@@ -1,0 +1,26 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "nodemon index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JrP12345/jk-backend.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/JrP12345/jk-backend/issues"
+  },
+  "homepage": "https://github.com/JrP12345/jk-backend#readme",
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "fastify": "^5.8.5"
+  }
+}
