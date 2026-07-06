@@ -1,0 +1,118 @@
+import type { FastifyRequest, FastifyReply } from "fastify";
+import mongoose from "mongoose";
+import { DoctorAssignment } from "../models/DoctorAssignment.ts";
+import { Clinic } from "../models/Clinic.ts";
+import { User } from "../models/User.ts";
+import { OrgMember } from "../models/OrgMember.ts";
+import { successResponse, errorResponse } from "../utilities/helpers.ts";
+
+export async function assignDoctor(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const orgId = req.user!.organization_id;
+    if (!orgId) return reply.code(400).send(errorResponse("You are not linked to any organization"));
+
+    const { doctorId, clinicId, workingHours, fees, appointmentDuration } = req.body as {
+      doctorId: string; clinicId: string; workingHours: string; fees: number; appointmentDuration?: number;
+    };
+
+    if (!doctorId || !clinicId || !workingHours || fees === undefined) {
+      return reply.code(400).send(errorResponse("doctorId, clinicId, workingHours, and fees are required"));
+    }
+
+    // Verify Clinic belongs to the organization
+    const clinic = await Clinic.findOne({ _id: clinicId, organizationId: orgId, isActive: true });
+    if (!clinic) return reply.code(404).send(errorResponse("Clinic not found in your organization"));
+
+    // Verify Doctor exists, has role 'doctor', and belongs to organization
+    const doctorUser = await User.findOne({ _id: doctorId, role: "doctor", isActive: true });
+    if (!doctorUser) return reply.code(404).send(errorResponse("Doctor user not found"));
+
+    const orgMember = await OrgMember.findOne({ userId: doctorId, organizationId: orgId });
+    if (!orgMember) return reply.code(403).send(errorResponse("Doctor is not a member of your organization"));
+
+    // Upsert DoctorAssignment
+    const assignment = await DoctorAssignment.findOneAndUpdate(
+      { doctorId, clinicId, organizationId: orgId },
+      { workingHours, fees, appointmentDuration: appointmentDuration || 15, isActive: true },
+      { new: true, upsert: true }
+    );
+
+    return reply.code(201).send(successResponse(assignment, "Doctor assigned to clinic successfully"));
+  } catch (err) {
+    console.error("assignDoctor error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+export async function getDoctorAssignments(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const orgId = req.user!.organization_id;
+    if (!orgId) return reply.code(400).send(errorResponse("You are not linked to any organization"));
+
+    const { doctorId, clinicId } = req.query as { doctorId?: string; clinicId?: string };
+
+    const query: any = { organizationId: orgId, isActive: true };
+    if (doctorId) query.doctorId = doctorId;
+    if (clinicId) query.clinicId = clinicId;
+
+    const assignments = await DoctorAssignment.find(query)
+      .populate("doctorId", "name email phone")
+      .populate("clinicId", "name city address");
+
+    return reply.code(200).send(successResponse(assignments));
+  } catch (err) {
+    console.error("getDoctorAssignments error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+export async function updateAssignment(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const orgId = req.user!.organization_id;
+    const { id } = req.params as { id: string };
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return reply.code(400).send(errorResponse("Invalid assignment ID"));
+    }
+
+    const { workingHours, fees, appointmentDuration } = req.body as {
+      workingHours?: string; fees?: number; appointmentDuration?: number;
+    };
+
+    const assignment = await DoctorAssignment.findOne({ _id: id, organizationId: orgId });
+    if (!assignment) return reply.code(404).send(errorResponse("Doctor assignment not found"));
+
+    const updateFields: any = {};
+    if (workingHours !== undefined) updateFields.workingHours = workingHours;
+    if (fees !== undefined) updateFields.fees = fees;
+    if (appointmentDuration !== undefined) updateFields.appointmentDuration = appointmentDuration;
+
+    const updated = await DoctorAssignment.findByIdAndUpdate(id, updateFields, { new: true });
+
+    return reply.code(200).send(successResponse(updated, "Doctor assignment updated successfully"));
+  } catch (err) {
+    console.error("updateAssignment error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+export async function removeAssignment(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const orgId = req.user!.organization_id;
+    const { id } = req.params as { id: string };
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return reply.code(400).send(errorResponse("Invalid assignment ID"));
+    }
+
+    const assignment = await DoctorAssignment.findOne({ _id: id, organizationId: orgId });
+    if (!assignment) return reply.code(404).send(errorResponse("Doctor assignment not found"));
+
+    await DoctorAssignment.findByIdAndDelete(id);
+
+    return reply.code(200).send(successResponse(null, "Doctor assignment removed successfully"));
+  } catch (err) {
+    console.error("removeAssignment error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
