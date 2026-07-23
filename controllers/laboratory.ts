@@ -5,7 +5,9 @@ import { LabOrder } from "../models/LabOrder.ts";
 import { Patient } from "../models/Patient.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { AuditLog } from "../models/AuditLog.ts";
+import { Encounter } from "../models/Encounter.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
+import { OrdersService } from "../services/OrdersService.ts";
 
 // ─── LabTest (Catalog) CRUD Handlers ─────────────────────────────
 
@@ -226,6 +228,7 @@ export async function createLabOrder(req: FastifyRequest, reply: FastifyReply) {
         clinicId,
         patientId,
         doctorId,
+        orderedBy: doctorId,  // forward-compatible with v1.6 accountability fields
         testId,
         status: "ordered"
       });
@@ -377,8 +380,8 @@ export async function uploadLabResult(req: FastifyRequest, reply: FastifyReply) 
       return reply.code(404).send(errorResponse("Lab order not found"));
     }
 
-    if (order.status !== "sample-collected") {
-      return reply.code(400).send(errorResponse(`Cannot upload result for order in ${order.status} state. Sample must be collected first.`));
+    if (order.status === "result-uploaded" || order.status === "cancelled") {
+      return reply.code(400).send(errorResponse(`Cannot upload result for order in ${order.status} state.`));
     }
 
     order.status = "result-uploaded";
@@ -402,5 +405,183 @@ export async function uploadLabResult(req: FastifyRequest, reply: FastifyReply) 
   } catch (err) {
     console.error("uploadLabResult error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+// ─── v1.6.0: Encounter-Scoped Orders & Results Controllers ───────────────────
+
+/**
+ * POST /api/encounters/:id/orders
+ * Place a diagnostic order anchored to an Encounter.
+ * Permission: MANAGE_ORDERS
+ */
+export async function placeOrderController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id: encounterId } = req.params as { id: string };
+    const userId = req.user?.id!;
+    const orgId = req.user?.organization_id;
+    let {
+      testId, clinicId, patientId,
+      priority, clinicalReason,
+    } = req.body as {
+      testId: string; clinicId?: string; patientId?: string;
+      priority?: "routine" | "urgent" | "stat"; clinicalReason?: string;
+    };
+
+    if (encounterId) {
+      const encounter = await Encounter.findById(encounterId).lean() as any;
+      if (encounter) {
+        if (!clinicId) clinicId = encounter.clinicId?.toString();
+        if (!patientId) patientId = encounter.patientId?.toString();
+      }
+    }
+
+    if (!testId || !clinicId || !patientId) {
+      return reply.code(400).send(errorResponse("testId, clinicId, and patientId are required"));
+    }
+
+    const { order, test } = await OrdersService.placeOrder({
+      organizationId: orgId || clinicId,
+      clinicId,
+      encounterId,
+      patientId,
+      testId,
+      orderedBy:      userId,
+      priority,
+      clinicalReason,
+    });
+
+    await AuditLog.create({
+      userId,
+      action: "LAB_ORDER_PLACE",
+      targetId: order._id,
+      targetModel: "LabOrder",
+      details: { testCode: test.code, testName: test.name, encounterId, priority: order.priority },
+    });
+
+    return reply.code(201).send(successResponse(order, "Diagnostic order placed"));
+  } catch (err: any) {
+    const code = err.message?.includes("not found") ? 404 : 500;
+    return reply.code(code).send(errorResponse(err.message || "Internal server error"));
+  }
+}
+
+/**
+ * GET /api/encounters/:id/orders
+ * Retrieve all diagnostic orders for an encounter.
+ * Permission: VIEW_EHR
+ */
+export async function getEncounterOrdersController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id: encounterId } = req.params as { id: string };
+    const orders = await OrdersService.getOrdersByEncounter(encounterId);
+    return reply.code(200).send(successResponse(orders));
+  } catch (err: any) {
+    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+  }
+}
+
+/**
+ * PUT /api/orders/:id/collect
+ * Record sample collection. Transitions: ordered → sample-collected.
+ * Permission: MANAGE_ORDERS
+ */
+export async function collectSampleOrderController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id: orderId } = req.params as { id: string };
+    const userId = req.user?.id!;
+    const order = await OrdersService.collectSample(orderId, userId);
+    return reply.code(200).send(successResponse(order, "Sample collection recorded"));
+  } catch (err: any) {
+    const code = err.message?.includes("not found") ? 404
+      : err.message?.includes("Cannot") || err.message?.includes("Invalid") ? 422
+      : 500;
+    return reply.code(code).send(errorResponse(err.message || "Internal server error"));
+  }
+}
+
+/**
+ * PUT /api/orders/:id/process
+ * Mark order as processing. Transitions: sample-collected → processing.
+ * Permission: MANAGE_ORDERS
+ */
+export async function markProcessingController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id: orderId } = req.params as { id: string };
+    const order = await OrdersService.markProcessing(orderId);
+    return reply.code(200).send(successResponse(order, "Order marked as processing"));
+  } catch (err: any) {
+    const code = err.message?.includes("not found") ? 404
+      : err.message?.includes("Cannot") || err.message?.includes("Invalid") ? 422
+      : 500;
+    return reply.code(code).send(errorResponse(err.message || "Internal server error"));
+  }
+}
+
+/**
+ * PUT /api/orders/:id/result
+ * Record a diagnostic result. Transitions: processing → result-uploaded.
+ * Returns AbnormalResultSignal in response when isAbnormal = true.
+ * Permission: MANAGE_ORDERS
+ */
+export async function recordResultController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id: orderId } = req.params as { id: string };
+    const userId = req.user?.id!;
+    const {
+      value, unit, referenceRange, interpretation,
+      isAbnormal, notes, attachmentUrl,
+    } = req.body as {
+      value: string; unit?: string; referenceRange?: string;
+      interpretation?: "normal" | "low" | "high" | "critical" | "indeterminate";
+      isAbnormal?: boolean; notes?: string; attachmentUrl?: string;
+    };
+
+    if (!value) {
+      return reply.code(400).send(errorResponse("Result value is required"));
+    }
+
+    const { order, abnormalSignal } = await OrdersService.recordResult(orderId, {
+      resultedBy: userId, value, unit, referenceRange,
+      interpretation, isAbnormal, notes, attachmentUrl,
+    });
+
+    return reply.code(200).send(
+      successResponse(
+        { order, abnormalSignal },
+        abnormalSignal
+          ? `Result recorded — ABNORMAL: ${abnormalSignal.interpretation.toUpperCase()}`
+          : "Result recorded"
+      )
+    );
+  } catch (err: any) {
+    const code = err.message?.includes("not found") ? 404
+      : err.message?.includes("Cannot") || err.message?.includes("Invalid") ? 422
+      : 500;
+    return reply.code(code).send(errorResponse(err.message || "Internal server error"));
+  }
+}
+
+/**
+ * PUT /api/orders/:id/cancel
+ * Cancel an order with a mandatory reason. Any non-terminal state → cancelled.
+ * Permission: MANAGE_ORDERS
+ */
+export async function cancelOrderController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id: orderId } = req.params as { id: string };
+    const { cancellationReason } = (req.body || {}) as { cancellationReason?: string };
+
+    if (!cancellationReason || cancellationReason.trim().length === 0) {
+      return reply.code(400).send(errorResponse("cancellationReason is required"));
+    }
+
+    const order = await OrdersService.cancelOrder(orderId, cancellationReason);
+    return reply.code(200).send(successResponse(order, "Order cancelled"));
+  } catch (err: any) {
+    const code = err.message?.includes("not found") ? 404
+      : err.message?.includes("Cannot") || err.message?.includes("Invalid") ? 422
+      : 500;
+    return reply.code(code).send(errorResponse(err.message || "Internal server error"));
   }
 }

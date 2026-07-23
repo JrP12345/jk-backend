@@ -28,10 +28,9 @@ beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
   const uri = mongoServer.getUri();
   
-  // Set the environment variables so that when db.ts is loaded it points to this DB
+  // Set environment variables for test DB and Cloudflare R2
   process.env.MONGODB_URI = uri;
   process.env.NODE_ENV = "test";
-  process.env.JWT_SECRET = "testsecretkeytestsecretkeytestsecretkey";
   process.env.CLOUDFLARE_ACCOUNT_ID = "testaccount";
   process.env.R2_ACCESS_KEY_ID = "testaccess";
   process.env.R2_SECRET_ACCESS_KEY = "testsecret";
@@ -42,7 +41,6 @@ beforeAll(async () => {
   }
   await mongoose.connect(uri);
 });
-
 
 afterAll(async () => {
   if (mongoose.connection.readyState !== 0) {

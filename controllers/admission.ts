@@ -3,9 +3,12 @@ import mongoose from "mongoose";
 import { Bed } from "../models/Bed.ts";
 import { Admission } from "../models/Admission.ts";
 import { Patient } from "../models/Patient.ts";
+import { Doctor } from "../models/Doctor.ts";
+import { User } from "../models/User.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
+import { withTransaction } from "../utilities/transaction.ts";
 
 // ─── Bed CRUD Handlers ───────────────────────────────────────────
 
@@ -99,7 +102,6 @@ export async function updateBed(req: FastifyRequest, reply: FastifyReply) {
     if (bedNumber !== undefined) bed.bedNumber = bedNumber;
     if (pricePerDay !== undefined) bed.pricePerDay = pricePerDay;
     if (status !== undefined) {
-      // If setting to available, ensure occupiedBy is cleared
       if (status === "available") {
         bed.occupiedBy = null;
       }
@@ -143,7 +145,7 @@ export async function deleteBed(req: FastifyRequest, reply: FastifyReply) {
   }
 }
 
-// ─── Admission Handlers ───────────────────────────────────────────
+// ─── Admission Handlers (ACID Transactional) ───────────────────────
 
 export async function admitPatient(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -185,41 +187,46 @@ export async function admitPatient(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse(`Bed is currently ${bed.status}`));
     }
 
-    // Update Bed status first
-    bed.status = "occupied";
-    bed.occupiedBy = patient._id;
-    await bed.save();
+    return await withTransaction(async (session) => {
+      const option = session ? { session } : {};
 
-    let admission: any = null;
-    try {
-      // Create admission
-      admission = await Admission.create({
-        clinicId,
-        patientId,
-        bedId,
-        reasonForAdmission,
-        doctorInCharge,
-        status: "admitted",
-        notes: notes || ""
-      });
-    } catch (saveError) {
-      // Rollback bed status if admission creation fails
-      bed.status = "available";
-      bed.occupiedBy = null;
-      await bed.save();
-      throw saveError;
-    }
+      // 1. Update Bed status
+      bed.status = "occupied";
+      bed.occupiedBy = patient._id;
+      await bed.save(option);
 
-    // Create Audit Log
-    await AuditLog.create({
-      userId,
-      action: "PATIENT_ADMIT",
-      targetId: admission._id,
-      targetModel: "Admission",
-      details: { bedNumber: bed.bedNumber, wardName: bed.wardName, reason: reasonForAdmission }
+      // 2. Create Admission record
+      const [admission] = await Admission.create(
+        [
+          {
+            clinicId,
+            patientId,
+            bedId,
+            reasonForAdmission,
+            doctorInCharge,
+            status: "admitted",
+            notes: notes || ""
+          }
+        ],
+        option
+      );
+
+      // 3. Create Audit Log
+      await AuditLog.create(
+        [
+          {
+            userId,
+            action: "PATIENT_ADMIT",
+            targetId: admission._id,
+            targetModel: "Admission",
+            details: { bedNumber: bed.bedNumber, wardName: bed.wardName, reason: reasonForAdmission }
+          }
+        ],
+        option
+      );
+
+      return reply.code(201).send(successResponse(admission, "Patient admitted successfully"));
     });
-
-    return reply.code(201).send(successResponse(admission, "Patient admitted successfully"));
   } catch (err) {
     console.error("admitPatient error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -295,68 +302,70 @@ export async function dischargePatient(req: FastifyRequest, reply: FastifyReply)
       return reply.code(404).send(errorResponse("Associated bed not found"));
     }
 
-    // 1. Release the bed
-    const originalBedStatus = bed.status;
-    const originalBedOccupant = bed.occupiedBy;
+    return await withTransaction(async (session) => {
+      const option = session ? { session } : {};
 
-    bed.status = "available";
-    bed.occupiedBy = null;
-    await bed.save();
+      // 1. Release bed
+      bed.status = "available";
+      bed.occupiedBy = null;
+      await bed.save(option);
 
-    let invoice: any = null;
-    try {
       // 2. Calculate stay duration & billing amount
       const dischargeDate = new Date();
       const stayMs = dischargeDate.getTime() - admission.admissionDate.getTime();
-      const stayDays = Math.max(1, Math.ceil(stayMs / (1000 * 60 * 60 * 24))); // Minimum 1 day charge
+      const stayDays = Math.max(1, Math.ceil(stayMs / (1000 * 60 * 60 * 24)));
       const subtotal = stayDays * bed.pricePerDay;
 
       // 3. Generate sequential invoice
       const year = dischargeDate.getFullYear();
-      const count = await Invoice.countDocuments();
+      const count = await Invoice.countDocuments({}, option);
       const invoiceNumber = `INV-${year}-${(count + 1).toString().padStart(5, "0")}`;
 
-      invoice = await Invoice.create({
-        invoiceNumber,
-        patientId: admission.patientId,
-        clinicId: admission.clinicId,
-        doctorId: admission.doctorInCharge, // Doctor in charge is responsible for care
-        items: [
+      const [invoice] = await Invoice.create(
+        [
           {
-            description: `Bed Occupancy Charge - Ward: ${bed.wardName}, Bed: ${bed.bedNumber} (${stayDays} Days)`,
-            amount: bed.pricePerDay,
-            quantity: stayDays
+            invoiceNumber,
+            patientId: admission.patientId,
+            clinicId: admission.clinicId,
+            doctorId: admission.doctorInCharge,
+            items: [
+              {
+                description: `Bed Occupancy Charge - Ward: ${bed.wardName}, Bed: ${bed.bedNumber} (${stayDays} Days)`,
+                amount: bed.pricePerDay,
+                quantity: stayDays
+              }
+            ],
+            subtotal,
+            tax: 0,
+            discount: 0,
+            totalAmount: subtotal,
+            status: "unpaid"
           }
         ],
-        subtotal,
-        tax: 0,
-        discount: 0,
-        totalAmount: subtotal,
-        status: "unpaid"
-      });
+        option
+      );
 
       // 4. Update Admission record
       admission.dischargeDate = dischargeDate;
       admission.status = "discharged";
-      await admission.save();
+      await admission.save(option);
 
-      // Create Audit Log
-      await AuditLog.create({
-        userId,
-        action: "PATIENT_DISCHARGE",
-        targetId: admission._id,
-        targetModel: "Admission",
-        details: { bedNumber: bed.bedNumber, wardName: bed.wardName, stayDays, invoiceNumber }
-      });
+      // 5. Create Audit Log
+      await AuditLog.create(
+        [
+          {
+            userId,
+            action: "PATIENT_DISCHARGE",
+            targetId: admission._id,
+            targetModel: "Admission",
+            details: { bedNumber: bed.bedNumber, wardName: bed.wardName, stayDays, invoiceNumber }
+          }
+        ],
+        option
+      );
 
       return reply.code(200).send(successResponse({ admission, invoice }, "Patient discharged and billed successfully"));
-    } catch (billingError) {
-      // Rollback bed occupancy if billing/admission updates fail
-      bed.status = originalBedStatus;
-      bed.occupiedBy = originalBedOccupant;
-      await bed.save();
-      throw billingError;
-    }
+    });
   } catch (err) {
     console.error("dischargePatient error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));

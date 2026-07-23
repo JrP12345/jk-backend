@@ -10,7 +10,6 @@ import { Receptionist } from "./models/Receptionist.ts";
 import { Patient } from "./models/Patient.ts";
 import { Appointment } from "./models/Appointment.ts";
 import { AuditLog } from "./models/AuditLog.ts";
-import { generateKeyPair } from "./utilities/helpers.ts";
 import { Permission } from "./models/Permission.ts";
 import { Role } from "./models/Role.ts";
 import "./db.ts";
@@ -89,15 +88,12 @@ async function seed() {
 
     // Helper for user generation
     const createUser = async (name, email, role, phone) => {
-      const { publicKey, privateKey } = generateKeyPair();
       return await User.create({
         name,
         email,
         password: hashedPassword,
         phone,
-        role,
-        publicKey,
-        privateKey
+        role
       });
     };
 

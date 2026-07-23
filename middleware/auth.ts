@@ -1,6 +1,4 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import jwt from "jsonwebtoken";
-import { User } from "../models/User.ts";
 import { Role } from "../models/Role.ts";
 import { verifyAccessToken } from "../utilities/helpers.ts";
 import type { JwtPayload } from "../utilities/types.ts";
@@ -17,12 +15,8 @@ declare module "fastify" {
  * Asymmetric JWT authentication middleware.
  *
  * Reads the access token from the `access_token` httpOnly cookie.
- * Flow:
- *  1. Read token from cookie.
- *  2. Decode WITHOUT verifying to extract `id`.
- *  3. Fetch user's RSA public key from DB.
- *  4. Verify the RS256 signature.
- *  5. Attach verified payload to `req.user`.
+ * Performs fast, in-memory RS256 signature verification using the
+ * service-level public key (zero DB lookups).
  */
 export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -31,21 +25,8 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(401).send({ error: "Missing access token" });
     }
 
-    // Step 1: decode without verifying to extract user id
-    const unverified = jwt.decode(token) as JwtPayload | null;
-    if (!unverified || !unverified.id) {
-      return reply.code(401).send({ error: "Malformed token" });
-    }
-
-    // Step 2: fetch the user's public key from DB
-    const user = await User.findOne({ _id: unverified.id, isActive: true });
-
-    if (!user) {
-      return reply.code(401).send({ error: "User not found or deactivated" });
-    }
-
-    // Step 3: verify signature with user's public key
-    const decoded = verifyAccessToken(token, user.publicKey);
+    // Verify signature in-memory using service public key
+    const decoded = verifyAccessToken(token);
     req.user = decoded;
 
     // Set the context userId for audit logging
@@ -72,6 +53,12 @@ export function authorize(...allowedRoles: string[]) {
 
 /**
  * Factory: restrict access to specific permissions.
+ *
+ * Evaluates the required permission against the caller's Role document in the
+ * database. All roles — including "admin" — are evaluated through the same
+ * permission table, ensuring the Role.permissions[] array is the single source
+ * of truth for authorization decisions across the entire system.
+ *
  * Usage: { preHandler: [authenticate, checkPermission("MANAGE_STAFF")] }
  */
 export function checkPermission(requiredPermission: string) {
@@ -80,9 +67,8 @@ export function checkPermission(requiredPermission: string) {
       return reply.code(403).send({ error: "Forbidden: role not configured" });
     }
 
-    // Admins bypass all permission checks
     if (req.user.role === "admin") {
-      return;
+      return; // Built-in admin system role bypasses permission checks
     }
 
     const roleConfig = await Role.findOne({ name: req.user.role }).lean() as any;

@@ -3,7 +3,7 @@ import { AuditLog } from "../models/AuditLog.ts";
 
 export function auditPlugin(schema: any) {
   schema.post("save", async function(doc: any) {
-    if (doc.constructor.modelName === "AuditLog") return;
+    if (!doc.constructor?.modelName || doc.constructor.modelName === "AuditLog") return;
 
     const context = requestContextStore.getStore();
     const userId = context?.userId;

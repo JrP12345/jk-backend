@@ -1,0 +1,32 @@
+{
+  "datasetVersion": "2026.07.22",
+  "rules": [
+    {
+      "ingredientA": "warfarin",
+      "ingredientB": "aspirin",
+      "severity": "critical",
+      "title": "Severe Hemorrhage Risk (Warfarin + Aspirin)",
+      "description": "Concurrent use of anticoagulants and antiplatelet agents markedly increases gastrointestinal and intracranial bleeding risk.",
+      "evidence": "FDA Black Box Warning & CHEST Guidelines for Antithrombotic Therapy.",
+      "recommendation": "Avoid combination unless strictly indicated for mechanical valve. Monitor INR closely."
+    },
+    {
+      "ingredientA": "lisinopril",
+      "ingredientB": "spironolactone",
+      "severity": "major",
+      "title": "Hyperkalemia Risk (ACE Inhibitor + Potassium-Sparing Diuretic)",
+      "description": "Additive inhibition of aldosterone leads to severe serum potassium elevation.",
+      "evidence": "AHA/ACC Heart Failure Guidelines.",
+      "recommendation": "Monitor serum potassium and renal function within 1 week of co-prescription."
+    },
+    {
+      "ingredientA": "ciprofloxacin",
+      "ingredientB": "antacid",
+      "severity": "moderate",
+      "title": "Reduced Antibiotic Absorption (Fluoroquinolone + Cation Antacid)",
+      "description": "Chelation by multivalent cations reduces oral fluoroquinolone bioavailability by up to 90%.",
+      "evidence": "Clinical Pharmacokinetics & Drug Interaction Guidelines.",
+      "recommendation": "Administer fluoroquinolone at least 2 hours before or 6 hours after antacids."
+    }
+  ]
+}

@@ -2,6 +2,7 @@ import mongoose, { Schema } from "mongoose";
 
 const PatientSchema = new Schema({
   userId: { type: Schema.Types.ObjectId, ref: "User", required: true, unique: true, index: true },
+  organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
   dob: { type: Date },
   gender: { type: String, enum: ["male", "female", "other"] },
   address: { type: String },

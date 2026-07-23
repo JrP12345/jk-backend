@@ -2,7 +2,9 @@ import { verifyEnv } from "./utilities/config.ts";
 verifyEnv();
 
 import "./db.ts";
+import mongoose from "mongoose";
 import { requestContextStore } from "./utilities/context.ts";
+import { redisClient } from "./utilities/redis.ts";
 import fastify from "fastify";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
@@ -39,14 +41,21 @@ app.setErrorHandler((error, request, reply) => {
 // ─── Plugins ────────────────────────────────────────────────────
 app.register(cookie);
 
+const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS
+  ? process.env.CORS_ALLOWED_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
+  : ["http://localhost:3000"];
+
 app.register(cors, {
-  origin: "http://localhost:3000",   // Next.js frontend
+  origin: allowedOrigins.length === 1 ? allowedOrigins[0] : allowedOrigins,
   credentials: true,                 // allow cookies cross-origin
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
 });
 
 app.register(rateLimit, {
   max: 100,
-  timeWindow: "1 minute"
+  timeWindow: "1 minute",
+  ...(redisClient ? { redis: redisClient } : {})
 });
 
 // ─── Register route plugins ────────────────────────────────────
@@ -55,17 +64,71 @@ app.register(onboardingRoutes);
 app.register(publicRoutes);
 app.register(uploadRoutes, { prefix: '/api' });
 
-// ─── Health-check ───────────────────────────────────────────────
+// ─── Health-checks & Probes (SRE-001, SRE-002, SRE-003) ─────────
 app.get("/api/health", async () => {
   return { status: "ok", timestamp: new Date().toISOString() };
 });
 
-// ─── Start server ───────────────────────────────────────────────
-if (process.env.NODE_ENV !== "test") {
-  const PORT = Number(process.env.PORT) || 5000;
-  app.listen({ host: "localhost", port: PORT }).then(() => {
-    console.log(`🚀 Server running on http://localhost:${PORT}`);
+app.get("/api/health/liveness", async () => {
+  return { status: "ok" };
+});
+
+app.get("/api/health/readiness", async (request, reply) => {
+  const dbState = mongoose.connection.readyState;
+  const isDbReady = dbState === 1; // 1 = connected
+
+  let isRedisReady = true;
+  if (redisClient) {
+    isRedisReady = redisClient.status === "ready" || redisClient.status === "connecting";
+  }
+
+  const isReady = isDbReady && isRedisReady;
+  const statusCode = isReady ? 200 : 503;
+
+  return reply.code(statusCode).send({
+    status: isReady ? "ready" : "unhealthy",
+    database: isDbReady ? "connected" : "disconnected",
+    redis: isRedisReady ? "ready" : "degraded",
+    timestamp: new Date().toISOString()
   });
+});
+
+// ─── Graceful Shutdown & Server Startup ──────────────────────────
+const PORT = Number(process.env.PORT) || 5000;
+
+async function startServer() {
+  try {
+    const address = await app.listen({ port: PORT, host: "0.0.0.0" });
+    app.log.info(`🚀 HealthOS Fastify Server running at ${address}`);
+  } catch (err) {
+    app.log.error(err);
+    process.exit(1);
+  }
+}
+
+const gracefulShutdown = async (signal) => {
+  app.log.info(`Received ${signal}. Shutting down gracefully...`);
+  try {
+    await app.close();
+    if (mongoose.connection.readyState !== 0) {
+      await mongoose.disconnect();
+    }
+    if (redisClient) {
+      await redisClient.quit();
+    }
+    app.log.info("Server closed successfully.");
+    process.exit(0);
+  } catch (err) {
+    app.log.error("Error during graceful shutdown:", err);
+    process.exit(1);
+  }
+};
+
+if (process.env.NODE_ENV !== "test") {
+  startServer();
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 }
 
 export { app };
+export default app;

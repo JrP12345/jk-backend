@@ -6,8 +6,6 @@ const UserSchema = new Schema({
   password: { type: String, required: true },
   phone: { type: String },
   role: { type: String, required: true },
-  publicKey: { type: String, required: true },
-  privateKey: { type: String, required: true },
   isActive: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now }
 });
@@ -23,8 +21,6 @@ UserSchema.set("toJSON", {
     delete ret._id;
     delete ret.__v;
     delete ret.password;
-    delete ret.privateKey;
-    delete ret.publicKey;
     return ret;
   }
 });

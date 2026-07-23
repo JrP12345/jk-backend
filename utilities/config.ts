@@ -1,6 +1,5 @@
 const requiredEnv = [
   "MONGODB_URI",
-  "JWT_SECRET",
   "CLOUDFLARE_ACCOUNT_ID",
   "R2_ACCESS_KEY_ID",
   "R2_SECRET_ACCESS_KEY",

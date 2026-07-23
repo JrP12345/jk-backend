@@ -2,38 +2,28 @@ import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import { RefreshToken } from "../models/RefreshToken.ts";
 import type { JwtPayload } from "./types.ts";
+import { SERVICE_PRIVATE_KEY, SERVICE_PUBLIC_KEY, KEY_ID } from "./keys.ts";
 
-// ─── RSA Key-Pair Generation ────────────────────────────────────
-
-/**
- * Generate a fresh RSA-2048 key pair (PEM-encoded).
- * Called once per user at registration time.
- */
-export function generateKeyPair(): { publicKey: string; privateKey: string } {
-  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    publicKeyEncoding:  { type: "spki",  format: "pem" },
-    privateKeyEncoding: { type: "pkcs8", format: "pem" },
-  });
-  return { publicKey, privateKey };
-}
-
-
-// ─── Access Token (RS256 — signed with user's private key) ──────
+// ─── Access Token (RS256 — signed with service private key) ──────
 
 /**
- * Sign an access token using the user's RSA private key.
+ * Sign an access token using the service RSA private key.
  * Short-lived: 15 minutes.
  */
-export function generateAccessToken(payload: JwtPayload, privateKey: string): string {
-  return jwt.sign(payload, privateKey, { algorithm: "RS256", expiresIn: "15m" });
+export function generateAccessToken(payload: JwtPayload): string {
+  return jwt.sign(payload, SERVICE_PRIVATE_KEY, {
+    algorithm: "RS256",
+    expiresIn: "15m",
+    keyid: KEY_ID
+  });
 }
 
 /**
- * Verify an access token using the user's RSA public key.
+ * Verify an access token in-memory using the service RSA public key.
+ * Requires zero database queries.
  */
-export function verifyAccessToken(token: string, publicKey: string): JwtPayload {
-  return jwt.verify(token, publicKey, { algorithms: ["RS256"] }) as JwtPayload;
+export function verifyAccessToken(token: string): JwtPayload {
+  return jwt.verify(token, SERVICE_PUBLIC_KEY, { algorithms: ["RS256"] }) as JwtPayload;
 }
 
 
@@ -121,4 +111,3 @@ export function setPaginationHeaders(
   reply.header("X-Page-Size", pageSize.toString());
   reply.header("Access-Control-Expose-Headers", "X-Total-Count, X-Total-Pages, X-Current-Page, X-Page-Size");
 }
-

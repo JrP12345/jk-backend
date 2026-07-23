@@ -5,7 +5,6 @@ import { OrgMember } from "../models/OrgMember.ts";
 import { Patient } from "../models/Patient.ts";
 import { Role } from "../models/Role.ts";
 import {
-  generateKeyPair,
   generateAccessToken,
   createRefreshToken,
   validateRefreshToken,
@@ -46,7 +45,7 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
     const permissions = roleConfig ? roleConfig.permissions : [];
 
     const payload = { id: user.id, email: user.email, role: user.role, organization_id };
-    const accessToken = generateAccessToken(payload, user.privateKey);
+    const accessToken = generateAccessToken(payload);
     const refreshToken = await createRefreshToken(user.id);
 
     // Set httpOnly cookies
@@ -91,7 +90,7 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
     const organization_id = orgMember?.organizationId?.toString();
 
     const payload = { id: user.id, email: user.email, role: user.role, organization_id };
-    const accessToken = generateAccessToken(payload, user.privateKey);
+    const accessToken = generateAccessToken(payload);
 
     // Update the access token cookie only
     reply.setCookie("access_token", accessToken, {
@@ -153,7 +152,6 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const { publicKey, privateKey } = generateKeyPair();
 
     const newUser = await User.create({
       name,
@@ -161,8 +159,6 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
       password: hashedPassword,
       phone: phone || null,
       role: "patient",
-      publicKey,
-      privateKey
     });
 
     try {
@@ -176,7 +172,7 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
     const permissions = roleConfig ? roleConfig.permissions : [];
 
     const payload = { id: newUser.id, email, role: "patient" };
-    const accessToken = generateAccessToken(payload, privateKey);
+    const accessToken = generateAccessToken(payload);
     const refreshToken = await createRefreshToken(newUser.id);
 
     // Set httpOnly cookies

@@ -5,22 +5,120 @@ import { Organization } from "../models/Organization.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { Receptionist } from "../models/Receptionist.ts";
+import { Role } from "../models/Role.ts";
 import {
-  generateKeyPair,
   generateAccessToken,
   createRefreshToken,
   successResponse,
   errorResponse,
 } from "../utilities/helpers.ts";
 import { setAuthCookies } from "../utilities/types.ts";
+import { withTransaction, createWithSession } from "../utilities/transaction.ts";
+
+/**
+ * Full set of permission codes granted to the built-in "admin" system role.
+ * This is the exhaustive list of all permission tokens currently checked by
+ * checkPermission() across all route handlers.
+ */
+const ADMIN_PERMISSIONS = [
+  // Staff management
+  "MANAGE_STAFF",
+  "VIEW_STAFF",
+  // Clinic management
+  "MANAGE_CLINICS",
+  "VIEW_CLINICS",
+  // Organization settings
+  "MANAGE_ORGANIZATION",
+  // Beds & admissions
+  "MANAGE_BEDS",
+  "MANAGE_ADMISSIONS",
+  "VIEW_ADMISSIONS",
+  // Medicines & pharmacy
+  "MANAGE_MEDICINES",
+  // Laboratory & diagnostics
+  "MANAGE_LAB_TESTS",
+  // Billing
+  "MANAGE_BILLING",
+  "VIEW_BILLING",
+  // Appointments
+  "MANAGE_APPOINTMENTS",
+  "VIEW_APPOINTMENTS",
+  // Analytics
+  "VIEW_ANALYTICS",
+  // Queue
+  "MANAGE_QUEUE",
+  // EHR & Medical Records
+  "VIEW_EHR",
+  "MANAGE_EHR",
+  "MANAGE_CLINICAL_NOTES",
+  // Medication Administration (distinct from note authoring)
+  "ADMINISTER_MEDICATION",
+  // Diagnostic Orders & Results
+  "MANAGE_ORDERS",
+  // Discharge Summary & Encounter Closure
+  "MANAGE_DISCHARGE_SUMMARY",
+  // Clinical Search & Analytics
+  "VIEW_ANALYTICS",
+];
+
+export const DOCTOR_PERMISSIONS = [
+  "VIEW_STAFF",
+  "VIEW_CLINICS",
+  "VIEW_APPOINTMENTS",
+  "MANAGE_APPOINTMENTS",
+  "MANAGE_QUEUE",
+  "VIEW_EHR",
+  "MANAGE_EHR",
+  "MANAGE_CLINICAL_NOTES",
+  "ADMINISTER_MEDICATION",
+  "MANAGE_ORDERS",
+  "MANAGE_DISCHARGE_SUMMARY",
+  "VIEW_ADMISSIONS",
+  "MANAGE_ADMISSIONS",
+  "VIEW_ANALYTICS",
+];
+
+export const RECEPTIONIST_PERMISSIONS = [
+  "MANAGE_STAFF",
+  "VIEW_STAFF",
+  "MANAGE_CLINICS",
+  "VIEW_CLINICS",
+  "MANAGE_APPOINTMENTS",
+  "VIEW_APPOINTMENTS",
+  "MANAGE_QUEUE",
+  "VIEW_BILLING",
+  "MANAGE_BILLING",
+  "VIEW_ADMISSIONS",
+  "MANAGE_ADMISSIONS",
+  "MANAGE_BEDS",
+];
+
+export const PATIENT_PERMISSIONS = [
+  "VIEW_APPOINTMENTS",
+  "VIEW_EHR",
+  "VIEW_BILLING",
+];
 
 // ─── Step 1: Create Organization + Admin ────────────────────────
 export async function createOrganization(req: FastifyRequest, reply: FastifyReply) {
-  let createdOrgId: string | null = null;
-  let createdUserId: string | null = null;
-  let createdMemberId: string | null = null;
-
   try {
+    // ── Security Gate: Dev-Only ───────────────────────────────────
+    // Onboarding (creating a new org) is only allowed in development.
+    // In production this endpoint is fully disabled — no exceptions.
+    if (process.env.NODE_ENV === "production") {
+      return reply.code(403).send(errorResponse("Forbidden: onboarding is disabled in production"));
+    }
+
+    // ── Security Gate: Onboarding Secret ─────────────────────────
+    // Only the root/seed operator who knows ONBOARDING_SECRET can create orgs.
+    // The frontend passes it in the X-Onboarding-Secret header.
+    const providedSecret = (req.headers["x-onboarding-secret"] as string) || "";
+    const expectedSecret = process.env.ONBOARDING_SECRET || "";
+    if (!expectedSecret || providedSecret !== expectedSecret) {
+      return reply.code(403).send(errorResponse("Forbidden: invalid onboarding key"));
+    }
+
+
     const {
       org_name, city, address, org_phone, org_email, description, image_url, timings, working_days,
       admin_name, admin_email, admin_password, admin_phone,
@@ -39,60 +137,72 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
       return reply.code(409).send(errorResponse("Admin email already registered"));
     }
 
-    const org = await Organization.create({
-      name: org_name,
-      city,
-      address: address || null,
-      phone: org_phone || null,
-      email: org_email || null,
-      description: description || null,
-      image_url: image_url || null,
-      timings: timings || null,
-      working_days: working_days || null,
-    });
-    createdOrgId = org._id.toString();
+    return await withTransaction(async (session) => {
+      const org = await createWithSession(Organization, {
+        name: org_name,
+        city,
+        address: address || null,
+        phone: org_phone || null,
+        email: org_email || null,
+        description: description || null,
+        image_url: image_url || null,
+        timings: timings || null,
+        working_days: working_days || null,
+      }, session);
 
-    const hashedPassword = await bcrypt.hash(admin_password, 10);
-    const { publicKey, privateKey } = generateKeyPair();
+      const hashedPassword = await bcrypt.hash(admin_password, 10);
 
-    const adminUser = await User.create({
-      name: admin_name,
-      email: admin_email,
-      password: hashedPassword,
-      phone: admin_phone || null,
-      role: "admin",
-      publicKey,
-      privateKey,
-    });
-    createdUserId = adminUser._id.toString();
+      const adminUser = await createWithSession(User, {
+        name: admin_name,
+        email: admin_email,
+        password: hashedPassword,
+        phone: admin_phone || null,
+        role: "admin",
+      }, session);
 
-    const member = await OrgMember.create({
-      userId: adminUser._id,
-      organizationId: org._id,
-      role: "admin",
-    });
-    createdMemberId = member._id.toString();
+      await createWithSession(OrgMember, {
+        userId: adminUser._id,
+        organizationId: org._id,
+        role: "admin",
+      }, session);
 
-    // Set httpOnly cookies so admin is immediately logged in
-    const payload = { id: adminUser.id, email: admin_email, role: "admin", organization_id: org.id };
-    const accessToken = generateAccessToken(payload, privateKey);
-    const refreshToken = await createRefreshToken(adminUser.id);
-    setAuthCookies(reply, accessToken, refreshToken);
-
-    return reply.code(201).send(
-      successResponse(
+      // Upsert the admin Role document with all permissions.
+      // Uses $setOnInsert so a manually-customized admin Role is never overwritten
+      // by subsequent org-creation calls.
+      await Role.findOneAndUpdate(
+        { name: "admin" },
         {
-          organization: { id: org.id, name: org_name, city },
-          user: { id: adminUser.id, name: admin_name, email: admin_email, role: "admin", organization_id: org.id },
+          $setOnInsert: {
+            name: "admin",
+            description: "Full-access system administrator. Manages all organizational resources.",
+            isSystemRole: true,
+            permissions: ADMIN_PERMISSIONS,
+          },
         },
-        "Organization created and admin registered"
-      )
-    );
+        { upsert: true, session } as any
+      );
+
+      const orgIdStr = org._id.toString();
+      const userIdStr = adminUser._id.toString();
+
+      // Set httpOnly cookies so admin is immediately logged in
+      const payload = { id: userIdStr, email: admin_email, role: "admin", organization_id: orgIdStr };
+      const accessToken = generateAccessToken(payload);
+      const refreshToken = await createRefreshToken(userIdStr);
+      setAuthCookies(reply, accessToken, refreshToken);
+
+      return reply.code(201).send(
+        successResponse(
+          {
+            organization: { id: orgIdStr, name: org_name, city },
+            user: { id: userIdStr, name: admin_name, email: admin_email, role: "admin", organization_id: orgIdStr },
+          },
+          "Organization created and admin registered"
+        )
+      );
+    });
   } catch (err) {
     console.error("createOrganization error:", err);
-    if (createdMemberId) await OrgMember.deleteOne({ _id: createdMemberId }).catch(console.error);
-    if (createdUserId) await User.deleteOne({ _id: createdUserId }).catch(console.error);
-    if (createdOrgId) await Organization.deleteOne({ _id: createdOrgId }).catch(console.error);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -100,10 +210,6 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
 
 // ─── Step 2a: Admin adds a Doctor ───────────────────────────────
 export async function addDoctor(req: FastifyRequest, reply: FastifyReply) {
-  let createdUserId: string | null = null;
-  let createdDoctorId: string | null = null;
-  let createdMemberId: string | null = null;
-
   try {
     const orgId = req.user!.organization_id;
     if (!orgId) return reply.code(400).send(errorResponse("You are not linked to any organization"));
@@ -122,49 +228,42 @@ export async function addDoctor(req: FastifyRequest, reply: FastifyReply) {
     const emailCheck = await User.findOne({ email });
     if (emailCheck) return reply.code(409).send(errorResponse("Email already registered"));
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const { publicKey, privateKey } = generateKeyPair();
+    return await withTransaction(async (session) => {
+      const hashedPassword = await bcrypt.hash(password, 10);
 
-    const newDoctorUser = await User.create({
-      name,
-      email,
-      password: hashedPassword,
-      phone: phone || null,
-      role: "doctor",
-      publicKey,
-      privateKey,
+      const newDoctorUser = await createWithSession(User, {
+        name,
+        email,
+        password: hashedPassword,
+        phone: phone || null,
+        role: "doctor",
+      }, session);
+
+      await createWithSession(Doctor, {
+        userId: newDoctorUser._id,
+        organizationId: orgId,
+        specialization: specialization || null,
+        qualification: qualification || null,
+        experience_years: experience_years || null,
+        fees: fees || null,
+        timings: timings || null,
+        working_days: working_days || null,
+        description: description || null,
+        image_url: image_url || null,
+      }, session);
+
+      await createWithSession(OrgMember, {
+        userId: newDoctorUser._id,
+        organizationId: orgId,
+        role: "doctor",
+      }, session);
+
+      return reply.code(201).send(
+        successResponse({ id: newDoctorUser._id.toString(), name, email, role: "doctor", organization_id: orgId, specialization }, "Doctor registered successfully")
+      );
     });
-    createdUserId = newDoctorUser._id.toString();
-
-    const doctorProfile = await Doctor.create({
-      userId: newDoctorUser._id,
-      organizationId: orgId,
-      specialization: specialization || null,
-      qualification: qualification || null,
-      experience_years: experience_years || null,
-      fees: fees || null,
-      timings: timings || null,
-      working_days: working_days || null,
-      description: description || null,
-      image_url: image_url || null,
-    });
-    createdDoctorId = doctorProfile._id.toString();
-
-    const member = await OrgMember.create({
-      userId: newDoctorUser._id,
-      organizationId: orgId,
-      role: "doctor",
-    });
-    createdMemberId = member._id.toString();
-
-    return reply.code(201).send(
-      successResponse({ id: newDoctorUser.id, name, email, role: "doctor", organization_id: orgId, specialization }, "Doctor registered successfully")
-    );
   } catch (err) {
     console.error("addDoctor error:", err);
-    if (createdMemberId) await OrgMember.deleteOne({ _id: createdMemberId }).catch(console.error);
-    if (createdDoctorId) await Doctor.deleteOne({ _id: createdDoctorId }).catch(console.error);
-    if (createdUserId) await User.deleteOne({ _id: createdUserId }).catch(console.error);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -172,10 +271,6 @@ export async function addDoctor(req: FastifyRequest, reply: FastifyReply) {
 
 // ─── Step 2b: Admin adds a Receptionist ─────────────────────────
 export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) {
-  let createdUserId: string | null = null;
-  let createdRecId: string | null = null;
-  let createdMemberId: string | null = null;
-
   try {
     const orgId = req.user!.organization_id;
     if (!orgId) return reply.code(400).send(errorResponse("You are not linked to any organization"));
@@ -189,43 +284,36 @@ export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) 
     const emailCheck = await User.findOne({ email });
     if (emailCheck) return reply.code(409).send(errorResponse("Email already registered"));
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const { publicKey, privateKey } = generateKeyPair();
+    return await withTransaction(async (session) => {
+      const hashedPassword = await bcrypt.hash(password, 10);
 
-    const newRecUser = await User.create({
-      name,
-      email,
-      password: hashedPassword,
-      phone: phone || null,
-      role: "receptionist",
-      publicKey,
-      privateKey,
+      const newRecUser = await createWithSession(User, {
+        name,
+        email,
+        password: hashedPassword,
+        phone: phone || null,
+        role: "receptionist",
+      }, session);
+
+      await createWithSession(Receptionist, {
+        userId: newRecUser._id,
+        organizationId: orgId,
+        clinicId: clinicId || null,
+        shift: shift || null,
+      }, session);
+
+      await createWithSession(OrgMember, {
+        userId: newRecUser._id,
+        organizationId: orgId,
+        role: "receptionist",
+      }, session);
+
+      return reply.code(201).send(
+        successResponse({ id: newRecUser._id.toString(), name, email, role: "receptionist", organization_id: orgId, shift, clinicId }, "Receptionist registered successfully")
+      );
     });
-    createdUserId = newRecUser._id.toString();
-
-    const receptionistProfile = await Receptionist.create({
-      userId: newRecUser._id,
-      organizationId: orgId,
-      clinicId: clinicId || null,
-      shift: shift || null,
-    });
-    createdRecId = receptionistProfile._id.toString();
-
-    const member = await OrgMember.create({
-      userId: newRecUser._id,
-      organizationId: orgId,
-      role: "receptionist",
-    });
-    createdMemberId = member._id.toString();
-
-    return reply.code(201).send(
-      successResponse({ id: newRecUser.id, name, email, role: "receptionist", organization_id: orgId, shift, clinicId }, "Receptionist registered successfully")
-    );
   } catch (err) {
     console.error("addReceptionist error:", err);
-    if (createdMemberId) await OrgMember.deleteOne({ _id: createdMemberId }).catch(console.error);
-    if (createdRecId) await Receptionist.deleteOne({ _id: createdRecId }).catch(console.error);
-    if (createdUserId) await User.deleteOne({ _id: createdUserId }).catch(console.error);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

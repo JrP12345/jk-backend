@@ -56,6 +56,7 @@ import {
   searchPatients,
   getPatientDetails,
   submitDoctorReview,
+  getPatientTimelineController,
 } from "../controllers/patient.ts";
 import {
   getQueue,
@@ -197,4 +198,69 @@ export default async function onboardingRoutes(app: FastifyInstance) {
 
   // ─── Executive Analytics Routes ─────────────────────────────
   app.get("/api/analytics/executive", adminOnly, getExecutiveAnalytics);
+
+  // ─── Longitudinal EHR Domain Timeline Route ─────────────────
+  app.get("/api/patients/:id/timeline", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, getPatientTimelineController);
+
+  // ─── Clinical Documentation Workspace Routes ────────────────
+  app.post("/api/encounters", { preHandler: [authenticate, checkPermission("MANAGE_CLINICAL_NOTES")] }, (await import("../controllers/clinicalNote.ts")).createEncounterController);
+  app.post("/api/clinical-notes", { preHandler: [authenticate, checkPermission("MANAGE_CLINICAL_NOTES")] }, (await import("../controllers/clinicalNote.ts")).saveDraftClinicalNoteController);
+  app.put("/api/clinical-notes/:id/sign", { preHandler: [authenticate, checkPermission("MANAGE_CLINICAL_NOTES")] }, (await import("../controllers/clinicalNote.ts")).signClinicalNoteController);
+  app.post("/api/clinical-notes/:id/amend", { preHandler: [authenticate, checkPermission("MANAGE_CLINICAL_NOTES")] }, (await import("../controllers/clinicalNote.ts")).amendClinicalNoteController);
+  app.get("/api/patients/:id/clinical-notes/history", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/clinicalNote.ts")).getClinicalNoteHistoryController);
+
+  // ─── Clinical Decision Support (CDS) Routes ────────────────
+  app.post("/api/prescriptions/evaluate-safety", { preHandler: [authenticate, checkPermission("MANAGE_CLINICAL_NOTES")] }, (await import("../controllers/prescriptionSafety.ts")).evaluatePrescriptionSafetyController);
+  app.post("/api/prescriptions/override-evaluation", { preHandler: [authenticate, checkPermission("MANAGE_CLINICAL_NOTES")] }, (await import("../controllers/prescriptionSafety.ts")).overrideCDSEvaluationController);
+
+  // ─── Observation Analytics & NEWS2 Scoring Routes ─────────
+  app.post("/api/encounters/:id/evaluate-score", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/observationAnalytics.ts")).evaluateEncounterScoreController);
+  app.get("/api/encounters/:id/scores", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/observationAnalytics.ts")).getEncounterScoresController);
+  app.post("/api/alerts/:id/acknowledge", { preHandler: [authenticate, checkPermission("MANAGE_CLINICAL_NOTES")] }, (await import("../controllers/observationAnalytics.ts")).acknowledgeAlertController);
+  app.get("/api/patients/:id/vital-trends", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/observationAnalytics.ts")).getPatientVitalTrendsController);
+
+  // ─── Medication Administration Record (MAR) Routes ─────────
+  // Write operations require ADMINISTER_MEDICATION (distinct from MANAGE_CLINICAL_NOTES)
+  // Read operations require VIEW_EHR
+  app.post("/api/encounters/:id/mar", { preHandler: [authenticate, checkPermission("ADMINISTER_MEDICATION")] }, (await import("../controllers/mar.ts")).scheduleMARController);
+  app.get("/api/encounters/:id/mar", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/mar.ts")).getEncounterMARController);
+  app.put("/api/mar/:id/administer", { preHandler: [authenticate, checkPermission("ADMINISTER_MEDICATION")] }, (await import("../controllers/mar.ts")).administerMARController);
+  app.put("/api/mar/:id/refuse", { preHandler: [authenticate, checkPermission("ADMINISTER_MEDICATION")] }, (await import("../controllers/mar.ts")).refuseMARController);
+  app.put("/api/mar/:id/hold", { preHandler: [authenticate, checkPermission("ADMINISTER_MEDICATION")] }, (await import("../controllers/mar.ts")).holdMARController);
+  app.get("/api/prescriptions/:id/mar", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/mar.ts")).getPrescriptionMARController);
+
+  // ─── Orders & Results (Diagnostic Workflow) Routes ──────────
+  // Write operations require MANAGE_ORDERS; reads require VIEW_EHR
+  app.post("/api/encounters/:id/orders", { preHandler: [authenticate, checkPermission("MANAGE_ORDERS")] }, (await import("../controllers/laboratory.ts")).placeOrderController);
+  app.get("/api/encounters/:id/orders", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/laboratory.ts")).getEncounterOrdersController);
+  app.put("/api/orders/:id/collect", { preHandler: [authenticate, checkPermission("MANAGE_ORDERS")] }, (await import("../controllers/laboratory.ts")).collectSampleOrderController);
+  app.put("/api/orders/:id/process", { preHandler: [authenticate, checkPermission("MANAGE_ORDERS")] }, (await import("../controllers/laboratory.ts")).markProcessingController);
+  app.put("/api/orders/:id/result", { preHandler: [authenticate, checkPermission("MANAGE_ORDERS")] }, (await import("../controllers/laboratory.ts")).recordResultController);
+  app.put("/api/orders/:id/cancel", { preHandler: [authenticate, checkPermission("MANAGE_ORDERS")] }, (await import("../controllers/laboratory.ts")).cancelOrderController);
+
+  // ─── Discharge Summary Routes ──────────────────────────────
+  // Write operations require MANAGE_DISCHARGE_SUMMARY; reads require VIEW_EHR
+  app.post("/api/encounters/:id/discharge/compile", { preHandler: [authenticate, checkPermission("MANAGE_DISCHARGE_SUMMARY")] }, (await import("../controllers/discharge.ts")).compileDischargeSummaryController);
+  app.get("/api/encounters/:id/discharge", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/discharge.ts")).getDischargeSummaryByEncounterController);
+  app.put("/api/discharge/:id/finalize", { preHandler: [authenticate, checkPermission("MANAGE_DISCHARGE_SUMMARY")] }, (await import("../controllers/discharge.ts")).finalizeDischargeSummaryController);
+  app.put("/api/discharge/:id/countersign", { preHandler: [authenticate, checkPermission("MANAGE_DISCHARGE_SUMMARY")] }, (await import("../controllers/discharge.ts")).countersignDischargeSummaryController);
+  app.get("/api/discharge/:id", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/discharge.ts")).getDischargeByIdController);
+
+  // ─── Clinical Search & Analytics Routes ────────────────────
+  app.get("/api/patients/:id/search", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/search.ts")).searchPatientRecordController);
+  app.get("/api/encounters/:id/summary-report", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/search.ts")).getEncounterSummaryReportController);
+  app.get("/api/analytics/quality-metrics", { preHandler: [authenticate, checkPermission("VIEW_ANALYTICS")] }, (await import("../controllers/search.ts")).getOrganizationQualityMetricsController);
+
+  // ─── FHIR R4 Interoperability Routes ───────────────────────
+  app.get("/api/fhir/R4/Patient/:id", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/fhir.ts")).getFHIRPatientController);
+  app.get("/api/fhir/R4/Encounter/:id", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/fhir.ts")).getFHIREncounterController);
+  app.get("/api/fhir/R4/Observation/:id", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/fhir.ts")).getFHIRObservationController);
+  app.get("/api/fhir/R4/Encounter/:id/$export", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/fhir.ts")).exportFHIREncounterBundleController);
+  app.get("/api/fhir/R4/DiagnosticReport/:id", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/fhir.ts")).getFHIRDiagnosticReportController);
+  app.get("/api/fhir/R4/MedicationAdministration/:id", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/fhir.ts")).getFHIRMedicationAdministrationController);
+  app.get("/api/fhir/R4/Composition/:id", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/fhir.ts")).getFHIRCompositionController);
 }
+
+
+
+

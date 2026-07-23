@@ -47,10 +47,12 @@ describe("Auth API Integration Tests", () => {
     expect(accessToken).toBeDefined();
     expect(refreshToken).toBeDefined();
 
-    // Verify DB entry
+    // Verify DB entry has no per-user keys
     const user = await User.findOne({ email: patientEmail });
     expect(user).not.toBeNull();
     expect(user!.role).toBe("patient");
+    expect((user as any).publicKey).toBeUndefined();
+    expect((user as any).privateKey).toBeUndefined();
 
     const patient = await Patient.findOne({ userId: user!._id });
     expect(patient).not.toBeNull();
@@ -105,7 +107,6 @@ describe("Auth API Integration Tests", () => {
   });
 
   it("should fetch current user profile via /api/auth/me", async () => {
-    // Login to get cookie
     const loginRes = await app.inject({
       method: "POST",
       url: "/api/auth/login",
@@ -129,10 +130,21 @@ describe("Auth API Integration Tests", () => {
     const body = JSON.parse(response.body);
     expect(body.success).toBe(true);
     expect(body.data.user.email).toBe(patientEmail);
-    // Ensure sensitive data is not returned
     expect(body.data.user.password).toBeUndefined();
     expect(body.data.user.privateKey).toBeUndefined();
     expect(body.data.user.publicKey).toBeUndefined();
+  });
+
+  it("should return public JWKS on GET /.well-known/jwks.json", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/.well-known/jwks.json",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.keys).toBeDefined();
+    expect(body.keys[0].kid).toBe("healthos-service-key-1");
   });
 
   it("should refresh the access token", async () => {
@@ -183,7 +195,6 @@ describe("Auth API Integration Tests", () => {
 
     expect(response.statusCode).toBe(200);
 
-    // Verify all refresh tokens are revoked in database
     const user = await User.findOne({ email: patientEmail });
     const count = await RefreshToken.countDocuments({ userId: user!._id, revoked: false });
     expect(count).toBe(0);

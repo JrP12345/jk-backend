@@ -1,0 +1,9 @@
+node_modules
+.env
+.env.*
+!.env.example
+tests/
+*.test.ts
+*.log
+keys/
+seed-db.js
