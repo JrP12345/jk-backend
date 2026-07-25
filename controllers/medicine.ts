@@ -11,7 +11,7 @@ import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPa
 export async function createMedicine(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
-    if (userRole !== "admin" && userRole !== "receptionist") {
+    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "root") {
       return reply.code(403).send(errorResponse("Forbidden: Only staff can manage medicine stock"));
     }
 
@@ -92,7 +92,7 @@ export async function getMedicines(req: FastifyRequest, reply: FastifyReply) {
 export async function updateMedicine(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
-    if (userRole !== "admin" && userRole !== "receptionist") {
+    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "root") {
       return reply.code(403).send(errorResponse("Forbidden: Only staff can edit medicine stock"));
     }
 
@@ -127,7 +127,7 @@ export async function updateMedicine(req: FastifyRequest, reply: FastifyReply) {
 export async function deleteMedicine(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
-    if (userRole !== "admin") {
+    if (userRole !== "admin" && userRole !== "root") {
       return reply.code(403).send(errorResponse("Forbidden: Only admin can delete medicine records"));
     }
 

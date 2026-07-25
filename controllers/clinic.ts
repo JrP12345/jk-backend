@@ -1,12 +1,22 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { Clinic } from "../models/Clinic.ts";
+import { Organization } from "../models/Organization.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 
 export async function createClinic(req: FastifyRequest, reply: FastifyReply) {
   try {
     const orgId = req.user!.organization_id;
     if (!orgId) return reply.code(400).send(errorResponse("You are not linked to any organization"));
+
+    // Check SaaS Clinic Quota Limit
+    const org = await Organization.findById(orgId);
+    if (org && org.maxClinics) {
+      const existingCount = await Clinic.countDocuments({ organizationId: orgId, isActive: true });
+      if (existingCount >= org.maxClinics && req.user?.role !== "root") {
+        return reply.code(403).send(errorResponse(`Clinic branch quota limit of ${org.maxClinics} reached for your ${org.plan?.toUpperCase() || "current"} plan. Upgrade subscription to add more clinics.`));
+      }
+    }
 
     const {
       name, logo, description, phone, email, address, city, latitude, longitude, timings, facilities
@@ -45,7 +55,13 @@ export async function createClinic(req: FastifyRequest, reply: FastifyReply) {
 export async function getClinics(req: FastifyRequest, reply: FastifyReply) {
   try {
     const orgId = req.user!.organization_id;
-    if (!orgId) return reply.code(400).send(errorResponse("You are not linked to any organization"));
+    if (!orgId) {
+      if (req.user?.role === "root") {
+        const clinics = await Clinic.find({ isActive: true }).limit(20).sort({ name: 1 });
+        return reply.code(200).send(successResponse(clinics));
+      }
+      return reply.code(200).send(successResponse([]));
+    }
 
     const clinics = await Clinic.find({ organizationId: orgId, isActive: true }).sort({ name: 1 });
     return reply.code(200).send(successResponse(clinics));

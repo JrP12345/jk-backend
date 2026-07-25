@@ -25,15 +25,15 @@ describe("Orders & Results Management Integration Tests", () => {
         org_name: "Orders Diagnostic Hospital",
         city: "Chennai",
         admin_name: "Orders Admin",
-        admin_email: "orders-admin@test.com",
+        admin_email: `orders-admin-${Date.now()}@test.com`,
         admin_password: "Password123",
       },
     });
     expect(orgRes.statusCode).toBe(201);
     adminCookies = orgRes.headers["set-cookie"] as string[];
-    orgId = JSON.parse(orgRes.body).data.organization.id;
-    const adminUser = await User.findOne({ email: "orders-admin@test.com" });
-    adminUserId = adminUser!._id.toString();
+    const orgData = JSON.parse(orgRes.body).data;
+    orgId = orgData.organization.id;
+    adminUserId = orgData.user.id || orgData.user._id;
 
     // 2. Create Clinic
     const clinicRes = await app.inject({

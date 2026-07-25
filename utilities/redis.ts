@@ -18,7 +18,7 @@ function createRedisClient(): Redis | null {
     const client = redisUrl
       ? new Redis(redisUrl, {
           maxRetriesPerRequest: 1,
-          enableOfflineQueue: false,
+          enableOfflineQueue: true,
           retryStrategy: (times: number) => Math.min(times * 100, 2000),
         })
       : new Redis({
@@ -26,7 +26,7 @@ function createRedisClient(): Redis | null {
           port: parseInt(process.env.REDIS_PORT || "6379", 10),
           password: process.env.REDIS_PASSWORD || undefined,
           maxRetriesPerRequest: 1,
-          enableOfflineQueue: false,
+          enableOfflineQueue: true,
           retryStrategy: (times: number) => Math.min(times * 100, 2000),
         });
 

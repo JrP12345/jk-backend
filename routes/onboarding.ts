@@ -26,14 +26,24 @@ import {
 } from "../schemas/billing.ts";
 import {
   createOrganization,
+  getAllOrganizations,
+  updateOrganizationById,
+  deleteOrganizationById,
+  saveDraft,
+  getDraft,
+  setupOnboardingTOTP,
+  verifyOnboardingTOTP,
   addDoctor,
   addReceptionist,
+  addStaff,
   getOrgStaff,
   updateDoctor,
   updateReceptionist,
   deleteStaff,
   getOrganizationSettings,
   updateOrganizationSettings,
+  createDepartment,
+  getDepartments,
 } from "../controllers/onboarding.ts";
 import {
   createClinic,
@@ -51,6 +61,8 @@ import {
   bookAppointment,
   getAppointments,
   updateAppointmentStatus,
+  getDoctorSlots,
+  cancelAppointment,
 } from "../controllers/appointment.ts";
 import {
   searchPatients,
@@ -62,6 +74,7 @@ import {
   getQueue,
   reorderQueue,
   getAuditLogs,
+  callNextPatient,
 } from "../controllers/queue.ts";
 import {
   createInvoice,
@@ -103,6 +116,19 @@ export default async function onboardingRoutes(app: FastifyInstance) {
   // POST /api/onboarding/organization  — Create org + admin (public, first-time setup)
   app.post("/api/onboarding/organization", { schema: createOrganizationSchema }, createOrganization);
 
+  // Draft persistence routes
+  app.post("/api/onboarding/draft", saveDraft);
+  app.get("/api/onboarding/draft", getDraft);
+
+  // 2FA Google Authenticator (TOTP) onboarding routes
+  app.post("/api/onboarding/totp/setup", { preHandler: [authenticate] }, setupOnboardingTOTP);
+  app.post("/api/onboarding/totp/verify", { preHandler: [authenticate] }, verifyOnboardingTOTP);
+
+  // GET /api/organizations — Root Admin list all platform organizations
+  app.get("/api/organizations", { preHandler: [authenticate] }, getAllOrganizations);
+  app.put("/api/organizations/:id", { preHandler: [authenticate] }, updateOrganizationById);
+  app.delete("/api/organizations/:id", { preHandler: [authenticate] }, deleteOrganizationById);
+
   // ─── Protected: Permission-based routes ─────────────────────────
   const manageStaff = { preHandler: [authenticate, checkPermission("MANAGE_STAFF")] };
   const viewStaff = { preHandler: [authenticate, checkPermission("VIEW_STAFF")] };
@@ -116,6 +142,9 @@ export default async function onboardingRoutes(app: FastifyInstance) {
 
   // POST /api/onboarding/receptionist  — Admin registers a receptionist
   app.post("/api/onboarding/receptionist", { ...manageStaff, schema: addReceptionistSchema }, addReceptionist);
+
+  // POST /api/onboarding/staff         — Admin registers Nurse, Lab Tech, Pharmacist, Cashier, etc.
+  app.post("/api/onboarding/staff", manageStaff, addStaff);
 
   // GET  /api/onboarding/staff         — Admin views all org staff
   app.get("/api/onboarding/staff", viewStaff, getOrgStaff);
@@ -141,6 +170,10 @@ export default async function onboardingRoutes(app: FastifyInstance) {
   app.put("/api/onboarding/clinics/:id", manageClinics, updateClinic);
   app.delete("/api/onboarding/clinics/:id", manageClinics, deleteClinic);
 
+  // ─── Department Management Routes ─────────────────────────────
+  app.post("/api/departments", manageClinics, createDepartment);
+  app.get("/api/departments", viewClinics, getDepartments);
+
   // ─── Doctor Multi-Location Assignment Routes ──────────────────
   app.post("/api/onboarding/doctors/assignments", { ...manageClinics, schema: assignDoctorSchema }, assignDoctor);
   app.get("/api/onboarding/doctors/assignments", viewClinics, getDoctorAssignments);
@@ -151,6 +184,8 @@ export default async function onboardingRoutes(app: FastifyInstance) {
   app.post("/api/appointments", { preHandler: [authenticate], schema: bookAppointmentSchema }, bookAppointment);
   app.get("/api/appointments", { preHandler: [authenticate] }, getAppointments);
   app.put("/api/appointments/:id/status", { preHandler: [authenticate], schema: updateAppointmentStatusSchema }, updateAppointmentStatus);
+  app.put("/api/appointments/:id/cancel", { preHandler: [authenticate] }, cancelAppointment);
+  app.get("/api/doctors/:doctorId/slots", { preHandler: [authenticate] }, getDoctorSlots);
   
   app.get("/api/patients", { preHandler: [authenticate] }, searchPatients);
   app.get("/api/patients/:id", { preHandler: [authenticate] }, getPatientDetails);
@@ -159,6 +194,7 @@ export default async function onboardingRoutes(app: FastifyInstance) {
   // ─── Queue Management & VIP Override Routes ─────────────────
   app.get("/api/queue", { preHandler: [authenticate] }, getQueue);
   app.put("/api/queue/reorder", { preHandler: [authenticate] }, reorderQueue);
+  app.post("/api/queue/call-next", { preHandler: [authenticate] }, callNextPatient);
   app.get("/api/audit-logs", { preHandler: [authenticate] }, getAuditLogs);
 
   // ─── Bed & Admission Routes ─────────────────────────────────
@@ -257,6 +293,7 @@ export default async function onboardingRoutes(app: FastifyInstance) {
   app.get("/api/fhir/R4/Observation/:id", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/fhir.ts")).getFHIRObservationController);
   app.get("/api/fhir/R4/Encounter/:id/$export", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/fhir.ts")).exportFHIREncounterBundleController);
   app.get("/api/fhir/R4/DiagnosticReport/:id", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/fhir.ts")).getFHIRDiagnosticReportController);
+
   app.get("/api/fhir/R4/MedicationAdministration/:id", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/fhir.ts")).getFHIRMedicationAdministrationController);
   app.get("/api/fhir/R4/Composition/:id", { preHandler: [authenticate, checkPermission("VIEW_EHR")] }, (await import("../controllers/fhir.ts")).getFHIRCompositionController);
 }

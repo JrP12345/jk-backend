@@ -10,8 +10,19 @@ const OrganizationSchema = new Schema({
   image_url: { type: String },
   timings: { type: String }, // JSON string of schedule
   working_days: { type: String }, // JSON string
+  plan: { type: String, enum: ["starter", "pro", "enterprise"], default: "starter" },
+  maxClinics: { type: Number, default: 1 },
+  maxDoctors: { type: Number, default: 2 },
+  maxStaff: { type: Number, default: 2 },
+  onboardingStatus: {
+    type: String,
+    enum: ["NOT_STARTED", "ORGANIZATION_CREATED", "ADMIN_CREATED", "CLINIC_CREATED", "TWO_FACTOR_PENDING", "COMPLETED"],
+    default: "NOT_STARTED",
+  },
+  isOnboarded: { type: Boolean, default: false },
   isActive: { type: Boolean, default: true },
-  createdAt: { type: Date, default: Date.now }
+  status: { type: String, enum: ["active", "inactive"], default: "active" },
+  createdAt: { type: Date, default: Date.now },
 });
 
 OrganizationSchema.virtual("id").get(function() {

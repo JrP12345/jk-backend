@@ -9,13 +9,13 @@ import { successResponse, errorResponse } from "../utilities/helpers.ts";
 
 export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user!.organization_id;
-    if (!orgId) {
-      return reply.code(400).send(errorResponse("You are not linked to any organization"));
+    let orgId = req.user!.organization_id;
+    
+    // 1. Fetch clinics under organization (or all clinics for Root Admin)
+    let clinics = orgId ? await Clinic.find({ organizationId: orgId, isActive: true }) : [];
+    if (clinics.length === 0 && req.user?.role === "root") {
+      clinics = await Clinic.find({ isActive: true });
     }
-
-    // 1. Fetch clinics under this organization
-    const clinics = await Clinic.find({ organizationId: orgId, isActive: true });
     const clinicIds = clinics.map(c => c._id);
 
     if (clinicIds.length === 0) {

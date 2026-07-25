@@ -19,6 +19,10 @@ import "../models/Admission.ts";
 import "../models/Medicine.ts";
 import "../models/LabTest.ts";
 import "../models/LabOrder.ts";
+import "../models/Notification.ts";
+import "../models/NotificationPreference.ts";
+import "../models/NotificationTemplate.ts";
+import "../models/NotificationDelivery.ts";
 
 process.env.NODE_ENV = "test";
 

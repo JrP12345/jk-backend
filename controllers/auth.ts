@@ -2,6 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import bcrypt from "bcryptjs";
 import { User } from "../models/User.ts";
 import { OrgMember } from "../models/OrgMember.ts";
+import { Organization } from "../models/Organization.ts";
 import { Patient } from "../models/Patient.ts";
 import { Role } from "../models/Role.ts";
 import {
@@ -13,6 +14,8 @@ import {
   errorResponse,
 } from "../utilities/helpers.ts";
 import { setAuthCookies, clearAuthCookies } from "../utilities/types.ts";
+import { eventBus } from "../events/eventBus.ts";
+import { EVENT_TYPES } from "../events/types.ts";
 
 // ─── Login ──────────────────────────────────────────────────────
 export async function login(req: FastifyRequest, reply: FastifyReply) {
@@ -41,6 +44,14 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
     const orgMember = await OrgMember.findOne({ userId: user._id });
     const organization_id = orgMember?.organizationId?.toString();
 
+    // Enforce Organization Status Lockdown
+    if (organization_id && user.role !== "root") {
+      const org = await Organization.findById(organization_id).select("status isActive").lean();
+      if (org && (org.status === "inactive" || org.isActive === false)) {
+        return reply.code(403).send(errorResponse("Organization workspace is inactive or suspended. Access revoked."));
+      }
+    }
+
     const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
     const permissions = roleConfig ? roleConfig.permissions : [];
 
@@ -50,6 +61,17 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
 
     // Set httpOnly cookies
     setAuthCookies(reply, accessToken, refreshToken);
+
+    // Emit authentication notification event
+    eventBus.publish({
+      eventType: EVENT_TYPES.AUTH_LOGIN_NEW_DEVICE,
+      category: "auth",
+      targetUserId: user.id,
+      title: "New Account Login",
+      message: `Successful login to Ananta account (${user.email}).`,
+      severity: "info",
+      organizationId: organization_id,
+    });
 
     return reply.code(200).send(
       successResponse(
@@ -203,7 +225,7 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const orgMember = await OrgMember.findOne({ userId });
-    const organization_id = orgMember?.organizationId?.toString();
+    const organization_id = user.role === "root" ? req.user?.organization_id : orgMember?.organizationId?.toString();
 
     const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
     const permissions = roleConfig ? roleConfig.permissions : [];
@@ -222,5 +244,41 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
   } catch (err) {
     console.error("me error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+// ─── Switch Active Organization (Root Admin Only) ───────────────
+export async function switchOrganization(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const userId = req.user!.id;
+    const userRole = req.user!.role;
+
+    if (userRole !== "root") {
+      return reply.code(403).send(errorResponse("Only platform Root Admin can switch organization contexts"));
+    }
+
+    const { organizationId } = (req.body as any) || {};
+
+    const payload = {
+      id: userId,
+      email: req.user!.email,
+      role: "root",
+      organization_id: organizationId || undefined,
+    };
+
+    const accessToken = generateAccessToken(payload);
+    const refreshToken = await createRefreshToken(userId);
+
+    setAuthCookies(reply, accessToken, refreshToken);
+
+    return reply.code(200).send(
+      successResponse(
+        { organization_id: organizationId || null },
+        "Organization context switched successfully"
+      )
+    );
+  } catch (err) {
+    console.error("switchOrganization error:", err);
+    return reply.code(500).send(errorResponse("Failed to switch organization context"));
   }
 }

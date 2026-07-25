@@ -14,7 +14,7 @@ import { OrdersService } from "../services/OrdersService.ts";
 export async function createLabTest(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
-    if (userRole !== "admin" && userRole !== "receptionist") {
+    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "root") {
       return reply.code(403).send(errorResponse("Forbidden: Only staff can manage lab tests"));
     }
 
@@ -91,7 +91,7 @@ export async function getLabTests(req: FastifyRequest, reply: FastifyReply) {
 export async function updateLabTest(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
-    if (userRole !== "admin" && userRole !== "receptionist") {
+    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "root") {
       return reply.code(403).send(errorResponse("Forbidden: Only staff can update lab tests"));
     }
 
@@ -132,7 +132,7 @@ export async function updateLabTest(req: FastifyRequest, reply: FastifyReply) {
 export async function deleteLabTest(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
-    if (userRole !== "admin") {
+    if (userRole !== "admin" && userRole !== "root") {
       return reply.code(403).send(errorResponse("Forbidden: Only admin can delete lab tests"));
     }
 

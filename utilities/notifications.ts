@@ -1,4 +1,7 @@
 import { Appointment } from "../models/Appointment.ts";
+import { eventBus } from "../events/eventBus.ts";
+import { EVENT_TYPES } from "../events/types.ts";
+import { emailProvider } from "../notifications/providers/emailProvider.ts";
 
 /**
  * Simulates sending an email notification to patients for booking confirmations and cancellations.
@@ -19,6 +22,7 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
       return;
     }
 
+    const targetUserId = appt.patientId?.userId?._id?.toString() || appt.patientId?.userId?.id || appt.patientId?.userId;
     const patientName = appt.patientId?.userId?.name || "Patient";
     const patientEmail = appt.patientId?.userId?.email || "no-email@healthos.placeholder.com";
     const doctorName = appt.doctorId?.name || "Doctor";
@@ -29,22 +33,36 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
       timeStyle: "short"
     });
 
-    console.log("\n==========================================================");
-    console.log(`[EMAIL NOTIFICATION SERVICE - ${actionType.toUpperCase()}]`);
-    console.log(`To              : ${patientEmail}`);
-    console.log(`Clinic          : ${clinicName}`);
-    console.log(`Doctor          : Dr. ${doctorName}`);
-    console.log(`Time Slot       : ${time}`);
-    console.log(`Queue Token     : #${token}`);
-    
-    if (actionType === "booked") {
-      console.log(`Subject         : Appointment Confirmed - Token #${token} at ${clinicName}`);
-      console.log(`Body            : Hello ${patientName},\n\nYour appointment booking with Dr. ${doctorName} at ${clinicName} is confirmed for ${time}.\n\nYour assigned daily queue token is #${token}.\n\nPlease scan the reception QR code or check the Queue Dashboard when you arrive to view live wait times.\n\nBest regards,\nHealthOS Clinic Desk`);
-    } else {
-      console.log(`Subject         : Appointment Cancelled - ${clinicName}`);
-      console.log(`Body            : Hello ${patientName},\n\nThis is to inform you that your appointment with Dr. ${doctorName} at ${clinicName} scheduled for ${time} has been cancelled.\n\nIf you believe this is an error, please contact the clinic reception directly.\n\nBest regards,\nHealthOS Clinic Desk`);
+    if (targetUserId) {
+      eventBus.publish({
+        eventType: actionType === "booked" ? EVENT_TYPES.PATIENT_APPOINTMENT_BOOKED : EVENT_TYPES.PATIENT_APPOINTMENT_CANCELLED,
+        category: "patient",
+        targetUserId: targetUserId.toString(),
+        title: actionType === "booked" ? `Appointment Confirmed (#${token})` : `Appointment Cancelled`,
+        message: actionType === "booked"
+          ? `Appointment with Dr. ${doctorName} at ${clinicName} confirmed for ${time}. Token: #${token}`
+          : `Your appointment with Dr. ${doctorName} at ${clinicName} scheduled for ${time} has been cancelled.`,
+        severity: actionType === "booked" ? "success" : "warning",
+        actionUrl: "/dashboard/appointments",
+        metadata: { appointmentId, clinicName, doctorName, token, time },
+      });
     }
-    console.log("==========================================================\n");
+
+    if (patientEmail && !patientEmail.includes("placeholder.com")) {
+      const subject = actionType === "booked"
+        ? `Appointment Confirmed - Token #${token} at ${clinicName}`
+        : `Appointment Cancelled - ${clinicName}`;
+      const body = actionType === "booked"
+        ? `Hello ${patientName},\n\nYour appointment booking with Dr. ${doctorName} at ${clinicName} is confirmed for ${time}.\n\nYour assigned daily queue token is #${token}.\n\nPlease scan the reception QR code or check the Queue Dashboard when you arrive to view live wait times.\n\nBest regards,\nAnanta Health Desk`
+        : `Hello ${patientName},\n\nThis is to inform you that your appointment with Dr. ${doctorName} at ${clinicName} scheduled for ${time} has been cancelled.\n\nIf you believe this is an error, please contact clinic reception.\n\nBest regards,\nAnanta Health Desk`;
+
+      await emailProvider.sendEmail({
+        to: patientEmail,
+        subject,
+        text: body,
+        html: `<div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">${body.replace(/\n/g, "<br/>")}</div>`
+      });
+    }
   } catch (err) {
     console.error("sendBookingNotification error:", err);
   }

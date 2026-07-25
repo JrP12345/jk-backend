@@ -321,6 +321,10 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
     if (notes) appointment.notes = notes;
     await appointment.save();
 
+    if (status === "cancelled") {
+      sendBookingNotification(appointment._id, "cancelled").catch((err) => console.error("Cancellation notification dispatch failed:", err));
+    }
+
     await AuditLog.create({
       userId: req.user!.id,
       action: "APPOINTMENT_STATUS_UPDATE",
@@ -335,3 +339,59 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
+
+// ─── Get Doctor Time Slot Availability ─────────────────────────
+export async function getDoctorSlots(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { doctorId } = req.params as { doctorId: string };
+    const { clinicId, date } = req.query as { clinicId: string; date: string };
+
+    if (!doctorId || !clinicId || !date) {
+      return reply.code(400).send(errorResponse("doctorId, clinicId, and date (YYYY-MM-DD) are required"));
+    }
+
+    const { getDoctorAvailableSlots } = await import("../services/SlotService.ts");
+    const result = await getDoctorAvailableSlots(doctorId, clinicId, date);
+
+    return reply.code(200).send(successResponse(result));
+  } catch (err: any) {
+    console.error("getDoctorSlots error:", err);
+    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+  }
+}
+
+// ─── Patient Self-Service Appointment Cancellation ─────────────
+export async function cancelAppointment(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id } = req.params as { id: string };
+    const { reason } = req.body as { reason?: string };
+
+    const appointment = await Appointment.findById(id);
+    if (!appointment) return reply.code(404).send(errorResponse("Appointment not found"));
+
+    if (appointment.status === "completed" || appointment.status === "cancelled") {
+      return reply.code(400).send(errorResponse(`Cannot cancel appointment already in '${appointment.status}' status`));
+    }
+
+    appointment.status = "cancelled";
+    if (reason) appointment.notes = `Cancelled by patient: ${reason}`;
+    await appointment.save();
+
+    sendBookingNotification(appointment._id, "cancelled").catch((err) => console.error("Cancellation notification failed:", err));
+
+    await AuditLog.create({
+      userId: req.user!.id,
+      action: "PATIENT_CANCEL_APPOINTMENT",
+      targetId: appointment._id,
+      targetModel: "Appointment",
+      details: { reason: reason || "Self-service cancellation" }
+    });
+
+    return reply.code(200).send(successResponse(appointment, "Appointment cancelled successfully"));
+  } catch (err) {
+    console.error("cancelAppointment error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+

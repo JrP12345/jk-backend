@@ -104,8 +104,8 @@ export async function reorderQueue(req: FastifyRequest, reply: FastifyReply) {
 export async function getAuditLogs(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
-    if (userRole !== "admin") {
-      return reply.code(403).send(errorResponse("Forbidden: only admins can view audit logs"));
+    if (userRole !== "admin" && userRole !== "root") {
+      return reply.code(403).send(errorResponse("Forbidden: only administrators can view audit logs"));
     }
 
     const logs = await AuditLog.find()
@@ -119,3 +119,78 @@ export async function getAuditLogs(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
+
+export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const userRole = req.user!.role;
+    const userId = req.user!.id;
+    const { clinicId, doctorId } = req.body as { clinicId?: string; doctorId?: string };
+
+    const targetDoctorId = doctorId || (userRole === "doctor" ? userId : null);
+    if (!targetDoctorId) {
+      return reply.code(400).send(errorResponse("doctorId is required"));
+    }
+
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const query: any = {
+      doctorId: targetDoctorId,
+      appointmentTime: { $gte: startOfDay, $lte: endOfDay },
+      status: { $in: ["checked-in", "confirmed", "pending"] }
+    };
+    if (clinicId) query.clinicId = clinicId;
+
+    // Sort by status priority (checked-in first), then queuePosition / tokenNumber
+    const nextAppt = await Appointment.findOne(query)
+      .populate({
+        path: "patientId",
+        populate: { path: "userId", select: "name email phone" }
+      })
+      .populate("clinicId", "name city")
+      .sort({
+        status: 1, // "checked-in" comes before "confirmed" & "pending" alphabetically
+        queuePosition: 1,
+        tokenNumber: 1
+      });
+
+    if (!nextAppt) {
+      return reply.code(200).send(successResponse(null, "No waiting patients in queue for today"));
+    }
+
+    nextAppt.status = "in-consultation";
+    await nextAppt.save();
+
+    const { eventBus } = await import("../events/eventBus.ts");
+    const { EVENT_TYPES } = await import("../events/types.ts");
+
+    const patientUserId = (nextAppt.patientId as any)?.userId?._id?.toString() || (nextAppt.patientId as any)?.userId?.toString();
+    if (patientUserId) {
+      eventBus.publish({
+        eventType: EVENT_TYPES.PATIENT_CALL_NEXT,
+        category: "patient",
+        targetUserId: patientUserId,
+        title: "Called for Consultation 🩺",
+        message: `Please proceed to consultation room. Token #${nextAppt.tokenNumber}`,
+        severity: "info",
+        actionUrl: "/dashboard/appointments"
+      });
+    }
+
+    await AuditLog.create({
+      userId,
+      action: "PATIENT_CALL_NEXT",
+      targetId: nextAppt._id,
+      targetModel: "Appointment",
+      details: { tokenNumber: nextAppt.tokenNumber, status: "in-consultation" }
+    });
+
+    return reply.code(200).send(successResponse(nextAppt, `Calling Token #${nextAppt.tokenNumber}`));
+  } catch (err) {
+    console.error("callNextPatient error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+

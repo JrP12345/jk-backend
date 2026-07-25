@@ -6,6 +6,8 @@ import { Appointment } from "../models/Appointment.ts";
 import { Clinic } from "../models/Clinic.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
+import { eventBus } from "../events/eventBus.ts";
+import { EVENT_TYPES } from "../events/types.ts";
 
 export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -13,7 +15,7 @@ export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
     const userId = req.user!.id;
     const orgId = req.user?.organization_id;
 
-    if (userRole !== "admin" && userRole !== "receptionist") {
+    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "root") {
       return reply.code(403).send(errorResponse("Forbidden: Only staff can create invoices manually"));
     }
 
@@ -47,11 +49,12 @@ export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
       }
     }
 
-    // Generate sequential invoice number
-    const targetDate = new Date();
-    const year = targetDate.getFullYear();
-    const count = await Invoice.countDocuments();
-    const invoiceNumber = `INV-${year}-${(count + 1).toString().padStart(5, "0")}`;
+    // Generate atomic predictable sequential invoice number (e.g. INV-2026-000001)
+    const { getNextAtomicSequence } = await import("../models/Counter.ts");
+    const currentYear = new Date().getFullYear();
+    const counterId = `invoice_${clinicId || "GLOBAL"}_${currentYear}`;
+    const seq = await getNextAtomicSequence(counterId);
+    const invoiceNumber = `INV-${currentYear}-${seq.toString().padStart(6, "0")}`;
 
     // Calculate totals
     let subtotal = 0;
@@ -95,6 +98,19 @@ export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
       targetModel: "Invoice",
       details: { invoiceNumber, totalAmount, patientId }
     });
+
+    if (patient?.userId) {
+      eventBus.publish({
+        eventType: EVENT_TYPES.BILLING_INVOICE_GENERATED,
+        category: "billing",
+        targetUserId: patient.userId.toString(),
+        title: "New Invoice Generated",
+        message: `Invoice #${invoiceNumber} for $${totalAmount.toFixed(2)} has been generated.`,
+        severity: "info",
+        actionUrl: "/dashboard/bills",
+        organizationId: orgId,
+      });
+    }
 
     return reply.code(201).send(successResponse(invoice, "Invoice created successfully"));
   } catch (err) {
@@ -188,7 +204,7 @@ export async function getInvoiceDetails(req: FastifyRequest, reply: FastifyReply
       }
     } else if (userRole === "doctor" && invoice.doctorId._id.toString() !== userId) {
       return reply.code(403).send(errorResponse("Access denied: You are not the practitioner for this invoice"));
-    } else if (orgId && (userRole === "admin" || userRole === "receptionist")) {
+    } else if (orgId && (userRole === "admin" || userRole === "receptionist" || userRole === "root")) {
       const clinicOrgId = invoice.clinicId?.organizationId?.toString();
       if (clinicOrgId && clinicOrgId !== orgId) {
         // Return 404 for cross-tenant access attempt
@@ -242,7 +258,7 @@ export async function collectPayment(req: FastifyRequest, reply: FastifyReply) {
       if (paymentMethod !== "online" && paymentMethod !== "upi" && paymentMethod !== "card") {
         return reply.code(400).send(errorResponse("Patients can only pay online, via UPI, or via tokenized card"));
       }
-    } else if (orgId && (userRole === "admin" || userRole === "receptionist")) {
+    } else if (orgId && (userRole === "admin" || userRole === "receptionist" || userRole === "root")) {
       const clinicOrgId = (invoice.clinicId as any)?.organizationId?.toString();
       if (clinicOrgId && clinicOrgId !== orgId) {
         return reply.code(404).send(errorResponse("Invoice not found"));

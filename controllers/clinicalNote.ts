@@ -208,12 +208,52 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
     // Complete Encounter
     await Encounter.findByIdAndUpdate(note.encounterId, { status: "completed", endedAt: new Date() });
 
-    return reply.code(200).send(successResponse(note, "Clinical note signed and locked"));
+    // Auto-create Follow-up Appointment if followUpDate is set
+    if (note.plan?.followUpDate) {
+      try {
+        const { Appointment } = await import("../models/Appointment.ts");
+        const existingFollowUp = await Appointment.findOne({ followUpForAppointmentId: note.encounterId });
+
+        if (!existingFollowUp) {
+          const encounterDoc = await Encounter.findById(note.encounterId);
+          const requestedDate = new Date(note.plan.followUpDate);
+          const startOfDay = new Date(requestedDate.getFullYear(), requestedDate.getMonth(), requestedDate.getDate());
+          const endOfDay = new Date(requestedDate.getFullYear(), requestedDate.getMonth(), requestedDate.getDate(), 23, 59, 59, 999);
+
+          const countToday = await Appointment.countDocuments({
+            doctorId: note.doctorId,
+            clinicId: note.clinicId,
+            appointmentTime: { $gte: startOfDay, $lte: endOfDay }
+          });
+
+          const tokenNumber = countToday + 1;
+
+          await Appointment.create({
+            clinicId: note.clinicId,
+            doctorId: note.doctorId,
+            patientId: note.patientId,
+            appointmentTime: requestedDate,
+            appointmentType: "walk-in",
+            status: "confirmed",
+            tokenNumber,
+            queuePosition: tokenNumber,
+            notes: note.plan.followUpInstructions || "Follow-up consultation",
+            followUpRecommended: true,
+            followUpForAppointmentId: encounterDoc?.appointmentId || note.encounterId
+          });
+        }
+      } catch (followUpErr) {
+        console.error("Auto follow-up creation failed:", followUpErr);
+      }
+    }
+
+    return reply.code(200).send(successResponse(note, "Clinical note signed and locked (Follow-up scheduled)"));
   } catch (err) {
     console.error("signClinicalNoteController error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
+
 
 export async function amendClinicalNoteController(req: FastifyRequest, reply: FastifyReply) {
   try {

@@ -18,7 +18,11 @@ export const createOrganizationSchema = {
       admin_name: { type: "string", minLength: 1 },
       admin_email: { type: "string", pattern: emailPattern },
       admin_password: { type: "string", minLength: 6 },
-      admin_phone: { type: "string" }
+      admin_phone: { type: "string" },
+      plan: { type: "string", enum: ["starter", "pro", "enterprise"] },
+      maxClinics: { type: "number" },
+      maxDoctors: { type: "number" },
+      maxStaff: { type: "number" },
     },
     additionalProperties: false
   }
@@ -36,6 +40,10 @@ export const addDoctorSchema = {
       specialization: { type: "string", minLength: 1 },
       qualification: { type: "string" },
       experience_years: { type: "number", minimum: 0 },
+      fees: { type: "number", minimum: 0 },
+      timings: { type: "string" },
+      working_days: { type: "string" },
+      department: { type: "string" },
       clinicAssignments: {
         type: "array",
         items: {
@@ -58,13 +66,14 @@ export const addDoctorSchema = {
 export const addReceptionistSchema = {
   body: {
     type: "object",
-    required: ["name", "email", "password", "clinicId"],
+    required: ["name", "email", "password"],
     properties: {
       name: { type: "string", minLength: 1 },
       email: { type: "string", pattern: emailPattern },
       password: { type: "string", minLength: 6 },
       phone: { type: "string" },
-      clinicId: { type: "string", pattern: objectIdPattern }
+      shift: { type: "string" },
+      clinicId: { type: "string" }
     },
     additionalProperties: false
   }

@@ -1,2 +1,24 @@
-/node_modules
+# Dependencies
+node_modules/
+
+# Environment variables
 .env
+.env.local
+.env.*.local
+
+# Sensitive Keys & Certificates (RS256 JWT keypairs)
+keys/
+*.pem
+*.key
+*.crt
+
+# Build outputs & Logs
+dist/
+build/
+*.log
+
+# OS & IDE metadata
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -20,7 +20,11 @@ declare module "fastify" {
  */
 export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const token = req.cookies?.access_token;
+    const token =
+      req.cookies?.access_token ||
+      (req.query as any)?.token ||
+      (req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.split(" ")[1] : undefined);
+
     if (!token) {
       return reply.code(401).send({ error: "Missing access token" });
     }
@@ -45,7 +49,7 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
  */
 export function authorize(...allowedRoles: string[]) {
   return async (req: FastifyRequest, reply: FastifyReply) => {
-    if (!req.user || !allowedRoles.includes(req.user.role)) {
+    if (!req.user || (!allowedRoles.includes(req.user.role) && req.user.role !== "root")) {
       return reply.code(403).send({ error: "Forbidden: insufficient permissions" });
     }
   };
@@ -67,8 +71,8 @@ export function checkPermission(requiredPermission: string) {
       return reply.code(403).send({ error: "Forbidden: role not configured" });
     }
 
-    if (req.user.role === "admin") {
-      return; // Built-in admin system role bypasses permission checks
+    if (req.user.role === "root" || req.user.role === "admin") {
+      return; // Built-in root and admin system roles bypass permission checks
     }
 
     const roleConfig = await Role.findOne({ name: req.user.role }).lean() as any;

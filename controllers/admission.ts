@@ -15,7 +15,7 @@ import { withTransaction } from "../utilities/transaction.ts";
 export async function createBed(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
-    if (userRole !== "admin" && userRole !== "receptionist") {
+    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "root") {
       return reply.code(403).send(errorResponse("Forbidden: Only staff can manage beds"));
     }
 
@@ -77,7 +77,7 @@ export async function getBeds(req: FastifyRequest, reply: FastifyReply) {
 export async function updateBed(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
-    if (userRole !== "admin" && userRole !== "receptionist") {
+    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "root") {
       return reply.code(403).send(errorResponse("Forbidden: Only staff can update beds"));
     }
 
@@ -119,7 +119,7 @@ export async function updateBed(req: FastifyRequest, reply: FastifyReply) {
 export async function deleteBed(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
-    if (userRole !== "admin") {
+    if (userRole !== "admin" && userRole !== "root") {
       return reply.code(403).send(errorResponse("Forbidden: Only admin can delete beds"));
     }
 
@@ -151,7 +151,7 @@ export async function admitPatient(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
     const userId = req.user!.id;
-    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "doctor") {
+    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "doctor" && userRole !== "root") {
       return reply.code(403).send(errorResponse("Forbidden: Only providers can admit patients"));
     }
 
@@ -279,7 +279,7 @@ export async function dischargePatient(req: FastifyRequest, reply: FastifyReply)
     const userRole = req.user!.role;
     const userId = req.user!.id;
 
-    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "doctor") {
+    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "doctor" && userRole !== "root") {
       return reply.code(403).send(errorResponse("Forbidden: Only staff can discharge patients"));
     }
 

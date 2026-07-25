@@ -5,9 +5,11 @@ const UserSchema = new Schema({
   email: { type: String, required: true, unique: true, index: true },
   password: { type: String, required: true },
   phone: { type: String },
-  role: { type: String, required: true },
+  role: { type: String, required: true }, // "root" | "admin" | "doctor" | "receptionist" | "nurse" | "lab_tech" | "pharmacist" | "cashier" | "patient" | "family_member"
+  twoFactorEnabled: { type: Boolean, default: false },
+  twoFactorSecret: { type: String },
   isActive: { type: Boolean, default: true },
-  createdAt: { type: Date, default: Date.now }
+  createdAt: { type: Date, default: Date.now },
 });
 
 UserSchema.virtual("id").get(function() {

@@ -217,7 +217,7 @@ export class DischargeSummaryService {
       throw new Error(`Cannot finalize document already in '${doc.status}' status`);
     }
 
-    const defaultDiag = (doc.activeDiagnoses as any[])?.[0]?.description || (doc.activeDiagnoses as any[])?.[0]?.code || "General Outpatient Consultation";
+    const defaultDiag = (doc.aggregated?.diagnoses as any[])?.[0]?.description || (doc.aggregated?.diagnoses as any[])?.[0]?.code || "General Outpatient Consultation";
     const primaryDiagnosis = (clinicianInput.primaryDiagnosis && clinicianInput.primaryDiagnosis.trim().length > 0)
       ? clinicianInput.primaryDiagnosis
       : defaultDiag;

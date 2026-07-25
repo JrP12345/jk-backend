@@ -34,19 +34,24 @@ const REFRESH_COOKIE_OPTIONS = {
 };
 
 /**
- * Set both access + refresh token cookies on the reply.
+ * Set access + refresh token cookies on the reply.
  */
 export function setAuthCookies(reply: FastifyReply, accessToken: string, refreshToken: string) {
   reply
     .setCookie("access_token", accessToken, ACCESS_COOKIE_OPTIONS)
-    .setCookie("refresh_token", refreshToken, REFRESH_COOKIE_OPTIONS);
+    .setCookie("refresh_token", refreshToken, REFRESH_COOKIE_OPTIONS)
+    .setCookie("sse_access_token", accessToken, {
+      ...ACCESS_COOKIE_OPTIONS,
+      httpOnly: false, // Readable by frontend JS to authenticate EventSource SSE streams
+    });
 }
 
 /**
- * Clear both auth cookies (used on logout).
+ * Clear all auth cookies (used on logout).
  */
 export function clearAuthCookies(reply: FastifyReply) {
   reply
     .clearCookie("access_token", { path: "/" })
-    .clearCookie("refresh_token", { path: "/" });
+    .clearCookie("refresh_token", { path: "/" })
+    .clearCookie("sse_access_token", { path: "/" });
 }

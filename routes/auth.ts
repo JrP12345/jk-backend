@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../middleware/auth.ts";
-import { login, registerPatient, refreshAccessToken, logout, me } from "../controllers/auth.ts";
+import { login, registerPatient, refreshAccessToken, logout, me, switchOrganization } from "../controllers/auth.ts";
 import { loginSchema, registerPatientSchema } from "../schemas/auth.ts";
 import { getJwks } from "../utilities/keys.ts";
 
@@ -40,4 +40,7 @@ export default async function authRoutes(app: FastifyInstance) {
 
   // GET /api/auth/me            — Get current authenticated user details
   app.get("/api/auth/me", { preHandler: [authenticate] }, me);
+
+  // POST /api/auth/switch-org   — Switch active organization context (Root Admin only)
+  app.post("/api/auth/switch-org", { preHandler: [authenticate] }, switchOrganization);
 }

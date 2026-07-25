@@ -78,7 +78,6 @@ export class OrdersService {
     }
     if (!test) {
       test = await LabTest.create({
-        organizationId: payload.organizationId,
         clinicId: payload.clinicId,
         name: payload.testId,
         code: payload.testId.toUpperCase().replace(/\s+/g, "_"),

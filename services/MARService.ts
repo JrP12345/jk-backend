@@ -102,12 +102,10 @@ export class MARService {
         patientId: payload.patientId,
         medicineName: payload.prescriptionId,
         dosage: "1 tablet",
-        route: payload.route,
         frequency: "Once daily",
         duration: "5 days",
         status: "active",
         doctorId: payload.recordedBy,
-        prescribedBy: payload.recordedBy,
       });
     }
 

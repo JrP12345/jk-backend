@@ -13,6 +13,9 @@ import authRoutes from "./routes/auth.ts";
 import onboardingRoutes from "./routes/onboarding.ts";
 import publicRoutes from "./routes/public.ts";
 import uploadRoutes from "./routes/upload.ts";
+import notificationRoutes from "./routes/notifications.ts";
+import notificationPreferenceRoutes from "./routes/notificationPreferences.ts";
+import taskRoutes from "./routes/tasks.ts";
 
 const app = fastify({ logger: true, bodyLimit: 10485760 }); // 10MB
 
@@ -49,7 +52,11 @@ app.register(cors, {
   origin: allowedOrigins.length === 1 ? allowedOrigins[0] : allowedOrigins,
   credentials: true,                 // allow cookies cross-origin
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+  allowedHeaders: [
+    "Content-Type", "Authorization", "X-Requested-With", "Accept",
+    "Cache-Control", "cache-control", "Pragma", "Expires",
+    "X-Onboarding-Secret", "x-onboarding-secret", "X-Clinic-Id", "x-clinic-id"
+  ],
 });
 
 app.register(rateLimit, {
@@ -63,6 +70,9 @@ app.register(authRoutes);
 app.register(onboardingRoutes);
 app.register(publicRoutes);
 app.register(uploadRoutes, { prefix: '/api' });
+app.register(notificationRoutes);
+app.register(notificationPreferenceRoutes);
+app.register(taskRoutes);
 
 // ─── Health-checks & Probes (SRE-001, SRE-002, SRE-003) ─────────
 app.get("/api/health", async () => {

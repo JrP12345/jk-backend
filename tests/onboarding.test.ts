@@ -24,6 +24,7 @@ describe("Onboarding & Clinic API Integration Tests", () => {
         admin_name: "Hitesh Patel",
         admin_email: adminEmail,
         admin_password: password,
+        plan: "pro",
       },
     });
 
