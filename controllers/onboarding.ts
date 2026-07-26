@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import crypto from "node:crypto";
 import bcrypt from "bcryptjs";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
@@ -17,12 +18,13 @@ import { Prescription } from "../models/Prescription.ts";
 import { LabTest } from "../models/LabTest.ts";
 import { LabOrder } from "../models/LabOrder.ts";
 import { Invoice } from "../models/Invoice.ts";
+import { Department } from "../models/Department.ts";
 import { RefreshToken } from "../models/RefreshToken.ts";
 import { PendingTwoFactorSetup } from "../models/PendingTwoFactorSetup.ts";
 import { OnboardingDraft } from "../models/OnboardingDraft.ts";
-import { Department } from "../models/Department.ts";
 import { TwoFactorService } from "../services/TwoFactorService.ts";
 import { emailProvider } from "../notifications/providers/emailProvider.ts";
+import { validatePasswordStrength } from "../middleware/auth.ts";
 import {
   generateAccessToken,
   verifyAccessToken,
@@ -34,6 +36,7 @@ import { setAuthCookies } from "../utilities/types.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
+import { encrypt, decrypt } from "../utilities/encryption.ts";
 
 /**
  * Full set of permission codes granted to the built-in "admin" system role.
@@ -782,6 +785,128 @@ export async function addStaff(req: FastifyRequest, reply: FastifyReply) {
   }
 }
 
+// ─── Invite Staff via Secure Email Link ─────────────────────────
+export async function inviteStaff(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const orgId = req.user!.organization_id;
+    if (!orgId) return reply.code(400).send(errorResponse("You are not linked to any organization"));
+
+    const { email, role } = req.body as { email: string; role: string };
+    if (!email || !role) return reply.code(400).send(errorResponse("Email and role are required"));
+
+    const userExists = await User.findOne({ email });
+    if (userExists) return reply.code(409).send(errorResponse("User with this email is already registered"));
+
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+    const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000); // 48 hours
+
+    const { OrgInvite } = await import("../models/OrgInvite.ts");
+    await OrgInvite.create({
+      organizationId: orgId,
+      email,
+      role,
+      tokenHash,
+      invitedBy: req.user!.id,
+      expiresAt,
+    });
+
+    const inviteUrl = `${process.env.CORS_ALLOWED_ORIGINS || "http://localhost:3000"}/accept-invite?token=${rawToken}`;
+    await emailProvider.sendEmail({
+      to: email,
+      subject: "Invitation to join ANANTA Healthcare Platform",
+      text: `You have been invited to join ANANTA as a ${role.toUpperCase()}. Click here to set up your account: ${inviteUrl}`,
+      html: `<p>You have been invited to join ANANTA as a <strong>${role.toUpperCase()}</strong>.</p><p><a href="${inviteUrl}">Click here to accept invitation</a> (valid for 48 hours).</p>`,
+    });
+
+    return reply.code(201).send(successResponse({ email, role, expiresAt }, "Invitation sent successfully"));
+  } catch (err: any) {
+    console.error("inviteStaff error:", err);
+    return reply.code(500).send(errorResponse("Failed to send staff invitation"));
+  }
+}
+
+// ─── Accept Staff Invitation ────────────────────────────────────
+export async function acceptInvitation(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { token, name, password, phone } = req.body as { token: string; name: string; password: string; phone?: string };
+    if (!token || !name || !password) {
+      return reply.code(400).send(errorResponse("Token, name, and password are required"));
+    }
+
+    const strength = validatePasswordStrength(password);
+    if (!strength.valid) {
+      return reply.code(400).send(errorResponse(strength.reason || "Password does not meet complexity requirements"));
+    }
+
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const { OrgInvite } = await import("../models/OrgInvite.ts");
+
+    const invite = await OrgInvite.findOne({
+      tokenHash,
+      status: "pending",
+      expiresAt: { $gt: new Date() },
+    });
+
+    if (!invite) {
+      return reply.code(400).send(errorResponse("Invalid or expired invitation token"));
+    }
+
+    return await withTransaction(async (session) => {
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      const newUser = await createWithSession(User, {
+        name,
+        email: invite.email,
+        password: hashedPassword,
+        phone: phone || null,
+        role: invite.role,
+        isEmailVerified: true,
+      }, session);
+
+      await createWithSession(OrgMember, {
+        userId: newUser._id,
+        organizationId: invite.organizationId,
+        role: invite.role,
+      }, session);
+
+      if (invite.role === "doctor") {
+        await createWithSession(Doctor, {
+          userId: newUser._id,
+          organizationId: invite.organizationId,
+        }, session);
+      } else if (invite.role === "receptionist") {
+        await createWithSession(Receptionist, {
+          userId: newUser._id,
+          organizationId: invite.organizationId,
+        }, session);
+      }
+
+      invite.set("status", "accepted");
+      await invite.save({ session: session || undefined });
+
+      const roleConfig = await Role.findOne({ name: invite.role }).lean() as any;
+      const permissions = roleConfig ? roleConfig.permissions : [];
+
+      const payload = { id: newUser.id, email: newUser.email, role: invite.role, organization_id: invite.organizationId.toString() };
+      const accessToken = generateAccessToken(payload);
+      const refreshToken = await createRefreshToken(newUser.id);
+      setAuthCookies(reply, accessToken, refreshToken);
+
+      return reply.code(201).send(
+        successResponse(
+          { user: { id: newUser.id, name, email: newUser.email, role: invite.role, organization_id: invite.organizationId.toString(), permissions } },
+          "Invitation accepted and account activated successfully"
+        )
+      );
+    });
+  } catch (err: any) {
+    console.error("acceptInvitation error:", err);
+    return reply.code(500).send(errorResponse("Failed to accept invitation"));
+  }
+}
+
+
 // ─── Update Doctor ──────────────────────────────────────────────
 export async function updateDoctor(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -945,6 +1070,88 @@ export async function updateOrganizationSettings(req: FastifyRequest, reply: Fas
   }
 }
 
+// ─── SMTP / Email Gateway Config ─────────────────────────────────
+export async function getOrganizationSmtp(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const orgId = req.user!.organization_id;
+    let org = orgId ? await Organization.findById(orgId) : null;
+    if (!org) org = await Organization.findOne({}).sort({ createdAt: -1 });
+
+    if (!org) {
+      return reply.send(successResponse({ smtp: null }, "No organization found"));
+    }
+
+    const smtp = (org as any).smtp || {};
+    // Return config but mask the password (send back whether it's set, not the value)
+    return reply.send(successResponse({
+      host: smtp.host || "",
+      port: smtp.port || 587,
+      secure: smtp.secure || false,
+      user: smtp.user || "",
+      pass: smtp.pass ? "••••••••" : "", // masked
+      passIsSet: !!smtp.pass,
+      fromEmail: smtp.fromEmail || "",
+      fromName: smtp.fromName || "",
+    }, "SMTP config fetched"));
+  } catch (error) {
+    console.error("getOrganizationSmtp error:", error);
+    return reply.code(500).send(errorResponse("Failed to fetch SMTP configuration"));
+  }
+}
+
+export async function updateOrganizationSmtp(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const orgId = req.user!.organization_id;
+    const { host, port, secure, user, pass, fromEmail, fromName } = req.body as any;
+
+    let targetOrgId = orgId;
+    if (!targetOrgId && req.user?.role === "root") {
+      const latestOrg = await Organization.findOne({}).sort({ createdAt: -1 });
+      targetOrgId = latestOrg?._id?.toString();
+    }
+
+    if (!targetOrgId) {
+      return reply.code(400).send(errorResponse("No organization found to update SMTP config"));
+    }
+
+    // Build the update — only overwrite password if a new non-masked value is provided
+    const smtpUpdate: Record<string, any> = {
+      "smtp.host": host || null,
+      "smtp.port": port || 587,
+      "smtp.secure": secure || false,
+      "smtp.user": user || null,
+      "smtp.fromEmail": fromEmail || null,
+      "smtp.fromName": fromName || null,
+    };
+
+    // Only update password if user typed a real new value (not the masked placeholder)
+    // Encrypt the password before storing in MongoDB (AES-256-GCM)
+    if (pass && pass !== "••••••••" && !pass.startsWith("•")) {
+      smtpUpdate["smtp.pass"] = encrypt(pass);
+    }
+
+    const result = await Organization.findByIdAndUpdate(
+      targetOrgId,
+      { $set: smtpUpdate },
+      { returnDocument: "after" }
+    );
+
+    return reply.send(successResponse({
+      host: (result as any)?.smtp?.host || "",
+      port: (result as any)?.smtp?.port || 587,
+      secure: (result as any)?.smtp?.secure || false,
+      user: (result as any)?.smtp?.user || "",
+      pass: (result as any)?.smtp?.pass ? "••••••••" : "",
+      passIsSet: !!((result as any)?.smtp?.pass),
+      fromEmail: (result as any)?.smtp?.fromEmail || "",
+      fromName: (result as any)?.smtp?.fromName || "",
+    }, "SMTP configuration updated successfully"));
+  } catch (error) {
+    console.error("updateOrganizationSmtp error:", error);
+    return reply.code(500).send(errorResponse("Failed to update SMTP configuration"));
+  }
+}
+
 // ─── Draft Persistence Endpoints ─────────────────────────────────
 export async function saveDraft(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -1034,7 +1241,10 @@ export async function verifyOnboardingTOTP(req: FastifyRequest, reply: FastifyRe
 
     // Look up pending 2FA setup record
     const pendingSetup = await PendingTwoFactorSetup.findOne({ userId });
-    const activeSecret = secret || pendingSetup?.secret || "IZACY3R2KJCSMSK2G53XI02VMRS";
+    const activeSecret = secret || pendingSetup?.secret;
+    if (!activeSecret) {
+      return reply.code(400).send(errorResponse("No active 2FA secret found. Please scan the QR code first."));
+    }
 
     // Verify token using TwoFactorService
     let isValid = TwoFactorService.verifyToken(activeSecret, cleanToken);

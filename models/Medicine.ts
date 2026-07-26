@@ -9,8 +9,11 @@ const MedicineSchema = new Schema({
   costPrice: { type: Number, required: true }, // purchase cost price
   expiryDate: { type: Date, required: true },
   batchNumber: { type: String, required: true },
+  deletedAt: { type: Date, default: null, index: true },
   createdAt: { type: Date, default: Date.now }
-});
+}, { timestamps: true });
+
+MedicineSchema.index({ clinicId: 1, name: 1 });
 
 MedicineSchema.virtual("id").get(function() {
   return this._id.toHexString();

@@ -11,8 +11,9 @@ const EncounterSchema = new Schema({
   status: { type: String, enum: ["scheduled", "in_progress", "completed", "cancelled", "closed"], default: "in_progress", index: true },
   startedAt: { type: Date, default: Date.now },
   endedAt: { type: Date },
+  deletedAt: { type: Date, default: null, index: true },
   createdAt: { type: Date, default: Date.now },
-});
+}, { timestamps: true });
 
 EncounterSchema.virtual("id").get(function () {
   return this._id.toHexString();

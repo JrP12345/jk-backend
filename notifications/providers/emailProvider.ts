@@ -8,6 +8,16 @@ export interface EmailOptions {
   from?: string;
 }
 
+export interface SmtpConfig {
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  pass: string;
+  fromEmail: string;
+  fromName: string;
+}
+
 export class EmailProvider {
   private transporter: nodemailer.Transporter | null = null;
   private lastConfigKey: string = "";
@@ -31,35 +41,58 @@ export class EmailProvider {
         host,
         port,
         secure,
-        auth: {
-          user,
-          pass,
-        },
-        tls: {
-          rejectUnauthorized: false,
-        },
+        auth: { user, pass },
+        tls: { rejectUnauthorized: false },
       });
       console.log(`[EmailProvider] Nodemailer initialized for SMTP Host: ${host}:${port} (${user})`);
     } else {
       this.transporter = null;
-      console.log("[EmailProvider] Warning: SMTP Host/User credentials not set in .env. Running in simulation mode.");
+      console.log("[EmailProvider] Warning: SMTP credentials not set in .env. Running in simulation mode.");
     }
   }
 
   /**
-   * Send outbound email via Nodemailer or log fallback if credentials not configured.
+   * Build a one-time transporter from an org-level SMTP config.
    */
-  public async sendEmail(options: EmailOptions): Promise<boolean> {
-    const rawFrom = options.from || process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER || "noreply@ananta.health";
-    const fromName = process.env.SMTP_FROM_NAME || "Ananta Health";
-    
-    // Clean formatted email address
-    let formattedFrom = rawFrom;
-    if (!rawFrom.includes("<")) {
-      formattedFrom = `"${fromName}" <${rawFrom}>`;
+  private buildTransientTransporter(cfg: SmtpConfig): nodemailer.Transporter {
+    return nodemailer.createTransport({
+      host: cfg.host,
+      port: cfg.port || 587,
+      secure: cfg.secure || false,
+      auth: { user: cfg.user, pass: cfg.pass },
+      tls: { rejectUnauthorized: false },
+    });
+  }
+
+  /**
+   * Send outbound email.
+   * If orgSmtp is provided and has credentials, it is used instead of .env.
+   */
+  public async sendEmail(options: EmailOptions, orgSmtp?: SmtpConfig | null): Promise<boolean> {
+    const fromEmail = orgSmtp?.fromEmail || options.from || process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER || "noreply@ananta.health";
+    const fromName = orgSmtp?.fromName || process.env.SMTP_FROM_NAME || "Ananta Health";
+    const formattedFrom = fromEmail.includes("<") ? fromEmail : `"${fromName}" <${fromEmail}>`;
+
+    // Use org-level SMTP if fully configured
+    if (orgSmtp?.host && orgSmtp?.user && orgSmtp?.pass) {
+      const transporter = this.buildTransientTransporter(orgSmtp);
+      try {
+        const info = await transporter.sendMail({
+          from: formattedFrom,
+          to: options.to,
+          subject: options.subject,
+          text: options.text || options.html.replace(/<[^>]*>?/gm, ""),
+          html: options.html,
+        });
+        console.log(`[EmailProvider] Sent via org SMTP to ${options.to}. MessageId: ${info.messageId}`);
+        return true;
+      } catch (err: any) {
+        console.error(`[EmailProvider] Org SMTP failed for ${options.to}:`, err?.message || err);
+        return false;
+      }
     }
 
-    // Always check if env vars have changed
+    // Fallback: use .env transporter
     const host = process.env.SMTP_HOST;
     const port = Number(process.env.SMTP_PORT) || 587;
     const secure = process.env.SMTP_SECURE === "true" || port === 465;
@@ -80,36 +113,44 @@ export class EmailProvider {
           text: options.text || options.html.replace(/<[^>]*>?/gm, ""),
           html: options.html,
         });
-        console.log(`[EmailProvider Success] Email sent to ${options.to}. MessageId: ${info.messageId}`);
+        console.log(`[EmailProvider] Email sent to ${options.to}. MessageId: ${info.messageId}`);
         return true;
       } catch (err: any) {
-        console.error(`[EmailProvider Error] Failed to transmit email to ${options.to}:`, err?.message || err);
+        console.error(`[EmailProvider] Failed to send to ${options.to}:`, err?.message || err);
         return false;
       }
     }
 
-    // Simulation / Fallback mode when SMTP credentials are not configured in .env
+    // Simulation mode — no SMTP configured anywhere
     console.log("\n==========================================================");
-    console.log(`[ENTERPRISE EMAIL PROVIDER - DISPATCH (SIMULATION MODE)]`);
+    console.log(`[EMAIL PROVIDER - SIMULATION MODE]`);
     console.log(`From    : ${formattedFrom}`);
     console.log(`To      : ${options.to}`);
     console.log(`Subject : ${options.subject}`);
-    console.log(`Summary : ${options.text || "HTML Email Body Generated"}`);
-    console.log(`Note    : To send REAL emails to inboxes, set SMTP_HOST, SMTP_USER, & SMTP_PASS in backend/.env`);
+    console.log(`Note    : Configure SMTP in Organization Settings or backend/.env to send real emails.`);
     console.log("==========================================================\n");
     return true;
   }
 
-  public async verifyConnection(): Promise<{ success: boolean; message: string }> {
+  public async verifyConnection(orgSmtp?: SmtpConfig | null): Promise<{ success: boolean; message: string }> {
+    if (orgSmtp?.host && orgSmtp?.user && orgSmtp?.pass) {
+      const transporter = this.buildTransientTransporter(orgSmtp);
+      try {
+        await transporter.verify();
+        return { success: true, message: `SMTP verified: ${orgSmtp.host}:${orgSmtp.port} (${orgSmtp.user})` };
+      } catch (err: any) {
+        return { success: false, message: `SMTP verification failed: ${err.message}` };
+      }
+    }
     if (!this.transporter) {
       return {
         success: false,
-        message: "SMTP is not configured. Please set SMTP_HOST, SMTP_USER, and SMTP_PASS in backend/.env file.",
+        message: "SMTP is not configured. Set credentials in Organization Settings or backend/.env.",
       };
     }
     try {
       await this.transporter.verify();
-      return { success: true, message: "SMTP Server connection verified successfully!" };
+      return { success: true, message: "SMTP connection verified successfully!" };
     } catch (err: any) {
       return { success: false, message: `SMTP verification failed: ${err.message}` };
     }
@@ -117,5 +158,3 @@ export class EmailProvider {
 }
 
 export const emailProvider = new EmailProvider();
-
-

@@ -11,17 +11,76 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import authRoutes from "./routes/auth.ts";
 import onboardingRoutes from "./routes/onboarding.ts";
+import staffRoutes from "./routes/staff.ts";
+import clinicRoutes from "./routes/clinics.ts";
+import appointmentRoutes from "./routes/appointments.ts";
+import clinicalRoutes from "./routes/clinical.ts";
+import marRoutes from "./routes/mar.ts";
+import laboratoryRoutes from "./routes/laboratory.ts";
+import inpatientRoutes from "./routes/inpatient.ts";
+import pharmacyRoutes from "./routes/pharmacy.ts";
+import billingRoutes from "./routes/billing.ts";
+import analyticsRoutes from "./routes/analytics.ts";
+import fhirRoutes from "./routes/fhir.ts";
+import searchRoutes from "./routes/search.ts";
 import publicRoutes from "./routes/public.ts";
 import uploadRoutes from "./routes/upload.ts";
 import notificationRoutes from "./routes/notifications.ts";
 import notificationPreferenceRoutes from "./routes/notificationPreferences.ts";
 import taskRoutes from "./routes/tasks.ts";
+import documentRoutes from "./routes/documents.ts";
+import prescriptionPrintRoutes from "./routes/prescriptionPrint.ts";
+import patientPortalRoutes from "./routes/patientPortal.ts";
+import aiRoutes from "./routes/ai.ts";
+import platformGatewayRoutes from "./platform/gateway.ts";
+
+import fastifySwagger from "@fastify/swagger";
+import fastifySwaggerUi from "@fastify/swagger-ui";
+import { apiV1VersioningPlugin } from "./utilities/versioningPlugin.ts";
 
 const app = fastify({ logger: true, bodyLimit: 10485760 }); // 10MB
 
-// Setup global async context hook
+// Register Swagger OpenAPI spec
+app.register(fastifySwagger, {
+  openapi: {
+    info: {
+      title: "ANANTA Healthcare Infrastructure Platform API",
+      description: "Production-Grade Enterprise AI-First Healthcare Infrastructure Platform API Specification",
+      version: "1.0.0",
+    },
+    servers: [
+      { url: "http://localhost:5000", description: "Local Development Server" },
+    ],
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "JWT",
+        },
+      },
+    },
+  },
+});
+
+// Register Swagger UI documentation interface
+app.register(fastifySwaggerUi, {
+  routePrefix: "/documentation",
+  uiConfig: {
+    docExpansion: "list",
+    deepLinking: true,
+  },
+});
+
+// Register API Versioning plugin (/api/v1/*)
+app.register(apiV1VersioningPlugin);
+
+// Setup global async context & versioning URL rewrite hook
 app.addHook("onRequest", (request, reply, done) => {
   requestContextStore.enterWith({ userId: undefined });
+  if (request.raw.url && request.raw.url.startsWith("/api/v1/")) {
+    request.raw.url = request.raw.url.replace("/api/v1/", "/api/");
+  }
   done();
 });
 
@@ -55,7 +114,8 @@ app.register(cors, {
   allowedHeaders: [
     "Content-Type", "Authorization", "X-Requested-With", "Accept",
     "Cache-Control", "cache-control", "Pragma", "Expires",
-    "X-Onboarding-Secret", "x-onboarding-secret", "X-Clinic-Id", "x-clinic-id"
+    "X-Onboarding-Secret", "x-onboarding-secret", "X-Clinic-Id", "x-clinic-id",
+    "X-Organization-Id", "x-organization-id"
   ],
 });
 
@@ -65,25 +125,42 @@ app.register(rateLimit, {
   ...(redisClient ? { redis: redisClient } : {})
 });
 
-// ─── Register route plugins ────────────────────────────────────
+// ─── Register Domain Route Plugins ─────────────────────────────
 app.register(authRoutes);
 app.register(onboardingRoutes);
+app.register(staffRoutes);
+app.register(clinicRoutes);
+app.register(appointmentRoutes);
+app.register(clinicalRoutes);
+app.register(marRoutes);
+app.register(laboratoryRoutes);
+app.register(inpatientRoutes);
+app.register(pharmacyRoutes);
+app.register(billingRoutes);
+app.register(analyticsRoutes);
+app.register(fhirRoutes);
+app.register(searchRoutes);
 app.register(publicRoutes);
 app.register(uploadRoutes, { prefix: '/api' });
 app.register(notificationRoutes);
 app.register(notificationPreferenceRoutes);
 app.register(taskRoutes);
+app.register(documentRoutes);
+app.register(prescriptionPrintRoutes);
+app.register(patientPortalRoutes);
+app.register(aiRoutes);
+app.register(platformGatewayRoutes);
 
 // ─── Health-checks & Probes (SRE-001, SRE-002, SRE-003) ─────────
-app.get("/api/health", async () => {
+const healthCheckHandler = async () => {
   return { status: "ok", timestamp: new Date().toISOString() };
-});
+};
 
-app.get("/api/health/liveness", async () => {
+const livenessHandler = async () => {
   return { status: "ok" };
-});
+};
 
-app.get("/api/health/readiness", async (request, reply) => {
+const readinessHandler = async (request, reply) => {
   const dbState = mongoose.connection.readyState;
   const isDbReady = dbState === 1; // 1 = connected
 
@@ -101,7 +178,16 @@ app.get("/api/health/readiness", async (request, reply) => {
     redis: isRedisReady ? "ready" : "degraded",
     timestamp: new Date().toISOString()
   });
-});
+};
+
+app.get("/api/health", healthCheckHandler);
+app.get("/api/health/liveness", livenessHandler);
+app.get("/api/health/readiness", readinessHandler);
+
+// Explicit /api/v1 Health Probe Aliases
+app.get("/api/v1/health", healthCheckHandler);
+app.get("/api/v1/health/liveness", livenessHandler);
+app.get("/api/v1/health/readiness", readinessHandler);
 
 // ─── Graceful Shutdown & Server Startup ──────────────────────────
 const PORT = Number(process.env.PORT) || 5000;

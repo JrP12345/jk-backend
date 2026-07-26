@@ -34,15 +34,38 @@ export function verifyAccessToken(token: string): JwtPayload {
  * Long-lived: 7 days.
  * Returns the raw token to send to the client.
  */
-export async function createRefreshToken(userId: string): Promise<string> {
+/**
+ * Create an opaque refresh token, store its SHA-256 hash in the DB.
+ * Enforces a maximum of 5 concurrent active sessions per user by revoking oldest sessions.
+ * Long-lived: 7 days.
+ */
+export async function createRefreshToken(
+  userId: string,
+  meta?: { ipAddress?: string; userAgent?: string; deviceName?: string }
+): Promise<string> {
   const rawToken = crypto.randomBytes(48).toString("hex");
   const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+  // Evict oldest session if active sessions count >= 5
+  const activeSessions = await RefreshToken.find({ userId, revoked: false, expiresAt: { $gt: new Date() } })
+    .sort({ createdAt: 1 })
+    .lean();
+
+  if (activeSessions.length >= 5) {
+    const oldestToEvictCount = activeSessions.length - 4; // leave room for 1 new session
+    const idsToRevoke = activeSessions.slice(0, oldestToEvictCount).map((s) => s._id);
+    await RefreshToken.updateMany({ _id: { $in: idsToRevoke } }, { revoked: true });
+  }
 
   await RefreshToken.create({
     userId,
     tokenHash,
     expiresAt,
+    ipAddress: meta?.ipAddress || "",
+    userAgent: meta?.userAgent || "",
+    deviceName: meta?.deviceName || "Browser Session",
+    lastActiveAt: new Date(),
   });
 
   return rawToken;

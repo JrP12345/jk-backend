@@ -73,9 +73,10 @@ const LabOrderSchema = new Schema({
 
   // ─── Cancellation Accountability ───────────────────────────────
   cancellationReason: { type: String, default: "" }, // required when status = "cancelled"
+  deletedAt: { type: Date, default: null, index: true },
 
   createdAt: { type: Date, default: Date.now },
-});
+}, { timestamps: true });
 
 LabOrderSchema.virtual("id").get(function() {
   return this._id.toHexString();

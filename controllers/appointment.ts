@@ -9,6 +9,7 @@ import { Clinic } from "../models/Clinic.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { OrgMember } from "../models/OrgMember.ts";
+import { Consent } from "../models/Consent.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { sendBookingNotification } from "../utilities/notifications.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
@@ -107,6 +108,7 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
           const patientProfile = await createWithSession(Patient, {
             userId: newPatientUser._id,
             organizationId: orgId || null,
+            personalVaultId: `pvt_${newPatientUser._id.toString()}`,
             dob: new Date(dob),
             gender,
             address: address || null,
@@ -121,6 +123,20 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
               organizationId: orgId,
               role: "patient"
             }, session);
+
+            // ANANTA v1.0: Automatically create initial Consent Grant for clinic
+            const consentGrant = await createWithSession(Consent, {
+              patientId: patientProfile._id,
+              grantee: { organizationId: orgId, doctorId },
+              status: "active",
+              scope: ["READ_TIMELINE", "WRITE_ENCOUNTER", "VIEW_LABS", "VIEW_IMAGING"],
+              period: { start: new Date(), end: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) }, // 1 Year Initial Grant
+              provision: { type: "permit", purpose: ["TREATMENT", "BILLING"] },
+              audit: { grantedAt: new Date(), grantedVia: "DEFAULT_INITIAL_REGISTRATION" },
+            }, session);
+
+            // Update patient activeConsentGrants
+            await Patient.findByIdAndUpdate(patientProfile._id, { $addToSet: { activeConsentGrants: consentGrant._id } }, option);
           }
 
           finalPatientId = patientProfile.id;
@@ -393,5 +409,33 @@ export async function cancelAppointment(req: FastifyRequest, reply: FastifyReply
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
+
+// ─── Get Single Appointment by ID ─────────────────────────────
+export async function getAppointmentById(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id } = req.params as { id: string };
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return reply.code(400).send(errorResponse("Invalid appointment ID"));
+    }
+
+    const appointment = await Appointment.findById(id)
+      .populate("clinicId", "name city address")
+      .populate("doctorId", "name specialization fees email phone")
+      .populate({
+        path: "patientId",
+        populate: { path: "userId", select: "name email phone" }
+      });
+
+    if (!appointment) {
+      return reply.code(404).send(errorResponse("Appointment not found"));
+    }
+
+    return reply.code(200).send(successResponse(appointment));
+  } catch (err) {
+    console.error("getAppointmentById error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
 
 

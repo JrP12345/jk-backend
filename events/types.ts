@@ -4,9 +4,32 @@ export type NotificationCategory =
   | "team"
   | "task"
   | "patient"
+  | "clinical"
+  | "consent"
+  | "labs"
   | "billing"
   | "security"
   | "system";
+
+export interface AnantaCloudEvent<T = any> {
+  specversion: "1.0";
+  id: string;
+  source: string;
+  type: string;
+  subject: string; // Patient ID or Resource ID
+  time: string;
+  datacontenttype: "application/json";
+  metadata: {
+    tenantId: string;
+    facilityId?: string;
+    correlationId: string;
+    actor: {
+      userId: string;
+      role: string;
+    };
+  };
+  data: T;
+}
 
 export interface DomainEventPayload {
   eventId?: string;
@@ -16,9 +39,9 @@ export interface DomainEventPayload {
   organizationId?: string;
   tenantId?: string;
   createdBy?: string;
-  targetUserId: string;
-  title: string;
-  message: string;
+  targetUserId?: string;
+  title?: string;
+  message?: string;
   priority?: "low" | "medium" | "high" | "urgent";
   severity?: "info" | "success" | "warning" | "error";
   actionUrl?: string;
@@ -33,6 +56,19 @@ export interface DomainEventPayload {
 }
 
 export const EVENT_TYPES = {
+  // ANANTA Architecture Domain Events
+  PATIENT_REGISTERED: "ananta.patient.registered",
+  CONSENT_GRANTED: "ananta.consent.granted",
+  CONSENT_REVOKED: "ananta.consent.revoked",
+  CONSENT_BREAK_GLASS: "ananta.consent.break_glass",
+  CLINICAL_ENCOUNTER_STARTED: "ananta.clinical.encounter.started",
+  CLINICAL_ENCOUNTER_COMPLETED: "ananta.clinical.encounter.completed",
+  CLINICAL_NOTE_SIGNED: "ananta.clinical.note.signed",
+  CLINICAL_PRESCRIPTION_SIGNED: "ananta.clinical.prescription.signed",
+  DOCUMENT_UPLOADED: "ananta.document.uploaded",
+  DOCUMENT_OCR_COMPLETED: "ananta.document.ocr_completed",
+  LAB_RESULT_VERIFIED: "ananta.lab.result_verified",
+
   // Auth
   AUTH_LOGIN_NEW_DEVICE: "AUTH_LOGIN_NEW_DEVICE",
   AUTH_PASSWORD_CHANGED: "AUTH_PASSWORD_CHANGED",
@@ -72,3 +108,4 @@ export const EVENT_TYPES = {
   SYSTEM_ALERT: "SYSTEM_ALERT",
   SYSTEM_MAINTENANCE: "SYSTEM_MAINTENANCE",
 } as const;
+

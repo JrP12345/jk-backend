@@ -5,8 +5,12 @@ const RefreshTokenSchema = new Schema({
   tokenHash: { type: String, required: true, unique: true, index: true },
   expiresAt: { type: Date, required: true },
   revoked: { type: Boolean, default: false },
+  ipAddress: { type: String, default: "" },
+  userAgent: { type: String, default: "" },
+  deviceName: { type: String, default: "Browser Session" },
+  lastActiveAt: { type: Date, default: Date.now },
   createdAt: { type: Date, default: Date.now }
-});
+}, { timestamps: true });
 
 RefreshTokenSchema.virtual("id").get(function() {
   return this._id.toHexString();

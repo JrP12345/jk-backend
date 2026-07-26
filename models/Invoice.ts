@@ -28,8 +28,9 @@ const InvoiceSchema = new Schema({
     enum: ["cash", "card", "upi", "net-banking", "insurance", "online"] 
   },
   paymentDate: { type: Date },
+  deletedAt: { type: Date, default: null, index: true },
   createdAt: { type: Date, default: Date.now }
-});
+}, { timestamps: true });
 
 InvoiceSchema.index({ clinicId: 1, status: 1 });
 

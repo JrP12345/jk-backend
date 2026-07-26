@@ -13,7 +13,8 @@ const ObservationSchema = new Schema({
   unit: { type: String, default: "" },                 // e.g. "mmHg", "bpm", "°F", "%"
   referenceRange: { type: String, default: "" },       // e.g. "< 120/80"
   recordedAt: { type: Date, default: Date.now, index: true },
-});
+  deletedAt: { type: Date, default: null, index: true },
+}, { timestamps: true });
 
 ObservationSchema.virtual("id").get(function () {
   return this._id.toHexString();

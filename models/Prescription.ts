@@ -15,8 +15,9 @@ const PrescriptionSchema = new Schema({
   instructions: { type: String, default: "" },   // e.g. "Take after food"
 
   status: { type: String, enum: ["active", "dispensed", "discontinued"], default: "active", index: true },
+  deletedAt: { type: Date, default: null, index: true },
   createdAt: { type: Date, default: Date.now },
-});
+}, { timestamps: true });
 
 PrescriptionSchema.virtual("id").get(function () {
   return this._id.toHexString();

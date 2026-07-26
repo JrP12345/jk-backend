@@ -41,12 +41,20 @@ export class NotificationService {
   public async getPreferences(userId: string, organizationId?: string) {
     let pref = await NotificationPreference.findOne({ userId: new mongoose.Types.ObjectId(userId) }).lean();
     if (!pref) {
-      pref = (
-        await NotificationPreference.create({
-          userId: new mongoose.Types.ObjectId(userId),
-          organizationId: organizationId ? new mongoose.Types.ObjectId(organizationId) : undefined,
-        })
-      ).toJSON() as any;
+      try {
+        pref = (
+          await NotificationPreference.create({
+            userId: new mongoose.Types.ObjectId(userId),
+            organizationId: organizationId ? new mongoose.Types.ObjectId(organizationId) : undefined,
+          })
+        ).toJSON() as any;
+      } catch (err: any) {
+        if (err.code === 11000) {
+          pref = await NotificationPreference.findOne({ userId: new mongoose.Types.ObjectId(userId) }).lean();
+        } else {
+          throw err;
+        }
+      }
     }
     return pref;
   }
@@ -108,8 +116,10 @@ export class NotificationService {
     const pref = await this.getPreferences(targetUserId, organizationId);
     if (!pref) return;
 
+    const mappedCategory = (category === "clinical" ? "patient" : category) as any;
+
     // Check category preferences
-    if (pref.categories && pref.categories[category] === false) {
+    if (pref.categories && (pref.categories as any)[mappedCategory] === false) {
       console.log(`[NotificationService] Suppressed event ${type} for user ${targetUserId} (Category ${category} disabled)`);
       return;
     }
@@ -125,7 +135,7 @@ export class NotificationService {
         organizationId: organizationId ? new mongoose.Types.ObjectId(organizationId) : undefined,
         createdBy: createdBy ? new mongoose.Types.ObjectId(createdBy) : undefined,
         targetUser: new mongoose.Types.ObjectId(targetUserId),
-        category,
+        category: mappedCategory,
         type: type || event.eventType || "NOTIFICATION",
         title,
         message,
@@ -178,13 +188,15 @@ export class NotificationService {
         console.warn(`[NotificationService Warning] Could not resolve email for user ${targetUserId}`, err);
       }
 
-      await notificationQueue.enqueue({
-        notificationId: createdNotification._id.toString(),
-        channel: "email",
-        recipient: recipientEmail,
-        title,
-        message,
-      });
+      if (recipientEmail) {
+        await notificationQueue.enqueue({
+          notificationId: createdNotification._id.toString(),
+          channel: "email",
+          recipient: recipientEmail,
+          title: title || "Notification Alert",
+          message: message || "",
+        });
+      }
     }
   }
 

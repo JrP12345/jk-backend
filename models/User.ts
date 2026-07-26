@@ -8,9 +8,16 @@ const UserSchema = new Schema({
   role: { type: String, required: true }, // "root" | "admin" | "doctor" | "receptionist" | "nurse" | "lab_tech" | "pharmacist" | "cashier" | "patient" | "family_member"
   twoFactorEnabled: { type: Boolean, default: false },
   twoFactorSecret: { type: String },
+  isEmailVerified: { type: Boolean, default: true }, // Defaults to true for admin/staff created by org; patient self-reg sets false
+  emailVerificationToken: { type: String, sparse: true, index: true },
+  emailVerificationExpires: { type: Date },
+  passwordResetToken: { type: String, sparse: true, index: true },
+  passwordResetExpires: { type: Date },
+  failedLoginAttempts: { type: Number, default: 0 },
+  lockoutUntil: { type: Date, default: null },
   isActive: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now },
-});
+}, { timestamps: true });
 
 UserSchema.virtual("id").get(function() {
   return this._id.toHexString();

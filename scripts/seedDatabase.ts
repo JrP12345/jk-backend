@@ -40,7 +40,7 @@ import { PendingTwoFactorSetup } from "../models/PendingTwoFactorSetup.ts";
 import { OnboardingDraft } from "../models/OnboardingDraft.ts";
 import { RefreshToken } from "../models/RefreshToken.ts";
 
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://jaydevelopment:Jp12345@cluster0.x7q258r.mongodb.net/";
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/ananta_health";
 
 async function runSeed() {
   console.log("=======================================================================");

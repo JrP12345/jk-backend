@@ -5,7 +5,9 @@ import { notificationStreamHandler } from "../notifications/websocket.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { User } from "../models/User.ts";
-import { emailProvider } from "../notifications/providers/emailProvider.ts";
+import { Organization } from "../models/Organization.ts";
+import { emailProvider, type SmtpConfig } from "../notifications/providers/emailProvider.ts";
+import { decrypt } from "../utilities/encryption.ts";
 
 export default async function notificationRoutes(app: FastifyInstance) {
 
@@ -199,42 +201,70 @@ export default async function notificationRoutes(app: FastifyInstance) {
       return reply.code(400).send({ success: false, message: "Title and message are required" });
     }
 
-    let targetUsers: string[] = [];
+    let targetUsers: any[] = [];
 
     if (recipientScope === "user" && targetUserId) {
-      targetUsers = [targetUserId];
+      targetUsers = await User.find({ _id: targetUserId }).select("_id email name").lean();
     } else {
       const userFilter: any = {};
       if (recipientScope !== "all") {
         userFilter.role = recipientScope;
       }
-      let users = await User.find(userFilter).select("_id").lean();
-      targetUsers = users.map((u: any) => u._id.toString());
+      targetUsers = await User.find(userFilter).select("_id email name").lean();
     }
 
     if (targetUsers.length === 0) {
-      // Fallback to sender
-      targetUsers = [senderUserId];
+      targetUsers = await User.find({ _id: senderUserId }).select("_id email name").lean();
     }
 
     let dispatchedCount = 0;
-    for (const recipientId of targetUsers) {
-      eventBus.publish({
-        eventId: `manual_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-        eventType: EVENT_TYPES.SYSTEM_ALERT,
-        category,
-        targetUserId: recipientId,
-        createdBy: senderUserId,
-        title,
-        message,
-        severity,
-        priority,
-        actionUrl: actionUrl || undefined,
-        organizationId,
-        metadata: {
-          requestedChannels: channels,
-        },
-      });
+    for (const targetUser of targetUsers) {
+      const recipientId = targetUser._id.toString();
+
+      // 1. Dispatch In-App notification event
+      if (channels?.inApp !== false) {
+        eventBus.publish({
+          eventId: `manual_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+          eventType: EVENT_TYPES.SYSTEM_ALERT,
+          category,
+          targetUserId: recipientId,
+          createdBy: senderUserId,
+          title,
+          message,
+          severity,
+          priority,
+          actionUrl: actionUrl || undefined,
+          organizationId,
+          metadata: {
+            requestedChannels: channels,
+          },
+        });
+      }
+
+      // 2. Dispatch Email alert if email channel enabled and user has valid email
+      if (channels?.email && targetUser.email) {
+        emailProvider.sendEmail({
+          to: targetUser.email,
+          subject: `[${severity.toUpperCase()}] ${title}`,
+          text: message,
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
+              <div style="display: flex; items-center; justify-content: space-between; border-bottom: 2px solid #3b82f6; padding-bottom: 12px; margin-bottom: 20px;">
+                <h2 style="color: #1e293b; margin: 0; font-size: 20px;">Ananta Health Alert</h2>
+                <span style="background-color: #3b82f6; color: #ffffff; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; text-transform: uppercase;">${category}</span>
+              </div>
+              <h3 style="color: #0f172a; margin-top: 0; font-size: 16px;">${title}</h3>
+              <div style="background-color: #f8fafc; padding: 16px; border-left: 4px solid #3b82f6; border-radius: 6px; margin: 16px 0;">
+                <p style="margin: 0; font-size: 14px; color: #334155; line-height: 1.6;">${message.replace(/\n/g, "<br/>")}</p>
+              </div>
+              ${actionUrl ? `<div style="margin: 24px 0;"><a href="${actionUrl}" style="background-color: #2563eb; color: #ffffff; padding: 10px 20px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 13px; display: inline-block;">View Action Destination &rarr;</a></div>` : ""}
+              <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0 16px 0;" />
+              <p style="font-size: 11px; color: #94a3b8; text-align: center; margin: 0;">Sent by Ananta Health Intelligence System &bull; Confidential Medical Telemetry</p>
+            </div>
+          `,
+        }).catch((e) => console.error("Email broadcast error:", e));
+      }
+
       dispatchedCount++;
     }
 
@@ -243,10 +273,14 @@ export default async function notificationRoutes(app: FastifyInstance) {
       .map(([k]) => k)
       .join(", ");
 
+    const sentEmails = targetUsers.map((u) => u.email).filter(Boolean);
+
     return reply.send({
       success: true,
-      message: `Successfully dispatched notification to ${dispatchedCount} user(s) via [${channelNames || "inApp"}]`,
-      data: { count: dispatchedCount, channels },
+      message: `Dispatched to ${dispatchedCount} user(s) via [${channelNames || "inApp"}]${
+        channels?.email ? ` — Email sent to: ${sentEmails.join(", ")}` : ""
+      }`,
+      data: { count: dispatchedCount, channels, emailsSentTo: sentEmails },
     });
   });
 
@@ -284,11 +318,30 @@ export default async function notificationRoutes(app: FastifyInstance) {
   // ─── Test Direct Email Dispatch Endpoint ─────────────────────────
   app.post("/api/notifications/test-email", { preHandler: [authenticate] }, async (req, reply) => {
     const userEmail = req.user?.email;
+    const orgId = req.user?.organization_id;
     const { targetEmail } = (req.body as any) || {};
     const recipient = targetEmail || userEmail;
 
     if (!recipient) {
       return reply.code(400).send({ success: false, message: "No recipient email address available" });
+    }
+
+    // Load org SMTP config if available — decrypt password before use
+    let orgSmtp: SmtpConfig | null = null;
+    if (orgId) {
+      const org = await Organization.findById(orgId).select("smtp").lean();
+      const smtp = (org as any)?.smtp;
+      if (smtp?.host && smtp?.user && smtp?.pass) {
+        orgSmtp = {
+          host: smtp.host,
+          port: smtp.port || 587,
+          secure: smtp.secure || false,
+          user: smtp.user,
+          pass: decrypt(smtp.pass),   // ← AES-256-GCM decrypt before SMTP auth
+          fromEmail: smtp.fromEmail || smtp.user,
+          fromName: smtp.fromName || "Ananta Health",
+        };
+      }
     }
 
     const sent = await emailProvider.sendEmail({
@@ -303,6 +356,7 @@ export default async function notificationRoutes(app: FastifyInstance) {
           <div style="background-color: #f8fafc; padding: 15px; border-left: 4px solid #2563eb; border-radius: 4px; margin: 20px 0;">
             <p style="margin: 0; font-size: 14px; color: #475569;">
               <strong>Recipient:</strong> ${recipient}<br/>
+              <strong>Source:</strong> ${orgSmtp ? "Organization SMTP Gateway" : "Environment (.env) SMTP"}<br/>
               <strong>Timestamp:</strong> ${new Date().toLocaleString()}
             </p>
           </div>
@@ -311,17 +365,17 @@ export default async function notificationRoutes(app: FastifyInstance) {
           <p style="font-size: 12px; color: #94a3b8; text-align: center;">Ananta Health System &bull; Automated Delivery</p>
         </div>
       `,
-    });
+    }, orgSmtp);
 
     if (sent) {
       return reply.send({
         success: true,
-        message: `Test email dispatched to ${recipient}`,
+        message: `Test email dispatched to ${recipient}${orgSmtp ? " via organization SMTP gateway" : ""}`,
       });
     } else {
       return reply.code(500).send({
         success: false,
-        message: "Failed to send test email. Please check server logs and backend/.env SMTP credentials.",
+        message: "Failed to send test email. Check SMTP configuration in Organization Settings or backend/.env.",
       });
     }
   });

@@ -15,8 +15,9 @@ const AdmissionSchema = new Schema({
     index: true
   },
   notes: { type: String },
+  deletedAt: { type: Date, default: null, index: true },
   createdAt: { type: Date, default: Date.now }
-});
+}, { timestamps: true });
 
 AdmissionSchema.virtual("id").get(function() {
   return this._id.toHexString();

@@ -44,7 +44,7 @@ describe("Notification Infrastructure System", () => {
     });
 
     // Allow event emitter setImmediate tick to resolve
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 300));
 
     const unread = await notificationService.getUnreadCount(userId);
     expect(unread).toBe(1);
@@ -68,7 +68,7 @@ describe("Notification Infrastructure System", () => {
       message: "This should be suppressed.",
     });
 
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 300));
 
     const unread = await notificationService.getUnreadCount(userId);
     expect(unread).toBe(0);

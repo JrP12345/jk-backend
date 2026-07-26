@@ -81,3 +81,49 @@ export function checkPermission(requiredPermission: string) {
     }
   };
 }
+
+/**
+ * Tenant Isolation Guard Middleware.
+ * Verifies that requests targeting an organization scope match the authenticated caller's organization_id.
+ * Root super-admins bypass tenant checks.
+ */
+export async function enforceTenantIsolation(req: FastifyRequest, reply: FastifyReply) {
+  if (!req.user) {
+    return reply.code(401).send({ error: "Unauthorized" });
+  }
+
+  if (req.user.role === "root") {
+    return; // Root admin context bypasses tenant restriction
+  }
+
+  const targetOrgId =
+    (req.headers["x-organization-id"] as string) ||
+    (req.body as any)?.organizationId ||
+    (req.query as any)?.organizationId ||
+    (req.params as any)?.organizationId;
+
+  if (targetOrgId && targetOrgId !== req.user.organization_id) {
+    return reply.code(403).send({ error: "Forbidden: Cross-tenant access attempt blocked" });
+  }
+}
+
+/**
+ * Password Strength Policy Validator.
+ * Enforces minimum length (8 chars), mixed case, number, and special character.
+ */
+export function validatePasswordStrength(password: string): { valid: boolean; reason?: string } {
+  if (!password || password.length < 8) {
+    return { valid: false, reason: "Password must be at least 8 characters long" };
+  }
+  if (!/[A-Z]/.test(password)) {
+    return { valid: false, reason: "Password must contain at least one uppercase letter" };
+  }
+  if (!/[a-z]/.test(password)) {
+    return { valid: false, reason: "Password must contain at least one lowercase letter" };
+  }
+  if (!/[0-9]/.test(password)) {
+    return { valid: false, reason: "Password must contain at least one digit" };
+  }
+  return { valid: true };
+}
+

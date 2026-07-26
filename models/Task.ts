@@ -33,7 +33,9 @@ const TaskSchema = new Schema({
   createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
-});
+}, { timestamps: true });
+
+TaskSchema.index({ organizationId: 1, status: 1 });
 
 TaskSchema.virtual("id").get(function () {
   return this._id.toHexString();

@@ -10,6 +10,7 @@
     "audit:release": "node ../scripts/repo_auditor.js",
     "audit": "node ../scripts/repo_auditor.js",
     "seed": "node --env-file=.env --experimental-strip-types scripts/seedDatabase.ts",
+    "seed:clinic1": "node --env-file=.env --experimental-strip-types scripts/seedClinicOne.ts",
     "dev": "nodemon -e js,ts,json,env --exec \"node --env-file=.env --experimental-strip-types\" index.js"
   },
   "repository": {
@@ -30,11 +31,16 @@
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.2.0",
     "@fastify/rate-limit": "^11.0.0",
+    "@fastify/swagger": "^9.8.1",
+    "@fastify/swagger-ui": "^6.1.0",
     "bcryptjs": "^3.0.3",
     "fastify": "^5.8.5",
     "ioredis": "^5.11.1",
     "jsonwebtoken": "^9.0.3",
-    "mongoose": "^9.7.0"
+    "mongoose": "^9.7.0",
+    "nodemailer": "^9.0.3",
+    "qrcode": "^1.5.4",
+    "speakeasy": "^2.0.0"
   },
   "devDependencies": {
     "@types/jsonwebtoken": "^9.0.8",
@@ -44,9 +50,6 @@
     "@types/qrcode": "^1.5.6",
     "@types/speakeasy": "^2.0.10",
     "mongodb-memory-server": "^11.2.0",
-    "nodemailer": "^9.0.3",
-    "qrcode": "^1.5.4",
-    "speakeasy": "^2.0.0",
     "vitest": "^4.1.9"
   }
 }

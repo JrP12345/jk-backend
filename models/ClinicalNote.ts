@@ -54,8 +54,9 @@ const ClinicalNoteSchema = new Schema({
   },
 
   amendmentReason: { type: String, default: "" },
+  deletedAt: { type: Date, default: null, index: true },
   createdAt: { type: Date, default: Date.now },
-});
+}, { timestamps: true });
 
 ClinicalNoteSchema.index({ organizationId: 1, patientId: 1, isLatest: 1 });
 

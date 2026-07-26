@@ -5,7 +5,8 @@ export const TimelineSource = {
   BILLING: "BILLING",
   PRESCRIPTION: "PRESCRIPTION",
   MAR: "MAR",
-  DISCHARGE: "DISCHARGE"
+  DISCHARGE: "DISCHARGE",
+  DOCUMENT_UPLOAD: "DOCUMENT_UPLOAD",
 } as const;
 
 export type TimelineSource = typeof TimelineSource[keyof typeof TimelineSource];
@@ -18,7 +19,7 @@ export interface TimelineActor {
 
 export interface TimelineSourceRef {
   source: TimelineSource;
-  resourceType: "Appointment" | "LabOrder" | "Admission" | "Invoice" | "MedicationAdministration" | "DischargeDocument";
+  resourceType: "Appointment" | "LabOrder" | "Admission" | "Invoice" | "MedicationAdministration" | "DischargeDocument" | "DocumentUpload";
   resourceId: string;
   link: string;
 }

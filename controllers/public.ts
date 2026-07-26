@@ -135,6 +135,24 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
       
       const docProfile = await Doctor.findOne({ userId: assign.doctorId._id });
 
+      let workingDays = "Not specified";
+      if (assign.workingHours) {
+        if (typeof assign.workingHours === "object") {
+          workingDays = Object.keys(assign.workingHours).join(", ");
+        } else if (typeof assign.workingHours === "string") {
+          try {
+            const parsed = JSON.parse(assign.workingHours);
+            if (typeof parsed === "object" && parsed !== null) {
+              workingDays = Object.keys(parsed).join(", ");
+            } else {
+              workingDays = assign.workingHours;
+            }
+          } catch {
+            workingDays = assign.workingHours;
+          }
+        }
+      }
+
       return {
         id: assign.doctorId._id.toString(),
         name: assign.doctorId.name,
@@ -145,7 +163,7 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
         experience_years: docProfile?.experience_years || 1,
         fees: assign.fees,
         timings: assign.workingHours,
-        working_days: assign.workingHours ? Object.keys(JSON.parse(assign.workingHours)).join(", ") : "Not specified",
+        working_days: workingDays,
         description: docProfile?.description || "",
         image_url: docProfile?.image_url || null,
         rating: docProfile?.rating || 5,

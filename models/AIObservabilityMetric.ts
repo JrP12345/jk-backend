@@ -1,0 +1,20 @@
+import mongoose, { Schema } from "mongoose";
+
+const AIObservabilityMetricSchema = new Schema({
+  correlationId: { type: String, required: true, index: true },
+  organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
+  userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
+  sessionId: { type: String, default: "general", index: true },
+  provider: { type: String, required: true },
+  model: { type: String, required: true },
+  modelAlias: { type: String, default: "CLINICAL_FAST" },
+  inputTokens: { type: Number, default: 0 },
+  outputTokens: { type: Number, default: 0 },
+  estimatedCostUSD: { type: Number, default: 0 },
+  latencyMs: { type: Number, default: 0 },
+  status: { type: String, enum: ["success", "failover", "error"], default: "success", index: true },
+  errorMessage: { type: String, default: null },
+  timestamp: { type: Date, default: Date.now, index: true }
+}, { timestamps: true });
+
+export const AIObservabilityMetric = mongoose.model("AIObservabilityMetric", AIObservabilityMetricSchema);

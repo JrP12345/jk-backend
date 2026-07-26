@@ -11,6 +11,7 @@ import { AdmissionProvider } from "./providers/AdmissionProvider.ts";
 import { BillingProvider } from "./providers/BillingProvider.ts";
 import { MARProvider } from "./providers/MARProvider.ts";
 import { DischargeSummaryProvider } from "./providers/DischargeSummaryProvider.ts";
+import { DocumentUploadProvider } from "./providers/DocumentUploadProvider.ts";
 
 export class TimelineProviderRegistry {
   private providers: TimelineProvider[] = [];
@@ -38,6 +39,8 @@ export class TimelineService {
     this.registry.register(new MARProvider());
     // v1.7.0: Discharge Summary provider
     this.registry.register(new DischargeSummaryProvider());
+    // ANANTA v1.0: Patient & Clinic Document Upload provider
+    this.registry.register(new DocumentUploadProvider());
   }
 
 
