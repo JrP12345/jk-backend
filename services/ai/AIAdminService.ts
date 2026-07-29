@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { AIOrganizationConfig } from "../../models/AIOrganizationConfig.ts";
 
 export class AIAdminService {
@@ -14,11 +15,12 @@ export class AIAdminService {
 
   /**
    * Fetches or initializes AI configuration for an organization.
+   * Safely handles missing or invalid Organization ObjectIds without throwing CastErrors.
    */
-  async getConfig(organizationId: string) {
-    if (!organizationId) {
+  async getConfig(organizationId?: string) {
+    if (!organizationId || !mongoose.Types.ObjectId.isValid(organizationId)) {
       return {
-        organizationId: "default",
+        organizationId: null,
         defaultModelAlias: "CLINICAL_FAST",
         monthlyTokenQuota: 10000000,
         featureFlags: {
@@ -52,6 +54,10 @@ export class AIAdminService {
    * Updates AI model preferences and feature flag configurations for an organization.
    */
   async updateConfig(organizationId: string, updates: any, userId?: string) {
+    if (!organizationId || !mongoose.Types.ObjectId.isValid(organizationId)) {
+      throw new Error("Invalid organizationId for AI configuration update");
+    }
+
     let config = await AIOrganizationConfig.findOne({ organizationId });
     if (!config) {
       config = new AIOrganizationConfig({ organizationId });
@@ -62,11 +68,14 @@ export class AIAdminService {
     if (updates.featureFlags) {
       config.featureFlags = { ...config.featureFlags, ...updates.featureFlags };
     }
-    if (userId) config.updatedByUserId = userId as any;
+    if (userId && mongoose.Types.ObjectId.isValid(userId)) {
+      config.updatedByUserId = userId as any;
+    }
 
     await config.save();
     return config;
   }
 }
+
 
 export const aiAdminService = AIAdminService.getInstance();

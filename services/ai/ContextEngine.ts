@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { Patient } from "../../models/Patient.ts";
 import { User } from "../../models/User.ts";
 import { Prescription } from "../../models/Prescription.ts";
@@ -26,6 +27,8 @@ export interface Assembled6DContext {
 
 export class ContextEngine {
   private static instance: ContextEngine;
+  private metricsCache: Map<string, { data: string; expiresAt: number }> = new Map();
+  private CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes TTL
 
   private constructor() {}
 
@@ -40,7 +43,7 @@ export class ContextEngine {
    * Aggregates 6 dimensions of context across the platform:
    * 1. Route Context
    * 2. Role Context
-   * 3. Organization & Live Financial/Operational Metrics (Real-time DB query)
+   * 3. Organization & Live Financial/Operational Metrics (Real-time DB query with 5m TTL cache)
    * 4. Patient Longitudinal EHR
    * 5. Encounter History
    * 6. Clinical Domain Directives
@@ -54,101 +57,123 @@ export class ContextEngine {
     // 2. Role Context
     const roleContext = `User Access Role: ${input.userRole || "clinician"}`;
 
-    // 3. Organization Financial & Operational Metrics (Real-time MongoDB Context)
+    // 3. Organization Financial & Operational Metrics (Cached with 5m TTL)
     let orgName = "Healthcare System";
     const orgId = input.organizationId;
-    if (orgId && orgId !== "000000000000000000000000") {
-      try {
-        const orgObj = await Organization.findById(orgId).select("name city").lean();
-        if (orgObj) orgName = orgObj.name;
-      } catch {}
-    }
-    if (orgName === "Healthcare System") {
-      try {
-        const firstOrg = await Organization.findOne({ isActive: true }).select("name city").lean();
-        if (firstOrg) orgName = firstOrg.name;
-      } catch {}
-    }
+    const cacheKey = orgId || "default_org";
 
-    let organizationContext = `Facility / Organization: ${orgName}`;
-    try {
-      const clinicFilter = orgId && orgId !== "000000000000000000000000"
-        ? { organizationId: orgId, isActive: true }
-        : { isActive: true };
+    let organizationContext = "";
+    const cachedMetrics = this.metricsCache.get(cacheKey);
 
-      let clinics = await Clinic.find(clinicFilter).lean();
-      if (clinics.length === 0) {
-        clinics = await Clinic.find({ isActive: true }).lean();
+    if (cachedMetrics && cachedMetrics.expiresAt > Date.now()) {
+      organizationContext = cachedMetrics.data;
+    } else {
+      if (orgId && mongoose.Types.ObjectId.isValid(orgId)) {
+        try {
+          const orgObj = await Organization.findById(orgId).select("name city").lean();
+          if (orgObj) orgName = orgObj.name;
+        } catch (e: any) {
+          console.warn(`[ContextEngine] Organization lookup warning for ${orgId}:`, e.message);
+        }
+      }
+      if (orgName === "Healthcare System") {
+        try {
+          const firstOrg = await Organization.findOne({ isActive: true }).select("name city").lean();
+          if (firstOrg) orgName = firstOrg.name;
+        } catch (e: any) {
+          console.warn("[ContextEngine] Default Organization lookup warning:", e.message);
+        }
       }
 
-      const clinicIds = clinics.map((c) => c._id);
-      const invoiceFilter = clinicIds.length > 0 ? { clinicId: { $in: clinicIds } } : {};
-      const invoices = await Invoice.find(invoiceFilter)
-        .populate({ path: "patientId", populate: { path: "userId", select: "name email" } })
-        .lean();
+      organizationContext = `Facility / Organization: ${orgName}`;
+      try {
+        const clinicFilter = orgId && mongoose.Types.ObjectId.isValid(orgId)
+          ? { organizationId: orgId, isActive: true }
+          : { isActive: true };
 
-      let totalRevenue = 0;
-      let todayRevenue = 0;
-      let outstandingBilling = 0;
-      let paidInvoicesCount = 0;
-      let unpaidInvoicesCount = 0;
-
-      const patientPaidTotals: Record<string, { name: string; amount: number; count: number }> = {};
-      const startOfToday = new Date();
-      startOfToday.setHours(0, 0, 0, 0);
-
-      invoices.forEach((inv: any) => {
-        const amt = inv.totalAmount || 0;
-        const pUser = (inv.patientId as any)?.userId;
-        const pName = pUser?.name || "Patient / Client";
-        const pId = inv.patientId?._id ? inv.patientId._id.toString() : pName;
-
-        const pDate = inv.paymentDate || inv.createdAt;
-        const isToday = pDate && new Date(pDate) >= startOfToday;
-
-        if (inv.status === "paid") {
-          totalRevenue += amt;
-          paidInvoicesCount++;
-          if (isToday) todayRevenue += amt;
-
-          if (!patientPaidTotals[pId]) {
-            patientPaidTotals[pId] = { name: pName, amount: 0, count: 0 };
-          }
-          patientPaidTotals[pId].amount += amt;
-          patientPaidTotals[pId].count += 1;
-        } else if (inv.status === "unpaid") {
-          outstandingBilling += amt;
-          unpaidInvoicesCount++;
+        let clinics = await Clinic.find(clinicFilter).select("name city").lean();
+        if (clinics.length === 0) {
+          clinics = await Clinic.find({ isActive: true }).select("name city").lean();
         }
-      });
 
-      const effectiveTodayRevenue = todayRevenue > 0 ? todayRevenue : totalRevenue;
-      const sortedClients = Object.values(patientPaidTotals).sort((a, b) => b.amount - a.amount);
-      const topPayingClient = sortedClients[0]
-        ? `${sortedClients[0].name} (Total Paid: ₹${sortedClients[0].amount.toLocaleString()})`
-        : "None recorded yet";
+        const clinicIds = clinics.map((c) => c._id);
+        const invoiceFilter = clinicIds.length > 0 ? { clinicId: { $in: clinicIds } } : {};
+        const invoices = await Invoice.find(invoiceFilter)
+          .select("totalAmount status paymentDate createdAt patientId")
+          .populate({ path: "patientId", populate: { path: "userId", select: "name email" } })
+          .lean();
 
-      const appointmentsCount = await Appointment.countDocuments(clinicIds.length > 0 ? { clinicId: { $in: clinicIds } } : {});
-      const beds = await Bed.find(clinicIds.length > 0 ? { clinicId: { $in: clinicIds } } : {}).lean();
-      const occupiedBeds = beds.filter((b) => b.status === "occupied").length;
-      const totalBeds = beds.length;
+        let totalRevenue = 0;
+        let todayRevenue = 0;
+        let outstandingBilling = 0;
+        let paidInvoicesCount = 0;
+        let unpaidInvoicesCount = 0;
 
-      const clinicNames = clinics.map(c => `${c.name} (${c.city})`).join(", ") || "Main Pavilion";
+        const patientPaidTotals: Record<string, { name: string; amount: number; count: number }> = {};
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
 
-      organizationContext = [
-        `Facility / Organization Context:`,
-        `- Facility Name: ${orgName}`,
-        `- Active Clinics (${clinics.length}): ${clinicNames}`,
-        `- Today's Revenue Collections: ₹${effectiveTodayRevenue.toLocaleString()} (${paidInvoicesCount} paid transactions)`,
-        `- Total Cumulative Revenue Collections: ₹${totalRevenue.toLocaleString()} (${paidInvoicesCount} total transactions)`,
-        `- Outstanding Billings (Unpaid): ₹${outstandingBilling.toLocaleString()} (${unpaidInvoicesCount} pending invoices)`,
-        `- Top / Highest Paying Client: ${topPayingClient}`,
-        `- Total Patient Visits / Appointments: ${appointmentsCount} recorded`,
-        `- IPD Bed Census: ${occupiedBeds} occupied of ${totalBeds} total beds (${totalBeds > 0 ? Math.round((occupiedBeds / totalBeds) * 100) : 0}% occupancy)`
-      ].join("\n");
-    } catch (err) {
-      console.warn("[ContextEngine] Failed to build live financial context:", err);
+        invoices.forEach((inv: any) => {
+          const amt = inv.totalAmount || 0;
+          const pUser = (inv.patientId as any)?.userId;
+          const pName = pUser?.name || "Patient / Client";
+          const pId = inv.patientId?._id ? inv.patientId._id.toString() : pName;
+
+          const pDate = inv.paymentDate || inv.createdAt;
+          const isToday = pDate && new Date(pDate) >= startOfToday;
+
+          if (inv.status === "paid") {
+            totalRevenue += amt;
+            paidInvoicesCount++;
+            if (isToday) todayRevenue += amt;
+
+            if (!patientPaidTotals[pId]) {
+              patientPaidTotals[pId] = { name: pName, amount: 0, count: 0 };
+            }
+            patientPaidTotals[pId].amount += amt;
+            patientPaidTotals[pId].count += 1;
+          } else if (inv.status === "unpaid") {
+            outstandingBilling += amt;
+            unpaidInvoicesCount++;
+          }
+        });
+
+        const effectiveTodayRevenue = todayRevenue > 0 ? todayRevenue : totalRevenue;
+        const sortedClients = Object.values(patientPaidTotals).sort((a, b) => b.amount - a.amount);
+        const topPayingClient = sortedClients[0]
+          ? `${sortedClients[0].name} (Total Paid: ₹${sortedClients[0].amount.toLocaleString()})`
+          : "None recorded yet";
+
+        const appointmentsCount = await Appointment.countDocuments(clinicIds.length > 0 ? { clinicId: { $in: clinicIds } } : {});
+        const beds = await Bed.find(clinicIds.length > 0 ? { clinicId: { $in: clinicIds } } : {}).select("status").lean();
+        const occupiedBeds = beds.filter((b) => b.status === "occupied").length;
+        const totalBeds = beds.length;
+
+        const clinicNames = clinics.map(c => `${c.name} (${c.city})`).join(", ") || "Main Pavilion";
+
+        organizationContext = [
+          `Facility / Organization Context:`,
+          `- Facility Name: ${orgName}`,
+          `- Organization ID: ${orgId}`,
+          `- Active Clinics (${clinics.length}): ${clinicNames}`,
+          `- Today's Revenue Collections: ₹${effectiveTodayRevenue.toLocaleString()} (${paidInvoicesCount} paid transactions)`,
+          `- Total Cumulative Revenue Collections: ₹${totalRevenue.toLocaleString()} (${paidInvoicesCount} total transactions)`,
+          `- Outstanding Billings (Unpaid): ₹${outstandingBilling.toLocaleString()} (${unpaidInvoicesCount} pending invoices)`,
+          `- Top / Highest Paying Client: ${topPayingClient}`,
+          `- Total Patient Visits / Appointments: ${appointmentsCount} recorded`,
+          `- IPD Bed Census: ${occupiedBeds} occupied of ${totalBeds} total beds (${totalBeds > 0 ? Math.round((occupiedBeds / totalBeds) * 100) : 0}% occupancy)`
+        ].join("\n");
+
+        // Cache the formatted organizationContext
+        this.metricsCache.set(cacheKey, {
+          data: organizationContext,
+          expiresAt: Date.now() + this.CACHE_TTL_MS
+        });
+      } catch (err: any) {
+        console.warn("[ContextEngine] Failed to build live financial context:", err.message);
+      }
     }
+
 
     // 4 & 5. Patient Longitudinal EHR & Encounter Context
     let patientRecordContext = "Active Patient Context: No active patient chart selected.";

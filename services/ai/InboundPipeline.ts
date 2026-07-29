@@ -92,9 +92,28 @@ export class InboundPipeline {
     let tokenMap = new Map<string, string>();
 
     if (flags?.enablePHIAnonymization) {
+      const phiList = [...(samplePatientData || [])];
+      
+      // If an active patient ID is provided, load exact PHI identifiers for anonymization
+      if (extraContextInput?.activePatientId && extraContextInput.activePatientId.length === 24) {
+        try {
+          const { Patient } = await import("../../models/Patient.ts");
+          const activeP = await Patient.findById(extraContextInput.activePatientId).populate("userId", "name email phone").lean();
+          if (activeP) {
+            const u = (activeP.userId as any) || {};
+            phiList.unshift({
+              name: u.name,
+              mrn: (activeP as any).mrn || activeP._id.toString(),
+              email: u.email,
+              phone: u.phone
+            });
+          }
+        } catch {}
+      }
+
       const result = PHIAnonymizer.anonymizeText(
         compiledPrompt.userPrompt,
-        samplePatientData || []
+        phiList
       );
       anonymizedText = result.anonymizedText;
       tokenMap = result.tokenMap;
@@ -113,3 +132,4 @@ export class InboundPipeline {
     };
   }
 }
+

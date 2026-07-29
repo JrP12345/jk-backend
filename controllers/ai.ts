@@ -14,6 +14,7 @@ import { Organization } from "../models/Organization.ts";
 import { AIChatSession } from "../models/AIChatSession.ts";
 import type { ChatTurn } from "../services/ai/AIProvider.ts";
 import { aiService } from "../services/ai/AIService.ts";
+import { aiGateway } from "../services/ai/AIGateway.ts";
 import { timelineService } from "../services/TimelineService.ts";
 import { PHIAnonymizer } from "../utilities/phiAnonymizer.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
@@ -338,10 +339,6 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
       return reply.code(400).send(errorResponse("Invalid session ID"));
     }
 
-    const session = await AIChatSession.findOne({ _id: sessionId, userId, status: "active" });
-    if (!session) return reply.code(404).send(errorResponse("Chat session not found"));
-
-    // 1. Append User Message to session
     const userMsg = {
       id: `usr_${Date.now()}`,
       sender: "user" as const,
@@ -351,76 +348,78 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       createdAt: new Date()
     };
-    session.messages.push(userMsg as any);
 
-    // 2. Build multi-turn chat turns and dynamic RAG context
-    const chatTurns: ChatTurn[] = session.messages.map(m => ({
-      sender: m.sender as "user" | "ai",
-      text: m.text
-    }));
+    // 1. Atomically append User Message to session in MongoDB
+    const sessionBefore = await AIChatSession.findOneAndUpdate(
+      { _id: sessionId, userId, status: "active" },
+      { $push: { messages: userMsg } },
+      { returnDocument: "after" }
+    );
 
-    const effectivePatientId = activePatientId || session.patientId?.toString();
-    const { finalSummary, targetPatientId } = await buildRAGContext(req, effectivePatientId);
+    if (!sessionBefore) return reply.code(404).send(errorResponse("Chat session not found"));
 
-    let routeContext = "";
-    if (currentRoute) {
-      routeContext = `\nActive Screen / Route Context: Clinician is currently viewing screen "${currentRoute}".`;
-    }
+    const isFirstUserTurn = sessionBefore.messages.filter(m => m.sender === "user").length === 1;
 
-    // 3. Apply HIPAA PHI Anonymization Proxy before sending to LLM
-    const samplePatientsList = await Patient.find(requesterOrgId ? { organizationId: requesterOrgId } : {}).populate("userId", "name email").limit(20).lean();
+    // 2. Fetch sample patient data for PHI anonymization context if available
+    const samplePatientsList = await Patient.find(
+      requesterOrgId && mongoose.Types.ObjectId.isValid(requesterOrgId)
+        ? { organizationId: requesterOrgId }
+        : {}
+    ).populate("userId", "name email phone").limit(20).lean();
+
     const patientMapList = samplePatientsList.map(p => ({
       name: (p.userId as any)?.name,
       mrn: (p as any).mrn,
-      email: (p.userId as any)?.email
+      email: (p.userId as any)?.email,
+      phone: (p.userId as any)?.phone
     }));
 
-    const fullContext = finalSummary + routeContext;
-    const { anonymizedText: anonymizedSummary, tokenMap } = PHIAnonymizer.anonymizeText(fullContext, patientMapList);
+    // 3. Execute request through Enterprise AI Gateway pipeline
+    const aiResponse = await aiGateway.execute({
+      prompt: query.trim(),
+      sessionId,
+      organizationId: requesterOrgId,
+      correlationId: `corr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+    }, patientMapList);
 
-    // 4. Call AI Service with anonymized prompt
-    const aiResponse = await aiService.queryPatientHealthAssistant({
-      patientId: targetPatientId || userId || "general",
-      query: query.trim(),
-      patientRecordSummary: anonymizedSummary,
-      chatHistory: chatTurns
-    });
-
-    // 5. Re-hydrate AI response with real patient details
-    const rehydratedAnswer = PHIAnonymizer.rehydrateText(aiResponse.answer, tokenMap);
-
-    // 6. Append AI Message to session
+    // 4. Formulate AI Message
     const aiMsg = {
       id: `ai_${Date.now()}`,
       sender: "ai" as const,
-      text: rehydratedAnswer,
+      text: aiResponse.text || (aiResponse as any).answer || "",
       citations: aiResponse.citations || [],
       suggestedActions: aiResponse.suggestedActions || [],
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       createdAt: new Date()
     };
-    session.messages.push(aiMsg as any);
 
-    // Auto-update title if it's the first user turn
-    const userTurnCount = session.messages.filter(m => m.sender === "user").length;
-    if (userTurnCount === 1) {
-      session.title = query.trim().length > 30 ? query.trim().substring(0, 27) + "..." : query.trim();
-    }
+    const newTitle = isFirstUserTurn
+      ? (query.trim().length > 30 ? query.trim().substring(0, 27) + "..." : query.trim())
+      : undefined;
 
-    await session.save();
+    // 5. Atomically append AI Message and update title if first turn
+    const updatedSession = await AIChatSession.findOneAndUpdate(
+      { _id: sessionId, userId, status: "active" },
+      {
+        $push: { messages: aiMsg },
+        ...(newTitle ? { title: newTitle } : {})
+      },
+      { returnDocument: "after" }
+    );
 
     return reply.code(200).send(successResponse({
-      sessionId: session._id.toString(),
-      title: session.title,
+      sessionId: updatedSession?._id.toString() || sessionId,
+      title: updatedSession?.title || "Clinical Chat Session",
       userMessage: userMsg,
       aiMessage: aiMsg,
-      allMessages: session.messages
+      allMessages: updatedSession?.messages || []
     }));
-  } catch (err) {
+  } catch (err: any) {
     console.error("sendChatMessageController error:", err);
-    return reply.code(500).send(errorResponse("Internal server error"));
+    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
   }
 }
+
 
 // ─── DELETE /api/ai/chat/sessions/:sessionId ───────────────────────────
 export async function deleteChatSessionController(req: FastifyRequest, reply: FastifyReply) {

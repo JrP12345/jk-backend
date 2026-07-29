@@ -13,6 +13,13 @@ import { Consent } from "../models/Consent.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { sendBookingNotification } from "../utilities/notifications.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
+import {
+  acquireSlotLock,
+  releaseSlotLock,
+  checkSlotLock,
+  validateSlotLockForBooking,
+  forceReleaseSlotLock,
+} from "../services/SlotLockService.ts";
 
 export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -21,7 +28,7 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
     const orgId = req.user?.organization_id;
 
     const {
-      clinicId, doctorId, appointmentTime, appointmentType, notes, patientId, patientDetails, followUpForAppointmentId
+      clinicId, doctorId, appointmentTime, appointmentType, notes, patientId, patientDetails, followUpForAppointmentId, lockId
     } = req.body as {
       clinicId: string;
       doctorId: string;
@@ -41,6 +48,7 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
         medicalNotes?: string;
       };
       followUpForAppointmentId?: string;
+      lockId?: string; // Optional: slot lock ID from prior lock acquisition
     };
 
     if (!clinicId || !doctorId || !appointmentTime || !appointmentType) {
@@ -55,6 +63,14 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
     const assignment = await DoctorAssignment.findOne({ doctorId, clinicId });
     if (!assignment) {
       return reply.code(400).send(errorResponse("Doctor is not assigned to the selected clinic"));
+    }
+
+    // Validate Slot Lock — prevent double-booking
+    const lockValidation = await validateSlotLockForBooking(
+      clinicId, doctorId, appointmentTime, userId, lockId
+    );
+    if (!lockValidation.valid) {
+      return reply.code(409).send(errorResponse(lockValidation.message));
     }
 
     return await withTransaction(async (session) => {
@@ -218,7 +234,14 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
         details: { tokenNumber, appointmentTime, clinicId, doctorId }
       }, session);
 
-      // 7. Async Notification Dispatch
+      // 7. Release Slot Lock (if one was held)
+      if (lockValidation.lockKey) {
+        forceReleaseSlotLock(lockValidation.lockKey).catch((err) =>
+          console.error("Slot lock release failed (non-critical):", err)
+        );
+      }
+
+      // 8. Async Notification Dispatch
       sendBookingNotification(appointment._id, "booked").catch((err) => console.error("Notification dispatch failed:", err));
 
       return reply.code(201).send(
@@ -437,5 +460,94 @@ export async function getAppointmentById(req: FastifyRequest, reply: FastifyRepl
   }
 }
 
+// ─── Slot Lock: Acquire Lock ───────────────────────────────────
+export async function lockSlot(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const userId = req.user!.id;
+    const { clinicId, doctorId, slotTime } = req.body as {
+      clinicId: string;
+      doctorId: string;
+      slotTime: string;
+    };
 
+    if (!clinicId || !doctorId || !slotTime) {
+      return reply.code(400).send(errorResponse("clinicId, doctorId, and slotTime are required"));
+    }
 
+    const result = await acquireSlotLock(clinicId, doctorId, slotTime, userId);
+
+    if (!result.success) {
+      return reply.code(409).send(errorResponse(result.message, { heldBy: result.heldBy }));
+    }
+
+    return reply.code(200).send(
+      successResponse(
+        {
+          lockId: result.lockId,
+          lockKey: result.lockKey,
+          expiresInSeconds: result.expiresInSeconds,
+        },
+        result.message
+      )
+    );
+  } catch (err) {
+    console.error("lockSlot error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+// ─── Slot Lock: Release Lock ──────────────────────────────────
+export async function unlockSlot(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const userId = req.user!.id;
+    const { clinicId, doctorId, slotTime, lockId } = req.body as {
+      clinicId: string;
+      doctorId: string;
+      slotTime: string;
+      lockId: string;
+    };
+
+    if (!clinicId || !doctorId || !slotTime || !lockId) {
+      return reply.code(400).send(errorResponse("clinicId, doctorId, slotTime, and lockId are required"));
+    }
+
+    const result = await releaseSlotLock(clinicId, doctorId, slotTime, userId, lockId);
+
+    if (!result.success) {
+      return reply.code(403).send(errorResponse(result.message));
+    }
+
+    return reply.code(200).send(successResponse(null, result.message));
+  } catch (err) {
+    console.error("unlockSlot error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+// ─── Slot Lock: Check Lock Status ─────────────────────────────
+export async function getSlotLockStatus(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { clinicId, doctorId, slotTime } = req.query as {
+      clinicId: string;
+      doctorId: string;
+      slotTime: string;
+    };
+
+    if (!clinicId || !doctorId || !slotTime) {
+      return reply.code(400).send(errorResponse("clinicId, doctorId, and slotTime are required"));
+    }
+
+    const info = await checkSlotLock(clinicId, doctorId, slotTime);
+
+    return reply.code(200).send(
+      successResponse({
+        isLocked: info.isLocked,
+        heldByUserId: info.heldByUserId || null,
+        ttlSeconds: info.ttlSeconds || 0,
+      })
+    );
+  } catch (err) {
+    console.error("getSlotLockStatus error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
