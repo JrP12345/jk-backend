@@ -371,3 +371,63 @@ export async function dischargePatient(req: FastifyRequest, reply: FastifyReply)
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
+
+// ─── Ward Hierarchy & Bed Matrix Board ─────────────────────────
+export async function getWardHierarchyBoard(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { clinicId } = req.query as { clinicId?: string };
+
+    const filter: any = {};
+    if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
+      filter.clinicId = clinicId;
+    }
+
+    const beds = await Bed.find(filter)
+      .populate({
+        path: "occupiedBy",
+        populate: { path: "userId", select: "name phone email" }
+      })
+      .sort({ floor: 1, wardName: 1, bedNumber: 1 });
+
+    const hierarchy: Record<string, Record<string, any[]>> = {};
+
+    let totalBeds = 0;
+    let totalAvailable = 0;
+    let totalOccupied = 0;
+    let totalMaintenance = 0;
+
+    beds.forEach((bed: any) => {
+      totalBeds++;
+      if (bed.status === "available") totalAvailable++;
+      else if (bed.status === "occupied") totalOccupied++;
+      else if (bed.status === "maintenance") totalMaintenance++;
+
+      const floorKey = bed.floor || "Ground Floor";
+      const wardKey = bed.wardName || "General Ward";
+
+      if (!hierarchy[floorKey]) hierarchy[floorKey] = {};
+      if (!hierarchy[floorKey][wardKey]) hierarchy[floorKey][wardKey] = [];
+
+      hierarchy[floorKey][wardKey].push(bed);
+    });
+
+    const occupancyRate = totalBeds > 0 ? Math.round((totalOccupied / totalBeds) * 100) : 0;
+
+    return reply.code(200).send(
+      successResponse({
+        summary: {
+          totalBeds,
+          totalAvailable,
+          totalOccupied,
+          totalMaintenance,
+          occupancyRatePercent: occupancyRate,
+        },
+        hierarchy,
+      })
+    );
+  } catch (err) {
+    console.error("getWardHierarchyBoard error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+

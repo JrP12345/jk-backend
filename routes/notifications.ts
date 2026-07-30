@@ -23,6 +23,16 @@ export default async function notificationRoutes(app: FastifyInstance) {
     });
   });
 
+  // ─── SMS/WhatsApp Dispatch Logs ──────────────────────────────────
+  app.get("/api/notifications/dispatch-logs", { preHandler: [authenticate] }, async (req, reply) => {
+    const { NotificationLog } = await import("../models/NotificationLog.ts");
+    const logs = await NotificationLog.find({}).sort({ createdAt: -1 }).limit(50);
+    return reply.send({
+      success: true,
+      data: logs,
+    });
+  });
+
   // ─── Unread Count ─────────────────────────────────────────────────
   app.get("/api/notifications/unread-count", { preHandler: [authenticate] }, async (req, reply) => {
     const userId = req.user!.id;

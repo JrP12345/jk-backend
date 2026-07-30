@@ -6,6 +6,9 @@ import {
   getInvoices,
   getInvoiceDetails,
   collectPayment,
+  getEncounterChargesPreview,
+  autoGenerateInvoiceForEncounter,
+  recordPartialPayment,
 } from "../controllers/invoice.ts";
 import {
   createClaimController,
@@ -66,6 +69,11 @@ export default async function billingRoutes(app: FastifyInstance) {
   app.get("/api/invoices", auth, getInvoices);
   app.get("/api/invoices/:id", auth, getInvoiceDetails);
   app.put("/api/invoices/:id/pay", { ...auth, schema: collectPaymentSchema }, collectPayment);
+  app.post("/api/invoices/:id/payments", auth, recordPartialPayment);
+
+  // Auto Charge Capture from Encounter
+  app.get("/api/encounters/:encounterId/charges-preview", auth, getEncounterChargesPreview);
+  app.post("/api/encounters/:encounterId/auto-invoice", auth, autoGenerateInvoiceForEncounter);
 
   // Online Payment Link Generation (for Patient Medical Invoices)
   app.post("/api/billing/payment-link", auth, createPaymentLinkController);

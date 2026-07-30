@@ -12,9 +12,13 @@ export function auditPlugin(schema: any) {
     try {
       await AuditLog.create({
         userId,
+        organizationId: context?.organizationId || undefined,
         action: `${doc.constructor.modelName.toUpperCase()}_SAVE`,
         targetId: doc._id,
         targetModel: doc.constructor.modelName,
+        ipAddress: context?.ipAddress,
+        userAgent: context?.userAgent,
+        category: "CLINICAL_WRITE",
         details: doc.toJSON()
       });
     } catch (err) {
@@ -32,9 +36,13 @@ export function auditPlugin(schema: any) {
     try {
       await AuditLog.create({
         userId,
+        organizationId: context?.organizationId || undefined,
         action: `${this.model.modelName.toUpperCase()}_UPDATE`,
         targetId: res._id,
         targetModel: this.model.modelName,
+        ipAddress: context?.ipAddress,
+        userAgent: context?.userAgent,
+        category: "CLINICAL_WRITE",
         details: typeof res.toJSON === "function" ? res.toJSON() : res
       });
     } catch (err) {
@@ -52,9 +60,13 @@ export function auditPlugin(schema: any) {
     try {
       await AuditLog.create({
         userId,
+        organizationId: context?.organizationId || undefined,
         action: `${this.model.modelName.toUpperCase()}_DELETE`,
         targetId: res._id,
         targetModel: this.model.modelName,
+        ipAddress: context?.ipAddress,
+        userAgent: context?.userAgent,
+        category: "CLINICAL_WRITE",
         details: { id: res._id.toString() }
       });
     } catch (err) {
@@ -62,4 +74,3 @@ export function auditPlugin(schema: any) {
     }
   });
 }
-

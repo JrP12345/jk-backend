@@ -7,7 +7,7 @@ import { emailProvider } from "../notifications/providers/emailProvider.ts";
  * Simulates sending an email notification to patients for booking confirmations and cancellations.
  * In a production environment, this would integrate with nodemailer, SendGrid, or AWS SES.
  */
-export async function sendBookingNotification(appointmentId: any, actionType: "booked" | "cancelled") {
+export async function sendBookingNotification(appointmentId: any, actionType: "booked" | "cancelled" | "rescheduled") {
   try {
     const appt: any = await Appointment.findById(appointmentId)
       .populate("clinicId", "name email phone city")
@@ -62,6 +62,24 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
         text: body,
         html: `<div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">${body.replace(/\n/g, "<br/>")}</div>`
       });
+    }
+
+    const patientPhone = appt.patientId?.userId?.phone;
+    if (patientPhone) {
+      const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
+      sendSmsWhatsAppNotification({
+        phone: patientPhone,
+        patientName,
+        channel: "whatsapp",
+        templateId: actionType === "booked" ? "BOOKING_CONFIRMATION" : "APPOINTMENT_REMINDER",
+        variables: {
+          patientName,
+          doctorName,
+          clinicName,
+          appointmentTime: time,
+          tokenNumber: String(token),
+        },
+      }).catch((err) => console.error("SMS/WhatsApp dispatch failed:", err));
     }
   } catch (err) {
     console.error("sendBookingNotification error:", err);

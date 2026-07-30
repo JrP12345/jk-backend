@@ -1,16 +1,20 @@
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Appointment } from "../models/Appointment.ts";
+import { checkSlotLock } from "./SlotLockService.ts";
 
 export interface TimeSlot {
   time: string; // e.g. "09:00", "09:15"
   available: boolean;
   reason?: string;
+  isLocked?: boolean;
+  lockedByOther?: boolean;
 }
 
 export async function getDoctorAvailableSlots(
   doctorId: string,
   clinicId: string,
-  dateStr: string
+  dateStr: string,
+  requestingUserId?: string
 ): Promise<{ date: string; appointmentDuration: number; slots: TimeSlot[] }> {
   const targetDate = new Date(dateStr);
   if (isNaN(targetDate.getTime())) {
@@ -77,16 +81,38 @@ export async function getDoctorAvailableSlots(
   let currentMinutes = startHour * 60 + startMinute;
   const endMinutesTotal = endHour * 60 + endMinute;
 
+  const year = targetDate.getFullYear();
+  const month = String(targetDate.getMonth() + 1).padStart(2, "0");
+  const day = String(targetDate.getDate()).padStart(2, "0");
+
   while (currentMinutes + duration <= endMinutesTotal) {
     const h = Math.floor(currentMinutes / 60);
     const m = currentMinutes % 60;
     const timeFormatted = `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
 
     const isBooked = bookedTimes.has(timeFormatted);
+
+    // Check lock status for this slot
+    const slotISOTime = `${year}-${month}-${day}T${timeFormatted}:00`;
+    let isLocked = false;
+    let lockedByOther = false;
+
+    try {
+      const lockInfo = await checkSlotLock(clinicId, doctorId, slotISOTime);
+      if (lockInfo.isLocked) {
+        isLocked = true;
+        lockedByOther = requestingUserId ? lockInfo.heldByUserId !== requestingUserId : true;
+      }
+    } catch {
+      // Non-critical: if lock check fails, treat as unlocked
+    }
+
     slots.push({
       time: timeFormatted,
       available: !isBooked,
-      reason: isBooked ? "Booked" : undefined
+      reason: isBooked ? "Booked" : undefined,
+      isLocked,
+      lockedByOther: isBooked ? false : lockedByOther,
     });
 
     currentMinutes += duration;

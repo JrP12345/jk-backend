@@ -20,15 +20,29 @@ export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const {
-      patientId, clinicId, doctorId, appointmentId, items, tax, discount
+      patientId, clinicId, doctorId, appointmentId, encounterId, items, tax, discount,
+      supplierGstin, customerGstin, invoiceType, placeOfSupply, isInterstate
     } = req.body as {
       patientId: string;
       clinicId: string;
       doctorId: string;
       appointmentId?: string;
-      items: Array<{ description: string; amount: number; quantity?: number }>;
+      encounterId?: string;
+      items: Array<{
+        serviceCatalogId?: string;
+        description: string;
+        amount: number;
+        quantity?: number;
+        hsnSacCode?: string;
+        gstRate?: number;
+      }>;
       tax?: number;
       discount?: number;
+      supplierGstin?: string;
+      customerGstin?: string;
+      invoiceType?: "B2C" | "B2B" | "SEZ" | "EXPORT";
+      placeOfSupply?: string;
+      isInterstate?: boolean;
     };
 
     if (!patientId || !clinicId || !doctorId || !items || !Array.isArray(items) || items.length === 0) {
@@ -56,21 +70,56 @@ export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
     const seq = await getNextAtomicSequence(counterId);
     const invoiceNumber = `INV-${currentYear}-${seq.toString().padStart(6, "0")}`;
 
-    // Calculate totals
+    // Calculate totals & GST Breakdown
     let subtotal = 0;
+    let cgstTotal = 0;
+    let sgstTotal = 0;
+    let igstTotal = 0;
+
     const formattedItems = items.map(item => {
       const quantity = item.quantity || 1;
-      subtotal += item.amount * quantity;
+      const baseLineAmount = item.amount * quantity;
+      subtotal += baseLineAmount;
+
+      const gstRate = item.gstRate || 0;
+      const hsnSacCode = item.hsnSacCode || "999312";
+
+      let cgstAmount = 0;
+      let sgstAmount = 0;
+      let igstAmount = 0;
+
+      if (gstRate > 0) {
+        if (isInterstate) {
+          igstAmount = Number((baseLineAmount * (gstRate / 100)).toFixed(2));
+          igstTotal += igstAmount;
+        } else {
+          cgstAmount = Number((baseLineAmount * (gstRate / 200)).toFixed(2));
+          sgstAmount = Number((baseLineAmount * (gstRate / 200)).toFixed(2));
+          cgstTotal += cgstAmount;
+          sgstTotal += sgstAmount;
+        }
+      }
+
+      const totalItemAmount = Number((baseLineAmount + cgstAmount + sgstAmount + igstAmount).toFixed(2));
+
       return {
+        serviceCatalogId: item.serviceCatalogId || null,
         description: item.description,
         amount: item.amount,
-        quantity
+        quantity,
+        hsnSacCode,
+        gstRate,
+        cgstAmount,
+        sgstAmount,
+        igstAmount,
+        totalItemAmount,
       };
     });
 
-    const calculatedTax = tax || 0;
+    const calculatedTax = tax !== undefined ? tax : (cgstTotal + sgstTotal + igstTotal);
     const calculatedDiscount = discount || 0;
-    const totalAmount = subtotal + calculatedTax - calculatedDiscount;
+    const taxableAmount = Math.max(0, subtotal - calculatedDiscount);
+    const totalAmount = Number((taxableAmount + calculatedTax).toFixed(2));
 
     if (totalAmount < 0) {
       return reply.code(400).send(errorResponse("Total amount cannot be negative"));
@@ -78,15 +127,26 @@ export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
 
     const invoice = await Invoice.create({
       invoiceNumber,
+      organizationId: orgId || null,
       patientId,
       clinicId,
       doctorId,
       appointmentId: appointmentId || null,
+      encounterId: encounterId || null,
       items: formattedItems,
       subtotal,
+      taxableAmount,
       tax: calculatedTax,
       discount: calculatedDiscount,
       totalAmount,
+      supplierGstin: supplierGstin || undefined,
+      customerGstin: customerGstin || undefined,
+      invoiceType: invoiceType || (customerGstin ? "B2B" : "B2C"),
+      placeOfSupply: placeOfSupply || undefined,
+      isInterstate: !!isInterstate,
+      cgstTotal,
+      sgstTotal,
+      igstTotal,
       status: "unpaid"
     });
 
@@ -290,3 +350,119 @@ export async function collectPayment(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
+
+// ─── Auto Charge Capture: Preview & Generate Invoice for Encounter ───
+export async function getEncounterChargesPreview(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { encounterId } = req.params as { encounterId: string };
+    if (!mongoose.Types.ObjectId.isValid(encounterId)) {
+      return reply.code(400).send(errorResponse("Invalid encounter ID"));
+    }
+
+    const { compileEncounterCharges } = await import("../services/ChargeCaptureService.ts");
+    const preview = await compileEncounterCharges(encounterId);
+
+    return reply.code(200).send(successResponse(preview, "Encounter charges compiled successfully"));
+  } catch (err: any) {
+    console.error("getEncounterChargesPreview error:", err);
+    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+  }
+}
+
+export async function autoGenerateInvoiceForEncounter(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const userId = req.user!.id;
+    const { encounterId } = req.params as { encounterId: string };
+
+    if (!mongoose.Types.ObjectId.isValid(encounterId)) {
+      return reply.code(400).send(errorResponse("Invalid encounter ID"));
+    }
+
+    const { autoGenerateEncounterInvoice } = await import("../services/ChargeCaptureService.ts");
+    const invoice = await autoGenerateEncounterInvoice(encounterId, userId);
+
+    return reply.code(201).send(successResponse(invoice, "Invoice auto-generated from encounter successfully"));
+  } catch (err: any) {
+    console.error("autoGenerateInvoiceForEncounter error:", err);
+    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+  }
+}
+
+// ─── Record Installment / Partial Payment ──────────────────────
+export async function recordPartialPayment(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id } = req.params as { id: string };
+    const userId = req.user!.id;
+    const { amount, paymentMethod, referenceNumber, notes } = req.body as {
+      amount: number;
+      paymentMethod: string;
+      referenceNumber?: string;
+      notes?: string;
+    };
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return reply.code(400).send(errorResponse("Invalid invoice ID"));
+    }
+
+    if (!amount || amount <= 0) {
+      return reply.code(400).send(errorResponse("Payment amount must be greater than 0"));
+    }
+
+    const invoice: any = await Invoice.findById(id);
+    if (!invoice) {
+      return reply.code(404).send(errorResponse("Invoice not found"));
+    }
+
+    if (invoice.status === "paid") {
+      return reply.code(400).send(errorResponse("Invoice has already been fully paid"));
+    }
+
+    const currentPaid = invoice.amountPaid || 0;
+    const currentBalance = invoice.balanceDue !== undefined ? invoice.balanceDue : invoice.totalAmount - currentPaid;
+
+    if (amount > currentBalance + 0.01) {
+      return reply.code(400).send(errorResponse(`Payment amount ₹${amount} exceeds current balance due ₹${currentBalance}`));
+    }
+
+    const newAmountPaid = Number((currentPaid + amount).toFixed(2));
+    const newBalanceDue = Math.max(0, Number((invoice.totalAmount - newAmountPaid).toFixed(2)));
+    const newStatus = newBalanceDue <= 0 ? "paid" : "partially_paid";
+
+    invoice.amountPaid = newAmountPaid;
+    invoice.balanceDue = newBalanceDue;
+    invoice.status = newStatus;
+    invoice.paymentMethod = paymentMethod || "cash";
+    invoice.paymentDate = new Date();
+
+    if (!invoice.payments) invoice.payments = [];
+    invoice.payments.push({
+      amount,
+      paymentMethod: paymentMethod || "cash",
+      referenceNumber: referenceNumber?.trim(),
+      paidAt: new Date(),
+      notes: notes?.trim(),
+    });
+
+    await invoice.save();
+
+    await AuditLog.create({
+      userId,
+      action: "INVOICE_PARTIAL_PAYMENT",
+      targetId: invoice._id,
+      targetModel: "Invoice",
+      details: { amount, newBalanceDue, status: newStatus, referenceNumber }
+    });
+
+    return reply.code(200).send(
+      successResponse(
+        invoice,
+        `Payment of ₹${amount} recorded! Remaining balance due: ₹${newBalanceDue}`
+      )
+    );
+  } catch (err) {
+    console.error("recordPartialPayment error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+

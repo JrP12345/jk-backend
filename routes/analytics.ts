@@ -4,6 +4,7 @@ import {
   getExecutiveAnalytics,
   getClinicalSummaryAnalyticsController,
   exportAnalyticsReportController,
+  getNabhKpis,
 } from "../controllers/analytics.ts";
 import { getOrganizationQualityMetricsController } from "../controllers/search.ts";
 
@@ -15,6 +16,7 @@ export default async function analyticsRoutes(app: FastifyInstance) {
   // Executive & Quality Metrics Dashboard
   app.get("/api/analytics/executive", adminOnly, getExecutiveAnalytics);
   app.get("/api/analytics/quality-metrics", viewAnalytics, getOrganizationQualityMetricsController);
+  app.get("/api/analytics/nabh-kpis", auth, getNabhKpis);
 
   // Clinical Summary & Throughput Analytics
   app.get("/api/analytics/clinical-summary", auth, getClinicalSummaryAnalyticsController);

@@ -237,3 +237,97 @@ export async function updatePrescriptionRefillRequestStatus(req: FastifyRequest,
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
+
+// ─── POST /api/patient-portal/self-book ────────────────────────────────
+export async function patientSelfBookAppointment(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const userId = req.user!.id;
+    const orgId = req.user?.organization_id;
+
+    const { clinicId, doctorId, appointmentTime, appointmentType, notes, lockId } = req.body as {
+      clinicId: string;
+      doctorId: string;
+      appointmentTime: string;
+      appointmentType?: "online" | "walk-in" | "reception";
+      notes?: string;
+      lockId?: string;
+    };
+
+    if (!clinicId || !doctorId || !appointmentTime) {
+      return reply.code(400).send(errorResponse("clinicId, doctorId, and appointmentTime are required"));
+    }
+
+    // Ensure patient profile exists
+    let patient = await Patient.findOne({ userId });
+    if (!patient) {
+      patient = await Patient.create({
+        userId,
+        organizationId: orgId ? new mongoose.Types.ObjectId(orgId) : undefined,
+      });
+    }
+
+    const { validateSlotLockForBooking, forceReleaseSlotLock } = await import("../services/SlotLockService.ts");
+    const { Appointment } = await import("../models/Appointment.ts");
+    const { DoctorAssignment } = await import("../models/DoctorAssignment.ts");
+    const { getNextAtomicSequence } = await import("../models/Counter.ts");
+    const { sendBookingNotification } = await import("../utilities/notifications.ts");
+    const { AuditLog } = await import("../models/AuditLog.ts");
+
+    // Verify doctor assignment
+    const assignment = await DoctorAssignment.findOne({ doctorId, clinicId });
+    if (!assignment) {
+      return reply.code(400).send(errorResponse("Doctor is not assigned to the selected clinic"));
+    }
+
+    // Validate anti-double-booking slot lock
+    const lockValidation = await validateSlotLockForBooking(clinicId, doctorId, appointmentTime, userId, lockId);
+    if (!lockValidation.valid) {
+      return reply.code(409).send(errorResponse(lockValidation.message));
+    }
+
+    const apptDateStr = new Date(appointmentTime).toISOString().split("T")[0];
+    const counterId = `queue_${clinicId}_${doctorId}_${apptDateStr}`;
+    const tokenNumber = await getNextAtomicSequence(counterId);
+
+    const appointment = await Appointment.create({
+      patientId: patient._id,
+      doctorId,
+      clinicId,
+      appointmentTime: new Date(appointmentTime),
+      appointmentType: appointmentType || "online",
+      notes: notes?.trim(),
+      status: "confirmed",
+      tokenNumber,
+      queuePosition: tokenNumber,
+    });
+
+    if (lockValidation.lockKey) {
+      forceReleaseSlotLock(lockValidation.lockKey).catch(() => {});
+    }
+
+    sendBookingNotification(appointment._id, "booked").catch(() => {});
+
+    await AuditLog.create({
+      userId,
+      action: "PATIENT_SELF_BOOKING",
+      targetId: appointment._id,
+      targetModel: "Appointment",
+      details: { tokenNumber, appointmentTime, clinicId, doctorId }
+    });
+
+    return reply.code(201).send(
+      successResponse(
+        {
+          appointment,
+          tokenNumber,
+          queuePosition: tokenNumber,
+        },
+        `Appointment booked successfully! Your Queue Token Number is #${tokenNumber}`
+      )
+    );
+  } catch (err) {
+    console.error("patientSelfBookAppointment error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+

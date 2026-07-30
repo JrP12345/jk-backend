@@ -28,7 +28,8 @@ export const bookAppointmentSchema = {
         },
         additionalProperties: false
       },
-      followUpForAppointmentId: { type: "string", pattern: objectIdPattern }
+      followUpForAppointmentId: { type: "string", pattern: objectIdPattern },
+      lockId: { type: "string" }
     },
     additionalProperties: false
   }

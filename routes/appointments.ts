@@ -8,6 +8,10 @@ import {
   updateAppointmentStatus,
   getDoctorSlots,
   cancelAppointment,
+  lockSlot,
+  unlockSlot,
+  getSlotLockStatus,
+  rescheduleAppointment,
 } from "../controllers/appointment.ts";
 import {
   searchPatients,
@@ -30,7 +34,13 @@ export default async function appointmentRoutes(app: FastifyInstance) {
   app.get("/api/appointments/:id", auth, getAppointmentById);
   app.put("/api/appointments/:id/status", { ...auth, schema: updateAppointmentStatusSchema }, updateAppointmentStatus);
   app.put("/api/appointments/:id/cancel", auth, cancelAppointment);
+  app.patch("/api/appointments/:id/reschedule", auth, rescheduleAppointment);
   app.get("/api/doctors/:doctorId/slots", auth, getDoctorSlots);
+
+  // Slot Locking (anti-double-booking)
+  app.post("/api/appointments/lock-slot", auth, lockSlot);
+  app.delete("/api/appointments/lock-slot", auth, unlockSlot);
+  app.get("/api/appointments/slot-lock-status", auth, getSlotLockStatus);
 
   // Patients
   app.get("/api/patients", auth, searchPatients);

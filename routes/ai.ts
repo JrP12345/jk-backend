@@ -8,6 +8,10 @@ import {
   getChatSessionController,
   sendChatMessageController,
   deleteChatSessionController,
+  predictNoShowRiskController,
+  auditBillingAnomaliesController,
+  forecastInventorySupplyController,
+  extractNlpIcd10CodesController,
 } from "../controllers/ai.ts";
 import {
   queryAIGatewayController,
@@ -73,4 +77,10 @@ export default async function aiRoutes(app: FastifyInstance) {
   // Enterprise AI Admin Console REST APIs (Phase 8)
   app.get("/api/ai/admin/config", auth, getAIAdminConfigController);
   app.put("/api/ai/admin/config", auth, updateAIAdminConfigController);
+
+  // Phase 4 AI & Automation Endpoints (Modules 32 - 37)
+  app.post("/api/ai/predictive/no-show", auth, predictNoShowRiskController);
+  app.post("/api/ai/billing/audit", auth, auditBillingAnomaliesController);
+  app.get("/api/ai/inventory/forecast", auth, forecastInventorySupplyController);
+  app.post("/api/ai/nlp/icd10-extract", auth, extractNlpIcd10CodesController);
 }

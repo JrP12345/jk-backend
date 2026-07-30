@@ -32,6 +32,21 @@ import documentRoutes from "./routes/documents.ts";
 import prescriptionPrintRoutes from "./routes/prescriptionPrint.ts";
 import patientPortalRoutes from "./routes/patientPortal.ts";
 import aiRoutes from "./routes/ai.ts";
+import serviceCatalogRoutes from "./routes/serviceCatalog.ts";
+import preAuthRoutes from "./routes/preAuth.ts";
+import insuranceTariffRoutes from "./routes/insuranceTariff.ts";
+import soapTemplateRoutes from "./routes/soapTemplate.ts";
+import checkInRoutes from "./routes/checkIn.ts";
+import cdsRoutes from "./routes/cds.ts";
+import imagingRoutes from "./routes/imaging.ts";
+import otRoutes from "./routes/ot.ts";
+import bloodBankRoutes from "./routes/bloodBank.ts";
+import teleconsultationRoutes from "./routes/teleconsultation.ts";
+import facilityTransferRoutes from "./routes/facilityTransfer.ts";
+import pecRoutes from "./routes/pec.ts";
+import reportExportRoutes from "./routes/reportExport.ts";
+import ssoRoutes from "./routes/sso.ts";
+import feedbackRoutes from "./routes/feedback.ts";
 import platformGatewayRoutes from "./platform/gateway.ts";
 
 import fastifySwagger from "@fastify/swagger";
@@ -120,7 +135,7 @@ app.register(cors, {
 });
 
 app.register(rateLimit, {
-  max: 100,
+  max: process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test" ? 10000 : 500,
   timeWindow: "1 minute",
   ...(redisClient ? { redis: redisClient } : {})
 });
@@ -149,6 +164,21 @@ app.register(documentRoutes);
 app.register(prescriptionPrintRoutes);
 app.register(patientPortalRoutes);
 app.register(aiRoutes);
+app.register(serviceCatalogRoutes);
+app.register(preAuthRoutes);
+app.register(insuranceTariffRoutes);
+app.register(soapTemplateRoutes);
+app.register(checkInRoutes);
+app.register(cdsRoutes);
+app.register(imagingRoutes);
+app.register(otRoutes);
+app.register(bloodBankRoutes);
+app.register(teleconsultationRoutes);
+app.register(facilityTransferRoutes);
+app.register(pecRoutes);
+app.register(reportExportRoutes);
+app.register(ssoRoutes);
+app.register(feedbackRoutes);
 app.register(platformGatewayRoutes);
 
 // ─── Health-checks & Probes (SRE-001, SRE-002, SRE-003) ─────────

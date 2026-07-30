@@ -33,11 +33,17 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
     const decoded = verifyAccessToken(token);
     req.user = decoded;
 
-    // Set the context userId for audit logging
-    const context = requestContextStore.getStore();
-    if (context) {
-      context.userId = decoded.id;
-    }
+    // Set the context store for audit logging & tenant isolation
+    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "127.0.0.1";
+    const userAgent = req.headers["user-agent"] || "unknown";
+    const cleanIp = Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(",")[0].trim();
+
+    requestContextStore.enterWith({
+      userId: decoded.id,
+      organizationId: decoded.organization_id,
+      ipAddress: cleanIp,
+      userAgent,
+    });
   } catch {
     return reply.code(401).send({ error: "Invalid or expired token" });
   }

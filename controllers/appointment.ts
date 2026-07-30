@@ -55,7 +55,7 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
       return reply.code(400).send(errorResponse("clinicId, doctorId, appointmentTime, and appointmentType are required"));
     }
 
-    if (userRole !== "patient" && userRole !== "admin" && userRole !== "receptionist") {
+    if (userRole !== "patient" && userRole !== "admin" && userRole !== "receptionist" && userRole !== "root" && userRole !== "doctor") {
       return reply.code(403).send(errorResponse("Forbidden: role cannot book appointments"));
     }
 
@@ -379,6 +379,82 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
   }
 }
 
+// ─── Reschedule Appointment ────────────────────────────────────
+export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id } = req.params as { id: string };
+    const userId = req.user!.id;
+    const { newTime, reason, lockId } = req.body as {
+      newTime: string;
+      reason?: string;
+      lockId?: string;
+    };
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return reply.code(400).send(errorResponse("Invalid appointment ID"));
+    }
+
+    if (!newTime || isNaN(new Date(newTime).getTime())) {
+      return reply.code(400).send(errorResponse("Valid newTime is required"));
+    }
+
+    const appointment = await Appointment.findById(id);
+    if (!appointment) {
+      return reply.code(404).send(errorResponse("Appointment not found"));
+    }
+
+    if (appointment.status === "completed" || appointment.status === "cancelled") {
+      return reply.code(400).send(errorResponse(`Cannot reschedule an appointment that is already ${appointment.status}`));
+    }
+
+    const newDateObj = new Date(newTime);
+    if (newDateObj < new Date()) {
+      return reply.code(400).send(errorResponse("Cannot reschedule an appointment to a past time"));
+    }
+
+    // Validate slot lock anti-double booking
+    const lockValidation = await validateSlotLockForBooking(
+      appointment.clinicId.toString(),
+      appointment.doctorId.toString(),
+      newTime,
+      userId,
+      lockId
+    );
+    if (!lockValidation.valid) {
+      return reply.code(409).send(errorResponse(lockValidation.message));
+    }
+
+    const oldTimeStr = new Date(appointment.appointmentTime).toLocaleString();
+    appointment.appointmentTime = newDateObj;
+    appointment.status = "confirmed";
+    if (reason) {
+      appointment.notes = appointment.notes
+        ? `${appointment.notes}\n[Rescheduled from ${oldTimeStr}: ${reason}]`
+        : `[Rescheduled from ${oldTimeStr}: ${reason}]`;
+    }
+    await appointment.save();
+
+    if (lockValidation.lockKey) {
+      forceReleaseSlotLock(lockValidation.lockKey).catch(() => {});
+    }
+
+    sendBookingNotification(appointment._id, "rescheduled").catch(() => {});
+
+    await AuditLog.create({
+      userId,
+      action: "APPOINTMENT_RESCHEDULE",
+      targetId: appointment._id,
+      targetModel: "Appointment",
+      details: { oldTime: oldTimeStr, newTime, reason }
+    });
+
+    return reply.code(200).send(successResponse(appointment, `Appointment successfully rescheduled to ${newDateObj.toLocaleString()}`));
+  } catch (err) {
+    console.error("rescheduleAppointment error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
 // ─── Get Doctor Time Slot Availability ─────────────────────────
 export async function getDoctorSlots(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -390,7 +466,7 @@ export async function getDoctorSlots(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const { getDoctorAvailableSlots } = await import("../services/SlotService.ts");
-    const result = await getDoctorAvailableSlots(doctorId, clinicId, date);
+    const result = await getDoctorAvailableSlots(doctorId, clinicId, date, req.user?.id);
 
     return reply.code(200).send(successResponse(result));
   } catch (err: any) {

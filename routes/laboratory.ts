@@ -20,6 +20,7 @@ import {
   markProcessingController,
   recordResultController,
   cancelOrderController,
+  getLabTatMetrics,
 } from "../controllers/laboratory.ts";
 
 export default async function laboratoryRoutes(app: FastifyInstance) {
@@ -27,6 +28,9 @@ export default async function laboratoryRoutes(app: FastifyInstance) {
   const adminOnly = { preHandler: [authenticate, authorize("admin")] };
   const manageOrders = { preHandler: [authenticate, checkPermission("MANAGE_ORDERS")] };
   const viewEhr = { preHandler: [authenticate, checkPermission("VIEW_EHR")] };
+
+  // Turnaround Time (TAT) Analytics
+  app.get("/api/laboratory/tat-metrics", auth, getLabTatMetrics);
 
   // Lab Test Catalog CRUD
   app.post("/api/lab-tests", { ...adminOnly, schema: createLabTestSchema }, createLabTest);

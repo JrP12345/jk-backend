@@ -9,6 +9,7 @@ import {
   admitPatient,
   getAdmissions,
   dischargePatient,
+  getWardHierarchyBoard,
 } from "../controllers/admission.ts";
 import {
   compileDischargeSummaryController,
@@ -27,6 +28,7 @@ export default async function inpatientRoutes(app: FastifyInstance) {
   // Beds
   app.post("/api/beds", { ...adminOnly, schema: createBedSchema }, createBed);
   app.get("/api/beds", auth, getBeds);
+  app.get("/api/beds/hierarchy", auth, getWardHierarchyBoard);
   app.put("/api/beds/:id", adminOnly, updateBed);
   app.delete("/api/beds/:id", adminOnly, deleteBed);
 

@@ -286,3 +286,70 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
+
+// ─── Multi-Batch Pharmacy Inventory Handlers ─────────────────────
+
+export async function createMedicineBatch(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { medicineId, clinicId, batchNumber, expiryDate, quantity, purchaseCost, sellingPrice, mrp, hsnCode, gstRate } = req.body as any;
+
+    if (!medicineId || !clinicId || !batchNumber || !expiryDate || quantity === undefined || purchaseCost === undefined || sellingPrice === undefined) {
+      return reply.code(400).send(errorResponse("medicineId, clinicId, batchNumber, expiryDate, quantity, purchaseCost, and sellingPrice are required"));
+    }
+
+    const { addBatchToMedicine } = await import("../services/PharmacyInventoryService.ts");
+    const batch = await addBatchToMedicine({
+      medicineId,
+      clinicId,
+      batchNumber,
+      expiryDate,
+      quantity,
+      purchaseCost,
+      sellingPrice,
+      mrp,
+      hsnCode,
+      gstRate,
+    });
+
+    return reply.code(201).send(successResponse(batch, "Medicine batch stock added successfully"));
+  } catch (err: any) {
+    console.error("createMedicineBatch error:", err);
+    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+  }
+}
+
+export async function getMedicineBatches(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id } = req.params as { id: string };
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return reply.code(400).send(errorResponse("Invalid medicine ID"));
+    }
+
+    const { MedicineBatch } = await import("../models/MedicineBatch.ts");
+    const batches = await MedicineBatch.find({ medicineId: id }).sort({ expiryDate: 1 });
+
+    return reply.code(200).send(successResponse(batches));
+  } catch (err) {
+    console.error("getMedicineBatches error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+export async function getExpiringMedicinesController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { clinicId, days } = req.query as { clinicId?: string; days?: string };
+    if (!clinicId || !mongoose.Types.ObjectId.isValid(clinicId)) {
+      return reply.code(400).send(errorResponse("Valid clinicId is required"));
+    }
+
+    const daysThreshold = days ? parseInt(days, 10) : 30;
+    const { getExpiringBatches } = await import("../services/PharmacyInventoryService.ts");
+    const expiring = await getExpiringBatches(clinicId, daysThreshold);
+
+    return reply.code(200).send(successResponse(expiring));
+  } catch (err) {
+    console.error("getExpiringMedicinesController error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
