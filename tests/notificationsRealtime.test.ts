@@ -102,7 +102,7 @@ describe("Milestone 6: Notifications & Real-Time Event System Integration Tests"
 
     const notificationDoc = await Notification.create({
       targetUser: user._id,
-      organizationId: user.organization_id,
+      organizationId: (user as any).organization_id,
       category: "patient",
       type: "CLINICAL_ALERT",
       title: "Critical Lab Alert",

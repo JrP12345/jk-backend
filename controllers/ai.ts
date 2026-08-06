@@ -386,6 +386,9 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
 
     // 3. Execute request through Enterprise AI Gateway pipeline
     const aiResponse = await aiGateway.execute({
+      requestId: `req_${Date.now()}`,
+      userId: req.user?.id || "",
+      modelAlias: "CLINICAL_ACCURATE",
       prompt: query.trim(),
       sessionId,
       organizationId: requesterOrgId,

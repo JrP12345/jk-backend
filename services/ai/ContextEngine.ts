@@ -93,7 +93,10 @@ export class ContextEngine {
 
         let clinics = await Clinic.find(clinicFilter).select("name city").lean();
         if (clinics.length === 0) {
-          clinics = await Clinic.find({ isActive: true }).select("name city").lean();
+          // Fallback: filter by valid org IDs to exclude orphan clinics
+          const validOrgs = await Organization.find().select("_id").lean();
+          const validOrgIds = validOrgs.map((o: any) => o._id);
+          clinics = await Clinic.find({ organizationId: { $in: validOrgIds }, isActive: true }).select("name city").lean();
         }
 
         const clinicIds = clinics.map((c) => c._id);

@@ -3,6 +3,7 @@ import { SaaSPlan } from "../models/SaaSPlan.ts";
 import { Subscription } from "../models/Subscription.ts";
 import { SubscriptionPayment } from "../models/SubscriptionPayment.ts";
 import { SaaSInvoice } from "../models/SaaSInvoice.ts";
+import { Organization } from "../models/Organization.ts";
 import { subscriptionService } from "../services/billing/SubscriptionService.ts";
 import { razorpayService } from "../services/billing/RazorpayService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
@@ -207,7 +208,24 @@ export async function adminUpsertPlan(req: FastifyRequest, reply: FastifyReply) 
  */
 export async function adminGetSubscriptions(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const subscriptions = await Subscription.find({})
+    // 1. Fetch all active organizations
+    const orgs = await Organization.find({}).lean();
+    const validOrgIds = orgs.map((o: any) => o._id);
+
+    // 2. Ensure every existing organization has a valid Subscription record initialized
+    for (const org of orgs) {
+      await subscriptionService.getOrInitializeSubscription(org._id.toString());
+    }
+
+    // 3. Purge any orphan subscriptions belonging to deleted organizations
+    if (validOrgIds.length > 0) {
+      await Subscription.deleteMany({ organizationId: { $nin: validOrgIds } });
+    } else {
+      await Subscription.deleteMany({});
+    }
+
+    // 4. Return all valid subscriptions populated with organization & plan data
+    const subscriptions = await Subscription.find({ organizationId: { $in: validOrgIds } })
       .populate("organizationId", "name city email plan")
       .populate("planId")
       .sort({ createdAt: -1 })
@@ -234,10 +252,19 @@ export async function adminExtendTrial(req: FastifyRequest, reply: FastifyReply)
     }
 
     const daysToAdd = extraDays || 15;
-    const currentTrialEnd = subscription.trialEndsAt > new Date() ? subscription.trialEndsAt : new Date();
-    subscription.trialEndsAt = new Date(currentTrialEnd.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
-    subscription.currentPeriodEnd = subscription.trialEndsAt;
-    subscription.status = "trialing";
+
+    if (subscription.status === "active") {
+      const currentEnd = subscription.currentPeriodEnd > new Date() ? subscription.currentPeriodEnd : new Date();
+      subscription.currentPeriodEnd = new Date(currentEnd.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
+      // Keep active paid status intact!
+      subscription.status = "active";
+    } else {
+      const currentTrialEnd = subscription.trialEndsAt > new Date() ? subscription.trialEndsAt : new Date();
+      subscription.trialEndsAt = new Date(currentTrialEnd.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
+      subscription.currentPeriodEnd = subscription.trialEndsAt;
+      subscription.status = "trialing";
+    }
+
     await subscription.save();
 
     // Dispatch In-App Event Notification
@@ -275,9 +302,57 @@ export async function adminExtendTrial(req: FastifyRequest, reply: FastifyReply)
       }
     }
 
-    return reply.code(200).send(successResponse(subscription, `Trial extended by ${daysToAdd} days`));
+    return reply.code(200).send(successResponse(subscription, `Free trial extended by ${daysToAdd} days`));
   } catch (err: any) {
     return reply.code(500).send(errorResponse("Failed to extend trial", err.message));
+  }
+}
+
+/**
+ * Platform Admin: Override & Manually Activate Subscription (Mark as Paid)
+ */
+export async function adminActivateSubscription(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id } = req.params as { id: string };
+    const { planSlug, billingCycle = "monthly" } = (req.body || {}) as { planSlug?: string; billingCycle?: "monthly" | "annual" };
+
+    const subscription = await Subscription.findById(id);
+    if (!subscription) {
+      return reply.code(404).send(errorResponse("Subscription not found"));
+    }
+
+    let plan = await SaaSPlan.findOne({ slug: planSlug || "starter" });
+    if (!plan) {
+      plan = await SaaSPlan.findOne({ status: "active" });
+    }
+    if (!plan) throw new Error("No active plan found");
+
+    const now = new Date();
+    const periodEnd = new Date(now);
+    if (billingCycle === "annual") {
+      periodEnd.setFullYear(periodEnd.getFullYear() + 1);
+    } else {
+      periodEnd.setMonth(periodEnd.getMonth() + 1);
+    }
+
+    subscription.planId = plan._id;
+    subscription.status = "active";
+    subscription.billingCycle = billingCycle;
+    subscription.currentPeriodStart = now;
+    subscription.currentPeriodEnd = periodEnd;
+    await subscription.save();
+
+    // Sync Organization limits
+    await Organization.findByIdAndUpdate(subscription.organizationId, {
+      plan: plan.slug,
+      maxClinics: plan.limits?.maxClinics ?? 1,
+      maxDoctors: plan.limits?.maxDoctors ?? 2,
+      maxStaff: plan.limits?.maxStaff ?? 5,
+    });
+
+    return reply.code(200).send(successResponse(subscription, "Subscription activated successfully as paid"));
+  } catch (err: any) {
+    return reply.code(500).send(errorResponse("Failed to activate subscription", err.message));
   }
 }
 

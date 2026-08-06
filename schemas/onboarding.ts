@@ -1,5 +1,6 @@
 const objectIdPattern = "^[0-9a-fA-F]{24}$";
 const emailPattern = "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$";
+const optionalEmailPattern = "^(|[^@\\s]+@[^@\\s]+\\.[^@\\s]+)$";
 
 export const createOrganizationSchema = {
   body: {
@@ -10,7 +11,7 @@ export const createOrganizationSchema = {
       city: { type: "string", minLength: 1 },
       address: { type: "string" },
       org_phone: { type: "string" },
-      org_email: { type: "string", pattern: emailPattern },
+      org_email: { type: "string" },
       description: { type: "string" },
       image_url: { type: "string" },
       timings: { type: "string" },
@@ -28,6 +29,11 @@ export const createOrganizationSchema = {
       maxClinics: { type: "number" },
       maxDoctors: { type: "number" },
       maxStaff: { type: "number" },
+      taxId: { type: "string" },
+      licenseNumber: { type: "string" },
+      currency: { type: "string", enum: ["INR", "USD", "EUR", "GBP", "AED"] },
+      timezone: { type: "string" },
+      sendWelcomeEmail: { type: "boolean" },
     },
     additionalProperties: false
   }
@@ -89,15 +95,22 @@ export const createClinicSchema = {
     type: "object",
     required: ["name", "city"],
     properties: {
+      organizationId: { type: "string" },
       name: { type: "string", minLength: 1 },
       city: { type: "string", minLength: 1 },
       address: { type: "string" },
       phone: { type: "string" },
-      email: { type: "string", pattern: emailPattern },
+      email: { type: "string" },
       timings: { type: "string" },
-      workingDays: { type: "string" }
+      workingDays: { type: "string" },
+      facilities: { type: "array", items: { type: "string" } },
+      image_url: { type: "string" },
+      logo: { type: "string" },
+      description: { type: "string" },
+      latitude: { type: "number" },
+      longitude: { type: "number" }
     },
-    additionalProperties: false
+    additionalProperties: true
   }
 };
 

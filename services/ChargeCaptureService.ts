@@ -95,8 +95,8 @@ export async function compileEncounterCharges(encounterId: string): Promise<{
   const admission = await Admission.findOne({ patientId, status: { $in: ["admitted", "discharged"] } }).populate("bedId");
   if (admission && admission.bedId) {
     const bed = admission.bedId as any;
-    const admitDate = new Date(admission.admittedAt);
-    const dischargeDate = admission.dischargedAt ? new Date(admission.dischargedAt) : new Date();
+    const admitDate = new Date((admission as any).admittedAt || (admission as any).admissionDate || (admission as any).createdAt);
+    const dischargeDate = (admission as any).dischargedAt || (admission as any).dischargeDate ? new Date((admission as any).dischargedAt || (admission as any).dischargeDate) : new Date();
     const days = Math.max(1, Math.ceil((dischargeDate.getTime() - admitDate.getTime()) / (1000 * 3600 * 24)));
 
     items.push({

@@ -11,11 +11,11 @@ import type { FastifyRequest } from "fastify";
  * accepted here; silently accepting it was the source of random-tenant
  * records in several operational controllers.
  */
-export function getRequestOrganizationId(req: FastifyRequest): string | null {
+export function getRequestOrganizationId(req: FastifyRequest): string | undefined {
   const organizationId = req.user?.organization_id;
   return organizationId && mongoose.Types.ObjectId.isValid(organizationId)
     ? organizationId
-    : null;
+    : undefined;
 }
 
 export function isRootRequest(req: FastifyRequest): boolean {
@@ -23,8 +23,8 @@ export function isRootRequest(req: FastifyRequest): boolean {
 }
 
 export type TenantCheck =
-  | { allowed: true; organizationId: string | null }
-  | { allowed: false; statusCode: 400 | 403; message: string };
+  | { allowed: true; organizationId: string | undefined }
+  | { allowed: false; statusCode: 400 | 403 | 404; message: string };
 
 /**
  * Verify that a clinic belongs to the caller's active organization.

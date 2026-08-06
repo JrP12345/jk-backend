@@ -46,7 +46,7 @@ export async function createSurgicalBooking(req: FastifyRequest, reply: FastifyR
     // Overlapping booking check for OT room and Lead Surgeon
     const overlappingBooking = await SurgicalBooking.findOne({
       clinicId,
-      status: { $in: ["scheduled", "in_surgery", "pre_op_prep"] },
+      status: { $in: ["scheduled", "in_progress"] },
       $or: [
         { theatreName: theatreName.trim() },
         { leadSurgeonId }

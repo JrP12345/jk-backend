@@ -1,6 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { Clinic } from "../models/Clinic.ts";
+import { Organization } from "../models/Organization.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { Bed } from "../models/Bed.ts";
 import { Medicine } from "../models/Medicine.ts";
@@ -23,7 +24,9 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
     // 1. Resolve Clinics under organization scope
     let clinics = orgId ? await Clinic.find({ organizationId: orgId, isActive: true }) : [];
     if (clinics.length === 0 && req.user?.role === "root") {
-      clinics = await Clinic.find({ isActive: true });
+      const activeOrgs = await Organization.find().select("_id").lean();
+      const activeOrgIds = activeOrgs.map((o: any) => o._id);
+      clinics = await Clinic.find({ organizationId: { $in: activeOrgIds }, isActive: true });
     }
     const clinicIds = clinics.map((c) => c._id);
 
@@ -247,7 +250,9 @@ export async function getNabhKpis(req: FastifyRequest, reply: FastifyReply) {
 
     let clinics = orgId ? await Clinic.find({ organizationId: orgId, isActive: true }) : [];
     if (clinics.length === 0 && req.user?.role === "root") {
-      clinics = await Clinic.find({ isActive: true });
+      const rootOrgs = await Organization.find().select("_id").lean();
+      const rootOrgIds = rootOrgs.map((o: any) => o._id);
+      clinics = await Clinic.find({ organizationId: { $in: rootOrgIds }, isActive: true });
     }
     const clinicIds = clinics.map((c) => c._id);
 
@@ -342,7 +347,9 @@ export async function getClinicalSummaryAnalyticsController(req: FastifyRequest,
     const orgId = req.user?.organization_id;
     let clinics = orgId ? await Clinic.find({ organizationId: orgId, isActive: true }) : [];
     if (clinics.length === 0 && req.user?.role === "root") {
-      clinics = await Clinic.find({ isActive: true });
+      const rootOrgs = await Organization.find().select("_id").lean();
+      const rootOrgIds = rootOrgs.map((o: any) => o._id);
+      clinics = await Clinic.find({ organizationId: { $in: rootOrgIds }, isActive: true });
     }
     const clinicIds = clinics.map((c) => c._id);
 
@@ -377,7 +384,14 @@ export async function exportAnalyticsReportController(req: FastifyRequest, reply
     const format = (req.query as any)?.format || "json";
     const reportType = (req.query as any)?.reportType || "executive";
 
-    const clinics = orgId ? await Clinic.find({ organizationId: orgId, isActive: true }).select("_id") : (req.user?.role === "root" ? await Clinic.find({ isActive: true }).select("_id") : []);
+    let rootOrgIds: any[] = [];
+    if (!orgId && req.user?.role === "root") {
+      const rootOrgs = await Organization.find().select("_id").lean();
+      rootOrgIds = rootOrgs.map((o: any) => o._id);
+    }
+    const clinics = orgId
+      ? await Clinic.find({ organizationId: orgId, isActive: true }).select("_id")
+      : (req.user?.role === "root" ? await Clinic.find({ organizationId: { $in: rootOrgIds }, isActive: true }).select("_id") : []);
     const clinicIds = clinics.map((clinic) => clinic._id);
     const clinicFilter = { clinicId: { $in: clinicIds } };
     const [invoiceCount, appointmentCount, encounterCount, claimCount] = await Promise.all([

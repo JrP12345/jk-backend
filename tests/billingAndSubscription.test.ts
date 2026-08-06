@@ -113,9 +113,9 @@ describe("Commercial SaaS Billing & Subscription Engine", () => {
     );
 
     expect(result.success).toBe(true);
-    expect(result.subscription.status).toBe("active");
+    expect(result.subscription?.status).toBe("active");
     expect(result.invoice).toBeDefined();
-    expect(result.invoice.invoiceNumber).toContain("SAAS-");
+    expect(result.invoice?.invoiceNumber).toContain("SAAS-");
 
     // Check organization limits updated
     const updatedOrg = await Organization.findById(org._id);

@@ -136,10 +136,9 @@ export async function approveAndExecuteToolController(req: FastifyRequest, reply
             clinicId: input.clinicId,
             patientId: input.patientId,
             doctorId: req.user.id,
-            type: "outpatient",
-            status: "in-progress",
+            status: "in_progress",
             startedAt: new Date(),
-          });
+          } as any);
           encounterId = newEncounter._id;
         }
       }

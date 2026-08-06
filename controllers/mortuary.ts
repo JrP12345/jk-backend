@@ -103,7 +103,7 @@ export async function createMortuaryEntry(req: FastifyRequest, reply: FastifyRep
     const certNum = deathCertificateNumber || `DC-2026-${Date.now().toString().slice(-5)}`;
 
     const newEntry = await MortuaryEntry.create({
-      organizationId: scope.organizationId,
+      organizationId: scope.organizationId || undefined,
       clinicId: new mongoose.Types.ObjectId(targetClinicId),
       tagNumber: generatedTag,
       deceasedName,

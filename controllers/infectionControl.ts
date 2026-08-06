@@ -94,7 +94,7 @@ export async function createInfectionIncident(req: FastifyRequest, reply: Fastif
     }
 
     const incident = await InfectionControl.create({
-      organizationId: scope.organizationId,
+      organizationId: scope.organizationId || undefined,
       clinicId: new mongoose.Types.ObjectId(targetClinicId),
       patientId: patientId && mongoose.Types.ObjectId.isValid(patientId) ? new mongoose.Types.ObjectId(patientId) : undefined,
       patientName: patientName.trim(),

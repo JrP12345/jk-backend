@@ -76,8 +76,8 @@ export async function processSelfCheckInQr(req: FastifyRequest, reply: FastifyRe
 
     // Publish event for real-time queue update
     eventBus.publish({
-      eventType: EVENT_TYPES.QUEUE_UPDATED,
-      category: "queue",
+      eventType: EVENT_TYPES.PATIENT_APPOINTMENT_CHECKED_IN,
+      category: "patient",
       targetUserId: appointment.doctorId?._id?.toString() || "",
       title: "Patient Self Checked-In",
       message: `${appointment.patientId?.userId?.name || "Patient"} (Token #${appointment.tokenNumber}) checked in via QR Kiosk.`,

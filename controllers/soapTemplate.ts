@@ -46,7 +46,7 @@ export async function createSoapTemplate(req: FastifyRequest, reply: FastifyRepl
       assessment: assessment || "",
       plan: plan || "",
       createdBy: userId,
-      organizationId: orgId || null,
+      organizationId: orgId || undefined,
       isPublic: isPublic !== undefined ? isPublic : true,
     });
 

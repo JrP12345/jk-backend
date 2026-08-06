@@ -22,6 +22,8 @@ import { Department } from "../models/Department.ts";
 import { RefreshToken } from "../models/RefreshToken.ts";
 import { PendingTwoFactorSetup } from "../models/PendingTwoFactorSetup.ts";
 import { OnboardingDraft } from "../models/OnboardingDraft.ts";
+import { Subscription } from "../models/Subscription.ts";
+import { SubscriptionPayment } from "../models/SubscriptionPayment.ts";
 import { TwoFactorService } from "../services/TwoFactorService.ts";
 import { emailProvider } from "../notifications/providers/emailProvider.ts";
 import { validatePasswordStrength } from "../middleware/auth.ts";
@@ -164,19 +166,18 @@ export const FAMILY_MEMBER_PERMISSIONS = [
 // ─── Step 1: Create Organization + Admin ────────────────────────
 export async function createOrganization(req: FastifyRequest, reply: FastifyReply) {
   try {
-    // ── Security Gate: Dev-Only ───────────────────────────────────
-    // Onboarding (creating a new org) is only allowed in development.
-    // In production this endpoint is fully disabled — no exceptions.
-    if (process.env.NODE_ENV === "production") {
-      return reply.code(403).send(errorResponse("Forbidden: onboarding is disabled in production"));
-    }
-
     // ── Security Gate: Onboarding Secret / Root Admin ─────────────
     let userRole = (req as any).user?.role;
     if (!userRole) {
-      const token =
+      let token =
         req.cookies?.access_token ||
         (req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.split(" ")[1] : undefined);
+
+      if (!token && req.headers.cookie) {
+        const match = req.headers.cookie.match(/access_token=([^;]+)/);
+        if (match) token = decodeURIComponent(match[1]);
+      }
+
       if (token) {
         try {
           const decoded = verifyAccessToken(token);
@@ -192,7 +193,11 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
     const providedSecret = (req.headers["x-onboarding-secret"] as string) || "";
     const expectedSecret = process.env.ONBOARDING_SECRET?.trim();
 
-    if (!isRootUser && (!expectedSecret || providedSecret !== expectedSecret) && process.env.NODE_ENV !== "test") {
+    if (!isRootUser && process.env.NODE_ENV === "production") {
+      return reply.code(403).send(errorResponse("Forbidden: public self-service onboarding is disabled in production"));
+    }
+
+    if (!isRootUser && expectedSecret && providedSecret !== expectedSecret && process.env.NODE_ENV !== "test") {
       return reply.code(403).send(errorResponse("Forbidden: invalid onboarding key"));
     }
 
@@ -200,15 +205,25 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
       org_name, city, address, org_phone, org_email, description, image_url, timings, working_days,
       admin_name, admin_email, admin_password, admin_phone,
       clinic_name, clinic_city, clinic_address, clinic_phone, clinic_email,
+      taxId, licenseNumber, currency, timezone, sendWelcomeEmail,
     } = req.body as {
       org_name: string; city: string; address?: string; org_phone?: string; org_email?: string;
       description?: string; image_url?: string; timings?: string; working_days?: string;
       admin_name: string; admin_email: string; admin_password: string; admin_phone?: string;
       clinic_name?: string; clinic_city?: string; clinic_address?: string; clinic_phone?: string; clinic_email?: string;
+      taxId?: string; licenseNumber?: string; currency?: string; timezone?: string; sendWelcomeEmail?: boolean;
     };
 
     if (!org_name || !city || !admin_name || !admin_email) {
       return reply.code(400).send(errorResponse("org_name, city, admin_name, and admin_email are required"));
+    }
+
+    const existingOrg = await Organization.findOne({
+      name: new RegExp(`^${org_name.trim()}$`, "i"),
+      city: new RegExp(`^${city.trim()}$`, "i"),
+    });
+    if (existingOrg) {
+      return reply.code(409).send(errorResponse(`An organization named "${org_name.trim()}" already exists in ${city.trim()}`));
     }
 
     return await withTransaction(async (session) => {
@@ -242,6 +257,10 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
         maxClinics,
         maxDoctors,
         maxStaff,
+        taxId: taxId?.trim() || undefined,
+        licenseNumber: licenseNumber?.trim() || undefined,
+        currency: currency || "INR",
+        timezone: timezone || "Asia/Kolkata",
         onboardingStatus: "CLINIC_CREATED",
         isOnboarded: false,
       }, session);
@@ -258,28 +277,26 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
       let emailQuery = User.findOne({ email: admin_email.trim().toLowerCase() });
       if (emailQuery && session) emailQuery = emailQuery.session(session);
       const emailTaken = emailQuery ? await emailQuery : null;
-      let adminUser = emailTaken;
-      if (adminUser && adminUser._id.toString() === rootUser?._id.toString() && !isRootUser) {
-        return reply.code(409).send(errorResponse("Administrator email is already registered; provide a unique administrator email"));
+
+      if (emailTaken) {
+        return reply.code(409).send(errorResponse("Administrator email is already registered; provide a unique administrator email for this organization"));
       }
-      if (adminUser && adminUser._id.toString() !== rootUser?._id.toString()) {
-        return reply.code(409).send(errorResponse("Administrator email is already registered; provide a unique administrator email"));
+
+      if (!admin_password) {
+        return reply.code(400).send(errorResponse("admin_password is required for a new organization administrator"));
       }
-      if (!adminUser) {
-        if (!admin_password) return reply.code(400).send(errorResponse("admin_password is required for a new organization administrator"));
-        const strength = validatePasswordStrength(admin_password);
-        if (!strength.valid) {
-          return reply.code(400).send(errorResponse(strength.reason || "Password does not meet complexity requirements"));
-        }
-        const hashedAdminPassword = await bcrypt.hash(admin_password, 10);
-        adminUser = await createWithSession(User, {
-          name: admin_name,
-          email: admin_email.trim().toLowerCase(),
-          password: hashedAdminPassword,
-          phone: admin_phone || null,
-          role: "admin",
-        }, session);
+      const strength = validatePasswordStrength(admin_password);
+      if (!strength.valid) {
+        return reply.code(400).send(errorResponse(strength.reason || "Password does not meet complexity requirements"));
       }
+      const hashedAdminPassword = await bcrypt.hash(admin_password, 10);
+      const adminUser = await createWithSession(User, {
+        name: admin_name,
+        email: admin_email.trim().toLowerCase(),
+        password: hashedAdminPassword,
+        phone: admin_phone || null,
+        role: "admin",
+      }, session);
 
       if (!adminUser) {
         return reply.code(500).send(errorResponse("Failed to initialize administrator user"));
@@ -339,6 +356,16 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
         organizationId: orgIdStr,
         actionUrl: "/dashboard",
       });
+
+      if (sendWelcomeEmail !== false && admin_email && admin_password) {
+        const portalUrl = `${process.env.CORS_ALLOWED_ORIGINS || "http://localhost:3000"}/login`;
+        emailProvider.sendEmail({
+          to: admin_email.trim().toLowerCase(),
+          subject: `Welcome to ANANTA - ${org_name} Workspace Provisioned`,
+          text: `Hello ${admin_name},\n\nYour organization workspace (${org_name}) has been provisioned on ANANTA Healthcare OS.\n\nLogin Portal: ${portalUrl}\nEmail: ${admin_email}\nPassword: ${admin_password}\n\nPlease sign in to configure your clinical staff and operational settings.`,
+          html: `<p>Hello <strong>${admin_name}</strong>,</p><p>Your organization workspace (<strong>${org_name}</strong>) has been provisioned on ANANTA Healthcare OS.</p><ul><li><strong>Login Portal:</strong> <a href="${portalUrl}">${portalUrl}</a></li><li><strong>Email:</strong> ${admin_email}</li><li><strong>Password:</strong> ${admin_password}</li></ul><p>Please sign in to configure your clinical staff and operational settings.</p>`,
+        }).catch((e) => console.error("Welcome email send error:", e));
+      }
 
       return reply.code(201).send(
         successResponse(
@@ -434,8 +461,10 @@ export async function deleteOrganizationById(req: FastifyRequest, reply: Fastify
       return reply.code(404).send(errorResponse("Organization not found"));
     }
 
-    // 1. Find all Clinics belonging to this Organization
-    const clinics = await Clinic.find({ organization_id: id }).select("_id").lean();
+    // 1. Find all Clinics belonging to this Organization (checking both camelCase & snake_case)
+    const clinics = await Clinic.find({
+      $or: [{ organizationId: id }, { organization_id: id }]
+    }).select("_id").lean();
     const clinicIds = clinics.map(c => c._id);
 
     // 2. Find all OrgMembers belonging to this Organization
@@ -471,8 +500,12 @@ export async function deleteOrganizationById(req: FastifyRequest, reply: Fastify
       PendingTwoFactorSetup.deleteMany({ userId: { $in: memberUserIds } }),
       OnboardingDraft.deleteMany({ organizationId: id }),
 
+      // Commercial SaaS Subscriptions
+      Subscription.deleteMany({ organizationId: id }),
+      SubscriptionPayment.deleteMany({ organizationId: id }),
+
       // Clinics belonging to this organization
-      Clinic.deleteMany({ organization_id: id }),
+      Clinic.deleteMany({ $or: [{ organizationId: id }, { organization_id: id }] }),
     ]);
 
     // 4. Delete linked User accounts (Safely preserve Root Admin users)
@@ -486,6 +519,14 @@ export async function deleteOrganizationById(req: FastifyRequest, reply: Fastify
 
     // 5. Delete the Organization record itself
     await Organization.findByIdAndDelete(id);
+
+    // 6. Self-healing cleanup: Delete any orphan clinics & subscriptions whose organization no longer exists
+    const activeOrgs = await Organization.find().select("_id").lean();
+    const activeOrgIds = activeOrgs.map((o) => o._id);
+    await Promise.all([
+      Clinic.deleteMany({ organizationId: { $nin: activeOrgIds } }),
+      Subscription.deleteMany({ organizationId: { $nin: activeOrgIds } }),
+    ]);
 
     return reply.send(successResponse({ id, name: org.name }, "Organization and all cascading clinic/staff/clinical resources cleanly deleted"));
   } catch (err: any) {

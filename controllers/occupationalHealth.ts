@@ -99,7 +99,7 @@ export async function createOccupationalRecord(req: FastifyRequest, reply: Fasti
     const generatedEmpId = employeeId || `EMP-${Date.now().toString().slice(-5)}`;
 
     const newRecord = await OccupationalHealthRecord.create({
-      organizationId: scope.organizationId,
+      organizationId: scope.organizationId || undefined,
       clinicId: new mongoose.Types.ObjectId(targetClinicId),
       employeeId: generatedEmpId,
       employeeName,

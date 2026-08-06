@@ -248,7 +248,7 @@ export async function admitPatient(req: FastifyRequest, reply: FastifyReply) {
             organizationId: clinicAccess.organizationId || undefined,
             status: "admitted",
             notes: notes || ""
-          }
+          } as any
         ],
         option
       );

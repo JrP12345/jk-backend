@@ -134,7 +134,7 @@ export async function createHomeRPMRecord(req: FastifyRequest, reply: FastifyRep
         },
       } : {}),
       nurseVisitStatus: "scheduled",
-      vitalAlertSeverity: severity,
+      vitalAlertSeverity: (severity as any) || "normal",
       address: address.trim(),
       notes: notes || "",
     });

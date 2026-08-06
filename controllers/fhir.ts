@@ -60,7 +60,7 @@ export async function getFhirObservationResource(req: FastifyRequest, reply: Fas
             organizationId: obsDoc.organizationId,
             code: obsDoc.code === "SPO2" ? "59408-5" : undefined,
             createdAt: obsDoc.recordedAt || obsDoc.createdAt,
-            vitals: obsDoc.vitals || {},
+            vitals: (obsDoc as any).vitals || {},
             value: obsDoc.value,
             unit: obsDoc.unit,
           };

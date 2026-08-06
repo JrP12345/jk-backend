@@ -14,6 +14,10 @@ const OrganizationSchema = new Schema({
   maxClinics: { type: Number, default: 1 },
   maxDoctors: { type: Number, default: 2 },
   maxStaff: { type: Number, default: 2 },
+  taxId: { type: String }, // GSTIN / EIN
+  licenseNumber: { type: String }, // Hospital Operating License No.
+  currency: { type: String, enum: ["INR", "USD", "EUR", "GBP", "AED"], default: "INR" },
+  timezone: { type: String, default: "Asia/Kolkata" },
   onboardingStatus: {
     type: String,
     enum: ["NOT_STARTED", "ORGANIZATION_CREATED", "ADMIN_CREATED", "CLINIC_CREATED", "TWO_FACTOR_PENDING", "COMPLETED"],

@@ -2,6 +2,7 @@ import mongoose, { Schema, Document } from "mongoose";
 import { auditPlugin } from "../utilities/auditPlugin.ts";
 
 export interface IPreAuthorization extends Document {
+  organizationId: mongoose.Types.ObjectId;
   preAuthNumber: string;
   patientId: mongoose.Types.ObjectId;
   clinicId: mongoose.Types.ObjectId;

@@ -29,6 +29,7 @@ import {
   adminUpsertPlan,
   adminGetSubscriptions,
   adminExtendTrial,
+  adminActivateSubscription,
   adminRefundPayment,
   adminGetRazorpayConfig,
   adminSaveRazorpayConfig,
@@ -60,6 +61,7 @@ export default async function billingRoutes(app: FastifyInstance) {
   app.post("/api/admin/billing/plans", rootAdminAuth, adminUpsertPlan);
   app.get("/api/admin/billing/subscriptions", rootAdminAuth, adminGetSubscriptions);
   app.post("/api/admin/billing/subscriptions/:id/extend-trial", rootAdminAuth, adminExtendTrial);
+  app.post("/api/admin/billing/subscriptions/:id/activate", rootAdminAuth, adminActivateSubscription);
   app.post("/api/admin/billing/payments/:paymentId/refund", rootAdminAuth, adminRefundPayment);
   app.get("/api/admin/billing/razorpay-config", rootAdminAuth, adminGetRazorpayConfig);
   app.post("/api/admin/billing/razorpay-config", rootAdminAuth, adminSaveRazorpayConfig);

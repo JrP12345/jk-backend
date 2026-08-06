@@ -18,6 +18,7 @@ export interface RazorpayOrderResponse {
   receipt: string;
   status: string;
   attempts: number;
+  notes?: Record<string, string>;
   created_at: number;
 }
 

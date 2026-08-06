@@ -644,7 +644,7 @@ export async function placeOrderController(req: FastifyRequest, reply: FastifyRe
     }
 
     const { order, test } = await OrdersService.placeOrder({
-      organizationId: clinicAccess.organizationId || orgId || undefined,
+      organizationId: (clinicAccess.organizationId || orgId || "") as string,
       clinicId,
       encounterId,
       patientId,

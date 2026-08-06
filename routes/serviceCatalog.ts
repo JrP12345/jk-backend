@@ -11,7 +11,7 @@ import {
 
 export default async function serviceCatalogRoutes(app: FastifyInstance) {
   const auth = { preHandler: [authenticate] };
-  const staffAuth = { preHandler: [authenticate, authorize(["admin", "root", "receptionist", "cashier"])] };
+  const staffAuth = { preHandler: [authenticate, authorize("admin", "root", "receptionist", "cashier")] };
 
   app.get("/api/service-catalog", auth, getServices);
   app.get("/api/service-catalog/:id", auth, getServiceById);

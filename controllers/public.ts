@@ -67,7 +67,17 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
       search?: string; city?: string; specialization?: string;
     };
 
-    const filter: any = { isActive: true };
+    // Filter out orphan clinics belonging to deleted organizations
+    const activeOrgs = await Organization.find({ isActive: true }).select("_id").lean();
+    const activeOrgIds = activeOrgs.map((o) => o._id);
+
+    const filter: any = {
+      $or: [
+        { organizationId: { $in: activeOrgIds } },
+        { organization_id: { $in: activeOrgIds } }
+      ],
+      isActive: true,
+    };
 
     if (city) {
       filter.city = { $regex: new RegExp(escapeRegex(city), "i") };

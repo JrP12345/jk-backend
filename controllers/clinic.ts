@@ -6,25 +6,32 @@ import { successResponse, errorResponse } from "../utilities/helpers.ts";
 
 export async function createClinic(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user!.organization_id;
-    if (!orgId) return reply.code(400).send(errorResponse("You are not linked to any organization"));
-
-    // Check SaaS Clinic Quota Limit
-    const org = await Organization.findById(orgId);
-    if (org && org.maxClinics) {
-      const existingCount = await Clinic.countDocuments({ organizationId: orgId, isActive: true });
-      if (existingCount >= org.maxClinics && req.user?.role !== "root") {
-        return reply.code(403).send(errorResponse(`Clinic branch quota limit of ${org.maxClinics} reached for your ${org.plan?.toUpperCase() || "current"} plan. Upgrade subscription to add more clinics.`));
-      }
-    }
-
     const {
-      name, logo, description, phone, email, address, city, latitude, longitude, timings, facilities
-    } = req.body as {
-      name: string; city: string; logo?: string; description?: string;
+      organizationId: reqOrgId, name, logo, description, phone, email, address, city, latitude, longitude, timings, facilities
+    } = (req.body || {}) as {
+      organizationId?: string; name: string; city: string; logo?: string; description?: string;
       phone?: string; email?: string; address?: string; latitude?: number;
       longitude?: number; timings?: string; facilities?: string[];
     };
+
+    let orgId = reqOrgId || req.user!.organization_id;
+    if (!orgId && req.user?.role === "root") {
+      const firstOrg = await Organization.findOne().select("_id").lean();
+      if (firstOrg) orgId = firstOrg._id.toString();
+    }
+
+    if (!orgId) return reply.code(400).send(errorResponse("Organization context is required to create a clinic branch"));
+
+    // Check SaaS Clinic Quota Limit
+    const org = await Organization.findById(orgId);
+    if (!org) return reply.code(404).send(errorResponse("Target organization not found"));
+
+    if (org.maxClinics) {
+      const existingCount = await Clinic.countDocuments({ organizationId: orgId, isActive: true });
+      if (existingCount >= org.maxClinics && req.user?.role !== "root") {
+        return reply.code(403).send(errorResponse(`Clinic branch quota limit of ${org.maxClinics} reached for ${org.name}'s ${org.plan?.toUpperCase() || "current"} plan. Upgrade subscription to add more clinic branches.`));
+      }
+    }
 
     if (!name || !city) {
       return reply.code(400).send(errorResponse("Clinic name and city are required"));
@@ -57,7 +64,9 @@ export async function getClinics(req: FastifyRequest, reply: FastifyReply) {
     const orgId = req.user!.organization_id;
     if (!orgId) {
       if (req.user?.role === "root") {
-        const clinics = await Clinic.find({ isActive: true }).limit(20).sort({ name: 1 });
+        const activeOrgs = await Organization.find().select("_id").lean();
+        const activeOrgIds = activeOrgs.map((o) => o._id);
+        const clinics = await Clinic.find({ organizationId: { $in: activeOrgIds }, isActive: true }).limit(20).sort({ name: 1 });
         return reply.code(200).send(successResponse(clinics));
       }
       return reply.code(200).send(successResponse([]));
@@ -73,7 +82,6 @@ export async function getClinics(req: FastifyRequest, reply: FastifyReply) {
 
 export async function updateClinic(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user!.organization_id;
     const { id } = req.params as { id: string };
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -81,14 +89,19 @@ export async function updateClinic(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const {
-      name, logo, description, phone, email, address, city, latitude, longitude, timings, facilities
+      name, logo, image_url, description, phone, email, address, city, latitude, longitude, timings, facilities
     } = req.body as any;
 
     if (!name || !city) {
       return reply.code(400).send(errorResponse("Clinic name and city are required"));
     }
 
-    const clinic = await Clinic.findOne({ _id: id, organizationId: orgId, isActive: true });
+    const filter: any = { _id: id, isActive: true };
+    if (req.user?.role !== "root") {
+      filter.organizationId = req.user!.organization_id;
+    }
+
+    const clinic = await Clinic.findOne(filter);
     if (!clinic) {
       return reply.code(404).send(errorResponse("Clinic not found in your organization"));
     }
@@ -97,7 +110,7 @@ export async function updateClinic(req: FastifyRequest, reply: FastifyReply) {
       id,
       {
         name,
-        logo: logo || null,
+        logo: logo || image_url || null,
         description: description || null,
         phone: phone || null,
         email: email || null,
@@ -120,14 +133,18 @@ export async function updateClinic(req: FastifyRequest, reply: FastifyReply) {
 
 export async function deleteClinic(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user!.organization_id;
     const { id } = req.params as { id: string };
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return reply.code(400).send(errorResponse("Invalid clinic ID"));
     }
 
-    const clinic = await Clinic.findOne({ _id: id, organizationId: orgId, isActive: true });
+    const filter: any = { _id: id, isActive: true };
+    if (req.user?.role !== "root") {
+      filter.organizationId = req.user!.organization_id;
+    }
+
+    const clinic = await Clinic.findOne(filter);
     if (!clinic) {
       return reply.code(404).send(errorResponse("Clinic not found in your organization"));
     }

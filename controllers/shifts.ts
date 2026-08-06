@@ -113,7 +113,7 @@ export async function createShift(req: FastifyRequest, reply: FastifyReply) {
     const assignedStaffId = staffId && mongoose.Types.ObjectId.isValid(staffId) ? staffId : user?.id || user?._id;
 
     const shift = await ShiftRoster.create({
-      organizationId: scope.organizationId,
+      organizationId: scope.organizationId || undefined,
       clinicId: new mongoose.Types.ObjectId(targetClinicId),
       departmentId: departmentId && mongoose.Types.ObjectId.isValid(departmentId) ? new mongoose.Types.ObjectId(departmentId) : undefined,
       staffId: assignedStaffId,

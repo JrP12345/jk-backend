@@ -29,7 +29,7 @@ export class InboundPipeline {
    */
   static async process(
     request: AIRequest,
-    samplePatientData?: Array<{ name?: string; mrn?: string; email?: string }>,
+    samplePatientData?: Array<{ name?: string; mrn?: string; email?: string; phone?: string }>,
     extraContextInput?: { currentRoute?: string; activePatientId?: string; userRole?: string }
   ): Promise<InboundPipelineContext> {
     // 1. Validation

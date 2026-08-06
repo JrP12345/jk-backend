@@ -96,7 +96,7 @@ export async function createTransplantCase(req: FastifyRequest, reply: FastifyRe
     const generatedCaseNum = caseNumber || `TXP-${Date.now().toString().slice(-6)}`;
 
     const newCase = await TransplantCase.create({
-      organizationId: scope.organizationId,
+      organizationId: scope.organizationId || undefined,
       clinicId: new mongoose.Types.ObjectId(targetClinicId),
       caseNumber: generatedCaseNum,
       patientName,
