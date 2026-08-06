@@ -132,9 +132,22 @@ export async function deleteClinic(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(404).send(errorResponse("Clinic not found in your organization"));
     }
 
+    const { Appointment } = await import("../models/Appointment.ts");
+    const activeApptsCount = await Appointment.countDocuments({
+      clinicId: id,
+      status: { $in: ["pending", "confirmed", "checked-in", "in-consultation"] }
+    });
+
+    if (activeApptsCount > 0) {
+      return reply.code(400).send(errorResponse(`Cannot deactivate clinic branch with ${activeApptsCount} active appointment(s). Please reassign or cancel them first.`));
+    }
+
     await Clinic.updateOne({ _id: id }, { isActive: false });
 
-    return reply.code(200).send(successResponse(null, "Clinic deactivated successfully"));
+    const { DoctorAssignment } = await import("../models/DoctorAssignment.ts");
+    await DoctorAssignment.updateMany({ clinicId: id }, { isActive: false });
+
+    return reply.code(200).send(successResponse(null, "Clinic branch deactivated successfully"));
   } catch (err) {
     console.error("deleteClinic error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));

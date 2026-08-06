@@ -4,6 +4,9 @@ import { BloodBankUnit } from "../models/BloodBankUnit.ts";
 import { Patient } from "../models/Patient.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
+import { checkClinicAccess, checkOperationalRecordAccess, getRequestClinicIds } from "../utilities/tenant.ts";
+import { checkPatientAccess } from "../utilities/tenant.ts";
+import { createWithSession, withTransaction } from "../utilities/transaction.ts";
 
 export async function registerBloodUnit(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -20,6 +23,9 @@ export async function registerBloodUnit(req: FastifyRequest, reply: FastifyReply
     if (!unitNumber || !clinicId || !bloodGroup || !volumeMl || !expiryDate) {
       return reply.code(400).send(errorResponse("unitNumber, clinicId, bloodGroup, volumeMl, and expiryDate are required"));
     }
+
+    const scope = await checkClinicAccess(req, clinicId);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
 
     const unit = await BloodBankUnit.create({
       unitNumber: unitNumber.trim(),
@@ -52,7 +58,13 @@ export async function getBloodUnits(req: FastifyRequest, reply: FastifyReply) {
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
 
     const filter: any = {};
-    if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) filter.clinicId = clinicId;
+    if (clinicId) {
+      const scope = await checkClinicAccess(req, clinicId);
+      if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+      filter.clinicId = clinicId;
+    } else if (req.user?.role !== "root") {
+      filter.clinicId = { $in: await getRequestClinicIds(req) };
+    }
     if (bloodGroup) filter.bloodGroup = bloodGroup;
     if (status) filter.status = status;
 
@@ -90,38 +102,83 @@ export async function crossMatchAndReserve(req: FastifyRequest, reply: FastifyRe
       return reply.code(400).send(errorResponse("patientId, bloodGroup, and requiredUnits are required"));
     }
 
+    const patientAccess = await checkPatientAccess(req, patientId);
+    if (!patientAccess.allowed) return reply.code(patientAccess.statusCode).send(errorResponse(patientAccess.message));
+
     const patient = await Patient.findById(patientId);
     if (!patient) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
     }
 
+    if (req.user?.role !== "root" && patient.organizationId && patientAccess.organizationId && patient.organizationId.toString() !== patientAccess.organizationId) {
+      return reply.code(404).send(errorResponse("Patient profile not found"));
+    }
+
+    const COMPATIBLE_DONORS: Record<string, string[]> = {
+      "O-": ["O-"],
+      "O+": ["O-", "O+"],
+      "A-": ["O-", "A-"],
+      "A+": ["O-", "O+", "A-", "A+"],
+      "B-": ["O-", "B-"],
+      "B+": ["O-", "O+", "B-", "B+"],
+      "AB-": ["O-", "A-", "B-", "AB-"],
+      "AB+": ["O-", "O+", "A-", "A+", "B-", "B+", "AB-", "AB+"],
+    };
+
     const now = new Date();
-    const availableUnits = await BloodBankUnit.find({
-      bloodGroup,
+    const allowedGroups = COMPATIBLE_DONORS[bloodGroup] || [bloodGroup];
+
+    const unitFilter: any = {
+      bloodGroup: { $in: allowedGroups as any },
       status: "available",
       expiryDate: { $gt: now },
-    })
-      .sort({ expiryDate: 1 })
-      .limit(requiredUnits);
+    };
+    if (req.user?.role !== "root") unitFilter.clinicId = { $in: await getRequestClinicIds(req) };
 
-    if (availableUnits.length < requiredUnits) {
-      return reply.code(409).send(errorResponse(`Cross-match failed: Insufficient unexpired ${bloodGroup} blood units in stock. Available: ${availableUnits.length}, Requested: ${requiredUnits}`));
-    }
+    const reservedIds = await withTransaction(async (session) => {
+      const availableUnits = await BloodBankUnit.find(unitFilter)
+        .sort({ expiryDate: 1 })
+        .limit(requiredUnits)
+        .session(session);
 
-    const reservedIds: string[] = [];
-    for (const unit of availableUnits) {
-      unit.status = "reserved";
-      unit.reservedForPatientId = new mongoose.Types.ObjectId(patientId);
-      await unit.save();
-      reservedIds.push(unit.unitNumber);
-    }
+      if (availableUnits.length < requiredUnits) {
+        const error: any = new Error(`Cross-match failed: Insufficient compatible blood units in stock for recipient group ${bloodGroup}. Available: ${availableUnits.length}, Requested: ${requiredUnits}`);
+        error.statusCode = 409;
+        throw error;
+      }
 
-    await AuditLog.create({
-      userId,
-      action: "BLOOD_CROSS_MATCH_RESERVE",
-      targetId: patient._id,
-      targetModel: "Patient",
-      details: { bloodGroup, requiredUnits, reservedUnits: reservedIds }
+      const originalStates = availableUnits.map((unit) => ({
+        unit,
+        status: unit.status,
+        reservedForPatientId: unit.reservedForPatientId,
+      }));
+      const reservedUnitNumbers = availableUnits.map((unit) => unit.unitNumber);
+      try {
+        for (const unit of availableUnits) {
+          unit.status = "reserved";
+          unit.reservedForPatientId = new mongoose.Types.ObjectId(patientId);
+          await unit.save(session ? { session } : undefined);
+        }
+
+        await createWithSession(AuditLog, {
+          userId,
+          action: "BLOOD_CROSS_MATCH_RESERVE",
+          targetId: patient._id,
+          targetModel: "Patient",
+          organizationId: patientAccess.organizationId || undefined,
+          details: { bloodGroup, requiredUnits, reservedUnits: reservedUnitNumbers }
+        }, session);
+        return reservedUnitNumbers;
+      } catch (error) {
+        if (!session) {
+          for (const original of originalStates) {
+            original.unit.status = original.status;
+            original.unit.reservedForPatientId = original.reservedForPatientId;
+            await original.unit.save();
+          }
+        }
+        throw error;
+      }
     });
 
     return reply.code(200).send(
@@ -130,8 +187,54 @@ export async function crossMatchAndReserve(req: FastifyRequest, reply: FastifyRe
         reservedUnits: reservedIds,
       }, `Cross-matching verified! ${reservedIds.length} units of ${bloodGroup} blood reserved for patient.`)
     );
-  } catch (err) {
+  } catch (err: any) {
     console.error("crossMatchAndReserve error:", err);
+    if (err?.statusCode === 409) return reply.code(409).send(errorResponse(err.message));
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+export async function updateBloodUnitStatus(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const userId = req.user!.id;
+    const { id } = req.params as { id: string };
+    const { status } = req.body as { status: "available" | "reserved" | "transfused" | "expired" | "discarded" };
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return reply.code(400).send(errorResponse("Invalid Blood Unit ID"));
+    }
+
+    if (!status || !["available", "reserved", "transfused", "expired", "discarded"].includes(status)) {
+      return reply.code(400).send(errorResponse("Valid status (available, reserved, transfused, expired, discarded) is required"));
+    }
+
+    const unit = await BloodBankUnit.findById(id);
+    if (!unit) {
+      return reply.code(404).send(errorResponse("Blood unit not found"));
+    }
+
+    const scope = await checkOperationalRecordAccess(req, unit);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+
+    const previousStatus = unit.status;
+    unit.status = status;
+    if (status === "available" || status === "discarded") {
+      unit.reservedForPatientId = undefined;
+    }
+
+    await unit.save();
+
+    await AuditLog.create({
+      userId,
+      action: "BLOOD_UNIT_STATUS_UPDATE",
+      targetId: unit._id,
+      targetModel: "BloodBankUnit",
+      details: { unitNumber: unit.unitNumber, previousStatus, newStatus: status }
+    });
+
+    return reply.code(200).send(successResponse(unit, `Blood unit status updated to ${status}`));
+  } catch (err) {
+    console.error("updateBloodUnitStatus error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

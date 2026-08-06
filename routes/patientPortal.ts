@@ -7,6 +7,8 @@ import {
   getPrescriptionRefillRequests,
   updatePrescriptionRefillRequestStatus,
   patientSelfBookAppointment,
+  getPatientAppointmentsHistory,
+  getPatientMedicalRecords,
 } from "../controllers/patientPortal.ts";
 
 export default async function patientPortalRoutes(app: FastifyInstance) {
@@ -16,8 +18,12 @@ export default async function patientPortalRoutes(app: FastifyInstance) {
   app.get("/api/patient/me", auth, getCurrentPatientProfile);
   app.put("/api/patient/me", auth, updateCurrentPatientProfile);
 
-  // Patient Self-Booking
+  // Patient Self-Booking & History
   app.post("/api/patient-portal/self-book", auth, patientSelfBookAppointment);
+  app.get("/api/patient-portal/appointments", auth, getPatientAppointmentsHistory);
+
+  // Longitudinal Medical Records Summary
+  app.get("/api/patient-portal/records", auth, getPatientMedicalRecords);
 
   // Prescription Refill Request Workflow
   app.post("/api/prescriptions/:id/refill", auth, createPrescriptionRefillRequest);

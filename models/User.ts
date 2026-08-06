@@ -16,7 +16,6 @@ const UserSchema = new Schema({
   failedLoginAttempts: { type: Number, default: 0 },
   lockoutUntil: { type: Date, default: null },
   isActive: { type: Boolean, default: true },
-  createdAt: { type: Date, default: Date.now },
 }, { timestamps: true });
 
 UserSchema.virtual("id").get(function() {

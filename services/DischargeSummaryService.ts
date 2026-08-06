@@ -9,8 +9,10 @@ import { Prescription } from "../models/Prescription.ts";
 import { MedicationAdministration } from "../models/MedicationAdministration.ts";
 import { LabOrder } from "../models/LabOrder.ts";
 import { Admission } from "../models/Admission.ts";
+import { Bed } from "../models/Bed.ts";
 import { domainEventBus } from "../platform/events/DomainEventBus.ts";
 import { EventTypes, type DischargeFinalizedPayload } from "../platform/events/types.ts";
+import { withTransaction } from "../utilities/transaction.ts";
 
 export interface ClinicianInputPayload {
   primaryDiagnosis: string;
@@ -39,7 +41,7 @@ export class DischargeSummaryService {
     if (!encounter) throw new Error("Encounter not found");
 
     // Check if document already exists
-    let doc = await DischargeDocument.findOne({ encounterId });
+    let doc = await DischargeDocument.findOne({ encounterId, organizationId: encounter.organizationId, clinicId: encounter.clinicId });
     if (doc && doc.status !== "draft") {
       throw new Error(`Cannot re-compile a finalized or countersigned discharge summary (current status: '${doc.status}')`);
     }
@@ -47,6 +49,8 @@ export class DischargeSummaryService {
     // 1. Gather Clinical Notes (signed & latest)
     const notes = await ClinicalNote.find({
       encounterId,
+      organizationId: encounter.organizationId,
+      clinicId: encounter.clinicId,
       isLatest: true,
       status: "signed",
     }).lean() as any[];
@@ -68,7 +72,7 @@ export class DischargeSummaryService {
     }
 
     // 2. Gather Observations (vitals on admission & discharge)
-    const observations = await Observation.find({ encounterId })
+    const observations = await Observation.find({ encounterId, organizationId: encounter.organizationId, clinicId: encounter.clinicId })
       .sort({ recordedAt: 1 })
       .lean() as any[];
 
@@ -90,7 +94,7 @@ export class DischargeSummaryService {
     }
 
     // 3. Gather NEWS2 Scores
-    const scores = await ObservationScore.find({ encounterId })
+    const scores = await ObservationScore.find({ encounterId, organizationId: encounter.organizationId, clinicId: encounter.clinicId })
       .sort({ evaluatedAt: -1 })
       .lean() as any[];
 
@@ -105,8 +109,8 @@ export class DischargeSummaryService {
     }
 
     // 4. Gather Prescriptions + MAR Summary
-    const prescriptions = await Prescription.find({ encounterId }).lean() as any[];
-    const administrations = await MedicationAdministration.find({ encounterId }).lean() as any[];
+    const prescriptions = await Prescription.find({ encounterId, organizationId: encounter.organizationId, clinicId: encounter.clinicId }).lean() as any[];
+    const administrations = await MedicationAdministration.find({ encounterId, organizationId: encounter.organizationId, clinicId: encounter.clinicId }).lean() as any[];
 
     const medications: any[] = prescriptions.map((rx) => {
       const rxAdms = administrations.filter(
@@ -133,6 +137,8 @@ export class DischargeSummaryService {
     // 5. Gather Diagnostic Lab Orders & Results
     const labOrders = await LabOrder.find({
       encounterId,
+      organizationId: encounter.organizationId,
+      clinicId: encounter.clinicId,
       status: "result-uploaded",
     })
       .populate("testId", "name code normalRange")
@@ -155,7 +161,7 @@ export class DischargeSummaryService {
     });
 
     // 6. Gather Admission info (if IPD)
-    const admission = await Admission.findOne({ encounterId }).lean() as any;
+    const admission = await Admission.findOne({ encounterId, clinicId: encounter.clinicId }).lean() as any;
     let stayDurationDays = 0;
     if (encounter.startedAt) {
       const end = encounter.endedAt || new Date();
@@ -207,7 +213,7 @@ export class DischargeSummaryService {
   /**
    * Finalizes a discharge summary.
    * Validates required clinician inputs, computes snapshotHash, freezes document,
-   * and enforces the invariant: Encounter.status → "closed".
+   * and enforces the invariant: Encounter.status â†’ "closed".
    */
   static async finalize(documentId: string, clinicianInput: ClinicianInputPayload) {
     const doc = await DischargeDocument.findById(documentId);
@@ -230,48 +236,77 @@ export class DischargeSummaryService {
       ? clinicianInput.dischargeInstructions
       : "Follow up with primary physician as advised.";
 
-    doc.clinicianInput = {
-      primaryDiagnosis,
-      conditionOnDischarge,
-      dischargeInstructions,
-      followUpPlan:           clinicianInput.followUpPlan || "",
-      medicationsOnDischarge: clinicianInput.medicationsOnDischarge || "",
-      restrictions:           clinicianInput.restrictions || "",
-    };
+    const finalizedDoc = await withTransaction(async (session) => {
+      const option = session ? { session } : {};
+      doc.clinicianInput = {
+        primaryDiagnosis,
+        conditionOnDischarge,
+        dischargeInstructions,
+        followUpPlan:           clinicianInput.followUpPlan || "",
+        medicationsOnDischarge: clinicianInput.medicationsOnDischarge || "",
+        restrictions:           clinicianInput.restrictions || "",
+      };
 
-    // Calculate cryptographic snapshot hash
-    doc.snapshotHash = DischargeSummaryService.generateSnapshotHash(doc.aggregated, doc.clinicianInput);
-    doc.status = "finalized";
-    doc.finalizedAt = new Date();
+      doc.snapshotHash = DischargeSummaryService.generateSnapshotHash(doc.aggregated, doc.clinicianInput);
+      doc.status = "finalized";
+      doc.finalizedAt = new Date();
+      await doc.save(option);
 
-    await doc.save();
+      const encounter = await Encounter.findOneAndUpdate({
+        _id: doc.encounterId,
+        organizationId: doc.organizationId,
+        clinicId: doc.clinicId,
+      }, {
+        status: "closed",
+        endedAt: new Date(),
+      }, option).lean() as any;
 
-    // Central invariant enforcement: Encounter.status → "closed" AND Appointment.status → "completed"
-    const encounter = await Encounter.findByIdAndUpdate(doc.encounterId, {
-      status: "closed",
-      endedAt: new Date(),
-    }).lean() as any;
+      if (encounter?.appointmentId) {
+        await Appointment.findOneAndUpdate(
+          { _id: encounter.appointmentId, clinicId: doc.clinicId, patientId: doc.patientId },
+          { status: "completed" },
+          option,
+        );
+      }
 
-    if (encounter?.appointmentId) {
-      await Appointment.findByIdAndUpdate(encounter.appointmentId, {
-        status: "completed",
-      });
-    }
+      const activeAdmission = await Admission.findOne({
+        patientId: doc.patientId,
+        clinicId: doc.clinicId,
+        status: "admitted",
+        deletedAt: null,
+      }, null, option);
+
+      if (activeAdmission) {
+        activeAdmission.status = "discharged";
+        activeAdmission.dischargeDate = new Date();
+        await activeAdmission.save(option);
+
+        if (activeAdmission.bedId) {
+          await Bed.findOneAndUpdate(
+            { _id: activeAdmission.bedId, clinicId: doc.clinicId },
+            { status: "available", occupiedBy: null },
+            option,
+          );
+        }
+      }
+
+      return doc;
+    });
 
     // Publish DischargeFinalized domain event
     const eventPayload: DischargeFinalizedPayload = {
-      dischargeId:          doc._id.toString(),
-      encounterId:          doc.encounterId?.toString(),
-      patientId:            doc.patientId?.toString(),
+      dischargeId:          finalizedDoc._id.toString(),
+      encounterId:          finalizedDoc.encounterId?.toString(),
+      patientId:            finalizedDoc.patientId?.toString(),
       primaryDiagnosis:     clinicianInput.primaryDiagnosis,
       conditionOnDischarge: clinicianInput.conditionOnDischarge,
-      snapshotHash:         doc.snapshotHash,
-      finalizedAt:          doc.finalizedAt!.toISOString(),
-      authoredBy:           doc.authoredBy?.toString(),
+      snapshotHash:         finalizedDoc.snapshotHash,
+      finalizedAt:          finalizedDoc.finalizedAt!.toISOString(),
+      authoredBy:           finalizedDoc.authoredBy?.toString(),
     };
     await domainEventBus.publishEvent(EventTypes.DISCHARGE_FINALIZED, eventPayload);
 
-    return doc;
+    return finalizedDoc;
   }
 
   /**
@@ -313,3 +348,5 @@ export class DischargeSummaryService {
       .lean();
   }
 }
+
+

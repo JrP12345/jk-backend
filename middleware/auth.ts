@@ -22,7 +22,6 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
   try {
     const token =
       req.cookies?.access_token ||
-      (req.query as any)?.token ||
       (req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.split(" ")[1] : undefined);
 
     if (!token) {
@@ -55,9 +54,31 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
  */
 export function authorize(...allowedRoles: string[]) {
   return async (req: FastifyRequest, reply: FastifyReply) => {
-    if (!req.user || (!allowedRoles.includes(req.user.role) && req.user.role !== "root")) {
-      return reply.code(403).send({ error: "Forbidden: insufficient permissions" });
+    if (!req.user) {
+      return reply.code(401).send({ error: "Unauthorized" });
     }
+
+    if (req.user.role === "root" || req.user.role === "admin" || allowedRoles.includes(req.user.role)) {
+      return;
+    }
+
+    // Check dynamic user.permissions array if present in JWT token
+    const userPermissions: string[] = (req.user as any).permissions || [];
+    const roleConfig = await Role.findOne({ name: req.user.role }).lean() as any;
+    const rolePermissions: string[] = roleConfig?.permissions || [];
+    const allPermissions = Array.from(new Set([...userPermissions, ...rolePermissions]));
+
+    // Check if user has any permission matching the target role requirement
+    const hasPermissionMatch = allowedRoles.some((role) => {
+      const permissionName = `MANAGE_${role.toUpperCase()}`;
+      return allPermissions.includes(permissionName) || allPermissions.includes("MANAGE_ORGANIZATION");
+    });
+
+    if (hasPermissionMatch) {
+      return;
+    }
+
+    return reply.code(403).send({ error: "Forbidden: insufficient permissions" });
   };
 }
 
@@ -77,8 +98,11 @@ export function checkPermission(requiredPermission: string) {
       return reply.code(403).send({ error: "Forbidden: role not configured" });
     }
 
-    if (req.user.role === "root" || req.user.role === "admin") {
-      return; // Built-in root and admin system roles bypass permission checks
+    if (
+      req.user.role === "root" ||
+      req.user.role === "admin"
+    ) {
+      return; // Built-in root and admin roles bypass permission checks
     }
 
     const roleConfig = await Role.findOne({ name: req.user.role }).lean() as any;
@@ -132,4 +156,3 @@ export function validatePasswordStrength(password: string): { valid: boolean; re
   }
   return { valid: true };
 }
-

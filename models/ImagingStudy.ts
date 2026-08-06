@@ -10,7 +10,7 @@ export interface IImagingStudy extends Document {
   radiologistId?: mongoose.Types.ObjectId;
   dicomWebUrl?: string;
   radiologyReport?: string;
-  status: "requested" | "completed" | "reported";
+  status: "requested" | "in_progress" | "completed" | "reported" | "cancelled";
   createdAt: Date;
   updatedAt: Date;
 }
@@ -60,7 +60,7 @@ const imagingStudySchema = new Schema<IImagingStudy>(
     },
     status: {
       type: String,
-      enum: ["requested", "completed", "reported"],
+      enum: ["requested", "in_progress", "completed", "reported", "cancelled"],
       default: "requested",
       index: true,
     },

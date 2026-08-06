@@ -13,6 +13,8 @@ const DoctorSchema = new Schema({
   image_url: { type: String },
   rating: { type: Number, default: 5 },
   reviewsCount: { type: Number, default: 0 },
+  registrationNumber: { type: String, trim: true },
+  isActive: { type: Boolean, default: true, index: true },
   languages: [{ type: String, default: "English" }]
 });
 

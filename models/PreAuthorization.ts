@@ -24,6 +24,12 @@ export interface IPreAuthorization extends Document {
 
 const preAuthorizationSchema = new Schema<IPreAuthorization>(
   {
+    organizationId: {
+      type: Schema.Types.ObjectId,
+      ref: "Organization",
+      required: true,
+      index: true,
+    },
     preAuthNumber: {
       type: String,
       required: true,

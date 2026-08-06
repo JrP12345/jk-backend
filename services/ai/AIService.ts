@@ -37,6 +37,22 @@ class FallbackAIProvider implements AIProvider {
   }
 }
 
+class UnavailableAIProvider implements AIProvider {
+  name = "AIProviderUnavailable";
+
+  async isHealthy(): Promise<boolean> {
+    return false;
+  }
+
+  async generateSOAPNote(): Promise<SOAPNoteDraft> {
+    throw new Error("No configured AI provider is available");
+  }
+
+  async queryPatientHealthAssistant(): Promise<HealthQueryResponse> {
+    throw new Error("No configured AI provider is available");
+  }
+}
+
 class GeminiAIProvider implements AIProvider {
   name = "GoogleGeminiAI";
   private apiKey: string;
@@ -243,8 +259,8 @@ export class AIService {
   private primaryProvider: AIProvider;
 
   constructor() {
-    const fallback = new FallbackAIProvider();
-    providerRegistry.registerProvider(fallback);
+    const fallback = process.env.NODE_ENV === "test" ? new FallbackAIProvider() : null;
+    if (fallback) providerRegistry.registerProvider(fallback);
 
     if (process.env.GEMINI_API_KEY) {
       console.log("[AIService] Initializing Google Gemini AI Provider (gemini-flash-latest)");
@@ -264,9 +280,15 @@ export class AIService {
       this.primaryProvider = openai;
       providerRegistry.registerProvider(openai);
       providerRegistry.setPrimaryProvider(openai.name);
+    } else if (process.env.NODE_ENV === "test") {
+      console.log("[AIService] No API Key detected in test environment; using test-only fallback provider");
+      this.primaryProvider = fallback!;
+      providerRegistry.setPrimaryProvider(fallback!.name);
     } else {
-      console.log("[AIService] No API Key detected in .env; using FallbackSimulationAI Provider");
-      this.primaryProvider = fallback;
+      console.error("[AIService] No AI provider credentials configured; clinical AI operations are unavailable");
+      this.primaryProvider = new UnavailableAIProvider();
+      providerRegistry.registerProvider(this.primaryProvider);
+      providerRegistry.setPrimaryProvider(this.primaryProvider.name);
     }
   }
 
@@ -282,7 +304,8 @@ export class AIService {
     try {
       return await this.primaryProvider.generateSOAPNote(input);
     } catch (err: any) {
-      console.warn(`[AIService] ${this.primaryProvider.name} failed (${err.message}), falling back to Simulation AI.`);
+      if (process.env.NODE_ENV !== "test") throw err;
+      console.warn(`[AIService] ${this.primaryProvider.name} failed in test; using test-only fallback provider.`);
       const fallback = new FallbackAIProvider();
       return await fallback.generateSOAPNote(input);
     }
@@ -292,7 +315,8 @@ export class AIService {
     try {
       return await this.primaryProvider.queryPatientHealthAssistant(input);
     } catch (err: any) {
-      console.warn(`[AIService] ${this.primaryProvider.name} failed (${err.message}), falling back to Simulation AI.`);
+      if (process.env.NODE_ENV !== "test") throw err;
+      console.warn(`[AIService] ${this.primaryProvider.name} failed in test; using test-only fallback provider.`);
       const fallback = new FallbackAIProvider();
       return await fallback.queryPatientHealthAssistant(input);
     }

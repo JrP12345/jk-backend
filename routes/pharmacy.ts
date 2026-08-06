@@ -10,6 +10,7 @@ import {
   createMedicineBatch,
   getMedicineBatches,
   getExpiringMedicinesController,
+  adjustStock,
 } from "../controllers/medicine.ts";
 
 export default async function pharmacyRoutes(app: FastifyInstance) {
@@ -21,6 +22,7 @@ export default async function pharmacyRoutes(app: FastifyInstance) {
   app.put("/api/medicines/:id", adminOnly, updateMedicine);
   app.delete("/api/medicines/:id", adminOnly, deleteMedicine);
   app.post("/api/pharmacy/dispense", { ...auth, schema: dispensePrescriptionSchema }, dispensePrescription);
+  app.post("/api/pharmacy/adjust-stock", auth, adjustStock);
 
   // Multi-Batch & Expiration Tracking
   app.post("/api/pharmacy/batches", auth, createMedicineBatch);

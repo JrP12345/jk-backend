@@ -22,11 +22,14 @@ export async function queryAIGatewayController(req: FastifyRequest, reply: Fasti
     if (!query || !query.trim()) {
       return reply.code(400).send(errorResponse("query string is required"));
     }
+    if (!userId || !orgId) {
+      return reply.code(403).send(errorResponse("Authenticated organization context is required"));
+    }
 
     const correlationId = `corr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
     // Fetch sample patients for PHI anonymization
-    const samplePatientsList = await Patient.find(orgId ? { organizationId: orgId } : {}).populate("userId", "name email").limit(20).lean();
+    const samplePatientsList = await Patient.find({ organizationId: orgId }).populate("userId", "name email").limit(20).lean();
     const patientMapList = samplePatientsList.map(p => ({
       name: (p.userId as any)?.name,
       mrn: (p as any).mrn,
@@ -35,10 +38,10 @@ export async function queryAIGatewayController(req: FastifyRequest, reply: Fasti
 
     const response = await aiGateway.execute({
       correlationId,
-      organizationId: orgId || "000000000000000000000000",
+      organizationId: orgId,
       sessionId: sessionId || "general",
       requestId: `req_${Date.now()}`,
-      userId: userId || "anonymous",
+      userId,
       modelAlias: modelAlias || "CLINICAL_FAST",
       prompt: query.trim(),
       systemDirective: currentRoute ? `Clinician viewing screen "${currentRoute}".` : "Enterprise Clinical Context"
@@ -47,8 +50,8 @@ export async function queryAIGatewayController(req: FastifyRequest, reply: Fasti
     // Asynchronously record telemetry metric
     AIObservabilityMetric.create({
       correlationId: response.correlationId,
-      organizationId: orgId || "000000000000000000000000",
-      userId: userId || "000000000000000000000000",
+      organizationId: orgId,
+      userId,
       sessionId: sessionId || "general",
       provider: response.provider,
       model: response.model,
@@ -81,6 +84,16 @@ export async function streamAIGatewayController(req: FastifyRequest, reply: Fast
     const userId = req.user?.id;
     const orgId = req.user?.organization_id;
 
+    if (!userId || !orgId) {
+      StreamingService.sendChunk(reply, {
+        correlationId,
+        chunkIndex: 0,
+        text: "Error: authenticated organization context is required.",
+        isComplete: true
+      });
+      return StreamingService.endStream(reply, correlationId);
+    }
+
     if (!query || !query.trim()) {
       StreamingService.sendChunk(reply, {
         correlationId,
@@ -93,16 +106,16 @@ export async function streamAIGatewayController(req: FastifyRequest, reply: Fast
 
     const response = await aiGateway.execute({
       correlationId,
-      organizationId: orgId || "000000000000000000000000",
+      organizationId: orgId,
       sessionId: "stream",
       requestId: `req_${Date.now()}`,
-      userId: userId || "anonymous",
+      userId,
       modelAlias: modelAlias || "CLINICAL_FAST",
       prompt: query.trim(),
       systemDirective: currentRoute ? `Clinician viewing screen "${currentRoute}".` : "Enterprise Clinical Context"
     });
 
-    // Simulate token chunks over SSE stream
+    // Emit the provider response incrementally over the SSE stream.
     const words = response.text.split(" ");
     for (let i = 0; i < words.length; i++) {
       const wordChunk = (i === 0 ? "" : " ") + words[i];

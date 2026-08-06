@@ -8,6 +8,7 @@ import { Appointment } from "../models/Appointment.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { Claim } from "../models/Claim.ts";
+import { PatientFeedback } from "../models/PatientFeedback.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 
 /**
@@ -251,9 +252,8 @@ export async function getNabhKpis(req: FastifyRequest, reply: FastifyReply) {
     const clinicIds = clinics.map((c) => c._id);
 
     // 1. Average Length of Stay (ALOS)
-    const dischargedAdmissions = await Admission.find({
-      status: "discharged",
-    });
+    const clinicFilter = { clinicId: { $in: clinicIds } };
+    const dischargedAdmissions = await Admission.find({ status: "discharged", ...clinicFilter });
 
     let totalInpatientDays = 0;
     dischargedAdmissions.forEach((adm) => {
@@ -267,18 +267,18 @@ export async function getNabhKpis(req: FastifyRequest, reply: FastifyReply) {
     });
 
     const totalDischarges = dischargedAdmissions.length;
-    const alosDays = totalDischarges > 0 ? Number((totalInpatientDays / totalDischarges).toFixed(1)) : 3.5;
+    const alosDays = totalDischarges > 0 ? Number((totalInpatientDays / totalDischarges).toFixed(1)) : null;
 
     // 2. Bed Occupancy Rate (BOR)
     const beds = await Bed.find({ clinicId: { $in: clinicIds } });
     const totalBeds = beds.length;
     const occupiedBeds = beds.filter((b) => b.status === "occupied").length;
-    const bedOccupancyRate = totalBeds > 0 ? Math.round((occupiedBeds / totalBeds) * 100) : 72;
+    const bedOccupancyRate = totalBeds > 0 ? Math.round((occupiedBeds / totalBeds) * 100) : null;
 
     // 3. 30-Day Hospital Readmission Rate
     // Patients with > 1 admission within 30 days
     const patientAdmissionsMap: Record<string, Date[]> = {};
-    const allAdmissions = await Admission.find({}).sort({ createdAt: 1 });
+    const allAdmissions = await Admission.find(clinicFilter).sort({ createdAt: 1 });
     allAdmissions.forEach((adm) => {
       const pId = adm.patientId.toString();
       if (!patientAdmissionsMap[pId]) patientAdmissionsMap[pId] = [];
@@ -297,12 +297,17 @@ export async function getNabhKpis(req: FastifyRequest, reply: FastifyReply) {
     });
 
     const uniquePatientsCount = Object.keys(patientAdmissionsMap).length;
-    const readmissionRate = uniquePatientsCount > 0 ? Number(((readmissionCount / uniquePatientsCount) * 100).toFixed(1)) : 2.4;
+    const readmissionRate = uniquePatientsCount > 0 ? Number(((readmissionCount / uniquePatientsCount) * 100).toFixed(1)) : null;
 
     // 4. MAR Medication Safety Compliance Rate
-    const totalMarDoses = await MedicationAdministration.countDocuments({});
-    const administeredDoses = await MedicationAdministration.countDocuments({ status: "given" });
-    const marComplianceRate = totalMarDoses > 0 ? Math.round((administeredDoses / totalMarDoses) * 100) : 98;
+    const totalMarDoses = await MedicationAdministration.countDocuments(clinicFilter);
+    const administeredDoses = await MedicationAdministration.countDocuments({ ...clinicFilter, status: "given" });
+    const marComplianceRate = totalMarDoses > 0 ? Math.round((administeredDoses / totalMarDoses) * 100) : null;
+
+    const feedback = await PatientFeedback.find(clinicFilter).select("rating").lean();
+    const patientSatisfactionScore = feedback.length > 0
+      ? Number(((feedback.reduce((sum, item) => sum + item.rating, 0) / feedback.length / 5) * 100).toFixed(1))
+      : null;
 
     return reply.code(200).send(
       successResponse({
@@ -312,8 +317,8 @@ export async function getNabhKpis(req: FastifyRequest, reply: FastifyReply) {
           bedOccupancyRatePercent: bedOccupancyRate,
           readmissionRate30DaysPercent: readmissionRate,
           marMedicationCompliancePercent: marComplianceRate,
-          hospitalAcquiredInfectionRatePer1000: 0.8,
-          patientSatisfactionScorePercent: 94.2,
+          hospitalAcquiredInfectionRatePer1000: null,
+          patientSatisfactionScorePercent: patientSatisfactionScore,
         },
         benchmarks: {
           targetALOS: "3.0 - 5.0 days",
@@ -341,16 +346,20 @@ export async function getClinicalSummaryAnalyticsController(req: FastifyRequest,
     }
     const clinicIds = clinics.map((c) => c._id);
 
-    const totalEncounters = await Encounter.countDocuments({ clinicId: { $in: clinicIds } });
-    const completedEncounters = await Encounter.countDocuments({ clinicId: { $in: clinicIds }, status: "completed" });
-    const activeEncounters = await Encounter.countDocuments({ clinicId: { $in: clinicIds }, status: "in_progress" });
+    const encounterFilter = { clinicId: { $in: clinicIds } };
+    const totalEncounters = await Encounter.countDocuments(encounterFilter);
+    const completedEncounters = await Encounter.countDocuments({ ...encounterFilter, status: "completed" });
+    const activeEncounters = await Encounter.countDocuments({ ...encounterFilter, status: "in_progress" });
+    const totalClaims = await Claim.countDocuments({ clinicId: { $in: clinicIds }, deletedAt: null });
+    const approvedClaims = await Claim.countDocuments({ clinicId: { $in: clinicIds }, deletedAt: null, status: { $in: ["approved", "settled"] } });
 
     return reply.code(200).send(
       successResponse({
         totalEncounters,
         completedEncounters,
         activeEncounters,
-        throughputRatePercent: totalEncounters > 0 ? Math.round((completedEncounters / totalEncounters) * 100) : 100,
+        throughputRatePercent: totalEncounters > 0 ? Math.round((completedEncounters / totalEncounters) * 100) : null,
+        claimApprovalRate: totalClaims > 0 ? Number(((approvedClaims / totalClaims) * 100).toFixed(1)) : null,
       })
     );
   } catch (err) {
@@ -366,18 +375,39 @@ export async function exportAnalyticsReportController(req: FastifyRequest, reply
   try {
     const orgId = req.user?.organization_id;
     const format = (req.query as any)?.format || "json";
+    const reportType = (req.query as any)?.reportType || "executive";
+
+    const clinics = orgId ? await Clinic.find({ organizationId: orgId, isActive: true }).select("_id") : (req.user?.role === "root" ? await Clinic.find({ isActive: true }).select("_id") : []);
+    const clinicIds = clinics.map((clinic) => clinic._id);
+    const clinicFilter = { clinicId: { $in: clinicIds } };
+    const [invoiceCount, appointmentCount, encounterCount, claimCount] = await Promise.all([
+      Invoice.countDocuments(clinicFilter),
+      Appointment.countDocuments(clinicFilter),
+      Encounter.countDocuments(clinicFilter),
+      Claim.countDocuments({ ...clinicFilter, deletedAt: null }),
+    ]);
 
     const reportData = {
       exportedAt: new Date().toISOString(),
       organizationId: orgId || "GLOBAL",
+      reportType,
       summary: "ANANTA Healthcare Executive & NABH Quality Accreditation Report",
-      status: "COMPLIANT",
+      status: "generated",
+      metrics: { invoiceCount, appointmentCount, encounterCount, claimCount },
     };
 
     if (format === "csv") {
       reply.header("Content-Type", "text/csv");
       reply.header("Content-Disposition", 'attachment; filename="analytics-report.csv"');
-      return reply.code(200).send(`Metric,Value\nExported At,${reportData.exportedAt}\nStatus,COMPLIANT`);
+      return reply.code(200).send([
+        "Metric,Value",
+        `Exported At,${reportData.exportedAt}`,
+        `Report Type,${reportData.reportType}`,
+        `Invoice Count,${invoiceCount}`,
+        `Appointment Count,${appointmentCount}`,
+        `Encounter Count,${encounterCount}`,
+        `Claim Count,${claimCount}`,
+      ].join("\n"));
     }
 
     return reply.code(200).send(successResponse(reportData));
@@ -386,5 +416,4 @@ export async function exportAnalyticsReportController(req: FastifyRequest, reply
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
-
 

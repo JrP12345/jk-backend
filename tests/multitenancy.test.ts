@@ -102,7 +102,8 @@ describe("Multi-Tenancy Data Isolation Integration Tests", () => {
           dob: "1990-01-01",
           gender: "male",
           phone: "9876543210",
-          email: "patientA@orga.com"
+          email: "patientA@orga.com",
+          password: "Password123"
         }
       }
     });

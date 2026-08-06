@@ -65,6 +65,7 @@ const InvoiceSchema = new Schema({
       notes: { type: String, trim: true },
     },
   ],
+  dueDate: { type: Date, index: true },
   paymentMethod: { 
     type: String, 
     enum: ["cash", "card", "upi", "net-banking", "insurance", "online"] 

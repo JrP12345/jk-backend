@@ -5,7 +5,13 @@ import { ClinicalNote } from "../models/ClinicalNote.ts";
 import { Observation } from "../models/Observation.ts";
 import { Prescription } from "../models/Prescription.ts";
 import { Appointment } from "../models/Appointment.ts";
+import { Patient } from "../models/Patient.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
+import { checkClinicAccess, checkOperationalRecordAccess } from "../utilities/tenant.ts";
+
+function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
+  return reply.code(check.statusCode).send(errorResponse(check.message));
+}
 
 export async function createEncounterController(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -24,8 +30,21 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
     let finalClinicId = clinicId;
     let finalPatientId = patientId;
 
+    if (appointmentId && !mongoose.Types.ObjectId.isValid(appointmentId)) {
+      return reply.code(400).send(errorResponse("Invalid appointment ID"));
+    }
+
     if (appointmentId && mongoose.Types.ObjectId.isValid(appointmentId)) {
       const appt = await Appointment.findById(appointmentId).lean() as any;
+      if (!appt) return reply.code(404).send(errorResponse("Appointment not found"));
+      const appointmentAccess = await checkOperationalRecordAccess(req, appt);
+      if (!appointmentAccess.allowed) return sendTenantError(reply, appointmentAccess);
+      if (finalClinicId && mongoose.Types.ObjectId.isValid(finalClinicId) && finalClinicId !== appt.clinicId?.toString()) {
+        return reply.code(400).send(errorResponse("Appointment clinic does not match clinicId"));
+      }
+      if (finalPatientId && mongoose.Types.ObjectId.isValid(finalPatientId) && finalPatientId !== appt.patientId?.toString()) {
+        return reply.code(400).send(errorResponse("Appointment patient does not match patientId"));
+      }
       if (appt) {
         if (!finalClinicId || !mongoose.Types.ObjectId.isValid(finalClinicId)) {
           finalClinicId = appt.clinicId?._id?.toString() || appt.clinicId?.toString() || appt.clinicId;
@@ -40,6 +59,18 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
       return reply.code(400).send(errorResponse("Valid clinicId and patientId are required"));
     }
 
+    const clinicAccess = await checkClinicAccess(req, finalClinicId);
+    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const patient = await Patient.findById(finalPatientId);
+    if (!patient) return reply.code(404).send(errorResponse("Patient profile not found"));
+    if (patient.organizationId && clinicAccess.organizationId && patient.organizationId.toString() !== clinicAccess.organizationId) {
+      return reply.code(404).send(errorResponse("Patient profile not found"));
+    }
+    if (!patient.organizationId && clinicAccess.organizationId) {
+      patient.organizationId = new mongoose.Types.ObjectId(clinicAccess.organizationId);
+      await patient.save();
+    }
+
     // Reuse existing active (in_progress) encounter for this appointment/patient session
     const existingFilter: any = { status: "in_progress" };
     if (appointmentId && mongoose.Types.ObjectId.isValid(appointmentId)) {
@@ -48,6 +79,7 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
       existingFilter.patientId = finalPatientId;
       existingFilter.clinicId = finalClinicId;
     }
+    existingFilter.organizationId = clinicAccess.organizationId;
 
     const existingEncounter = await Encounter.findOne(existingFilter).sort({ createdAt: -1 });
     if (existingEncounter) {
@@ -55,7 +87,7 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
     }
 
     const encounter = await Encounter.create({
-      organizationId: orgId,
+      organizationId: clinicAccess.organizationId || orgId,
       clinicId: finalClinicId,
       appointmentId: appointmentId || null,
       patientId: finalPatientId,
@@ -98,6 +130,17 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
       return reply.code(400).send(errorResponse("encounterId, patientId, and chiefComplaint are required"));
     }
 
+    if (!mongoose.Types.ObjectId.isValid(encounterId) || !mongoose.Types.ObjectId.isValid(patientId)) {
+      return reply.code(400).send(errorResponse("Invalid encounter or patient ID"));
+    }
+    const encounter = await Encounter.findById(encounterId).lean() as any;
+    if (!encounter) return reply.code(404).send(errorResponse("Encounter not found"));
+    const encounterAccess = await checkOperationalRecordAccess(req, encounter);
+    if (!encounterAccess.allowed) return sendTenantError(reply, encounterAccess);
+    if (encounter.patientId.toString() !== patientId) return reply.code(400).send(errorResponse("Encounter patient does not match patientId"));
+    if (clinicId && encounter.clinicId.toString() !== clinicId) return reply.code(400).send(errorResponse("Encounter clinic does not match clinicId"));
+    const effectiveClinicId = encounter.clinicId.toString();
+
     // 1. Record Generic Observations (vitals)
     const observationIds: mongoose.Types.ObjectId[] = [];
     if (vitals && typeof vitals === "object") {
@@ -113,7 +156,7 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
         if (v.value !== null && v.value !== undefined && v.value !== "") {
           const obs = await Observation.create({
             organizationId: orgId,
-            clinicId,
+            clinicId: effectiveClinicId,
             encounterId,
             patientId,
             recordedBy: userId,
@@ -135,7 +178,7 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
         if (rx.name && rx.dosage && rx.duration) {
           const rxDoc = await Prescription.create({
             organizationId: orgId,
-            clinicId,
+            clinicId: effectiveClinicId,
             encounterId,
             patientId,
             doctorId: userId,
@@ -151,18 +194,27 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
       }
     }
 
-    // 3. Create or update draft ClinicalNote
-    let note = await ClinicalNote.findOne({ encounterId, status: "draft", isLatest: true });
+    // 3. Normalize structured diagnoses
+    const formattedDiagnoses = Array.isArray(diagnoses)
+      ? diagnoses.map((d: any) =>
+          typeof d === "string"
+            ? { code: "ICD-10", description: d, status: "active" }
+            : { code: d.code || "ICD-10", description: d.description || d.name || "Diagnosis", status: d.status || "active" }
+        )
+      : [];
+
+    // 4. Create or update draft ClinicalNote
+    let note = await ClinicalNote.findOne({ encounterId, organizationId: orgId, status: "draft", isLatest: true });
     if (note) {
       note.subjective = { chiefComplaint, historyOfPresentIllness: historyOfPresentIllness || "", symptoms: symptoms || [] };
       note.objective = { observationIds, physicalExamination: physicalExamination || "" };
-      note.assessment = { diagnoses: diagnoses || [], severity: severity || "moderate" };
+      note.assessment = { diagnoses: formattedDiagnoses as any, severity: severity || "moderate" };
       note.plan = { treatmentPlan: treatmentPlan || "", prescriptionIds, labOrderIds: [], followUpDate: followUpDate ? new Date(followUpDate) : undefined, followUpInstructions: followUpInstructions || "" };
       await note.save();
     } else {
       note = await ClinicalNote.create({
         organizationId: orgId,
-        clinicId,
+        clinicId: effectiveClinicId,
         encounterId,
         patientId,
         doctorId: userId,
@@ -170,7 +222,7 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
         isLatest: true,
         subjective: { chiefComplaint, historyOfPresentIllness: historyOfPresentIllness || "", symptoms: symptoms || [] },
         objective: { observationIds, physicalExamination: physicalExamination || "" },
-        assessment: { diagnoses: diagnoses || [], severity: severity || "moderate" },
+        assessment: { diagnoses: formattedDiagnoses, severity: severity || "moderate" },
         plan: { treatmentPlan: treatmentPlan || "", prescriptionIds, labOrderIds: [], followUpDate: followUpDate ? new Date(followUpDate) : undefined, followUpInstructions: followUpInstructions || "" },
         status: "draft",
       });
@@ -192,6 +244,12 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
     const note = await ClinicalNote.findById(id);
     if (!note) return reply.code(404).send(errorResponse("Clinical note not found"));
 
+    const noteAccess = await checkOperationalRecordAccess(req, note);
+    if (!noteAccess.allowed) return sendTenantError(reply, noteAccess);
+    if (req.user?.role === "doctor" && note.doctorId.toString() !== userId) {
+      return reply.code(403).send(errorResponse("Only the assigned doctor can sign this clinical note"));
+    }
+
     if (note.status !== "draft" && note.status !== "under_review") {
       return reply.code(400).send(errorResponse(`Cannot sign note in status '${note.status}'`));
     }
@@ -205,9 +263,19 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
     };
     await note.save();
 
-    // Complete Encounter
-    await Encounter.findByIdAndUpdate(note.encounterId, { status: "completed", endedAt: new Date() });
+    // Complete Encounter and linked Appointment
+    const updatedEncounter = await Encounter.findOneAndUpdate(
+      { _id: note.encounterId, organizationId: note.organizationId, clinicId: note.clinicId },
+      { status: "completed", endedAt: new Date() },
+      { new: true }
+    );
 
+    if (updatedEncounter?.appointmentId) {
+      const { Appointment } = await import("../models/Appointment.ts");
+      await Appointment.findByIdAndUpdate(updatedEncounter.appointmentId, { status: "completed" });
+    }
+
+    let followUpCreationFailed = false;
     // Auto-create Follow-up Appointment if followUpDate is set
     if (note.plan?.followUpDate) {
       try {
@@ -244,10 +312,14 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
         }
       } catch (followUpErr) {
         console.error("Auto follow-up creation failed:", followUpErr);
+        followUpCreationFailed = true;
       }
     }
 
-    return reply.code(200).send(successResponse(note, "Clinical note signed and locked (Follow-up scheduled)"));
+    const message = followUpCreationFailed
+      ? "Clinical note signed and locked, but the requested follow-up could not be scheduled"
+      : "Clinical note signed and locked (Follow-up scheduled)";
+    return reply.code(200).send(successResponse(note, message));
   } catch (err) {
     console.error("signClinicalNoteController error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -268,6 +340,12 @@ export async function amendClinicalNoteController(req: FastifyRequest, reply: Fa
 
     const parentNote = await ClinicalNote.findById(id);
     if (!parentNote) return reply.code(404).send(errorResponse("Parent clinical note not found"));
+
+    const noteAccess = await checkOperationalRecordAccess(req, parentNote);
+    if (!noteAccess.allowed) return sendTenantError(reply, noteAccess);
+    if (req.user?.role === "doctor" && parentNote.doctorId.toString() !== userId) {
+      return reply.code(403).send(errorResponse("Only the assigned doctor can amend this clinical note"));
+    }
 
     if (parentNote.status !== "signed" && parentNote.status !== "amended") {
       return reply.code(400).send(errorResponse("Only signed or amended notes can be amended"));
@@ -314,6 +392,17 @@ export async function getClinicalNoteHistoryController(req: FastifyRequest, repl
   try {
     const { id } = req.params as { id: string }; // patientId
     const orgId = req.user?.organization_id;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) return reply.code(400).send(errorResponse("Invalid patient ID"));
+    const patient = await Patient.findById(id).lean() as any;
+    if (!patient) return reply.code(404).send(errorResponse("Patient not found"));
+    if (req.user?.role === "patient" && patient.userId.toString() !== req.user.id) {
+      return reply.code(404).send(errorResponse("Patient not found"));
+    }
+    if (patient.organizationId && orgId && patient.organizationId.toString() !== orgId) {
+      return reply.code(404).send(errorResponse("Patient not found"));
+    }
+    if (!orgId) return reply.code(403).send(errorResponse("Organization context required"));
 
     const notes = await ClinicalNote.find({ patientId: id, organizationId: orgId })
       .populate("doctorId", "name email")

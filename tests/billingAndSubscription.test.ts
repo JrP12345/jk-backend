@@ -9,6 +9,8 @@ import { Organization } from "../models/Organization.ts";
 import { subscriptionService } from "../services/billing/SubscriptionService.ts";
 import { razorpayService } from "../services/billing/RazorpayService.ts";
 
+import { SaaSConfig } from "../models/SaaSConfig.ts";
+
 let mongoServer: MongoMemoryServer;
 
 beforeAll(async () => {
@@ -17,6 +19,14 @@ beforeAll(async () => {
     const uri = mongoServer.getUri();
     await mongoose.connect(uri);
   }
+
+  await SaaSConfig.create({
+    key: "platform_config",
+    razorpayKeyId: "rzp_test_mock_key_12345",
+    razorpayKeySecret: "mock_secret_key_12345",
+    razorpayWebhookSecret: "mock_webhook_secret",
+    isLiveMode: false,
+  });
 });
 
 afterAll(async () => {

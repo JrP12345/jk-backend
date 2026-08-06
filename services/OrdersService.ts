@@ -69,23 +69,10 @@ export class OrdersService {
       test = await LabTest.findById(payload.testId).lean();
     }
     if (!test) {
-      test = await LabTest.findOne({
-        $or: [
-          { code: new RegExp(`^${payload.testId}$`, "i") },
-          { name: new RegExp(payload.testId, "i") },
-        ],
-      }).lean();
+      throw new Error("Lab test not found in the selected clinic catalog");
     }
-    if (!test) {
-      test = await LabTest.create({
-        clinicId: payload.clinicId,
-        name: payload.testId,
-        code: payload.testId.toUpperCase().replace(/\s+/g, "_"),
-        department: "Laboratory",
-        sampleType: "Blood",
-        normalRange: "Normal",
-        price: 50,
-      });
+    if (test.clinicId?.toString() !== payload.clinicId) {
+      throw new Error("Lab test not found in the selected clinic catalog");
     }
 
     const testId = test._id.toString();

@@ -1,6 +1,7 @@
 import { NotificationLog } from "../models/NotificationLog.ts";
 
 export interface SendMessageOptions {
+  organizationId?: string;
   phone: string;
   patientName?: string;
   channel?: "sms" | "whatsapp";
@@ -35,15 +36,17 @@ export async function sendSmsWhatsAppNotification(options: SendMessageOptions): 
       messageContent = `HealthOS Notification: ${JSON.stringify(options.variables)}`;
   }
 
-  // Create initial queued log entry
+  // No SMS/WhatsApp provider is configured in the current implementation.
+  // Record the failed delivery explicitly instead of reporting a simulated send.
   const log = await NotificationLog.create({
+    organizationId: options.organizationId,
     recipientPhone: phone,
     recipientName: options.patientName || options.variables.patientName,
     channel,
     templateId: options.templateId,
     messageContent,
-    status: "sent",
-    providerMessageId: `MSG-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+    status: "failed",
+    errorReason: "SMS/WhatsApp provider is not configured",
   });
 
   return log;

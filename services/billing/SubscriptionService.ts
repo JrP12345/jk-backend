@@ -102,7 +102,7 @@ export class SubscriptionService {
     // Fetch patients count linked to org clinics
     const orgClinics = await Clinic.find({ organizationId: orgObjId }).select("_id");
     const clinicIds = orgClinics.map(c => c._id);
-    const patientsCount = await Patient.countDocuments({ clinicId: { $in: clinicIds } });
+    const patientsCount = await Patient.countDocuments({ organizationId: orgObjId });
     const appointmentsCount = await Appointment.countDocuments({ clinicId: { $in: clinicIds } });
 
     // Update or upsert UsageRecord cache
@@ -115,7 +115,7 @@ export class SubscriptionService {
         staffCount,
         patientsCount,
         appointmentsCount,
-        storageUsedBytes: 50 * 1024 * 1024, // 50 MB simulated default usage
+        storageUsedBytes: 0,
         lastCalculatedAt: new Date(),
       },
       { upsert: true, returnDocument: 'after' }

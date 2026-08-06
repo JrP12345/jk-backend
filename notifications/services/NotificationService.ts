@@ -178,7 +178,7 @@ export class NotificationService {
     const shouldSendEmail = (requested?.email !== false && effectiveChannels.email) || requested?.email === true;
 
     if (shouldSendEmail && createdNotification) {
-      let recipientEmail = `user_${targetUserId}@ananta.internal`;
+      let recipientEmail: string | undefined;
       try {
         const userDoc: any = await User.findById(targetUserId).select("email").lean();
         if (userDoc?.email) {
@@ -188,7 +188,7 @@ export class NotificationService {
         console.warn(`[NotificationService Warning] Could not resolve email for user ${targetUserId}`, err);
       }
 
-      if (recipientEmail) {
+      if (recipientEmail?.trim()) {
         await notificationQueue.enqueue({
           notificationId: createdNotification._id.toString(),
           channel: "email",
@@ -328,7 +328,12 @@ export class NotificationService {
     };
 
     if (organizationId) {
-      filter.organizationId = new mongoose.Types.ObjectId(organizationId);
+      const orgIdObj = new mongoose.Types.ObjectId(organizationId);
+      filter.$or = [
+        { organizationId: orgIdObj },
+        { organizationId: null },
+        { organizationId: { $exists: false } },
+      ];
     }
 
     const notification = await Notification.findOneAndUpdate(

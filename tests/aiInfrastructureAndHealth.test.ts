@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import app from "../index.js";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
+import { OrgMember } from "../models/OrgMember.ts";
 import { AIObservabilityMetric } from "../models/AIObservabilityMetric.ts";
 
 describe("Work Package C: Enterprise AI Gateway Infrastructure & Operations Health Tests", () => {
@@ -31,6 +32,7 @@ describe("Work Package C: Enterprise AI Gateway Infrastructure & Operations Heal
       organizationId: org._id
     });
     testUserId = (user as any)._id.toString();
+    await OrgMember.create({ userId: user._id, organizationId: org._id, role: "doctor" });
 
     const loginRes = await app.inject({
       method: "POST",
@@ -43,6 +45,7 @@ describe("Work Package C: Enterprise AI Gateway Infrastructure & Operations Heal
 
   afterAll(async () => {
     await AIObservabilityMetric.deleteMany({ userId: testUserId });
+    await OrgMember.deleteMany({ userId: testUserId, organizationId: testOrgId });
     await User.deleteMany({ _id: testUserId });
     await Organization.deleteMany({ _id: testOrgId });
   });

@@ -89,24 +89,13 @@ export class MARService {
       prescription = await Prescription.findById(payload.prescriptionId).lean();
     }
     if (!prescription) {
-      prescription = await Prescription.findOne({
-        encounterId: payload.encounterId,
-        medicineName: new RegExp(payload.prescriptionId, "i")
-      }).lean();
+      throw new Error("Prescription not found");
     }
-    if (!prescription) {
-      prescription = await Prescription.create({
-        organizationId: payload.organizationId,
-        clinicId: payload.clinicId,
-        encounterId: payload.encounterId,
-        patientId: payload.patientId,
-        medicineName: payload.prescriptionId,
-        dosage: "1 tablet",
-        frequency: "Once daily",
-        duration: "5 days",
-        status: "active",
-        doctorId: payload.recordedBy,
-      });
+    if (prescription.encounterId?.toString() !== payload.encounterId || prescription.patientId?.toString() !== payload.patientId || prescription.clinicId?.toString() !== payload.clinicId) {
+      throw new Error("Prescription does not belong to the selected encounter");
+    }
+    if (prescription.organizationId?.toString() !== payload.organizationId) {
+      throw new Error("Prescription does not belong to the active organization");
     }
 
     const prescriptionId = prescription._id.toString();

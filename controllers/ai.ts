@@ -11,6 +11,7 @@ import { Bed } from "../models/Bed.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { Organization } from "../models/Organization.ts";
+import { Medicine } from "../models/Medicine.ts";
 import { AIChatSession } from "../models/AIChatSession.ts";
 import type { ChatTurn } from "../services/ai/AIProvider.ts";
 import { aiService } from "../services/ai/AIService.ts";
@@ -18,6 +19,7 @@ import { aiGateway } from "../services/ai/AIGateway.ts";
 import { timelineService } from "../services/TimelineService.ts";
 import { PHIAnonymizer } from "../utilities/phiAnonymizer.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
+import { checkClinicAccess, getRequestClinicIds } from "../utilities/tenant.ts";
 
 // ─── POST /api/ai/soap-notes/generate ─────────────────────────────────
 export async function generateSOAPNoteController(req: FastifyRequest, reply: FastifyReply) {
@@ -58,22 +60,30 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
 
   if (!finalSummary) {
     let patient = null;
+    const patientScope = requesterRole === "patient"
+      ? { userId: requesterUserId }
+      : requesterRole === "root"
+        ? {}
+        : requesterOrgId
+          ? { organizationId: requesterOrgId }
+          : { _id: null };
     if (patientId && patientId !== "me" && mongoose.Types.ObjectId.isValid(patientId)) {
-      patient = await Patient.findById(patientId).populate("userId", "name email phone");
+      patient = await Patient.findOne({ _id: patientId, ...patientScope }).populate("userId", "name email phone");
     }
     
     if (!patient && requesterUserId) {
-      patient = await Patient.findOne({ userId: requesterUserId }).populate("userId", "name email phone");
+      patient = await Patient.findOne({ userId: requesterUserId, ...patientScope }).populate("userId", "name email phone");
     }
 
     if (patient) {
       targetPatientId = patient._id.toString();
       const orgId = requesterOrgId || (patient.organizationId ? patient.organizationId.toString() : null);
       
+      const patientRecordScope = orgId ? { organizationId: orgId } : {};
       const [activeMeds, recentLabs, activeAdmission] = await Promise.all([
-        Prescription.find({ patientId: targetPatientId, status: "active" }).select("medicineName dosage duration").lean(),
-        LabOrder.find({ patientId: targetPatientId }).sort({ createdAt: -1 }).limit(5).select("orderNumber testId status").lean(),
-        Admission.findOne({ patientId: targetPatientId, status: "admitted" }).lean(),
+        Prescription.find({ patientId: targetPatientId, ...patientRecordScope, status: "active" }).select("medicineName dosage duration").lean(),
+        LabOrder.find({ patientId: targetPatientId, ...patientRecordScope }).sort({ createdAt: -1 }).limit(5).select("orderNumber testId status").lean(),
+        Admission.findOne({ patientId: targetPatientId, ...patientRecordScope, status: "admitted" }).lean(),
       ]);
 
       let eventsSummary = "No recent timeline events.";
@@ -101,24 +111,22 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
   }
 
   if (requesterRole !== "patient") {
-    const orgFilter = requesterOrgId && requesterOrgId !== "000000000000000000000000"
-      ? { organizationId: requesterOrgId }
-      : {};
+    const orgFilter = requesterRole === "root"
+      ? {}
+      : requesterOrgId
+        ? { organizationId: requesterOrgId }
+        : { _id: null };
 
     const clinicsList = await Clinic.find({ ...orgFilter, isActive: true }).lean();
-    let clinicIds = clinicsList.map((c) => c._id);
-    if (clinicIds.length === 0) {
-      const allClinics = await Clinic.find({ isActive: true }).lean();
-      clinicIds = allClinics.map((c) => c._id);
-    }
+    const clinicIds = clinicsList.map((c) => c._id);
 
-    const invoiceQuery = clinicIds.length > 0 ? { clinicId: { $in: clinicIds } } : {};
+    const invoiceQuery = { clinicId: { $in: clinicIds } };
 
     const [patientCount, apptCount, activeAdmissionsCount, bedsList, doctorsList, invoicesList, samplePatients, recentAppts] = await Promise.all([
       Patient.countDocuments(orgFilter),
       Appointment.countDocuments(orgFilter),
       Admission.countDocuments({ ...orgFilter, status: "admitted" }),
-      Bed.find({ status: "occupied" }).lean(),
+      Bed.find({ status: "occupied", clinicId: { $in: clinicIds } }).lean(),
       Doctor.find(orgFilter).select("name specialization").lean(),
       Invoice.find(invoiceQuery)
         .populate({ path: "patientId", populate: { path: "userId", select: "name email" } })
@@ -175,8 +183,7 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
       }
     });
 
-    // If all test/demo data was created prior to midnight, treat current total revenue as active total collections for today's summary context
-    const effectiveTodayRevenue = todayRevenue > 0 ? todayRevenue : totalRevenue;
+    const effectiveTodayRevenue = todayRevenue;
 
     // Rank top paying clients
     const sortedClients = Object.values(patientPaidTotals).sort((a, b) => b.amount - a.amount);
@@ -188,7 +195,7 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
       ? sortedClients.map((c, i) => `${i + 1}. ${c.name} - Paid: ₹${c.amount.toLocaleString()} (${c.count} transactions, Method: ${c.lastMethod})`).join("\n")
       : "No paid transactions recorded yet.";
 
-    const clinicNames = clinicsList.map(c => `${c.name} (${c.city})`).join(", ") || "Main Facility";
+    const clinicNames = clinicsList.map(c => `${c.name} (${c.city})`).join(", ") || "No clinic data available";
     const occupiedBedsCount = bedsList.length;
 
     const patientNamesList = samplePatients.map((p, idx) => {
@@ -207,10 +214,8 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
       return `${idx + 1}. ${pName} with ${dName} at ${cName} [Status: ${a.status}]`;
     }).join("\n");
 
-    const orgObj = requesterOrgId && requesterOrgId !== "000000000000000000000000"
-      ? await Organization.findById(requesterOrgId).lean()
-      : await Organization.findOne({ isActive: true }).lean();
-    const dynamicOrgName = orgObj?.name || "ANANTA Healthcare Platform";
+    const orgObj = requesterOrgId ? await Organization.findById(requesterOrgId).lean() : null;
+    const dynamicOrgName = orgObj?.name || "Organization name unavailable";
 
     const systemStats = `\n\nHospital System Operational & Financial Ledger Metrics:\n` +
       `- Organization / Facility: ${dynamicOrgName}\n` +
@@ -241,10 +246,11 @@ export async function listChatSessionsController(req: FastifyRequest, reply: Fas
     const orgId = req.user?.organization_id;
 
     if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
+    if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
 
     const sessions = await AIChatSession.find({
       userId,
-      organizationId: orgId || "000000000000000000000000",
+      organizationId: orgId,
       status: "active"
     })
       .select("title messages createdAt updatedAt")
@@ -270,6 +276,7 @@ export async function createChatSessionController(req: FastifyRequest, reply: Fa
     const orgId = req.user?.organization_id;
 
     if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
+    if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
 
     const { patientId, initialTitle } = req.body as { patientId?: string; initialTitle?: string };
 
@@ -284,7 +291,7 @@ export async function createChatSessionController(req: FastifyRequest, reply: Fa
     };
 
     const session = await AIChatSession.create({
-      organizationId: orgId || "000000000000000000000000",
+      organizationId: orgId,
       userId,
       patientId: patientId && mongoose.Types.ObjectId.isValid(patientId) ? patientId : null,
       title: initialTitle || "New Clinical Session",
@@ -303,12 +310,15 @@ export async function getChatSessionController(req: FastifyRequest, reply: Fasti
   try {
     const { sessionId } = req.params as { sessionId: string };
     const userId = req.user?.id;
+    const orgId = req.user?.organization_id;
 
+    if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
+    if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
     if (!mongoose.Types.ObjectId.isValid(sessionId)) {
       return reply.code(400).send(errorResponse("Invalid session ID"));
     }
 
-    const session = await AIChatSession.findOne({ _id: sessionId, userId, status: "active" }).lean();
+    const session = await AIChatSession.findOne({ _id: sessionId, userId, organizationId: orgId, status: "active" }).lean();
     if (!session) return reply.code(404).send(errorResponse("Chat session not found"));
 
     const formattedSession = {
@@ -331,6 +341,8 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
     const userId = req.user?.id;
     const requesterOrgId = req.user?.organization_id;
 
+    if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
+    if (!requesterOrgId) return reply.code(403).send(errorResponse("Organization context is required"));
     if (!query || !query.trim()) {
       return reply.code(400).send(errorResponse("query string is required"));
     }
@@ -351,7 +363,7 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
 
     // 1. Atomically append User Message to session in MongoDB
     const sessionBefore = await AIChatSession.findOneAndUpdate(
-      { _id: sessionId, userId, status: "active" },
+      { _id: sessionId, userId, organizationId: requesterOrgId, status: "active" },
       { $push: { messages: userMsg } },
       { returnDocument: "after" }
     );
@@ -362,9 +374,7 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
 
     // 2. Fetch sample patient data for PHI anonymization context if available
     const samplePatientsList = await Patient.find(
-      requesterOrgId && mongoose.Types.ObjectId.isValid(requesterOrgId)
-        ? { organizationId: requesterOrgId }
-        : {}
+      { organizationId: requesterOrgId }
     ).populate("userId", "name email phone").limit(20).lean();
 
     const patientMapList = samplePatientsList.map(p => ({
@@ -399,7 +409,7 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
 
     // 5. Atomically append AI Message and update title if first turn
     const updatedSession = await AIChatSession.findOneAndUpdate(
-      { _id: sessionId, userId, status: "active" },
+      { _id: sessionId, userId, organizationId: requesterOrgId, status: "active" },
       {
         $push: { messages: aiMsg },
         ...(newTitle ? { title: newTitle } : {})
@@ -426,13 +436,16 @@ export async function deleteChatSessionController(req: FastifyRequest, reply: Fa
   try {
     const { sessionId } = req.params as { sessionId: string };
     const userId = req.user?.id;
+    const orgId = req.user?.organization_id;
 
+    if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
+    if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
     if (!mongoose.Types.ObjectId.isValid(sessionId)) {
       return reply.code(400).send(errorResponse("Invalid session ID"));
     }
 
     await AIChatSession.updateOne(
-      { _id: sessionId, userId },
+      { _id: sessionId, userId, organizationId: orgId },
       { status: "archived", deletedAt: new Date() }
     );
 
@@ -476,24 +489,30 @@ export async function queryHealthAssistantController(req: FastifyRequest, reply:
 // ─── Phase 4: Module 34 — Predictive No-Show ML Risk Scoring ─────────
 export async function predictNoShowRiskController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { appointmentId, leadTimeDays, pastNoShowsCount, patientAge, distanceKm } = req.body as {
-      appointmentId?: string;
-      leadTimeDays?: number;
-      pastNoShowsCount?: number;
-      patientAge?: number;
-      distanceKm?: number;
-    };
+    const { appointmentId, distanceKm } = req.body as { appointmentId?: string; distanceKm?: number };
+    if (!appointmentId || !mongoose.Types.ObjectId.isValid(appointmentId)) {
+      return reply.code(400).send(errorResponse("Valid appointmentId is required"));
+    }
 
-    const days = leadTimeDays || 3;
-    const noShows = pastNoShowsCount || 0;
-    const age = patientAge || 40;
-    const distance = distanceKm || 5;
+    const appointment = await Appointment.findById(appointmentId);
+    if (!appointment) return reply.code(404).send(errorResponse("Appointment not found"));
+    const clinicAccess = await checkClinicAccess(req, appointment.clinicId);
+    if (!clinicAccess.allowed) return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
+
+    const days = Math.max(0, Math.ceil((new Date(appointment.appointmentTime).getTime() - new Date(appointment.createdAt).getTime()) / 86400000));
+    const noShows = await Appointment.countDocuments({
+      patientId: appointment.patientId,
+      status: "no-show",
+      appointmentTime: { $lt: appointment.appointmentTime },
+    });
+    const patient = await Patient.findById(appointment.patientId).select("dob").lean();
+    const age = patient?.dob ? Math.floor((Date.now() - new Date(patient.dob).getTime()) / (365.25 * 86400000)) : undefined;
 
     let riskScore = 15; // Baseline 15% risk
     if (days > 7) riskScore += 25;
     if (noShows > 0) riskScore += noShows * 20;
-    if (distance > 15) riskScore += 15;
-    if (age < 25 || age > 75) riskScore += 10;
+    if (distanceKm !== undefined && distanceKm > 15) riskScore += 15;
+    if (age !== undefined && (age < 25 || age > 75)) riskScore += 10;
 
     const finalRiskPercent = Math.min(Math.max(riskScore, 5), 95);
     const riskCategory = finalRiskPercent > 60 ? "High" : finalRiskPercent > 30 ? "Medium" : "Low";
@@ -556,19 +575,37 @@ export async function auditBillingAnomaliesController(req: FastifyRequest, reply
 export async function forecastInventorySupplyController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { clinicId } = req.query as { clinicId?: string };
+    let clinicFilter: any = {};
+    if (clinicId) {
+      if (!mongoose.Types.ObjectId.isValid(clinicId)) return reply.code(400).send(errorResponse("Invalid clinicId"));
+      const clinicAccess = await checkClinicAccess(req, clinicId);
+      if (!clinicAccess.allowed) return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
+      clinicFilter = { clinicId };
+    } else if (req.user?.role !== "root") {
+      const clinicIds = await getRequestClinicIds(req);
+      clinicFilter = { clinicId: { $in: clinicIds || [] } };
+    }
 
-    // Simulated 30-day velocity forecast based on active stock
-    const forecast = [
-      { medicineName: "Paracetamol 500mg", currentStock: 120, avgDailyUsage: 15, daysRemaining: 8, reorderRecommended: true },
-      { medicineName: "Amoxicillin 250mg", currentStock: 45, avgDailyUsage: 12, daysRemaining: 3, reorderRecommended: true },
-      { medicineName: "Metformin 500mg", currentStock: 450, avgDailyUsage: 20, daysRemaining: 22, reorderRecommended: false },
-      { medicineName: "Atorvastatin 10mg", currentStock: 200, avgDailyUsage: 10, daysRemaining: 20, reorderRecommended: false },
-    ];
+    const medicines = await Medicine.find({ ...clinicFilter, deletedAt: null })
+      .select("name genericName stockQuantity reorderLevel clinicId")
+      .sort({ name: 1 })
+      .lean();
+    const forecast = medicines.map((medicine: any) => ({
+      medicineId: medicine._id,
+      medicineName: medicine.name,
+      genericName: medicine.genericName,
+      clinicId: medicine.clinicId,
+      currentStock: medicine.stockQuantity,
+      avgDailyUsage: null,
+      daysRemaining: null,
+      reorderRecommended: medicine.stockQuantity <= medicine.reorderLevel,
+    }));
 
     return reply.code(200).send(
       successResponse({
         forecastCount: forecast.length,
         itemsNeedingReorder: forecast.filter((f) => f.reorderRecommended).length,
+        usageDataAvailable: false,
         forecast,
       })
     );
@@ -618,4 +655,3 @@ export async function extractNlpIcd10CodesController(req: FastifyRequest, reply:
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
-

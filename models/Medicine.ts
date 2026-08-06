@@ -10,6 +10,17 @@ const MedicineSchema = new Schema({
   costPrice: { type: Number, required: true }, // purchase cost price
   expiryDate: { type: Date },
   batchNumber: { type: String },
+  manufacturer: { type: String, trim: true },
+  category: { 
+    type: String, 
+    enum: ["tablet", "capsule", "syrup", "injection", "ointment", "drops", "inhaler", "other"], 
+    default: "tablet" 
+  },
+  scheduleType: { 
+    type: String, 
+    enum: ["general", "schedule_h", "schedule_h1", "schedule_x", "narcotic"], 
+    default: "general" 
+  },
   reorderLevel: { type: Number, default: 20 },
   hsnCode: { type: String, default: "3004" },
   gstRate: { type: Number, default: 5 },

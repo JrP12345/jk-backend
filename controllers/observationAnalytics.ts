@@ -4,6 +4,12 @@ import { ObservationScore } from "../models/ObservationScore.ts";
 import { ObservationAlert } from "../models/ObservationAlert.ts";
 import { ObservationAnalyticsService } from "../services/ObservationAnalyticsService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
+import { Patient } from "../models/Patient.ts";
+import { checkOperationalRecordAccess, checkPatientAccess } from "../utilities/tenant.ts";
+
+function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
+  return reply.code(check.statusCode).send(errorResponse(check.message));
+}
 
 export async function evaluateEncounterScoreController(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -12,6 +18,8 @@ export async function evaluateEncounterScoreController(req: FastifyRequest, repl
 
     const encounter = await Encounter.findById(encounterId).lean();
     if (!encounter) return reply.code(404).send(errorResponse("Encounter not found"));
+    const encounterAccess = await checkOperationalRecordAccess(req, encounter);
+    if (!encounterAccess.allowed) return sendTenantError(reply, encounterAccess);
 
     const orgId = req.user?.organization_id || encounter.organizationId?.toString();
     const clinicId = encounter.clinicId?.toString();
@@ -38,6 +46,10 @@ export async function evaluateEncounterScoreController(req: FastifyRequest, repl
 export async function getEncounterScoresController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id: encounterId } = req.params as { id: string };
+    const encounter = await Encounter.findById(encounterId).lean();
+    if (!encounter) return reply.code(404).send(errorResponse("Encounter not found"));
+    const encounterAccess = await checkOperationalRecordAccess(req, encounter);
+    if (!encounterAccess.allowed) return sendTenantError(reply, encounterAccess);
     const scores = await ObservationScore.find({ encounterId }).sort({ evaluatedAt: -1 }).lean();
     return reply.code(200).send(successResponse(scores));
   } catch (err) {
@@ -54,6 +66,15 @@ export async function acknowledgeAlertController(req: FastifyRequest, reply: Fas
 
     const alertDoc = await ObservationAlert.findById(alertId);
     if (!alertDoc) return reply.code(404).send(errorResponse("Observation alert not found"));
+    const alertAccess = await checkOperationalRecordAccess(req, alertDoc);
+    if (!alertAccess.allowed) return sendTenantError(reply, alertAccess);
+    if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
+    if (!(["open", "acknowledged"].includes(alertDoc.status))) {
+      return reply.code(400).send(errorResponse("Only open or acknowledged alerts can be updated"));
+    }
+    if (action !== "acknowledge" && action !== "resolve") {
+      return reply.code(400).send(errorResponse("Action must be acknowledge or resolve"));
+    }
 
     if (action === "resolve") {
       alertDoc.status = "resolved";
@@ -77,6 +98,15 @@ export async function getPatientVitalTrendsController(req: FastifyRequest, reply
     const { id: patientId } = req.params as { id: string };
     const { days } = req.query as { days?: string };
     const daysNum = days ? Number(days) : 30;
+    if (!Number.isInteger(daysNum) || daysNum < 1 || daysNum > 365) {
+      return reply.code(400).send(errorResponse("days must be an integer between 1 and 365"));
+    }
+    const patientAccess = await checkPatientAccess(req, patientId);
+    if (!patientAccess.allowed && req.user?.role !== "patient") return sendTenantError(reply, patientAccess);
+    if (req.user?.role === "patient") {
+      const patient = await Patient.findOne({ _id: patientId, userId: req.user.id }).select("_id").lean();
+      if (!patient) return reply.code(404).send(errorResponse("Patient not found"));
+    }
 
     const trends = await ObservationAnalyticsService.getPatientVitalTrends(patientId, daysNum);
     return reply.code(200).send(successResponse(trends));

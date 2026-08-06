@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import mongoose from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { User } from "../models/User.ts";
@@ -25,6 +25,7 @@ afterAll(async () => {
 
 describe("Enterprise Onboarding & Email Security OTP Infrastructure", () => {
   it("should dispatch email OTP via emailProvider", async () => {
+    const sendEmail = vi.spyOn(emailProvider, "sendEmail").mockResolvedValue(true);
     const sent = await emailProvider.sendEmail({
       to: "admin@hospital.internal",
       subject: "ANANTA Security Verification OTP Code",
@@ -33,6 +34,7 @@ describe("Enterprise Onboarding & Email Security OTP Infrastructure", () => {
     });
 
     expect(sent).toBe(true);
+    sendEmail.mockRestore();
   });
 
   it("should persist draft progress to database", async () => {

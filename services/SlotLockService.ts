@@ -37,6 +37,10 @@ function generateLockId(): string {
   return `lck_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
 }
 
+function distributedLockUnavailable(): boolean {
+  return process.env.NODE_ENV === "production" && (!redisClient || redisClient.status !== "ready");
+}
+
 // Clean expired in-memory locks periodically
 function cleanMemoryLocks(): void {
   const now = Date.now();
@@ -75,6 +79,9 @@ export async function acquireSlotLock(
   userId: string
 ): Promise<SlotLockResult> {
   const lockKey = buildLockKey(clinicId, doctorId, slotTime);
+  if (distributedLockUnavailable()) {
+    return { success: false, lockKey, message: "Distributed slot locking is unavailable" };
+  }
   const lockId = generateLockId();
   const lockValue = `${userId}:${lockId}:${Date.now()}`;
 
@@ -165,6 +172,9 @@ export async function releaseSlotLock(
   lockId: string
 ): Promise<{ success: boolean; message: string }> {
   const lockKey = buildLockKey(clinicId, doctorId, slotTime);
+  if (distributedLockUnavailable()) {
+    return { success: false, message: "Distributed slot locking is unavailable" };
+  }
 
   if (redisClient) {
     const existingValue = await redisClient.get(lockKey);
@@ -211,6 +221,9 @@ export async function checkSlotLock(
   slotTime: string
 ): Promise<SlotLockInfo> {
   const lockKey = buildLockKey(clinicId, doctorId, slotTime);
+  if (distributedLockUnavailable()) {
+    return { isLocked: true, lockKey, ttlSeconds: 0 };
+  }
 
   if (redisClient) {
     const existingValue = await redisClient.get(lockKey);
@@ -271,6 +284,10 @@ export async function validateSlotLockForBooking(
   lockId?: string
 ): Promise<{ valid: boolean; lockKey: string; message: string }> {
   const info = await checkSlotLock(clinicId, doctorId, slotTime);
+
+  if (distributedLockUnavailable()) {
+    return { valid: false, lockKey: info.lockKey, message: "Distributed slot locking is unavailable" };
+  }
 
   // If slot is not locked, allow booking (backward compatibility — lock is optional)
   if (!info.isLocked) {

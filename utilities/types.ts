@@ -39,11 +39,7 @@ const REFRESH_COOKIE_OPTIONS = {
 export function setAuthCookies(reply: FastifyReply, accessToken: string, refreshToken: string) {
   reply
     .setCookie("access_token", accessToken, ACCESS_COOKIE_OPTIONS)
-    .setCookie("refresh_token", refreshToken, REFRESH_COOKIE_OPTIONS)
-    .setCookie("sse_access_token", accessToken, {
-      ...ACCESS_COOKIE_OPTIONS,
-      httpOnly: false, // Readable by frontend JS to authenticate EventSource SSE streams
-    });
+    .setCookie("refresh_token", refreshToken, REFRESH_COOKIE_OPTIONS);
 }
 
 /**

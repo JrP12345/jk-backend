@@ -15,7 +15,7 @@ const SaaSConfigSchema = new Schema<ISaaSConfig>(
     key: { type: String, required: true, unique: true, default: "platform_config" },
     razorpayKeyId: { type: String, default: "" },
     razorpayKeySecret: { type: String, default: "" },
-    razorpayWebhookSecret: { type: String, default: "ananta_razorpay_webhook_secret_2026" },
+    razorpayWebhookSecret: { type: String, default: "" },
     isLiveMode: { type: Boolean, default: false },
     currency: { type: String, default: "INR" },
   },

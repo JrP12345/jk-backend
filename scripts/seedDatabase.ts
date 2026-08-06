@@ -1483,7 +1483,7 @@ async function runSeed() {
       message: "STAT Complete Blood Count (CBC) ordered for Maria Garcia (ICU Bed 102).",
       priority: "high",
       severity: "warning",
-      actionUrl: "/lab/orders",
+      actionUrl: "/lab-orders",
       entityType: "LabOrder",
       entityId: mariaLabCBC._id.toString(),
       createdAt: nowTime,

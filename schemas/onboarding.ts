@@ -17,8 +17,13 @@ export const createOrganizationSchema = {
       working_days: { type: "string" },
       admin_name: { type: "string", minLength: 1 },
       admin_email: { type: "string", pattern: emailPattern },
-      admin_password: { type: "string", minLength: 6 },
+      admin_password: { type: "string", minLength: 8 },
       admin_phone: { type: "string" },
+      clinic_name: { type: "string" },
+      clinic_city: { type: "string" },
+      clinic_address: { type: "string" },
+      clinic_phone: { type: "string" },
+      clinic_email: { type: "string" },
       plan: { type: "string", enum: ["starter", "pro", "enterprise"] },
       maxClinics: { type: "number" },
       maxDoctors: { type: "number" },
@@ -35,7 +40,7 @@ export const addDoctorSchema = {
     properties: {
       name: { type: "string", minLength: 1 },
       email: { type: "string", pattern: emailPattern },
-      password: { type: "string", minLength: 6 },
+      password: { type: "string", minLength: 8 },
       phone: { type: "string" },
       specialization: { type: "string", minLength: 1 },
       qualification: { type: "string" },
@@ -70,7 +75,7 @@ export const addReceptionistSchema = {
     properties: {
       name: { type: "string", minLength: 1 },
       email: { type: "string", pattern: emailPattern },
-      password: { type: "string", minLength: 6 },
+      password: { type: "string", minLength: 8 },
       phone: { type: "string" },
       shift: { type: "string" },
       clinicId: { type: "string" }
@@ -110,3 +115,19 @@ export const assignDoctorSchema = {
     additionalProperties: false
   }
 };
+
+export const createDepartmentSchema = {
+  body: {
+    type: "object",
+    required: ["name", "code"],
+    properties: {
+      name: { type: "string", minLength: 1 },
+      code: { type: "string", minLength: 1 },
+      description: { type: "string" },
+      headDoctorId: { type: "string", pattern: objectIdPattern },
+      clinicId: { type: "string", pattern: objectIdPattern },
+    },
+    additionalProperties: false,
+  },
+};
+

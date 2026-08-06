@@ -4,6 +4,7 @@ import { SurgicalBooking } from "../models/SurgicalBooking.ts";
 import { Patient } from "../models/Patient.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
+import { checkClinicAccess, checkOperationalRecordAccess } from "../utilities/tenant.ts";
 
 export async function createSurgicalBooking(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -27,9 +28,35 @@ export async function createSurgicalBooking(req: FastifyRequest, reply: FastifyR
       return reply.code(400).send(errorResponse("patientId, clinicId, theatreName, procedureName, leadSurgeonId, scheduledStartTime, and scheduledEndTime are required"));
     }
 
+    const clinicScope = await checkClinicAccess(req, clinicId);
+    if (!clinicScope.allowed) return reply.code(clinicScope.statusCode).send(errorResponse(clinicScope.message));
+
     const patient = await Patient.findById(patientId);
     if (!patient) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
+    }
+
+    const startTime = new Date(scheduledStartTime);
+    const endTime = new Date(scheduledEndTime);
+
+    if (endTime <= startTime) {
+      return reply.code(400).send(errorResponse("scheduledEndTime must be after scheduledStartTime"));
+    }
+
+    // Overlapping booking check for OT room and Lead Surgeon
+    const overlappingBooking = await SurgicalBooking.findOne({
+      clinicId,
+      status: { $in: ["scheduled", "in_surgery", "pre_op_prep"] },
+      $or: [
+        { theatreName: theatreName.trim() },
+        { leadSurgeonId }
+      ],
+      scheduledStartTime: { $lt: endTime },
+      scheduledEndTime: { $gt: startTime }
+    });
+
+    if (overlappingBooking) {
+      return reply.code(400).send(errorResponse("Schedule Conflict: Operating Theatre or Lead Surgeon is already booked during this time window"));
     }
 
     const booking = await SurgicalBooking.create({
@@ -67,7 +94,14 @@ export async function getSurgicalBookings(req: FastifyRequest, reply: FastifyRep
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
 
     const filter: any = {};
-    if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) filter.clinicId = clinicId;
+    if (clinicId) {
+      const scope = await checkClinicAccess(req, clinicId);
+      if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+      filter.clinicId = clinicId;
+    } else if (req.user?.role !== "root") {
+      const { getRequestClinicIds } = await import("../utilities/tenant.ts");
+      filter.clinicId = { $in: await getRequestClinicIds(req) };
+    }
     if (status) filter.status = status;
 
     const totalCount = await SurgicalBooking.countDocuments(filter);
@@ -110,6 +144,9 @@ export async function updateSurgicalBookingStatus(req: FastifyRequest, reply: Fa
     if (!booking) {
       return reply.code(404).send(errorResponse("Surgical booking not found"));
     }
+
+    const scope = await checkOperationalRecordAccess(req, booking);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
 
     if (status) booking.status = status;
     if (safetyChecklistComplete !== undefined) booking.safetyChecklistComplete = safetyChecklistComplete;

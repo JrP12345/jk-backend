@@ -10,6 +10,7 @@ import {
   getAdmissions,
   dischargePatient,
   getWardHierarchyBoard,
+  transferBed,
 } from "../controllers/admission.ts";
 import {
   compileDischargeSummaryController,
@@ -36,6 +37,7 @@ export default async function inpatientRoutes(app: FastifyInstance) {
   app.post("/api/admissions", { ...auth, schema: admitPatientSchema }, admitPatient);
   app.get("/api/admissions", auth, getAdmissions);
   app.put("/api/admissions/:id/discharge", auth, dischargePatient);
+  app.post("/api/admissions/:id/transfer-bed", auth, transferBed);
 
   // Inpatient Discharge Summary
   app.post("/api/encounters/:id/discharge/compile", manageDischarge, compileDischargeSummaryController);

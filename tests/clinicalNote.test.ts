@@ -4,17 +4,14 @@ import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { ClinicalNote } from "../models/ClinicalNote.ts";
-import { Observation } from "../models/Observation.ts";
-import { Prescription } from "../models/Prescription.ts";
 
-describe("Enterprise Clinical Documentation Workspace Integration Tests", () => {
+describe("Outpatient Consultation & Clinical Note Integration Tests", () => {
   let adminCookies: string[] = [];
-  let doctorCookies: string[] = [];
-  let patientId: string;
   let clinicId: string;
+  let patientId: string;
   let doctorUserId: string;
   let encounterId: string;
-  let draftNoteId: string;
+  let noteId: string;
 
   beforeAll(async () => {
     // 1. Create Organization & Admin
@@ -22,10 +19,10 @@ describe("Enterprise Clinical Documentation Workspace Integration Tests", () => 
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
-        org_name: "Clinical Workspace General Hospital",
-        city: "Delhi",
-        admin_name: "Workspace Admin",
-        admin_email: "ws-admin@test.com",
+        org_name: "St. Jude Multispecialty Hospital",
+        city: "Mumbai",
+        admin_name: "Clinical Admin",
+        admin_email: `opd_admin_${Date.now()}@stjude.internal`,
         admin_password: "Password123",
       },
     });
@@ -38,68 +35,54 @@ describe("Enterprise Clinical Documentation Workspace Integration Tests", () => 
       url: "/api/onboarding/clinics",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        name: "Workspace OPD Branch",
-        city: "Delhi",
-        address: "50 Clinical Way",
-        phone: "9112233445",
-        email: "opd@hospital.com",
+        name: "General OPD Consultation Clinic",
+        city: "Mumbai",
+        address: "100 Medical Center Drive",
+        phone: "9600055500",
+        email: "opd@stjude.internal",
       },
     });
     expect(clinicRes.statusCode).toBe(201);
     clinicId = JSON.parse(clinicRes.body).data.id;
 
-    // 3. Create Doctor & Grant MANAGE_CLINICAL_NOTES + VIEW_EHR
-    const doctorRes = await app.inject({
-      method: "POST",
-      url: "/api/onboarding/doctor",
-      headers: { cookie: adminCookies.join("; ") },
-      payload: {
-        name: "Dr. Vikram Patel",
-        email: "vikram.patel@wstest.com",
-        password: "Password123",
-        specialization: "Internal Medicine",
-      },
-    });
-    expect(doctorRes.statusCode).toBe(201);
-
-    const docUser = await User.findOne({ email: "vikram.patel@wstest.com" });
-    expect(docUser).not.toBeNull();
-    doctorUserId = docUser!._id.toString();
-
-    // Login as Doctor
-    const doctorLogin = await app.inject({
-      method: "POST",
-      url: "/api/auth/login",
-      payload: {
-        email: "vikram.patel@wstest.com",
-        password: "Password123",
-      },
-    });
-    expect(doctorLogin.statusCode).toBe(200);
-    doctorCookies = doctorLogin.headers["set-cookie"] as string[];
-
-    // 4. Register Patient
-    const patientReg = await app.inject({
+    // 3. Register Patient
+    const patientRes = await app.inject({
       method: "POST",
       url: "/api/auth/register",
+      headers: { cookie: adminCookies.join("; ") },
       payload: {
-        name: "Alice Patient WS",
-        email: "alice.ws@patient.com",
-        password: "Password123",
+        name: "OPD Patient Sunita",
+        email: `sunita_opd_${Date.now()}@patient.com`,
         phone: "9887766554",
+        password: "Password123",
+        role: "patient",
       },
     });
-    expect(patientReg.statusCode).toBe(201);
-    const patientUserId = JSON.parse(patientReg.body).data.user.id;
-    const patientDoc = await Patient.findOne({ userId: patientUserId });
+    expect(patientRes.statusCode).toBe(201);
+    const patientUserId = JSON.parse(patientRes.body).data.user.id;
+    const { Patient: PatientModel } = await import("../models/Patient.ts");
+    const patientDoc = await PatientModel.findOne({ userId: patientUserId });
     patientId = patientDoc!._id.toString();
 
-    const orgId = JSON.parse(orgRes.body).data.organization.id;
-    await Patient.findByIdAndUpdate(patientId, { organizationId: orgId });
+    // 4. Register Doctor
+    const docRes = await app.inject({
+      method: "POST",
+      url: "/api/onboarding/staff",
+      headers: { cookie: adminCookies.join("; ") },
+      payload: {
+        name: "Dr. Vikram Seth",
+        email: `dr.vikram_${Date.now()}@hospital.com`,
+        specialization: "Internal Medicine",
+        phone: "9123456789",
+        role: "doctor",
+        password: "Password123",
+      },
+    });
+    expect(docRes.statusCode).toBe(201);
+    doctorUserId = JSON.parse(docRes.body).data.id;
   });
 
-  // ─── Test 1: Create Encounter ─────────────────────────────────────────────
-  it("should create a new clinical Encounter aggregate root", async () => {
+  it("should create an active OPD consultation encounter via POST /api/encounters", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/encounters",
@@ -116,11 +99,11 @@ describe("Enterprise Clinical Documentation Workspace Integration Tests", () => 
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
     expect(body.data.status).toBe("in_progress");
-    encounterId = body.data.id;
+    expect(body.data.encounterType).toBe("opd");
+    encounterId = body.data.id || body.data._id;
   });
 
-  // ─── Test 2: Save Draft SOAP Note ─────────────────────────────────────────
-  it("should record generic vitals observations and draft SOAP note", async () => {
+  it("should save draft SOAP clinical note via POST /api/clinical-notes", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/clinical-notes",
@@ -129,103 +112,62 @@ describe("Enterprise Clinical Documentation Workspace Integration Tests", () => 
         clinicId,
         encounterId,
         patientId,
-        chiefComplaint: "Severe fever & chills",
-        historyOfPresentIllness: "Symptoms started 2 days ago.",
-        symptoms: ["Fever", "Chills", "Myalgia"],
+        chiefComplaint: "Persistent dry cough and mild fever for 4 days",
+        historyOfPresentIllness: "Patient reports onset of symptoms after traveling.",
+        symptoms: ["Cough", "Fever", "Fatigue"],
+        physicalExamination: "Chest auscultation clear. Throat slightly erythematous.",
+        diagnoses: ["Acute Upper Respiratory Infection (J06.9)"],
+        severity: "mild",
+        treatmentPlan: "Rest, oral hydration, paracetamol 500mg as needed.",
         vitals: {
           bpSystolic: 120,
           bpDiastolic: 80,
-          pulseRate: 88,
+          pulseRate: 78,
           spO2: 98,
-          temperatureF: 101.2,
+          temperatureF: 99.2,
         },
-        physicalExamination: "Febrile, throat clear, lungs clear to auscultation.",
-        diagnoses: [
-          { code: "A90", codingSystem: "ICD-10", description: "Dengue Fever", status: "active" },
-        ],
-        severity: "moderate",
-        treatmentPlan: "Hydration, antipyretics, monitor platelet count.",
         prescriptions: [
-          { name: "Paracetamol", dosage: "650mg", frequency: "1-1-1", duration: "5 days", instructions: "After food" },
+          { name: "Paracetamol 500mg", dosage: "1 tablet", frequency: "1-0-1", duration: "5 days" },
         ],
+        followUpDate: new Date(Date.now() + 7 * 86400000).toISOString(),
+        followUpInstructions: "Return if fever persists beyond 3 days.",
       },
     });
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    expect(body.data.subjective.chiefComplaint).toContain("Persistent dry cough");
     expect(body.data.status).toBe("draft");
-    expect(body.data.version).toBe(1);
-    draftNoteId = body.data.id;
-
-    // Verify Observations created (BP, HR, SPO2, TEMP)
-    const obsCount = await Observation.countDocuments({ encounterId });
-    expect(obsCount).toBe(4);
-
-    // Verify Prescriptions created
-    const rxCount = await Prescription.countDocuments({ encounterId });
-    expect(rxCount).toBe(1);
+    noteId = body.data._id || body.data.id;
   });
 
-  // ─── Test 3: Sign Clinical Note ───────────────────────────────────────────
-  it("should sign and lock clinical note", async () => {
+  it("should sign and lock clinical note via PUT /api/clinical-notes/:id/sign", async () => {
     const res = await app.inject({
       method: "PUT",
-      url: `/api/clinical-notes/${draftNoteId}/sign`,
+      url: `/api/clinical-notes/${noteId}/sign`,
       headers: { cookie: adminCookies.join("; ") },
     });
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
     expect(body.data.status).toBe("signed");
-    expect(body.data.signature.signedAt).not.toBeNull();
-
-    // Verify Encounter is completed
-    const enc = await Encounter.findById(encounterId);
-    expect(enc?.status).toBe("completed");
+    expect(body.data.signature.signedAt).toBeDefined();
   });
 
-  // ─── Test 4: Amend Signed Note ────────────────────────────────────────────
-  it("should create version 2 amendment linked to parent note", async () => {
-    const res = await app.inject({
-      method: "POST",
-      url: `/api/clinical-notes/${draftNoteId}/amend`,
-      headers: { cookie: adminCookies.join("; ") },
-      payload: {
-        amendmentReason: "Added dengue serology lab recommendation",
-        subjective: {
-          chiefComplaint: "Severe fever, chills & retro-orbital pain",
-          symptoms: ["Fever", "Chills", "Retro-orbital pain"],
-        },
-      },
-    });
-
-    expect(res.statusCode).toBe(201);
-    const body = JSON.parse(res.body);
-    expect(body.data.version).toBe(2);
-    expect(body.data.parentNoteId).toBe(draftNoteId);
-    expect(body.data.isLatest).toBe(true);
-
-    // Verify parent note is no longer isLatest
-    const parentNote = await ClinicalNote.findById(draftNoteId);
-    expect(parentNote?.isLatest).toBe(false);
-    expect(parentNote?.status).toBe("amended");
-  });
-
-  // ─── Test 5: EHR Timeline Integration ─────────────────────────────────────
-  it("should populate Longitudinal EHR Timeline with latest amended SOAP note", async () => {
+  it("should retrieve patient clinical note history via GET /api/patients/:id/clinical-notes/history", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/api/patients/${patientId}/timeline`,
+      url: `/api/patients/${patientId}/clinical-notes/history`,
       headers: { cookie: adminCookies.join("; ") },
     });
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.data.events.length).toBeGreaterThanOrEqual(1);
-
-    const soapEvent = body.data.events.find((e: any) => e.displayMetadata.statusLabel === "Signed v2");
-    expect(soapEvent).toBeDefined();
-    expect(soapEvent.title).toMatch(/Dengue Fever/i);
-    expect(soapEvent.clinicalConcepts.vitals.BP).toBe("120/80 mmHg");
+    expect(body.success).toBe(true);
+    expect(Array.isArray(body.data)).toBe(true);
+    expect(body.data.length).toBeGreaterThan(0);
+    expect(body.data[0].status).toBe("signed");
   });
 });

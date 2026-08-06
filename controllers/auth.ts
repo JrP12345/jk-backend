@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { User } from "../models/User.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { Organization } from "../models/Organization.ts";
+import { Clinic } from "../models/Clinic.ts";
 import { Patient } from "../models/Patient.ts";
 import { Role } from "../models/Role.ts";
 import {
@@ -12,6 +13,8 @@ import {
   revokeAllRefreshTokens,
   successResponse,
   errorResponse,
+  generateTwoFactorChallenge,
+  verifyTwoFactorChallenge,
 } from "../utilities/helpers.ts";
 import { setAuthCookies, clearAuthCookies } from "../utilities/types.ts";
 import { eventBus } from "../events/eventBus.ts";
@@ -21,6 +24,8 @@ import crypto from "node:crypto";
 import { validatePasswordStrength } from "../middleware/auth.ts";
 import { RefreshToken } from "../models/RefreshToken.ts";
 import { emailProvider } from "../notifications/providers/emailProvider.ts";
+import { TwoFactorService } from "../services/TwoFactorService.ts";
+import mongoose from "mongoose";
 
 // ─── Login ──────────────────────────────────────────────────────
 export async function login(req: FastifyRequest, reply: FastifyReply) {
@@ -31,7 +36,7 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse("Email and password are required"));
     }
 
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: email.trim().toLowerCase() });
 
     if (!user) {
       return reply.code(401).send(errorResponse("Invalid credentials"));
@@ -84,6 +89,21 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
     const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
     const permissions = roleConfig ? roleConfig.permissions : [];
 
+    if (user.twoFactorEnabled && user.twoFactorSecret) {
+      clearAuthCookies(reply);
+      const twoFactorToken = generateTwoFactorChallenge(user.id);
+      return reply.code(200).send(
+        successResponse(
+          {
+            twoFactorRequired: true,
+            twoFactorToken,
+            user: { id: user.id, name: user.name, email: user.email, role: user.role, organization_id, permissions },
+          },
+          "Two-factor verification required"
+        )
+      );
+    }
+
     const payload = { id: user.id, email: user.email, role: user.role, organization_id };
     const accessToken = generateAccessToken(payload);
 
@@ -92,7 +112,7 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
     const userAgent = (req.headers["user-agent"] as string) || "";
     const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
 
-    const refreshToken = await createRefreshToken(user.id, { ipAddress, userAgent, deviceName });
+    const refreshToken = await createRefreshToken(user.id, { ipAddress, userAgent, deviceName, organizationId: organization_id });
 
     // Set httpOnly cookies
     setAuthCookies(reply, accessToken, refreshToken);
@@ -118,6 +138,74 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
     );
   } catch (err) {
     console.error("login error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+// Complete the login flow for accounts that have two-factor authentication enabled.
+// The short-lived challenge is deliberately not an access token and cannot be used
+// against authenticated routes.
+export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { twoFactorToken, otp } = (req.body as { twoFactorToken?: string; otp?: string }) || {};
+    if (!twoFactorToken || !otp || !/^\d{6}$/.test(otp.trim())) {
+      return reply.code(400).send(errorResponse("Two-factor challenge and a 6-digit code are required"));
+    }
+
+    let challenge: { userId: string };
+    try {
+      challenge = verifyTwoFactorChallenge(twoFactorToken);
+    } catch {
+      return reply.code(401).send(errorResponse("Invalid or expired two-factor challenge"));
+    }
+
+    if (!mongoose.isValidObjectId(challenge.userId)) {
+      return reply.code(401).send(errorResponse("Invalid two-factor challenge"));
+    }
+
+    const user = await User.findOne({ _id: challenge.userId, isActive: true });
+    if (!user || !user.twoFactorEnabled || !user.twoFactorSecret) {
+      return reply.code(401).send(errorResponse("Two-factor authentication is not available for this account"));
+    }
+
+    if (!TwoFactorService.verifyToken(user.twoFactorSecret, otp)) {
+      return reply.code(401).send(errorResponse("Invalid two-factor code"));
+    }
+
+    const orgMember = await OrgMember.findOne({ userId: user._id });
+    const organization_id = orgMember?.organizationId?.toString() || (user as any).organization_id?.toString();
+    if (organization_id && user.role !== "root") {
+      const organization = await Organization.findById(organization_id).select("status isActive").lean();
+      if (!organization || organization.status === "inactive" || organization.isActive === false) {
+        return reply.code(403).send(errorResponse("Organization workspace is inactive or suspended"));
+      }
+    }
+
+    const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
+    const permissions = roleConfig?.permissions || [];
+    const payload = { id: user.id, email: user.email, role: user.role, organization_id };
+    const accessToken = generateAccessToken(payload);
+    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
+    const userAgent = (req.headers["user-agent"] as string) || "";
+    const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
+    const refreshToken = await createRefreshToken(user.id, { ipAddress, userAgent, deviceName, organizationId: organization_id });
+
+    setAuthCookies(reply, accessToken, refreshToken);
+    eventBus.publish({
+      eventType: EVENT_TYPES.AUTH_LOGIN_NEW_DEVICE,
+      category: "auth",
+      targetUserId: user.id,
+      title: "New Account Login",
+      message: `Successful login to Ananta account (${user.email}).`,
+      severity: "info",
+      organizationId: organization_id,
+    });
+
+    return reply.code(200).send(successResponse({
+      user: { id: user.id, name: user.name, email: user.email, role: user.role, organization_id, permissions },
+    }, "Login successful"));
+  } catch (err) {
+    console.error("verifyLoginTwoFactor error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -157,7 +245,7 @@ export async function forgotPassword(req: FastifyRequest, reply: FastifyReply) {
     const user = await User.findOne({ email, isActive: true });
     if (!user) {
       // Return 200 to prevent user enumeration
-      return reply.send(successResponse(null, "If an account exists with that email, a password reset link has been dispatched."));
+      return reply.send(successResponse(null, "If an account exists with that email, a password reset request was received."));
     }
 
     const resetToken = crypto.randomBytes(32).toString("hex");
@@ -168,14 +256,17 @@ export async function forgotPassword(req: FastifyRequest, reply: FastifyReply) {
     await user.save();
 
     const resetUrl = `${process.env.CORS_ALLOWED_ORIGINS || "http://localhost:3000"}/reset-password?token=${resetToken}`;
-    await emailProvider.sendEmail({
+    const sent = await emailProvider.sendEmail({
       to: user.email,
       subject: "ANANTA Account Password Reset",
       text: `Reset your ANANTA password using this link (valid for 1 hour): ${resetUrl}`,
       html: `<p>Click here to reset your password: <a href="${resetUrl}">${resetUrl}</a></p>`,
     });
+    if (!sent) {
+      console.error("forgotPassword: reset email delivery was unavailable");
+    }
 
-    return reply.send(successResponse(null, "Password reset instructions sent to your email."));
+    return reply.send(successResponse(null, "If an account exists with that email, a password reset request was received."));
   } catch (err: any) {
     return reply.code(500).send(errorResponse("Failed to process forgot password request"));
   }
@@ -278,8 +369,28 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
       return reply.code(401).send(errorResponse("User not found or deactivated"));
     }
 
+    const tokenHash = crypto.createHash("sha256").update(rawRefreshToken).digest("hex");
+    const refreshRecord = await RefreshToken.findOne({
+      tokenHash,
+      userId: user._id,
+      revoked: false,
+      expiresAt: { $gt: new Date() },
+    });
+    if (!refreshRecord) {
+      return reply.code(401).send(errorResponse("Invalid or expired refresh token"));
+    }
+
     const orgMember = await OrgMember.findOne({ userId: user._id });
-    const organization_id = orgMember?.organizationId?.toString();
+    const organization_id = refreshRecord.organizationId?.toString() || orgMember?.organizationId?.toString();
+    if (organization_id && user.role !== "root") {
+      const organization = await Organization.findById(organization_id).select("status isActive").lean();
+      if (!organization || organization.status === "inactive" || organization.isActive === false) {
+        return reply.code(403).send(errorResponse("Organization workspace is inactive or suspended"));
+      }
+    }
+
+    refreshRecord.set("lastActiveAt", new Date());
+    await refreshRecord.save();
 
     const payload = { id: user.id, email: user.email, role: user.role, organization_id };
     const accessToken = generateAccessToken(payload);
@@ -327,52 +438,90 @@ export async function logout(req: FastifyRequest, reply: FastifyReply) {
 // ─── Register (patient self-registration) ───────────────────────
 export async function registerPatient(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { name, email, password, phone } = req.body as {
+    const { name, email, password, phone, clinicId } = req.body as {
       name: string;
       email: string;
       password: string;
       phone?: string;
+      clinicId?: string;
     };
 
     if (!name || !email || !password) {
       return reply.code(400).send(errorResponse("Name, email and password are required"));
     }
 
-    const exists = await User.findOne({ email });
+    const strength = validatePasswordStrength(password);
+    if (!strength.valid) {
+      return reply.code(400).send(errorResponse(strength.reason || "Password does not meet complexity requirements"));
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const exists = await User.findOne({ email: normalizedEmail });
     if (exists) {
       return reply.code(409).send(errorResponse("Email already registered"));
     }
 
+    let selectedClinic: any = null;
+    if (clinicId) {
+      if (!mongoose.isValidObjectId(clinicId)) {
+        return reply.code(400).send(errorResponse("Invalid clinic ID"));
+      }
+      selectedClinic = await Clinic.findOne({ _id: clinicId, isActive: true }).lean();
+      if (!selectedClinic) {
+        return reply.code(404).send(errorResponse("Clinic not found or inactive"));
+      }
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
+    const emailVerificationToken = crypto.randomBytes(32).toString("hex");
 
     const newUser = await User.create({
-      name,
-      email,
+      name: name.trim(),
+      email: normalizedEmail,
       password: hashedPassword,
       phone: phone || null,
       role: "patient",
+      isEmailVerified: false,
+      emailVerificationToken,
+      emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000),
     });
 
     try {
-      await Patient.create({ userId: newUser._id });
+      await Patient.create({ userId: newUser._id, organizationId: selectedClinic?.organizationId });
+      if (selectedClinic?.organizationId) {
+        await OrgMember.findOneAndUpdate(
+          { userId: newUser._id, organizationId: selectedClinic.organizationId },
+          { $setOnInsert: { role: "patient" } },
+          { upsert: true, new: true }
+        );
+      }
     } catch (err) {
       await User.deleteOne({ _id: newUser._id });
       throw err;
     }
 
+    const verificationUrl = `${process.env.CORS_ALLOWED_ORIGINS || "http://localhost:3000"}/verify-email?token=${emailVerificationToken}`;
+    await emailProvider.sendEmail({
+      to: normalizedEmail,
+      subject: "Verify your ANANTA account",
+      text: `Verify your account using this link (valid for 24 hours): ${verificationUrl}`,
+      html: `<p>Verify your ANANTA account: <a href="${verificationUrl}">${verificationUrl}</a></p>`,
+    });
+
     const roleConfig = await Role.findOne({ name: "patient" }).lean() as any;
     const permissions = roleConfig ? roleConfig.permissions : [];
 
-    const payload = { id: newUser.id, email, role: "patient" };
+    const organization_id = selectedClinic?.organizationId?.toString();
+    const payload = { id: newUser.id, email: normalizedEmail, role: "patient", organization_id };
     const accessToken = generateAccessToken(payload);
-    const refreshToken = await createRefreshToken(newUser.id);
+    const refreshToken = await createRefreshToken(newUser.id, { organizationId: organization_id });
 
     // Set httpOnly cookies
     setAuthCookies(reply, accessToken, refreshToken);
 
     return reply.code(201).send(
       successResponse(
-        { user: { id: newUser.id, name, email, role: "patient", permissions } },
+        { user: { id: newUser.id, name: name.trim(), email: normalizedEmail, role: "patient", organization_id, permissions } },
         "Patient registered successfully"
       )
     );
@@ -396,6 +545,14 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
 
     const orgMember = await OrgMember.findOne({ userId });
     const organization_id = user.role === "root" ? req.user?.organization_id : orgMember?.organizationId?.toString();
+
+    if (organization_id && user.role !== "root") {
+      const organization = await Organization.findById(organization_id).select("status isActive").lean();
+      if (!organization || organization.status === "inactive" || organization.isActive === false) {
+        clearAuthCookies(reply);
+        return reply.code(403).send(errorResponse("Organization workspace is inactive or suspended"));
+      }
+    }
 
     const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
     const permissions = roleConfig ? roleConfig.permissions : [];
@@ -429,6 +586,21 @@ export async function switchOrganization(req: FastifyRequest, reply: FastifyRepl
 
     const { organizationId } = (req.body as any) || {};
 
+    if (organizationId && !mongoose.isValidObjectId(organizationId)) {
+      return reply.code(400).send(errorResponse("Invalid organization ID"));
+    }
+
+    if (organizationId) {
+      const organization = await Organization.findOne({
+        _id: organizationId,
+        isActive: { $ne: false },
+        status: { $ne: "inactive" },
+      }).lean();
+      if (!organization) {
+        return reply.code(404).send(errorResponse("Organization not found or inactive"));
+      }
+    }
+
     const payload = {
       id: userId,
       email: req.user!.email,
@@ -437,7 +609,7 @@ export async function switchOrganization(req: FastifyRequest, reply: FastifyRepl
     };
 
     const accessToken = generateAccessToken(payload);
-    const refreshToken = await createRefreshToken(userId);
+    const refreshToken = await createRefreshToken(userId, { organizationId: organizationId || undefined });
 
     setAuthCookies(reply, accessToken, refreshToken);
 

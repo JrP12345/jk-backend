@@ -1,10 +1,12 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import mongoose from "mongoose";
 import { notificationService } from "../notifications/services/NotificationService.ts";
 import { Notification } from "../models/Notification.ts";
 import { NotificationPreference } from "../models/NotificationPreference.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
+import { User } from "../models/User.ts";
+import { emailProvider } from "../notifications/providers/emailProvider.ts";
 
 describe("Notification Infrastructure System", () => {
   const userId = new mongoose.Types.ObjectId().toHexString();
@@ -12,6 +14,14 @@ describe("Notification Infrastructure System", () => {
   beforeEach(async () => {
     await Notification.deleteMany({});
     await NotificationPreference.deleteMany({});
+    await User.deleteMany({ _id: userId });
+    await User.create({
+      _id: userId,
+      name: "Notification Test User",
+      email: "notification-test@example.com",
+      password: "test-password",
+      role: "admin",
+    });
   });
 
   it("should create default notification preferences when requested", async () => {
@@ -176,6 +186,7 @@ describe("Notification Infrastructure System", () => {
   });
 
   it("should process background queue jobs asynchronously and track metrics", async () => {
+    const sendEmail = vi.spyOn(emailProvider, "sendEmail").mockResolvedValue(true);
     const metricsBefore = await notificationService.getMetrics();
     expect(metricsBefore).toBeDefined();
     expect(typeof metricsBefore.activeSseConnections).toBe("number");
@@ -195,6 +206,7 @@ describe("Notification Infrastructure System", () => {
 
     const metricsAfter = await notificationService.getMetrics();
     expect(metricsAfter.queueStats.processedCount).toBeGreaterThanOrEqual(1);
+    sendEmail.mockRestore();
   });
 
   it("should snooze notifications and temporarily hide them from unread count", async () => {

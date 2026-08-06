@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { authenticate, checkPermission } from "../middleware/auth.ts";
-import { createClinicSchema, assignDoctorSchema } from "../schemas/onboarding.ts";
+import { createClinicSchema, assignDoctorSchema, createDepartmentSchema } from "../schemas/onboarding.ts";
 import {
   createClinic,
   getClinics,
@@ -29,7 +29,7 @@ export default async function clinicRoutes(app: FastifyInstance) {
   app.delete("/api/onboarding/clinics/:id", manageClinics, deleteClinic);
 
   // Departments
-  app.post("/api/departments", manageClinics, createDepartment);
+  app.post("/api/departments", { ...manageClinics, schema: createDepartmentSchema }, createDepartment);
   app.get("/api/departments", viewClinics, getDepartments);
 
   // Multi-location Doctor Assignments

@@ -337,4 +337,60 @@ describe("Discharge Summary Integration Tests", () => {
     expect(dischargeEvent.clinicalMetadata.discharge).toBeDefined();
     expect(dischargeEvent.clinicalMetadata.discharge.snapshotHash).toHaveLength(64);
   });
+
+  it("should support transferring admitted patient to another available bed via POST /api/admissions/:id/transfer-bed", async () => {
+    // 1. Create 2 beds: Bed-101 (Occupied), Bed-102 (Available)
+    const bed1Res = await app.inject({
+      method: "POST",
+      url: "/api/beds",
+      headers: { cookie: adminCookies.join("; ") },
+      payload: { clinicId, wardName: "ICU", bedNumber: "ICU-101", pricePerDay: 5000 },
+    });
+    const bed1Id = JSON.parse(bed1Res.body).data.id;
+
+    const bed2Res = await app.inject({
+      method: "POST",
+      url: "/api/beds",
+      headers: { cookie: adminCookies.join("; ") },
+      payload: { clinicId, wardName: "General Ward", bedNumber: "GW-202", pricePerDay: 1500 },
+    });
+    const bed2Id = JSON.parse(bed2Res.body).data.id;
+
+    // 2. Admit patient to ICU-101
+    const admitRes = await app.inject({
+      method: "POST",
+      url: "/api/admissions",
+      headers: { cookie: adminCookies.join("; ") },
+      payload: {
+        clinicId,
+        patientId,
+        bedId: bed1Id,
+        reasonForAdmission: "Acute respiratory distress",
+        doctorInCharge: adminUserId,
+      },
+    });
+    expect(admitRes.statusCode).toBe(201);
+    const admissionId = JSON.parse(admitRes.body).data.id;
+
+    // 3. Transfer patient from ICU-101 to GW-202
+    const transferRes = await app.inject({
+      method: "POST",
+      url: `/api/admissions/${admissionId}/transfer-bed`,
+      headers: { cookie: adminCookies.join("; ") },
+      payload: {
+        targetBedId: bed2Id,
+        reason: "Patient stabilized, step-down to General Ward",
+      },
+    });
+
+    expect(transferRes.statusCode).toBe(200);
+    const transferBody = JSON.parse(transferRes.body);
+    expect(transferBody.success).toBe(true);
+
+    // Verify bed statuses swapped
+    const oldBed = await Bed.findById(bed1Id);
+    const newBed = await Bed.findById(bed2Id);
+    expect(oldBed!.status).toBe("available");
+    expect(newBed!.status).toBe("occupied");
+  });
 });

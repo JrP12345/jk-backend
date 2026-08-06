@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import app from "../index.js";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
+import { OrgMember } from "../models/OrgMember.ts";
 import { AIToolExecutionLog } from "../models/AIToolExecutionLog.ts";
 import { aiToolRouter } from "../services/ai/AIToolRouter.ts";
 
@@ -33,6 +34,7 @@ describe("Phase 5: Agentic Tool Execution & Clinician Co-Signature Approval Test
       organizationId: org._id
     });
     testUserId = (user as any)._id.toString();
+    await OrgMember.create({ userId: user._id, organizationId: org._id, role: "doctor" });
 
     const loginRes = await app.inject({
       method: "POST",
@@ -45,6 +47,7 @@ describe("Phase 5: Agentic Tool Execution & Clinician Co-Signature Approval Test
 
   afterAll(async () => {
     await AIToolExecutionLog.deleteMany({ requestedByUserId: testUserId });
+    await OrgMember.deleteMany({ userId: testUserId, organizationId: testOrgId });
     await User.deleteMany({ _id: testUserId });
     await Organization.deleteMany({ _id: testOrgId });
   });
@@ -65,8 +68,8 @@ describe("Phase 5: Agentic Tool Execution & Clinician Co-Signature Approval Test
       cookies: { access_token: accessToken },
       headers: { authorization: `Bearer ${accessToken}` },
       payload: {
-        toolName: "createAppointmentTool",
-        inputPayload: { patientName: "Maria Garcia", date: "2026-08-01" },
+        toolName: "generateSOAPNoteTool",
+        inputPayload: { chiefComplaint: "Persistent cough for three days" },
         sessionId: "sess_tool_test"
       }
     });

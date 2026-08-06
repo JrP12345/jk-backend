@@ -1,4 +1,5 @@
 import { User } from "../models/User.ts";
+import { OrgMember } from "../models/OrgMember.ts";
 import { generateAccessToken, createRefreshToken } from "../utilities/helpers.ts";
 
 export interface SsoIdentityPayload {
@@ -13,21 +14,15 @@ export async function processSsoLogin(identity: SsoIdentityPayload) {
 
   let user = await User.findOne({ email: cleanEmail });
 
-  if (!user) {
-    user = await User.create({
-      email: cleanEmail,
-      name: identity.name || cleanEmail.split("@")[0],
-      password: `SSO_${Date.now()}_${Math.random()}`,
-      role: "doctor", // Default enterprise role for SSO onboarded staff
-      isEmailVerified: true,
-      isActive: true,
-    });
-  }
+  if (!user || !user.isActive) throw new Error("SSO identity is not provisioned for this platform");
+  const membership = await OrgMember.findOne({ userId: user._id, status: { $ne: "inactive" } }).sort({ createdAt: 1 }).lean();
+  if (!membership) throw new Error("SSO identity has no active organization membership");
 
   const tokenPayload = {
     id: user._id.toString(),
     email: user.email,
     role: user.role,
+    organization_id: membership.organizationId.toString(),
   };
 
   const accessToken = generateAccessToken(tokenPayload);
@@ -39,6 +34,7 @@ export async function processSsoLogin(identity: SsoIdentityPayload) {
       email: user.email,
       name: user.name,
       role: user.role,
+      organization_id: membership.organizationId.toString(),
     },
     accessToken,
     refreshToken,

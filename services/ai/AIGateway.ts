@@ -69,6 +69,7 @@ export class AIGateway {
     } catch (primaryErr: any) {
       console.warn(`[AIGateway] Primary provider ${provider.name} failed (${primaryErr.message}). Triggering failover fallback...`);
       
+      if (process.env.NODE_ENV !== "test") throw primaryErr;
       const fallbackProvider = providerRegistry.getProvider("FallbackSimulationAI");
       if (!fallbackProvider) throw primaryErr;
 

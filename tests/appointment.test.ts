@@ -137,6 +137,8 @@ describe("Appointments & Queue API Integration Tests", () => {
           dob: "1980-05-15",
           gender: "male",
           phone: "9988776655",
+          email: "suresh.gopi@example.com",
+          password: "Password123",
         },
       },
     });
@@ -182,5 +184,26 @@ describe("Appointments & Queue API Integration Tests", () => {
     // Check if new queue is stored in DB
     const firstObj = await Appointment.findById(appointmentId);
     expect(firstObj!.queuePosition).toBe(2);
+  });
+
+  it("should update patient profile via PATCH /api/patients/:id", async () => {
+    const updateRes = await app.inject({
+      method: "PATCH",
+      url: `/api/patients/${patientId}`,
+      headers: { cookie: adminCookies.join("; ") },
+      payload: {
+        bloodGroup: "O+",
+        allergies: ["Penicillin", "Sulfa"],
+        conditions: ["Hypertension"],
+        address: "123 Healthcare Blvd, Surat",
+      },
+    });
+
+    expect(updateRes.statusCode).toBe(200);
+    const body = JSON.parse(updateRes.body);
+    expect(body.success).toBe(true);
+    expect(body.data.bloodGroup).toBe("O+");
+    expect(body.data.allergies).toContain("Penicillin");
+    expect(body.data.conditions).toContain("Hypertension");
   });
 });

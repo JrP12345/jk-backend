@@ -2,6 +2,7 @@ import mongoose, { Schema } from "mongoose";
 
 const RefreshTokenSchema = new Schema({
   userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
+  organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
   tokenHash: { type: String, required: true, unique: true, index: true },
   expiresAt: { type: Date, required: true },
   revoked: { type: Boolean, default: false },
@@ -11,6 +12,9 @@ const RefreshTokenSchema = new Schema({
   lastActiveAt: { type: Date, default: Date.now },
   createdAt: { type: Date, default: Date.now }
 }, { timestamps: true });
+
+// Automatically remove expired tokens via MongoDB TTL index
+RefreshTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 RefreshTokenSchema.virtual("id").get(function() {
   return this._id.toHexString();

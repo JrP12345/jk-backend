@@ -39,10 +39,13 @@ export interface PaymentProvider {
   processRefund(request: PaymentRefundRequest): Promise<PaymentRefundResponse>;
 }
 
-class SimulationPaymentProvider implements PaymentProvider {
-  name = "SimulationPaymentGateway";
+class TestPaymentProvider implements PaymentProvider {
+  name = "TestPaymentGateway";
 
   async createPaymentLink(request: PaymentLinkRequest): Promise<PaymentLinkResponse> {
+    if (process.env.NODE_ENV !== "test") {
+      throw new Error("Medical invoice payment provider is not configured");
+    }
     const paymentLinkId = `paylink_${Math.random().toString(36).substr(2, 9)}`;
     return {
       paymentLinkId,
@@ -53,6 +56,9 @@ class SimulationPaymentProvider implements PaymentProvider {
   }
 
   async processRefund(request: PaymentRefundRequest): Promise<PaymentRefundResponse> {
+    if (process.env.NODE_ENV !== "test") {
+      throw new Error("Medical invoice payment provider is not configured");
+    }
     return {
       refundId: `rfnd_${Math.random().toString(36).substr(2, 9)}`,
       status: "processed",
@@ -61,4 +67,4 @@ class SimulationPaymentProvider implements PaymentProvider {
   }
 }
 
-export const paymentProvider: PaymentProvider = new SimulationPaymentProvider();
+export const paymentProvider: PaymentProvider = new TestPaymentProvider();

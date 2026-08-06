@@ -13,6 +13,8 @@ export interface IServiceCatalog extends Document {
   gstRate: number;
   isActive: boolean;
   description?: string;
+  effectiveFrom?: Date;
+  effectiveTo?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -77,6 +79,14 @@ const serviceCatalogSchema = new Schema<IServiceCatalog>(
     description: {
       type: String,
       trim: true,
+    },
+    effectiveFrom: {
+      type: Date,
+      default: Date.now,
+    },
+    effectiveTo: {
+      type: Date,
+      default: null,
     },
   },
   {

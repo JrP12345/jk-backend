@@ -9,6 +9,11 @@ import { Invoice } from "../models/Invoice.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { withTransaction } from "../utilities/transaction.ts";
+import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds } from "../utilities/tenant.ts";
+
+function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
+  return reply.code(check.statusCode).send(errorResponse(check.message));
+}
 
 // ─── Bed CRUD Handlers ───────────────────────────────────────────
 
@@ -33,6 +38,9 @@ export async function createBed(req: FastifyRequest, reply: FastifyReply) {
     if (!mongoose.Types.ObjectId.isValid(clinicId)) {
       return reply.code(400).send(errorResponse("Invalid clinic ID"));
     }
+
+    const clinicAccess = await checkClinicAccess(req, clinicId);
+    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
 
     const bed = await Bed.create({
       clinicId,
@@ -59,7 +67,12 @@ export async function getBeds(req: FastifyRequest, reply: FastifyReply) {
       if (!mongoose.Types.ObjectId.isValid(clinicId)) {
         return reply.code(400).send(errorResponse("Invalid clinic ID"));
       }
+      const clinicAccess = await checkClinicAccess(req, clinicId);
+      if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
       query.clinicId = clinicId;
+    } else {
+      const clinicIds = await getRequestClinicIds(req);
+      if (clinicIds) query.clinicId = { $in: clinicIds };
     }
 
     const beds = await Bed.find(query).populate({
@@ -97,6 +110,8 @@ export async function updateBed(req: FastifyRequest, reply: FastifyReply) {
     if (!bed) {
       return reply.code(404).send(errorResponse("Bed not found"));
     }
+    const bedAccess = await checkOperationalRecordAccess(req, bed);
+    if (!bedAccess.allowed) return sendTenantError(reply, bedAccess);
 
     if (wardName !== undefined) bed.wardName = wardName;
     if (bedNumber !== undefined) bed.bedNumber = bedNumber;
@@ -132,6 +147,8 @@ export async function deleteBed(req: FastifyRequest, reply: FastifyReply) {
     if (!bed) {
       return reply.code(404).send(errorResponse("Bed not found"));
     }
+    const bedAccess = await checkOperationalRecordAccess(req, bed);
+    if (!bedAccess.allowed) return sendTenantError(reply, bedAccess);
 
     if (bed.status === "occupied") {
       return reply.code(400).send(errorResponse("Cannot delete an occupied bed"));
@@ -172,10 +189,20 @@ export async function admitPatient(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse("Invalid ObjectID reference"));
     }
 
+    const clinicAccess = await checkClinicAccess(req, clinicId);
+    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+
     // Verify patient profile
     const patient = await Patient.findById(patientId);
     if (!patient) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
+    }
+    if (patient.organizationId && clinicAccess.organizationId && patient.organizationId.toString() !== clinicAccess.organizationId) {
+      return reply.code(404).send(errorResponse("Patient profile not found"));
+    }
+    if (!patient.organizationId && clinicAccess.organizationId) {
+      patient.organizationId = new mongoose.Types.ObjectId(clinicAccess.organizationId);
+      await patient.save();
     }
 
     // Verify bed is available
@@ -183,8 +210,22 @@ export async function admitPatient(req: FastifyRequest, reply: FastifyReply) {
     if (!bed) {
       return reply.code(404).send(errorResponse("Bed not found"));
     }
+    if (bed.clinicId.toString() !== clinicId) {
+      return reply.code(404).send(errorResponse("Bed not found in selected clinic"));
+    }
     if (bed.status !== "available") {
       return reply.code(400).send(errorResponse(`Bed is currently ${bed.status}`));
+    }
+
+    // Check if patient is already actively admitted
+    const existingAdmission = await Admission.findOne({
+      patientId,
+      clinicId,
+      status: "admitted",
+      deletedAt: null,
+    });
+    if (existingAdmission) {
+      return reply.code(400).send(errorResponse("Patient is already actively admitted in another ward bed"));
     }
 
     return await withTransaction(async (session) => {
@@ -204,6 +245,7 @@ export async function admitPatient(req: FastifyRequest, reply: FastifyReply) {
             bedId,
             reasonForAdmission,
             doctorInCharge,
+            organizationId: clinicAccess.organizationId || undefined,
             status: "admitted",
             notes: notes || ""
           }
@@ -249,6 +291,9 @@ export async function getAdmissions(req: FastifyRequest, reply: FastifyReply) {
         return reply.code(400).send(errorResponse("Invalid clinic ID"));
       }
       query.clinicId = clinicId;
+    } else {
+      const clinicIds = await getRequestClinicIds(req);
+      if (clinicIds) query.clinicId = { $in: clinicIds };
     }
 
     const totalCount = await Admission.countDocuments(query);
@@ -292,6 +337,8 @@ export async function dischargePatient(req: FastifyRequest, reply: FastifyReply)
     if (!admission) {
       return reply.code(404).send(errorResponse("Admission record not found"));
     }
+    const admissionAccess = await checkOperationalRecordAccess(req, admission);
+    if (!admissionAccess.allowed) return sendTenantError(reply, admissionAccess);
 
     if (admission.status === "discharged") {
       return reply.code(400).send(errorResponse("Patient is already discharged"));
@@ -301,6 +348,8 @@ export async function dischargePatient(req: FastifyRequest, reply: FastifyReply)
     if (!bed) {
       return reply.code(404).send(errorResponse("Associated bed not found"));
     }
+    const bedAccess = await checkOperationalRecordAccess(req, bed);
+    if (!bedAccess.allowed) return sendTenantError(reply, bedAccess);
 
     return await withTransaction(async (session) => {
       const option = session ? { session } : {};
@@ -327,6 +376,7 @@ export async function dischargePatient(req: FastifyRequest, reply: FastifyReply)
             invoiceNumber,
             patientId: admission.patientId,
             clinicId: admission.clinicId,
+            organizationId: admissionAccess.organizationId || undefined,
             doctorId: admission.doctorInCharge,
             items: [
               {
@@ -378,8 +428,16 @@ export async function getWardHierarchyBoard(req: FastifyRequest, reply: FastifyR
     const { clinicId } = req.query as { clinicId?: string };
 
     const filter: any = {};
-    if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
+    if (clinicId) {
+      if (!mongoose.Types.ObjectId.isValid(clinicId)) {
+        return reply.code(400).send(errorResponse("Invalid clinic ID"));
+      }
+      const clinicAccess = await checkClinicAccess(req, clinicId);
+      if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
       filter.clinicId = clinicId;
+    } else {
+      const clinicIds = await getRequestClinicIds(req);
+      if (clinicIds) filter.clinicId = { $in: clinicIds };
     }
 
     const beds = await Bed.find(filter)
@@ -427,6 +485,98 @@ export async function getWardHierarchyBoard(req: FastifyRequest, reply: FastifyR
     );
   } catch (err) {
     console.error("getWardHierarchyBoard error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+export async function transferBed(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const userRole = req.user!.role;
+    const userId = req.user!.id;
+    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "doctor" && userRole !== "root") {
+      return reply.code(403).send(errorResponse("Forbidden: Only providers can transfer patient beds"));
+    }
+
+    const { id } = req.params as { id: string };
+    const { targetBedId, reason } = req.body as { targetBedId: string; reason?: string };
+
+    if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(targetBedId)) {
+      return reply.code(400).send(errorResponse("Invalid ObjectID reference"));
+    }
+
+    const admission = await Admission.findById(id);
+    if (!admission) {
+      return reply.code(404).send(errorResponse("Admission record not found"));
+    }
+    const admissionAccess = await checkOperationalRecordAccess(req, admission);
+    if (!admissionAccess.allowed) return sendTenantError(reply, admissionAccess);
+    if (admission.status !== "admitted") {
+      return reply.code(400).send(errorResponse("Cannot transfer a discharged patient"));
+    }
+
+    const targetBed = await Bed.findById(targetBedId);
+    if (!targetBed) {
+      return reply.code(404).send(errorResponse("Target bed not found"));
+    }
+    const targetBedAccess = await checkOperationalRecordAccess(req, targetBed);
+    if (!targetBedAccess.allowed) return sendTenantError(reply, targetBedAccess);
+    if (targetBed.clinicId.toString() !== admission.clinicId.toString()) {
+      return reply.code(404).send(errorResponse("Target bed not found in admission clinic"));
+    }
+    if (targetBed.status !== "available") {
+      return reply.code(400).send(errorResponse(`Target bed is currently ${targetBed.status}`));
+    }
+
+    const oldBedId = admission.bedId;
+    const oldBed = await Bed.findById(oldBedId);
+    if (oldBed) {
+      const oldBedAccess = await checkOperationalRecordAccess(req, oldBed);
+      if (!oldBedAccess.allowed) return sendTenantError(reply, oldBedAccess);
+    }
+
+    return await withTransaction(async (session) => {
+      const option = session ? { session } : {};
+
+      if (oldBed) {
+        oldBed.status = "available";
+        oldBed.occupiedBy = null;
+        await oldBed.save(option);
+      }
+
+      targetBed.status = "occupied";
+      targetBed.occupiedBy = admission.patientId;
+      await targetBed.save(option);
+
+      admission.bedId = targetBed._id as any;
+      if (reason) {
+        admission.notes = admission.notes
+          ? `${admission.notes}\n[Bed Transfer] ${new Date().toISOString()}: Transferred from ${oldBed?.bedNumber || "old bed"} to ${targetBed.bedNumber}. Reason: ${reason}`
+          : `[Bed Transfer] ${new Date().toISOString()}: Transferred to ${targetBed.bedNumber}. Reason: ${reason}`;
+      }
+      await admission.save(option);
+
+      await AuditLog.create(
+        [
+          {
+            userId,
+            action: "PATIENT_BED_TRANSFER",
+            targetId: admission._id,
+            targetModel: "Admission",
+            details: {
+              fromBed: oldBed?.bedNumber,
+              toBed: targetBed.bedNumber,
+              wardName: targetBed.wardName,
+              reason: reason || "Routine ward transfer",
+            },
+          },
+        ],
+        option
+      );
+
+      return reply.code(200).send(successResponse({ admission, bed: targetBed }, "Patient transferred to new bed successfully"));
+    });
+  } catch (err) {
+    console.error("transferBed error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

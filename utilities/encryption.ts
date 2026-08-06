@@ -17,13 +17,13 @@ const IV_BYTES = 12; // 96-bit IV — standard for GCM
  * Derives the 32-byte encryption key from the ENCRYPTION_KEY env var.
  * Accepts either a 64-char hex string or a raw passphrase (SHA-256 stretched).
  */
-function getKey(): Buffer | null {
+function getKey(): Buffer {
   const raw = process.env.ENCRYPTION_KEY;
   if (!raw) {
     if (process.env.NODE_ENV === "production") {
       console.error("[Encryption] ❌ ENCRYPTION_KEY is NOT set. Sensitive credentials will NOT be encrypted. Set ENCRYPTION_KEY in backend/.env immediately.");
     }
-    return null;
+    throw new Error("ENCRYPTION_KEY is required for sensitive credential encryption");
   }
   if (/^[0-9a-fA-F]{64}$/.test(raw)) {
     return Buffer.from(raw, "hex");
@@ -44,7 +44,7 @@ export function encrypt(plaintext: string): string {
   if (!key) {
     // Dev fallback: no encryption key configured
     console.warn("[Encryption] Warning: Storing sensitive value without encryption. Set ENCRYPTION_KEY in .env.");
-    return plaintext;
+    throw new Error("ENCRYPTION_KEY is required for sensitive credential encryption");
   }
 
   const iv = crypto.randomBytes(IV_BYTES);
@@ -67,7 +67,7 @@ export function decrypt(ciphertext: string): string {
   // Not an encrypted value — return as-is (backwards-compatibility)
   const parts = ciphertext.split(":");
   if (parts.length !== 3) {
-    return ciphertext;
+    throw new Error("ENCRYPTION_KEY is required for sensitive credential decryption");
   }
 
   const key = getKey();

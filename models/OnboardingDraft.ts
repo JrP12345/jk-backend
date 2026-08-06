@@ -7,4 +7,7 @@ const OnboardingDraftSchema = new Schema({
   updatedAt: { type: Date, default: Date.now }
 });
 
+// Abandoned onboarding drafts automatically expire after 7 days (604800 seconds)
+OnboardingDraftSchema.index({ updatedAt: 1 }, { expireAfterSeconds: 604800 });
+
 export const OnboardingDraft = mongoose.model("OnboardingDraft", OnboardingDraftSchema);

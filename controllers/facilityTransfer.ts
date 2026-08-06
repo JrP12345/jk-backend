@@ -5,6 +5,7 @@ import { Patient } from "../models/Patient.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { getNextAtomicSequence } from "../models/Counter.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
+import { checkClinicAccess, getRequestClinicIds } from "../utilities/tenant.ts";
 
 export async function createFacilityTransfer(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -25,6 +26,11 @@ export async function createFacilityTransfer(req: FastifyRequest, reply: Fastify
     if (!patientId || !sourceClinicId || !targetClinicId || !reasonForTransfer) {
       return reply.code(400).send(errorResponse("patientId, sourceClinicId, targetClinicId, and reasonForTransfer are required"));
     }
+
+    const sourceScope = await checkClinicAccess(req, sourceClinicId);
+    if (!sourceScope.allowed) return reply.code(sourceScope.statusCode).send(errorResponse(sourceScope.message));
+    const targetScope = await checkClinicAccess(req, targetClinicId);
+    if (!targetScope.allowed) return reply.code(targetScope.statusCode).send(errorResponse(targetScope.message));
 
     const patient = await Patient.findById(patientId);
     if (!patient) {
@@ -68,8 +74,13 @@ export async function getFacilityTransfers(req: FastifyRequest, reply: FastifyRe
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
 
     const filter: any = {};
-    if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
+    if (clinicId) {
+      const scope = await checkClinicAccess(req, clinicId);
+      if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
       filter.$or = [{ sourceClinicId: clinicId }, { targetClinicId: clinicId }];
+    } else if (req.user?.role !== "root") {
+      const clinicIds = await getRequestClinicIds(req);
+      filter.$or = [{ sourceClinicId: { $in: clinicIds } }, { targetClinicId: { $in: clinicIds } }];
     }
     if (status) filter.status = status;
     if (priority) filter.priority = priority;
@@ -112,6 +123,12 @@ export async function updateTransferStatus(req: FastifyRequest, reply: FastifyRe
 
     const transfer = await FacilityTransfer.findById(id);
     if (!transfer) {
+      return reply.code(404).send(errorResponse("Facility transfer request not found"));
+    }
+
+    const sourceScope = await checkClinicAccess(req, transfer.sourceClinicId);
+    const targetScope = await checkClinicAccess(req, transfer.targetClinicId);
+    if (!sourceScope.allowed || !targetScope.allowed) {
       return reply.code(404).send(errorResponse("Facility transfer request not found"));
     }
 

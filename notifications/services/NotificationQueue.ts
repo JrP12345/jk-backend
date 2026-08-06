@@ -17,6 +17,9 @@ export interface DeliveryJob {
 class NotificationQueueManager {
   private inMemoryQueue: DeliveryJob[] = [];
   private isProcessing = false;
+  private stopped = false;
+  private workerTimer: ReturnType<typeof setInterval>;
+  private retryTimers = new Set<ReturnType<typeof setTimeout>>();
   private queueStats = {
     processedCount: 0,
     failureCount: 0,
@@ -24,17 +27,22 @@ class NotificationQueueManager {
 
   constructor() {
     // Process jobs every 500ms
-    setInterval(() => {
+    this.workerTimer = setInterval(() => {
+      if (this.stopped) return;
       this.processQueue().catch((err) => {
         console.error("[NotificationQueue Error] Queue processing failure:", err);
       });
     }, 500);
+    this.workerTimer.unref?.();
   }
 
   /**
    * Enqueue job for background processing with retries
    */
   public async enqueue(job: Omit<DeliveryJob, "id" | "attempts" | "maxAttempts" | "createdAt">): Promise<string> {
+    if (this.stopped) {
+      throw new Error("Notification queue is shutting down");
+    }
     const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     const fullJob: DeliveryJob = {
       ...job,
@@ -61,7 +69,7 @@ class NotificationQueueManager {
    * Worker loop to process background queue jobs
    */
   private async processQueue() {
-    if (this.isProcessing) return;
+    if (this.stopped || this.isProcessing) return;
     this.isProcessing = true;
 
     try {
@@ -131,9 +139,12 @@ class NotificationQueueManager {
         const delayMs = Math.pow(2, job.attempts - 1) * 1000;
         console.warn(`[NotificationQueue Retry] Job ${job.id} failed (Attempt ${job.attempts}/${job.maxAttempts}). Retrying in ${delayMs}ms...`);
         
-        setTimeout(() => {
-          this.inMemoryQueue.push(job);
+        const retryTimer = setTimeout(() => {
+          this.retryTimers.delete(retryTimer);
+          if (!this.stopped) this.inMemoryQueue.push(job);
         }, delayMs);
+        this.retryTimers.add(retryTimer);
+        retryTimer.unref?.();
       } else {
         this.queueStats.failureCount += 1;
         console.error(`[NotificationQueue DeadLetter] Job ${job.id} exhausted max retries (${job.maxAttempts}). Marked as failed.`);
@@ -170,6 +181,15 @@ class NotificationQueueManager {
       ...this.queueStats,
       inMemoryPending: this.inMemoryQueue.length,
     };
+  }
+
+  /** Stop local processing before application/database shutdown. */
+  public async shutdown(): Promise<void> {
+    this.stopped = true;
+    clearInterval(this.workerTimer);
+    for (const retryTimer of this.retryTimers) clearTimeout(retryTimer);
+    this.retryTimers.clear();
+    this.inMemoryQueue.length = 0;
   }
 }
 

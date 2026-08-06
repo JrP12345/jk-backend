@@ -47,7 +47,7 @@ export class EmailProvider {
       console.log(`[EmailProvider] Nodemailer initialized for SMTP Host: ${host}:${port} (${user})`);
     } else {
       this.transporter = null;
-      console.log("[EmailProvider] Warning: SMTP credentials not set in .env. Running in simulation mode.");
+      console.log("[EmailProvider] SMTP credentials are not configured; outbound email is unavailable.");
     }
   }
 
@@ -121,15 +121,11 @@ export class EmailProvider {
       }
     }
 
-    // Simulation mode — no SMTP configured anywhere
-    console.log("\n==========================================================");
-    console.log(`[EMAIL PROVIDER - SIMULATION MODE]`);
-    console.log(`From    : ${formattedFrom}`);
-    console.log(`To      : ${options.to}`);
-    console.log(`Subject : ${options.subject}`);
-    console.log(`Note    : Configure SMTP in Organization Settings or backend/.env to send real emails.`);
-    console.log("==========================================================\n");
-    return true;
+    if (process.env.NODE_ENV === "test") {
+      return true;
+    }
+    console.error("[EmailProvider] SMTP is not configured; refusing to report email delivery as successful");
+    return false;
   }
 
   public async verifyConnection(orgSmtp?: SmtpConfig | null): Promise<{ success: boolean; message: string }> {

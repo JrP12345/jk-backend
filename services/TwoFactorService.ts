@@ -43,11 +43,6 @@ export class TwoFactorService {
 
     if (isValidSpeakeasy) return true;
 
-    // Dev/Test fallback for master bypass in local development
-    if (process.env.NODE_ENV !== "production" && (cleanToken === "123456" || cleanToken === "894084")) {
-      return true;
-    }
-
     return false;
   }
 }

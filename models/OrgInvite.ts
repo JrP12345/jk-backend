@@ -11,6 +11,9 @@ const OrgInviteSchema = new Schema({
   createdAt: { type: Date, default: Date.now },
 }, { timestamps: true });
 
+// Auto-purge expired invitations via TTL index
+OrgInviteSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
 OrgInviteSchema.virtual("id").get(function () {
   return this._id.toHexString();
 });

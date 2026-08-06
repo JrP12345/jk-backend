@@ -8,12 +8,13 @@ import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
+import { checkClinicAccess, getRequestClinicIds } from "../utilities/tenant.ts";
 
 export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
     const userId = req.user!.id;
-    const orgId = req.user?.organization_id;
+    let orgId = req.user?.organization_id;
 
     if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "root") {
       return reply.code(403).send(errorResponse("Forbidden: Only staff can create invoices manually"));
@@ -49,18 +50,20 @@ export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse("patientId, clinicId, doctorId, and items are required"));
     }
 
+    const clinicAccess = await checkClinicAccess(req, clinicId);
+    if (!clinicAccess.allowed) {
+      return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
+    }
+    if (!orgId && clinicAccess.organizationId) orgId = clinicAccess.organizationId;
+
     // Verify patient profile
     const patient = await Patient.findById(patientId);
     if (!patient) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
     }
 
-    // Verify clinic belongs to user's organization
-    if (orgId) {
-      const clinic = await Clinic.findOne({ _id: clinicId, organizationId: orgId });
-      if (!clinic) {
-        return reply.code(404).send(errorResponse("Clinic not found in your organization"));
-      }
+    if (req.user?.role !== "root" && orgId && patient.organizationId && patient.organizationId.toString() !== orgId) {
+      return reply.code(404).send(errorResponse("Patient profile not found"));
     }
 
     // Generate atomic predictable sequential invoice number (e.g. INV-2026-000001)
@@ -118,6 +121,15 @@ export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
 
     const calculatedTax = tax !== undefined ? tax : (cgstTotal + sgstTotal + igstTotal);
     const calculatedDiscount = discount || 0;
+
+    // Discount Authorization Gate: >15% discount requires Admin role or Manager Approval Code
+    if (subtotal > 0 && calculatedDiscount / subtotal > 0.15 && userRole !== "admin" && userRole !== "root") {
+      const { managerApprovalCode } = (req.body || {}) as { managerApprovalCode?: string };
+      if (!managerApprovalCode || managerApprovalCode.trim().length === 0) {
+        return reply.code(403).send(errorResponse("Forbidden: Invoice discounts exceeding 15% require a valid Manager Approval Code"));
+      }
+    }
+
     const taxableAmount = Math.max(0, subtotal - calculatedDiscount);
     const totalAmount = Number((taxableAmount + calculatedTax).toFixed(2));
 
@@ -147,7 +159,8 @@ export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
       cgstTotal,
       sgstTotal,
       igstTotal,
-      status: "unpaid"
+      status: "unpaid",
+      dueDate: (req.body as any)?.dueDate ? new Date((req.body as any).dueDate) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     });
 
     // Create Audit Log
@@ -201,10 +214,13 @@ export async function getInvoices(req: FastifyRequest, reply: FastifyReply) {
     if (patientId && userRole !== "patient") filter.patientId = patientId;
 
     if (clinicId) {
+      const clinicAccess = await checkClinicAccess(req, clinicId);
+      if (!clinicAccess.allowed) {
+        return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
+      }
       filter.clinicId = clinicId;
     } else if (orgId && userRole !== "patient") {
-      const orgClinics = await Clinic.find({ organizationId: orgId }).select("_id");
-      const clinicIds = orgClinics.map(c => c._id);
+      const clinicIds = await getRequestClinicIds(req);
       filter.clinicId = { $in: clinicIds };
     }
 
@@ -256,6 +272,12 @@ export async function getInvoiceDetails(req: FastifyRequest, reply: FastifyReply
       return reply.code(404).send(errorResponse("Invoice not found"));
     }
 
+    const invoiceClinicId = invoice.clinicId?._id || invoice.clinicId;
+    const clinicAccess = await checkClinicAccess(req, invoiceClinicId);
+    if (!clinicAccess.allowed) {
+      return reply.code(404).send(errorResponse("Invoice not found"));
+    }
+
     // Role & Tenant authorization checks
     if (userRole === "patient") {
       const patient = await Patient.findOne({ userId });
@@ -264,12 +286,6 @@ export async function getInvoiceDetails(req: FastifyRequest, reply: FastifyReply
       }
     } else if (userRole === "doctor" && invoice.doctorId._id.toString() !== userId) {
       return reply.code(403).send(errorResponse("Access denied: You are not the practitioner for this invoice"));
-    } else if (orgId && (userRole === "admin" || userRole === "receptionist" || userRole === "root")) {
-      const clinicOrgId = invoice.clinicId?.organizationId?.toString();
-      if (clinicOrgId && clinicOrgId !== orgId) {
-        // Return 404 for cross-tenant access attempt
-        return reply.code(404).send(errorResponse("Invoice not found"));
-      }
     }
 
     return reply.code(200).send(successResponse(invoice));
@@ -282,7 +298,7 @@ export async function getInvoiceDetails(req: FastifyRequest, reply: FastifyReply
 export async function collectPayment(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id } = req.params as { id: string };
-    const { paymentMethod, paymentToken } = req.body as { 
+    const { paymentMethod } = req.body as { 
       paymentMethod: "cash" | "card" | "upi" | "net-banking" | "insurance" | "online";
       paymentToken?: string;
     };
@@ -318,16 +334,33 @@ export async function collectPayment(req: FastifyRequest, reply: FastifyReply) {
       if (paymentMethod !== "online" && paymentMethod !== "upi" && paymentMethod !== "card") {
         return reply.code(400).send(errorResponse("Patients can only pay online, via UPI, or via tokenized card"));
       }
-    } else if (orgId && (userRole === "admin" || userRole === "receptionist" || userRole === "root")) {
-      const clinicOrgId = (invoice.clinicId as any)?.organizationId?.toString();
-      if (clinicOrgId && clinicOrgId !== orgId) {
+    } else if (!["admin", "receptionist", "cashier", "root"].includes(userRole)) {
+      return reply.code(403).send(errorResponse("Forbidden: only the patient or billing staff can collect payment"));
+    } else {
+      const clinicAccess = await checkClinicAccess(req, (invoice.clinicId as any)?._id || invoice.clinicId);
+      if (!clinicAccess.allowed) {
         return reply.code(404).send(errorResponse("Invoice not found"));
       }
     }
 
+    const remainingToPay = Number((invoice.totalAmount - (invoice.amountPaid || 0)).toFixed(2));
+
     invoice.status = "paid";
+    invoice.amountPaid = invoice.totalAmount;
+    invoice.balanceDue = 0;
     invoice.paymentMethod = paymentMethod;
     invoice.paymentDate = new Date();
+
+    if (!invoice.payments) invoice.payments = [] as any;
+    if (remainingToPay > 0) {
+      invoice.payments.push({
+        amount: remainingToPay,
+        paymentMethod,
+        paidAt: new Date(),
+        notes: "Full payment collected",
+      });
+    }
+
     await invoice.save();
 
     // Create Audit Log with tokenized ID reference
@@ -340,7 +373,6 @@ export async function collectPayment(req: FastifyRequest, reply: FastifyReply) {
         invoiceNumber: invoice.invoiceNumber, 
         totalAmount: invoice.totalAmount, 
         paymentMethod,
-        paymentToken: paymentToken || "N/A"
       }
     });
 
@@ -413,6 +445,27 @@ export async function recordPartialPayment(req: FastifyRequest, reply: FastifyRe
       return reply.code(404).send(errorResponse("Invoice not found"));
     }
 
+    if (!["patient", "admin", "receptionist", "cashier", "root"].includes(req.user!.role)) {
+      return reply.code(403).send(errorResponse("Forbidden: only the patient or billing staff can record payment"));
+    }
+
+    const clinicAccess = await checkClinicAccess(req, (invoice.clinicId as any)?._id || invoice.clinicId);
+    if (!clinicAccess.allowed) {
+      return reply.code(404).send(errorResponse("Invoice not found"));
+    }
+
+    if (req.user!.role === "patient") {
+      const patient = await Patient.findOne({ userId: req.user!.id });
+      if (!patient || invoice.patientId.toString() !== patient._id.toString()) {
+        return reply.code(403).send(errorResponse("Forbidden: invoice does not belong to you"));
+      }
+    }
+
+    const validPaymentMethods = ["cash", "card", "upi", "net-banking", "insurance", "online"];
+    if (!paymentMethod || !validPaymentMethods.includes(paymentMethod)) {
+      return reply.code(400).send(errorResponse("Invalid or missing payment method"));
+    }
+
     if (invoice.status === "paid") {
       return reply.code(400).send(errorResponse("Invoice has already been fully paid"));
     }
@@ -464,5 +517,3 @@ export async function recordPartialPayment(req: FastifyRequest, reply: FastifyRe
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
-
-

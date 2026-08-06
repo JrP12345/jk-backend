@@ -1,6 +1,7 @@
 import mongoose, { Schema } from "mongoose";
 
 const AppointmentSchema = new Schema({
+  organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
   clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
   doctorId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
   patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
@@ -14,6 +15,12 @@ const AppointmentSchema = new Schema({
   },
   tokenNumber: { type: Number, required: true },
   queuePosition: { type: Number, index: true },
+  duration: { type: Number, default: 15 },
+  reasonForVisit: { 
+    type: String, 
+    enum: ["new_consultation", "follow_up", "routine_checkup", "second_opinion", "report_review"], 
+    default: "new_consultation" 
+  },
   notes: { type: String },
   followUpRecommended: { type: Boolean, default: false },
   followUpTimeline: { type: String },
@@ -27,9 +34,10 @@ const AppointmentSchema = new Schema({
     duration: { type: String, required: true }
   }],
   createdAt: { type: Date, default: Date.now }
-});
+}, { timestamps: true });
 
 AppointmentSchema.index({ clinicId: 1, doctorId: 1, appointmentTime: 1 });
+AppointmentSchema.index({ organizationId: 1, appointmentTime: -1 });
 
 AppointmentSchema.virtual("id").get(function() {
   return this._id.toHexString();

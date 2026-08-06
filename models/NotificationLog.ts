@@ -2,6 +2,7 @@ import mongoose, { Schema, Document } from "mongoose";
 import { auditPlugin } from "../utilities/auditPlugin.ts";
 
 export interface INotificationLog extends Document {
+  organizationId?: mongoose.Types.ObjectId;
   recipientPhone: string;
   recipientName?: string;
   channel: "sms" | "whatsapp" | "email";
@@ -15,6 +16,11 @@ export interface INotificationLog extends Document {
 
 const notificationLogSchema = new Schema<INotificationLog>(
   {
+    organizationId: {
+      type: Schema.Types.ObjectId,
+      ref: "Organization",
+      index: true,
+    },
     recipientPhone: {
       type: String,
       required: true,

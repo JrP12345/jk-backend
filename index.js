@@ -5,6 +5,7 @@ import "./db.ts";
 import mongoose from "mongoose";
 import { requestContextStore } from "./utilities/context.ts";
 import { redisClient } from "./utilities/redis.ts";
+import { notificationQueue } from "./notifications/services/NotificationQueue.ts";
 import fastify from "fastify";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
@@ -47,7 +48,23 @@ import pecRoutes from "./routes/pec.ts";
 import reportExportRoutes from "./routes/reportExport.ts";
 import ssoRoutes from "./routes/sso.ts";
 import feedbackRoutes from "./routes/feedback.ts";
+import roleRoutes from "./routes/role.ts";
+import emergencyRoutes from "./routes/emergency.ts";
+import shiftRoutes from "./routes/shifts.ts";
+import infectionControlRoutes from "./routes/infectionControl.ts";
+import dietaryRoutes from "./routes/dietary.ts";
+import biomedicalRoutes from "./routes/biomedical.ts";
+import transplantRoutes from "./routes/transplant.ts";
+import mortuaryRoutes from "./routes/mortuary.ts";
+import biohazardRoutes from "./routes/biohazard.ts";
+import geneticsRoutes from "./routes/genetics.ts";
+import cssdRoutes from "./routes/cssd.ts";
+import occupationalHealthRoutes from "./routes/occupationalHealth.ts";
+import homeRPMRoutes from "./routes/homeRPM.ts";
+import hbotRoutes from "./routes/hbot.ts";
+import ambulanceDispatchRoutes from "./routes/ambulanceDispatch.ts";
 import platformGatewayRoutes from "./platform/gateway.ts";
+import moduleRegistryRoutes from "./routes/moduleRegistry.ts";
 
 import fastifySwagger from "@fastify/swagger";
 import fastifySwaggerUi from "@fastify/swagger-ui";
@@ -179,7 +196,23 @@ app.register(pecRoutes);
 app.register(reportExportRoutes);
 app.register(ssoRoutes);
 app.register(feedbackRoutes);
-app.register(platformGatewayRoutes);
+app.register(roleRoutes);
+app.register(emergencyRoutes);
+app.register(shiftRoutes, { prefix: "/api/shifts" });
+app.register(infectionControlRoutes, { prefix: "/api/infection-control" });
+app.register(dietaryRoutes, { prefix: "/api/dietary" });
+app.register(biomedicalRoutes, { prefix: "/api/biomedical" });
+app.register(transplantRoutes, { prefix: "/api/transplant" });
+app.register(mortuaryRoutes, { prefix: "/api/mortuary" });
+app.register(biohazardRoutes, { prefix: "/api/biohazard" });
+app.register(geneticsRoutes, { prefix: "/api/genetics" });
+app.register(cssdRoutes, { prefix: "/api/cssd" });
+app.register(occupationalHealthRoutes, { prefix: "/api/occupational-health" });
+app.register(homeRPMRoutes, { prefix: "/api/home-rpm" });
+app.register(hbotRoutes, { prefix: "/api/hbot" });
+app.register(ambulanceDispatchRoutes, { prefix: "/api/ambulance-dispatch" });
+app.register(platformGatewayRoutes, { prefix: "/api/platform" });
+app.register(moduleRegistryRoutes);
 
 // ─── Health-checks & Probes (SRE-001, SRE-002, SRE-003) ─────────
 const healthCheckHandler = async () => {
@@ -194,10 +227,9 @@ const readinessHandler = async (request, reply) => {
   const dbState = mongoose.connection.readyState;
   const isDbReady = dbState === 1; // 1 = connected
 
-  let isRedisReady = true;
-  if (redisClient) {
-    isRedisReady = redisClient.status === "ready" || redisClient.status === "connecting";
-  }
+  const isRedisReady = redisClient
+    ? redisClient.status === "ready"
+    : process.env.NODE_ENV !== "production";
 
   const isReady = isDbReady && isRedisReady;
   const statusCode = isReady ? 200 : 503;
@@ -205,7 +237,7 @@ const readinessHandler = async (request, reply) => {
   return reply.code(statusCode).send({
     status: isReady ? "ready" : "unhealthy",
     database: isDbReady ? "connected" : "disconnected",
-    redis: isRedisReady ? "ready" : "degraded",
+    redis: isRedisReady ? "ready" : (redisClient ? "connecting" : "not_configured"),
     timestamp: new Date().toISOString()
   });
 };
@@ -235,6 +267,7 @@ async function startServer() {
 const gracefulShutdown = async (signal) => {
   app.log.info(`Received ${signal}. Shutting down gracefully...`);
   try {
+    await notificationQueue.shutdown();
     await app.close();
     if (mongoose.connection.readyState !== 0) {
       await mongoose.disconnect();

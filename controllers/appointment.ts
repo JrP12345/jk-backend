@@ -13,6 +13,7 @@ import { Consent } from "../models/Consent.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { sendBookingNotification } from "../utilities/notifications.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
+import { validatePasswordStrength } from "../middleware/auth.ts";
 import {
   acquireSlotLock,
   releaseSlotLock,
@@ -20,12 +21,26 @@ import {
   validateSlotLockForBooking,
   forceReleaseSlotLock,
 } from "../services/SlotLockService.ts";
+import { checkClinicAccess, getRequestClinicIds } from "../utilities/tenant.ts";
+
+async function ensureAppointmentClinicAccess(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  clinicId: unknown,
+): Promise<boolean> {
+  const check = await checkClinicAccess(req, clinicId);
+  if (!check.allowed) {
+    reply.code(check.statusCode).send(errorResponse(check.message));
+    return false;
+  }
+  return true;
+}
 
 export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
     const userId = req.user!.id;
-    const orgId = req.user?.organization_id;
+    let orgId = req.user?.organization_id;
 
     const {
       clinicId, doctorId, appointmentTime, appointmentType, notes, patientId, patientDetails, followUpForAppointmentId, lockId
@@ -42,6 +57,7 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
         gender: "male" | "female" | "other";
         phone?: string;
         email?: string;
+        password: string;
         address?: string;
         allergies?: string[];
         conditions?: string[];
@@ -57,6 +73,16 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
 
     if (userRole !== "patient" && userRole !== "admin" && userRole !== "receptionist" && userRole !== "root" && userRole !== "doctor") {
       return reply.code(403).send(errorResponse("Forbidden: role cannot book appointments"));
+    }
+
+    const clinicAccess = await checkClinicAccess(req, clinicId);
+    if (!clinicAccess.allowed) {
+      return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
+    }
+    if (!orgId && clinicAccess.organizationId) orgId = clinicAccess.organizationId;
+
+    if (userRole !== "root" && !orgId) {
+      return reply.code(403).send(errorResponse("Organization context is required to book an appointment"));
     }
 
     // Validate Doctor Assignment at Clinic
@@ -83,12 +109,32 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
         if (!patient) {
           return reply.code(404).send(errorResponse("Patient profile not found for your account"));
         }
+        if (patient.organizationId && patient.organizationId.toString() !== orgId) {
+          return reply.code(403).send(errorResponse("Patient is not associated with the selected organization"));
+        }
+        if (!patient.organizationId && orgId) {
+          patient.organizationId = orgId as any;
+          await patient.save(option);
+          await createWithSession(OrgMember, { userId: patient.userId, organizationId: orgId, role: "patient" }, session);
+        }
         finalPatientId = patient.id;
       } else {
         // Staff booking
         if (patientId) {
           const patient = await Patient.findById(patientId, null, option);
           if (!patient) return reply.code(404).send(errorResponse("Patient profile not found"));
+          if (
+            userRole !== "root" &&
+            orgId &&
+            patient.organizationId &&
+            patient.organizationId.toString() !== orgId
+          ) {
+            return reply.code(404).send(errorResponse("Patient not found"));
+          }
+          if (!patient.organizationId && orgId) {
+            patient.organizationId = orgId as any;
+            await patient.save(option);
+          }
           finalPatientId = patient.id;
 
           // Ensure Patient is linked to OrgMember if not already
@@ -99,19 +145,23 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
             }
           }
         } else if (patientDetails) {
-          const { name, dob, gender, phone, email, address, allergies, conditions, medicalNotes } = patientDetails;
-          if (!name || !dob || !gender) {
-            return reply.code(400).send(errorResponse("name, dob, and gender are required for new patient registration"));
+          const { name, dob, gender, phone, email, password, address, allergies, conditions, medicalNotes } = patientDetails;
+          if (!name || !dob || !gender || !email?.trim() || !password) {
+            return reply.code(400).send(errorResponse("name, dob, gender, email, and password are required for new patient registration"));
+          }
+          const strength = validatePasswordStrength(password);
+          if (!strength.valid) {
+            return reply.code(400).send(errorResponse(strength.reason || "Patient password does not meet complexity requirements"));
           }
 
-          const finalEmail = email || `patient_${phone || Date.now()}_${Math.floor(Math.random() * 1000)}@healthos.placeholder.com`;
+          const finalEmail = email.trim().toLowerCase();
           
           const emailExists = await User.findOne({ email: finalEmail }, null, option);
           if (emailExists) {
             return reply.code(409).send(errorResponse("Email already registered"));
           }
 
-          const hashedPassword = await bcrypt.hash(Math.random().toString(36).substring(2, 10), 10);
+          const hashedPassword = await bcrypt.hash(password, 10);
 
           const newPatientUser = await createWithSession(User, {
             name,
@@ -123,7 +173,7 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
 
           const patientProfile = await createWithSession(Patient, {
             userId: newPatientUser._id,
-            organizationId: orgId || null,
+            organizationId: orgId,
             personalVaultId: `pvt_${newPatientUser._id.toString()}`,
             dob: new Date(dob),
             gender,
@@ -179,9 +229,13 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
       const queuePosition = tokenNumber;
 
       const initialStatus = (userRole === "admin" || userRole === "receptionist") ? "confirmed" : "pending";
+      const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
+      const slotDuration = (req.body as any).duration || assignment?.appointmentDuration || 15;
+      const visitReason = (req.body as any).reasonForVisit || (followUpForAppointmentId ? "follow_up" : "new_consultation");
 
       // 3. Create Appointment Document
       const appointment = await createWithSession(Appointment, {
+        organizationId: orgId || clinicAccess.organizationId || null,
         clinicId,
         doctorId,
         patientId: finalPatientId,
@@ -190,6 +244,8 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
         status: initialStatus,
         tokenNumber,
         queuePosition,
+        duration: slotDuration,
+        reasonForVisit: visitReason,
         notes: notes || null
       }, session);
 
@@ -199,7 +255,7 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
       }
 
       // 5. Automatically generate Consultation Fee Invoice
-      if (assignment.fees && assignment.fees > 0) {
+      if (assignment?.fees && assignment.fees > 0) {
         const year = requestedDate.getFullYear();
         const count = await Invoice.countDocuments({}, option);
         const invoiceNumber = `INV-${year}-${(count + 1).toString().padStart(5, "0")}`;
@@ -289,11 +345,11 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
     }
 
     if (clinicId) {
+      if (!(await ensureAppointmentClinicAccess(req, reply, clinicId))) return;
       filter.clinicId = clinicId;
     } else if (orgId && userRole !== "patient") {
       // Limit to clinics in requesting user's organization
-      const orgClinics = await Clinic.find({ organizationId: orgId }).select("_id");
-      const clinicIds = orgClinics.map(c => c._id);
+      const clinicIds = await getRequestClinicIds(req);
       filter.clinicId = { $in: clinicIds };
     }
 
@@ -348,7 +404,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
 
     if (!status) return reply.code(400).send(errorResponse("status is required"));
 
-    const allowedStatuses = ["pending", "confirmed", "checked-in", "in-consultation", "completed", "cancelled"];
+    const allowedStatuses = ["pending", "confirmed", "checked-in", "in-consultation", "completed", "cancelled", "no-show"];
     if (!allowedStatuses.includes(status)) {
       return reply.code(400).send(errorResponse("Invalid status value"));
     }
@@ -356,12 +412,32 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
     const appointment = await Appointment.findById(id);
     if (!appointment) return reply.code(404).send(errorResponse("Appointment not found"));
 
+    if (!(await ensureAppointmentClinicAccess(req, reply, appointment.clinicId))) return;
+
     appointment.status = status as any;
     if (notes) appointment.notes = notes;
     await appointment.save();
 
+    if (status === "in-consultation") {
+      const { Encounter } = await import("../models/Encounter.ts");
+      const existingEncounter = await Encounter.findOne({ appointmentId: appointment._id });
+      if (!existingEncounter) {
+        await Encounter.create({
+          organizationId: (appointment as any).organizationId,
+          clinicId: appointment.clinicId,
+          appointmentId: appointment._id,
+          patientId: appointment.patientId,
+          doctorId: appointment.doctorId,
+          encounterType: appointment.appointmentType === "online" ? "telehealth" : "opd",
+          status: "in_progress",
+          startedAt: new Date(),
+        });
+      }
+    }
+
     if (status === "cancelled") {
       sendBookingNotification(appointment._id, "cancelled").catch((err) => console.error("Cancellation notification dispatch failed:", err));
+      await Invoice.updateMany({ appointmentId: appointment._id, status: "unpaid" }, { status: "cancelled" });
     }
 
     await AuditLog.create({
@@ -403,6 +479,8 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
+    if (!(await ensureAppointmentClinicAccess(req, reply, appointment.clinicId))) return;
+
     if (appointment.status === "completed" || appointment.status === "cancelled") {
       return reply.code(400).send(errorResponse(`Cannot reschedule an appointment that is already ${appointment.status}`));
     }
@@ -425,7 +503,20 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
     }
 
     const oldTimeStr = new Date(appointment.appointmentTime).toLocaleString();
+
+    // Recalculate daily token number & queue position for the new date
+    const startOfDay = new Date(newDateObj.getFullYear(), newDateObj.getMonth(), newDateObj.getDate());
+    const endOfDay = new Date(newDateObj.getFullYear(), newDateObj.getMonth(), newDateObj.getDate(), 23, 59, 59, 999);
+    const countToday = await Appointment.countDocuments({
+      doctorId: appointment.doctorId,
+      clinicId: appointment.clinicId,
+      appointmentTime: { $gte: startOfDay, $lte: endOfDay },
+      _id: { $ne: appointment._id },
+    });
+
     appointment.appointmentTime = newDateObj;
+    appointment.tokenNumber = countToday + 1;
+    appointment.queuePosition = countToday + 1;
     appointment.status = "confirmed";
     if (reason) {
       appointment.notes = appointment.notes
@@ -465,6 +556,8 @@ export async function getDoctorSlots(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse("doctorId, clinicId, and date (YYYY-MM-DD) are required"));
     }
 
+    if (!(await ensureAppointmentClinicAccess(req, reply, clinicId))) return;
+
     const { getDoctorAvailableSlots } = await import("../services/SlotService.ts");
     const result = await getDoctorAvailableSlots(doctorId, clinicId, date, req.user?.id);
 
@@ -483,6 +576,8 @@ export async function cancelAppointment(req: FastifyRequest, reply: FastifyReply
 
     const appointment = await Appointment.findById(id);
     if (!appointment) return reply.code(404).send(errorResponse("Appointment not found"));
+
+    if (!(await ensureAppointmentClinicAccess(req, reply, appointment.clinicId))) return;
 
     if (appointment.status === "completed" || appointment.status === "cancelled") {
       return reply.code(400).send(errorResponse(`Cannot cancel appointment already in '${appointment.status}' status`));
@@ -529,6 +624,8 @@ export async function getAppointmentById(req: FastifyRequest, reply: FastifyRepl
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
+    if (!(await ensureAppointmentClinicAccess(req, reply, appointment.clinicId))) return;
+
     return reply.code(200).send(successResponse(appointment));
   } catch (err) {
     console.error("getAppointmentById error:", err);
@@ -549,6 +646,8 @@ export async function lockSlot(req: FastifyRequest, reply: FastifyReply) {
     if (!clinicId || !doctorId || !slotTime) {
       return reply.code(400).send(errorResponse("clinicId, doctorId, and slotTime are required"));
     }
+
+    if (!(await ensureAppointmentClinicAccess(req, reply, clinicId))) return;
 
     const result = await acquireSlotLock(clinicId, doctorId, slotTime, userId);
 
@@ -587,6 +686,8 @@ export async function unlockSlot(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse("clinicId, doctorId, slotTime, and lockId are required"));
     }
 
+    if (!(await ensureAppointmentClinicAccess(req, reply, clinicId))) return;
+
     const result = await releaseSlotLock(clinicId, doctorId, slotTime, userId, lockId);
 
     if (!result.success) {
@@ -612,6 +713,8 @@ export async function getSlotLockStatus(req: FastifyRequest, reply: FastifyReply
     if (!clinicId || !doctorId || !slotTime) {
       return reply.code(400).send(errorResponse("clinicId, doctorId, and slotTime are required"));
     }
+
+    if (!(await ensureAppointmentClinicAccess(req, reply, clinicId))) return;
 
     const info = await checkSlotLock(clinicId, doctorId, slotTime);
 

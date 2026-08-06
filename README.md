@@ -11,7 +11,7 @@ An enterprise healthcare platform backend built with **Fastify 5**, **Node.js (E
 - **Database**: MongoDB with Mongoose 9 (`mongoose`)
 - **Caching & Rate-Limiting**: ioredis (`ioredis`) & `@fastify/rate-limit`
 - **Authentication**: Asymmetric RS256 JWT tokens with httpOnly cookies (`@fastify/cookie`, `jsonwebtoken`)
-- **Event Bus & Notifications**: PubSub EventBus (`eventBus.ts`), Server-Sent Events (SSE), Nodemailer email simulation (`emailProvider.ts`)
+- **Event Bus & Notifications**: PubSub EventBus (`eventBus.ts`), Server-Sent Events (SSE), and fail-closed Nodemailer delivery (`emailProvider.ts`)
 - **Cloud Storage**: AWS S3 / Cloudflare R2 presigned upload integration (`@aws-sdk/client-s3`)
 - **Testing**: Vitest (`vitest`) with MongoDB Memory Server (`mongodb-memory-server`)
 

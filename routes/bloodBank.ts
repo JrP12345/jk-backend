@@ -1,15 +1,17 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate } from "../middleware/auth.ts";
+import { authenticate, authorize } from "../middleware/auth.ts";
 import {
   registerBloodUnit,
   getBloodUnits,
   crossMatchAndReserve,
+  updateBloodUnitStatus,
 } from "../controllers/bloodBank.ts";
 
 export default async function bloodBankRoutes(app: FastifyInstance) {
-  const auth = { preHandler: [authenticate] };
-
-  app.post("/api/blood-bank/units", auth, registerBloodUnit);
-  app.get("/api/blood-bank/units", auth, getBloodUnits);
-  app.post("/api/blood-bank/cross-match", auth, crossMatchAndReserve);
+  app.post("/api/blood-bank/units", { preHandler: [authenticate, authorize("admin", "doctor", "lab_tech", "nurse")] }, registerBloodUnit);
+  app.get("/api/blood-bank/units", { preHandler: [authenticate] }, getBloodUnits);
+  app.post("/api/blood-bank/cross-match", { preHandler: [authenticate, authorize("admin", "doctor", "lab_tech")] }, crossMatchAndReserve);
+  app.patch("/api/blood-bank/units/:id/status", { preHandler: [authenticate, authorize("admin", "doctor", "lab_tech", "nurse")] }, updateBloodUnitStatus);
 }
+
+

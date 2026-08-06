@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate } from "../middleware/auth.ts";
+import { authenticate, authorize } from "../middleware/auth.ts";
 import { notificationService } from "../notifications/services/NotificationService.ts";
 import { notificationStreamHandler } from "../notifications/websocket.ts";
 import { eventBus } from "../events/eventBus.ts";
@@ -8,14 +8,33 @@ import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
 import { emailProvider, type SmtpConfig } from "../notifications/providers/emailProvider.ts";
 import { decrypt } from "../utilities/encryption.ts";
+import { OrgMember } from "../models/OrgMember.ts";
+
+async function getOrganizationSmtp(organizationId?: string | null): Promise<SmtpConfig | null> {
+  if (!organizationId) return null;
+  const organization = await Organization.findById(organizationId).select("smtp").lean();
+  const smtp = (organization as any)?.smtp;
+  if (!smtp?.host || !smtp?.user || !smtp?.pass) return null;
+
+  return {
+    host: smtp.host,
+    port: smtp.port || 587,
+    secure: smtp.secure || false,
+    user: smtp.user,
+    pass: decrypt(smtp.pass),
+    fromEmail: smtp.fromEmail || smtp.user,
+    fromName: smtp.fromName || "Ananta Health",
+  };
+}
 
 export default async function notificationRoutes(app: FastifyInstance) {
+  const adminNotifications = { preHandler: [authenticate, authorize("admin")] };
 
   // ─── Realtime SSE Stream ─────────────────────────────────────────
   app.get("/api/notifications/stream", { preHandler: [authenticate] }, notificationStreamHandler);
 
   // ─── Operational Metrics Monitoring ──────────────────────────────
-  app.get("/api/notifications/metrics", { preHandler: [authenticate] }, async (req, reply) => {
+  app.get("/api/notifications/metrics", adminNotifications, async (req, reply) => {
     const metrics = await notificationService.getMetrics();
     return reply.send({
       success: true,
@@ -24,9 +43,11 @@ export default async function notificationRoutes(app: FastifyInstance) {
   });
 
   // ─── SMS/WhatsApp Dispatch Logs ──────────────────────────────────
-  app.get("/api/notifications/dispatch-logs", { preHandler: [authenticate] }, async (req, reply) => {
+  app.get("/api/notifications/dispatch-logs", adminNotifications, async (req, reply) => {
     const { NotificationLog } = await import("../models/NotificationLog.ts");
-    const logs = await NotificationLog.find({}).sort({ createdAt: -1 }).limit(50);
+    const organizationId = req.user!.organization_id;
+    if (!organizationId) return reply.code(403).send({ success: false, message: "Organization context is required" });
+    const logs = await NotificationLog.find({ organizationId }).sort({ createdAt: -1 }).limit(50);
     return reply.send({
       success: true,
       data: logs,
@@ -174,12 +195,12 @@ export default async function notificationRoutes(app: FastifyInstance) {
   });
 
   // ─── Fetch Organization Users for Recipient Selection ────────────
-  app.get("/api/notifications/users", { preHandler: [authenticate] }, async (req, reply) => {
+  app.get("/api/notifications/users", adminNotifications, async (req, reply) => {
     const organizationId = req.user!.organization_id;
-    let users = await User.find(organizationId ? { organization_id: organizationId } : {}).select("_id name email role").lean();
-    if (users.length === 0) {
-      users = await User.find({}).select("_id name email role").limit(100).lean();
-    }
+    if (!organizationId) return reply.code(403).send({ success: false, message: "Organization context is required" });
+    const members = await OrgMember.find({ organizationId }).select("userId role").lean();
+    const userIds = members.map((member) => member.userId);
+    const users = await User.find({ _id: { $in: userIds }, isActive: true }).select("_id name email role").lean();
     return reply.send({
       success: true,
       data: users.map((u: any) => ({
@@ -192,7 +213,7 @@ export default async function notificationRoutes(app: FastifyInstance) {
   });
 
   // ─── Send / Broadcast In-App Notification ────────────────────────
-  app.post("/api/notifications/send", { preHandler: [authenticate] }, async (req, reply) => {
+  app.post("/api/notifications/send", adminNotifications, async (req, reply) => {
     const senderUserId = req.user!.id;
     const organizationId = req.user!.organization_id;
     const {
@@ -210,24 +231,31 @@ export default async function notificationRoutes(app: FastifyInstance) {
     if (!title || !message) {
       return reply.code(400).send({ success: false, message: "Title and message are required" });
     }
+    if (!organizationId) {
+      return reply.code(403).send({ success: false, message: "Organization context is required" });
+    }
 
     let targetUsers: any[] = [];
 
     if (recipientScope === "user" && targetUserId) {
-      targetUsers = await User.find({ _id: targetUserId }).select("_id email name").lean();
+      const member = await OrgMember.findOne({ organizationId, userId: targetUserId }).select("userId").lean();
+      if (!member) return reply.code(404).send({ success: false, message: "Recipient is not a member of this organization" });
+      targetUsers = await User.find({ _id: member.userId, isActive: true }).select("_id email name").lean();
     } else {
-      const userFilter: any = {};
-      if (recipientScope !== "all") {
-        userFilter.role = recipientScope;
-      }
-      targetUsers = await User.find(userFilter).select("_id email name").lean();
+      const memberFilter: any = { organizationId };
+      if (recipientScope !== "all") memberFilter.role = recipientScope;
+      const members = await OrgMember.find(memberFilter).select("userId").lean();
+      targetUsers = await User.find({ _id: { $in: members.map((member) => member.userId) }, isActive: true }).select("_id email name").lean();
     }
 
     if (targetUsers.length === 0) {
-      targetUsers = await User.find({ _id: senderUserId }).select("_id email name").lean();
+      return reply.code(404).send({ success: false, message: "No active recipients found in this organization" });
     }
 
+    const orgSmtp = channels?.email ? await getOrganizationSmtp(organizationId) : null;
     let dispatchedCount = 0;
+    const emailsSentTo: string[] = [];
+    const emailFailures: string[] = [];
     for (const targetUser of targetUsers) {
       const recipientId = targetUser._id.toString();
 
@@ -253,7 +281,7 @@ export default async function notificationRoutes(app: FastifyInstance) {
 
       // 2. Dispatch Email alert if email channel enabled and user has valid email
       if (channels?.email && targetUser.email) {
-        emailProvider.sendEmail({
+        const sent = await emailProvider.sendEmail({
           to: targetUser.email,
           subject: `[${severity.toUpperCase()}] ${title}`,
           text: message,
@@ -272,7 +300,9 @@ export default async function notificationRoutes(app: FastifyInstance) {
               <p style="font-size: 11px; color: #94a3b8; text-align: center; margin: 0;">Sent by Ananta Health Intelligence System &bull; Confidential Medical Telemetry</p>
             </div>
           `,
-        }).catch((e) => console.error("Email broadcast error:", e));
+        }, orgSmtp);
+        if (sent) emailsSentTo.push(targetUser.email);
+        else emailFailures.push(targetUser.email);
       }
 
       dispatchedCount++;
@@ -283,19 +313,19 @@ export default async function notificationRoutes(app: FastifyInstance) {
       .map(([k]) => k)
       .join(", ");
 
-    const sentEmails = targetUsers.map((u) => u.email).filter(Boolean);
+    const sentEmails = emailsSentTo;
 
     return reply.send({
       success: true,
       message: `Dispatched to ${dispatchedCount} user(s) via [${channelNames || "inApp"}]${
         channels?.email ? ` — Email sent to: ${sentEmails.join(", ")}` : ""
       }`,
-      data: { count: dispatchedCount, channels, emailsSentTo: sentEmails },
+      data: { count: dispatchedCount, channels, emailsSentTo, emailFailures },
     });
   });
 
   // ─── Test Trigger Endpoint (Infrastructure Validation) ───────────
-  app.post("/api/notifications/test-trigger", { preHandler: [authenticate] }, async (req, reply) => {
+  app.post("/api/notifications/test-trigger", adminNotifications, async (req, reply) => {
     const userId = req.user!.id;
     const organizationId = req.user!.organization_id;
     const { category, title, message, severity } = (req.body as any) || {};
@@ -326,7 +356,7 @@ export default async function notificationRoutes(app: FastifyInstance) {
   });
 
   // ─── Test Direct Email Dispatch Endpoint ─────────────────────────
-  app.post("/api/notifications/test-email", { preHandler: [authenticate] }, async (req, reply) => {
+  app.post("/api/notifications/test-email", adminNotifications, async (req, reply) => {
     const userEmail = req.user?.email;
     const orgId = req.user?.organization_id;
     const { targetEmail } = (req.body as any) || {};
@@ -334,6 +364,11 @@ export default async function notificationRoutes(app: FastifyInstance) {
 
     if (!recipient) {
       return reply.code(400).send({ success: false, message: "No recipient email address available" });
+    }
+    if (orgId) {
+      const recipientUser = await User.findOne({ email: recipient, isActive: true }).select("_id").lean();
+      const member = recipientUser ? await OrgMember.exists({ organizationId: orgId, userId: recipientUser._id }) : null;
+      if (!member) return reply.code(404).send({ success: false, message: "Recipient is not an active organization member" });
     }
 
     // Load org SMTP config if available — decrypt password before use
@@ -390,4 +425,3 @@ export default async function notificationRoutes(app: FastifyInstance) {
     }
   });
 }
-

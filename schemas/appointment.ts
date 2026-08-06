@@ -21,6 +21,7 @@ export const bookAppointmentSchema = {
           gender: { type: "string", enum: ["male", "female", "other"] },
           phone: { type: "string" },
           email: { type: "string", pattern: emailPattern },
+          password: { type: "string", minLength: 8 },
           address: { type: "string" },
           allergies: { type: "array", items: { type: "string" } },
           conditions: { type: "array", items: { type: "string" } },

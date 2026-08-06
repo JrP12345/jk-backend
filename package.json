@@ -10,7 +10,9 @@
     "audit:release": "node ../scripts/repo_auditor.js",
     "audit": "node ../scripts/repo_auditor.js",
     "seed": "node --env-file=.env --experimental-strip-types scripts/seedDatabase.ts",
+    "seed:clean": "node --env-file=.env --experimental-strip-types scripts/seedFreshCleanDB.ts",
     "seed:clinic1": "node --env-file=.env --experimental-strip-types scripts/seedClinicOne.ts",
+    "migrate:tenant": "node --env-file=.env --experimental-strip-types scripts/migrateTenantScoping.ts",
     "dev": "nodemon -e js,ts,json,env --exec \"node --env-file=.env --experimental-strip-types\" index.js"
   },
   "repository": {

@@ -23,6 +23,7 @@ import "../models/Notification.ts";
 import "../models/NotificationPreference.ts";
 import "../models/NotificationTemplate.ts";
 import "../models/NotificationDelivery.ts";
+import "../services/ai/AIService.ts";
 
 process.env.NODE_ENV = "test";
 

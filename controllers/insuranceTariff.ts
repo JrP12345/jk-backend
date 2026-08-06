@@ -1,7 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { InsuranceTariff } from "../models/InsuranceTariff.ts";
-import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
+import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 
 export async function upsertTariff(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -22,6 +22,9 @@ export async function upsertTariff(req: FastifyRequest, reply: FastifyReply) {
 
     if (!tpaName || !serviceCode || !serviceName || agreedRate === undefined) {
       return reply.code(400).send(errorResponse("tpaName, serviceCode, serviceName, and agreedRate are required"));
+    }
+    if (!Number.isFinite(agreedRate) || agreedRate < 0 || (coPayPercentage !== undefined && (!Number.isFinite(coPayPercentage) || coPayPercentage < 0 || coPayPercentage > 100))) {
+      return reply.code(400).send(errorResponse("Tariff rates must be non-negative and co-pay percentage must be between 0 and 100"));
     }
 
     const tariff = await InsuranceTariff.findOneAndUpdate(
@@ -55,12 +58,13 @@ export async function getTariffs(req: FastifyRequest, reply: FastifyReply) {
 
     const filter: any = {};
     if (orgId && req.user?.role !== "root") filter.organizationId = orgId;
-    if (tpaName) filter.tpaName = new RegExp(tpaName, "i");
+    if (tpaName) filter.tpaName = new RegExp(escapeRegex(tpaName), "i");
     if (search) {
+      const safeSearch = escapeRegex(search);
       filter.$or = [
-        { serviceCode: new RegExp(search, "i") },
-        { serviceName: new RegExp(search, "i") },
-        { tpaName: new RegExp(search, "i") },
+        { serviceCode: new RegExp(safeSearch, "i") },
+        { serviceName: new RegExp(safeSearch, "i") },
+        { tpaName: new RegExp(safeSearch, "i") },
       ];
     }
 
@@ -92,6 +96,7 @@ export async function evaluateTariff(req: FastifyRequest, reply: FastifyReply) {
     if (!tpaName || !items || !Array.isArray(items)) {
       return reply.code(400).send(errorResponse("tpaName and items array are required"));
     }
+    if (!orgId && req.user?.role !== "root") return reply.code(403).send(errorResponse("Organization context missing"));
 
     const evaluatedItems = [];
     let totalClaimableAmount = 0;
@@ -99,6 +104,9 @@ export async function evaluateTariff(req: FastifyRequest, reply: FastifyReply) {
     let totalCoPayAmount = 0;
 
     for (const item of items) {
+      if (!item.serviceCode || !Number.isFinite(item.amount) || item.amount < 0 || !Number.isInteger(item.quantity) || item.quantity <= 0) {
+        return reply.code(400).send(errorResponse("Each tariff item requires a non-negative amount and positive integer quantity"));
+      }
       const tariffRule = await InsuranceTariff.findOne({
         organizationId: orgId,
         tpaName: tpaName.trim(),

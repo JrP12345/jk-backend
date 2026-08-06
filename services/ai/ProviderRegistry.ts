@@ -5,23 +5,7 @@ export class ProviderRegistry {
   private providers: Map<string, AIProvider> = new Map();
   private primaryProviderName = "GoogleGeminiAI";
 
-  private constructor() {
-    this.registerProvider({
-      name: "FallbackSimulationAI",
-      isHealthy: async () => true,
-      generateSOAPNote: async (input) => ({
-        subjective: `Chief complaint: ${input.chiefComplaint}`,
-        objective: "Vitals WNL",
-        assessment: "Clinical evaluation complete",
-        plan: "Supportive therapy"
-      }),
-      queryPatientHealthAssistant: async (input) => ({
-        answer: "Simulation response",
-        citations: ["System Record"],
-        disclaimer: "Grounded AI guidance"
-      })
-    });
-  }
+  private constructor() {}
 
   static getInstance(): ProviderRegistry {
     if (!ProviderRegistry.instance) {

@@ -16,12 +16,26 @@ export async function processSelfCheckInQr(req: FastifyRequest, reply: FastifyRe
 
     let appointment: any = null;
 
-    if (appointmentId && mongoose.Types.ObjectId.isValid(appointmentId)) {
-      appointment = await Appointment.findById(appointmentId)
+    // This is a public kiosk endpoint.  An appointment ID alone is not a
+    // sufficient check-in credential because it is enumerable/leakable.  The
+    // existing kiosk contract already supplies the clinic and queue token, so
+    // require all supplied identifiers to match the same appointment.
+    if (
+      appointmentId &&
+      mongoose.Types.ObjectId.isValid(appointmentId) &&
+      tokenNumber !== undefined &&
+      clinicId &&
+      mongoose.Types.ObjectId.isValid(clinicId)
+    ) {
+      appointment = await Appointment.findOne({
+        _id: appointmentId,
+        clinicId,
+        tokenNumber: Number(tokenNumber),
+      })
         .populate("clinicId", "name city")
         .populate("doctorId", "name specialization")
         .populate({ path: "patientId", populate: { path: "userId", select: "name email phone" } });
-    } else if (tokenNumber && clinicId) {
+    } else if (tokenNumber !== undefined && clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
       const startOfDay = new Date();
       startOfDay.setHours(0, 0, 0, 0);
       const endOfDay = new Date();

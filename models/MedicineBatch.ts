@@ -79,6 +79,7 @@ const medicineBatchSchema = new Schema<IMedicineBatch>(
 );
 
 medicineBatchSchema.index({ medicineId: 1, expiryDate: 1, status: 1 });
+medicineBatchSchema.index({ medicineId: 1, clinicId: 1, batchNumber: 1 }, { unique: true });
 
 medicineBatchSchema.plugin(auditPlugin);
 

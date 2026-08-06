@@ -11,51 +11,78 @@ export async function searchPatients(req: FastifyRequest, reply: FastifyReply) {
   try {
     const orgId = req.user?.organization_id;
     const userRole = req.user?.role;
-    const { search, page, limit } = req.query as { search?: string; page?: string | number; limit?: string | number };
-    
-    let allowedUserIds: mongoose.Types.ObjectId[] | null = null;
+    const { search, gender, page, limit } = req.query as {
+      search?: string;
+      gender?: string;
+      page?: string | number;
+      limit?: string | number;
+    };
+
+    let patientFilter: any = {};
+
     if (userRole !== "patient" && orgId) {
       // Find all userIds linked to this organization via OrgMember or Patient.organizationId
       const orgMembers = await OrgMember.find({ organizationId: orgId, role: "patient" }).select("userId");
-      const orgMemberUserIds = orgMembers.map(m => m.userId);
+      const orgMemberUserIds = orgMembers.map((m) => m.userId);
 
       const orgPatients = await Patient.find({ organizationId: orgId }).select("userId");
-      const orgPatientUserIds = orgPatients.map(p => p.userId);
+      const orgPatientUserIds = orgPatients.map((p) => p.userId);
 
       const mergedSet = new Set([
-        ...orgMemberUserIds.map(id => id.toString()),
-        ...orgPatientUserIds.map(id => id.toString())
+        ...orgMemberUserIds.map((id) => id.toString()),
+        ...orgPatientUserIds.map((id) => id.toString()),
       ]);
-      allowedUserIds = Array.from(mergedSet).map(id => new mongoose.Types.ObjectId(id));
+      const allowedUserIds = Array.from(mergedSet).map((id) => new mongoose.Types.ObjectId(id));
+      patientFilter.userId = { $in: allowedUserIds };
     }
 
-    const userQuery: any = { role: "patient", isActive: true };
-    if (allowedUserIds) {
-      userQuery._id = { $in: allowedUserIds };
+    if (gender && gender.toLowerCase() !== "all") {
+      patientFilter.gender = gender.toLowerCase();
     }
 
-    if (search) {
-      const safeSearch = escapeRegex(search);
-      userQuery.$or = [
-        { name: { $regex: safeSearch, $options: "i" } },
-        { email: { $regex: safeSearch, $options: "i" } },
-        { phone: { $regex: safeSearch, $options: "i" } }
+    if (search && search.trim()) {
+      const safeSearch = escapeRegex(search.trim());
+
+      // Search matching users first
+      const matchingUsers = await User.find({
+        role: "patient",
+        isActive: true,
+        $or: [
+          { name: { $regex: safeSearch, $options: "i" } },
+          { email: { $regex: safeSearch, $options: "i" } },
+          { phone: { $regex: safeSearch, $options: "i" } },
+        ],
+      }).select("_id");
+      const matchingUserIds = matchingUsers.map((u) => u._id);
+
+      patientFilter.$or = [
+        { userId: { $in: matchingUserIds } },
+        { mrn: { $regex: safeSearch, $options: "i" } },
+        { abdmHealthId: { $regex: safeSearch, $options: "i" } },
+        { allergies: { $regex: safeSearch, $options: "i" } },
+        { conditions: { $regex: safeSearch, $options: "i" } },
       ];
     }
-    
-    const totalCount = await User.countDocuments(userQuery);
+
+    const totalCount = await Patient.countDocuments(patientFilter);
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
     const totalPages = Math.ceil(totalCount / pageSize);
 
-    const users = await User.find(userQuery).skip(skip).limit(pageSize);
+    const patients = await Patient.find(patientFilter)
+      .populate("userId", "name email phone")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(pageSize);
 
-    if (users.length === 0) {
-      setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
-      return reply.code(200).send(successResponse([]));
+    // Auto-backfill MRN for legacy records if missing
+    for (const p of patients) {
+      if (!p.mrn) {
+        const year = new Date().getFullYear();
+        const randomHex = Math.floor(100000 + Math.random() * 900000);
+        p.mrn = `MRN-${year}-${randomHex}`;
+        await p.save();
+      }
     }
-
-    const userIds = users.map(u => u._id);
-    const patients = await Patient.find({ userId: { $in: userIds } }).populate("userId", "name email phone");
 
     setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
     return reply.code(200).send(successResponse(patients));
@@ -81,11 +108,15 @@ export async function getPatientDetails(req: FastifyRequest, reply: FastifyReply
       return reply.code(404).send(errorResponse("Patient not found"));
     }
 
-    // Enforce Tenant Boundaries:
-    // 1. Patient user can access their own patient profile
+    // Enforce Tenant Boundaries & Role Ownership:
+    // 1. Patient user can ONLY access their own patient profile
     // 2. Staff user can access patients in their active organization
     const patientUserIdStr = (patient.userId as any)?._id?.toString() || (patient.userId as any)?.id?.toString() || patient.userId.toString();
     const isSelfAccess = patientUserIdStr === requesterUserId;
+
+    if (requesterRole === "patient" && !isSelfAccess) {
+      return reply.code(403).send(errorResponse("Forbidden: You do not have permission to view other patients' records"));
+    }
 
     if (!isSelfAccess && requesterOrgId) {
       let isOrgMember = false;
@@ -202,4 +233,192 @@ export async function getPatientTimelineController(req: FastifyRequest, reply: F
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
+
+export async function updatePatientProfile(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id } = req.params as { id: string };
+    const requesterOrgId = req.user?.organization_id;
+    const requesterRole = req.user?.role;
+    const requesterUserId = req.user?.id;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return reply.code(400).send(errorResponse("Invalid patient ID"));
+    }
+
+    const patient = await Patient.findById(id);
+    if (!patient) {
+      return reply.code(404).send(errorResponse("Patient not found"));
+    }
+
+    // Tenant Boundary & Access Check
+    const patientUserIdStr = (patient.userId as any)?._id?.toString() || (patient.userId as any)?.id?.toString() || patient.userId.toString();
+    const isSelfAccess = patientUserIdStr === requesterUserId;
+
+    if (!isSelfAccess && requesterOrgId && requesterRole !== "root" && requesterRole !== "admin") {
+      let isOrgMember = false;
+      if (patient.organizationId && patient.organizationId.toString() === requesterOrgId) {
+        isOrgMember = true;
+      } else {
+        const member = await OrgMember.findOne({ userId: patient.userId, organizationId: requesterOrgId });
+        if (member) isOrgMember = true;
+      }
+
+      if (!isOrgMember) {
+        return reply.code(404).send(errorResponse("Patient not found"));
+      }
+    }
+
+    if (!patient.organizationId && requesterOrgId) {
+      patient.organizationId = requesterOrgId as any;
+    }
+
+    const {
+      name,
+      phone,
+      dob,
+      gender,
+      bloodGroup,
+      address,
+      city,
+      state,
+      pincode,
+      nationality,
+      allergies,
+      conditions,
+      medicalNotes,
+      emergencyContacts,
+      insurancePolicies,
+      abdmHealthId,
+    } = req.body as any;
+
+    if (gender !== undefined && !["male", "female", "other"].includes(gender.toLowerCase())) {
+      return reply.code(400).send(errorResponse("Invalid gender. Allowed values: male, female, other"));
+    }
+
+    if (bloodGroup !== undefined && bloodGroup !== "" && !["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"].includes(bloodGroup)) {
+      return reply.code(400).send(errorResponse("Invalid blood group. Allowed values: A+, A-, B+, B-, O+, O-, AB+, AB-"));
+    }
+
+    if (dob !== undefined && dob !== "") {
+      const parsedDob = new Date(dob);
+      if (isNaN(parsedDob.getTime())) {
+        return reply.code(400).send(errorResponse("Invalid date of birth format"));
+      }
+      if (parsedDob > new Date()) {
+        return reply.code(400).send(errorResponse("Date of birth cannot be in the future"));
+      }
+      patient.dob = parsedDob;
+    } else if (dob === "") {
+      patient.dob = undefined;
+    }
+
+    if (name || phone) {
+      const user = await User.findById(patient.userId);
+      if (user) {
+        if (name) user.name = name;
+        if (phone) user.phone = phone;
+        await user.save();
+      }
+    }
+
+    if (gender !== undefined) patient.gender = gender.toLowerCase();
+    if (bloodGroup !== undefined) patient.bloodGroup = bloodGroup;
+    if (address !== undefined) patient.address = address;
+    if (city !== undefined) (patient as any).city = city;
+    if (state !== undefined) (patient as any).state = state;
+    if (pincode !== undefined) (patient as any).pincode = pincode;
+    if (nationality !== undefined) (patient as any).nationality = nationality;
+    if (allergies !== undefined) patient.allergies = allergies;
+    if (conditions !== undefined) patient.conditions = conditions;
+    if (medicalNotes !== undefined) patient.medicalNotes = medicalNotes;
+    if (emergencyContacts !== undefined) patient.emergencyContacts = emergencyContacts;
+    if (insurancePolicies !== undefined) patient.insurancePolicies = insurancePolicies;
+    if (abdmHealthId !== undefined) patient.abdmHealthId = abdmHealthId;
+
+    await patient.save();
+
+    const updatedPatient = await Patient.findById(id).populate("userId", "name email phone");
+    return reply.code(200).send(successResponse(updatedPatient, "Patient profile updated successfully"));
+  } catch (err) {
+    console.error("updatePatientProfile error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+export async function createPatient(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const orgId = req.user?.organization_id;
+    const userRole = req.user?.role;
+    if (!orgId) return reply.code(400).send(errorResponse("Organization context required"));
+    if (!["admin", "receptionist", "doctor", "root"].includes(userRole || "")) {
+      return reply.code(403).send(errorResponse("Forbidden: staff access required"));
+    }
+
+    const {
+      name, email, phone, password, dob, gender, bloodGroup,
+      address, city, state, pincode, nationality,
+      allergies, conditions, medicalNotes, emergencyContacts
+    } = req.body as any;
+
+    if (!name || (!phone && !email)) {
+      return reply.code(400).send(errorResponse("Patient name and either phone or email are required"));
+    }
+
+    if (email && email.trim()) {
+      const existingUser = await User.findOne({ email: email.trim().toLowerCase() });
+      if (existingUser) return reply.code(409).send(errorResponse("User with this email already exists"));
+    }
+
+    const { withTransaction, createWithSession } = await import("../utilities/transaction.ts");
+    const bcrypt = await import("bcryptjs");
+
+    return await withTransaction(async (session) => {
+      const generatedPassword = password || `Ananta@${Math.floor(100000 + Math.random() * 900000)}`;
+      const hashedPassword = await bcrypt.default.hash(generatedPassword, 10);
+      const userEmail = email && email.trim() ? email.trim().toLowerCase() : `patient_${Date.now()}@clinic.local`;
+
+      const newPatientUser = await createWithSession(User, {
+        name: name.trim(),
+        email: userEmail,
+        password: hashedPassword,
+        phone: phone?.trim() || null,
+        role: "patient",
+      }, session);
+
+      const patientProfile = await createWithSession(Patient, {
+        userId: newPatientUser._id,
+        organizationId: orgId,
+        personalVaultId: `pvt_${newPatientUser._id.toString()}`,
+        dob: dob ? new Date(dob) : undefined,
+        gender,
+        bloodGroup,
+        address: address || null,
+        city: city || null,
+        state: state || null,
+        pincode: pincode || null,
+        nationality: nationality || "Indian",
+        allergies: allergies || [],
+        conditions: conditions || [],
+        medicalNotes: medicalNotes || null,
+        emergencyContacts: emergencyContacts || []
+      }, session);
+
+      await createWithSession(OrgMember, {
+        userId: newPatientUser._id,
+        organizationId: orgId,
+        role: "patient"
+      }, session);
+
+      const query = Patient.findById(patientProfile._id).populate("userId", "name email phone");
+      if (session) query.session(session);
+      const fullPatient = await query;
+
+      return reply.code(201).send(successResponse(fullPatient, "Patient registered successfully"));
+    });
+  } catch (err: any) {
+    console.error("createPatient error:", err);
+    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+  }
+}
+
 

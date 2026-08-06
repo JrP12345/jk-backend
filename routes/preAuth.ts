@@ -9,7 +9,8 @@ import {
 export default async function preAuthRoutes(app: FastifyInstance) {
   const auth = { preHandler: [authenticate] };
 
-  app.post("/api/insurance/pre-auth", auth, createPreAuthRequest);
-  app.get("/api/insurance/pre-auth", auth, getPreAuthList);
-  app.put("/api/insurance/pre-auth/:id/status", auth, updatePreAuthStatus);
+  app.post("/api/pre-auth", auth, createPreAuthRequest);
+  app.get("/api/pre-auth", auth, getPreAuthList);
+  app.put("/api/pre-auth/:id", auth, updatePreAuthStatus);
+
 }

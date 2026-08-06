@@ -35,7 +35,7 @@ async function seedDatabase() {
       password: hashedPassword,
       phone: "+1 234 567 8900",
       role: "root",
-      twoFactorEnabled: true,
+      twoFactorEnabled: false,
       isActive: true,
     });
     console.log("✓ Created Platform Root Admin:", rootAdmin.email);

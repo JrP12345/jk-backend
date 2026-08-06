@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import crypto from "node:crypto";
 import { processSsoLogin } from "../services/SsoAuthService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 
@@ -6,8 +7,14 @@ export async function initiateSsoRedirect(req: FastifyRequest, reply: FastifyRep
   try {
     const { provider } = req.query as { provider?: string };
     const targetProvider = provider || "azure_ad";
+    const allowedProviders = ["azure_ad", "okta", "google_workspace", "saml2"];
+    if (!allowedProviders.includes(targetProvider)) return reply.code(400).send(errorResponse("Unsupported SSO provider"));
+    const ssoAuthorizationUrl = process.env.SSO_AUTHORIZATION_URL?.trim();
+    if (!ssoAuthorizationUrl) return reply.code(503).send(errorResponse("SSO provider is not configured"));
 
-    const redirectUrl = `https://sso.healthos.ananta.org/auth/realms/enterprise/protocol/openid-connect/auth?client_id=ananta-erp&response_type=code&scope=openid%20profile%20email&provider=${targetProvider}`;
+    const redirect = new URL(ssoAuthorizationUrl);
+    redirect.searchParams.set("provider", targetProvider);
+    const redirectUrl = redirect.toString();
 
     return reply.code(200).send(
       successResponse({
@@ -23,6 +30,16 @@ export async function initiateSsoRedirect(req: FastifyRequest, reply: FastifyRep
 
 export async function handleSsoCallback(req: FastifyRequest, reply: FastifyReply) {
   try {
+    const callbackSecret = process.env.SSO_CALLBACK_SECRET?.trim();
+    if (!callbackSecret) {
+      return reply.code(503).send(errorResponse("SSO callback verification is not configured"));
+    }
+    const signature = req.headers["x-sso-signature"];
+    const suppliedSignature = Array.isArray(signature) ? signature[0] : signature;
+    const expectedSignature = crypto.createHmac("sha256", callbackSecret).update(JSON.stringify(req.body || {})).digest("hex");
+    if (!suppliedSignature || suppliedSignature.length !== expectedSignature.length || !crypto.timingSafeEqual(Buffer.from(suppliedSignature), Buffer.from(expectedSignature))) {
+      return reply.code(401).send(errorResponse("Invalid SSO callback assertion"));
+    }
     const { email, name, provider, externalId } = req.body as {
       email: string;
       name: string;

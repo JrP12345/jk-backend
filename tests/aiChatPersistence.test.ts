@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import app from "../index.js";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
+import { OrgMember } from "../models/OrgMember.ts";
 import { AIChatSession } from "../models/AIChatSession.ts";
 
 describe("Milestone 5: Enterprise DB-Backed AI Chat Persistence Tests", () => {
@@ -33,6 +34,7 @@ describe("Milestone 5: Enterprise DB-Backed AI Chat Persistence Tests", () => {
       organizationId: org._id
     });
     testUserId = (user as any)._id.toString();
+    await OrgMember.create({ userId: user._id, organizationId: org._id, role: "doctor" });
 
     // Login via API to get auth token
     const loginRes = await app.inject({
@@ -46,6 +48,7 @@ describe("Milestone 5: Enterprise DB-Backed AI Chat Persistence Tests", () => {
 
   afterAll(async () => {
     await AIChatSession.deleteMany({ userId: testUserId });
+    await OrgMember.deleteMany({ userId: testUserId, organizationId: testOrgId });
     await User.deleteMany({ _id: testUserId });
     await Organization.deleteMany({ _id: testOrgId });
   });

@@ -4,7 +4,14 @@ import { Medicine } from "../models/Medicine.ts";
 import { Patient } from "../models/Patient.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { AuditLog } from "../models/AuditLog.ts";
+import { MedicineBatch } from "../models/MedicineBatch.ts";
 import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
+import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds } from "../utilities/tenant.ts";
+import { withTransaction, createWithSession } from "../utilities/transaction.ts";
+
+function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
+  return reply.code(check.statusCode).send(errorResponse(check.message));
+}
 
 // ─── Medicine CRUD Handlers ─────────────────────────────────────
 
@@ -15,16 +22,10 @@ export async function createMedicine(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(403).send(errorResponse("Forbidden: Only staff can manage medicine stock"));
     }
 
-    const { clinicId, name, genericName, stockQuantity, price, costPrice, expiryDate, batchNumber } = req.body as {
-      clinicId: string;
-      name: string;
-      genericName: string;
-      stockQuantity: number;
-      price: number;
-      costPrice: number;
-      expiryDate: string;
-      batchNumber: string;
-    };
+    const {
+      clinicId, name, genericName, stockQuantity, price, costPrice,
+      expiryDate, batchNumber, manufacturer, category, scheduleType
+    } = req.body as any;
 
     if (!clinicId || !name || !genericName || stockQuantity === undefined || price === undefined || costPrice === undefined || !expiryDate || !batchNumber) {
       return reply.code(400).send(errorResponse("All fields (clinicId, name, genericName, stockQuantity, price, costPrice, expiryDate, batchNumber) are required"));
@@ -32,6 +33,15 @@ export async function createMedicine(req: FastifyRequest, reply: FastifyReply) {
 
     if (!mongoose.Types.ObjectId.isValid(clinicId)) {
       return reply.code(400).send(errorResponse("Invalid clinic ID"));
+    }
+    const clinicAccess = await checkClinicAccess(req, clinicId);
+    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    if (!Number.isInteger(stockQuantity) || stockQuantity < 0 || !Number.isFinite(price) || price < 0 || !Number.isFinite(costPrice) || costPrice < 0) {
+      return reply.code(400).send(errorResponse("Stock and prices must be non-negative numbers; stock must be an integer"));
+    }
+    const parsedExpiryDate = new Date(expiryDate);
+    if (Number.isNaN(parsedExpiryDate.getTime())) {
+      return reply.code(400).send(errorResponse("Invalid expiry date"));
     }
 
     const medicine = await Medicine.create({
@@ -41,8 +51,11 @@ export async function createMedicine(req: FastifyRequest, reply: FastifyReply) {
       stockQuantity,
       price,
       costPrice,
-      expiryDate: new Date(expiryDate),
-      batchNumber
+      expiryDate: parsedExpiryDate,
+      batchNumber,
+      manufacturer: manufacturer?.trim() || undefined,
+      category: category || "tablet",
+      scheduleType: scheduleType || "general",
     });
 
     return reply.code(201).send(successResponse(medicine, "Medicine registered successfully"));
@@ -61,7 +74,12 @@ export async function getMedicines(req: FastifyRequest, reply: FastifyReply) {
       if (!mongoose.Types.ObjectId.isValid(clinicId)) {
         return reply.code(400).send(errorResponse("Invalid clinic ID"));
       }
+      const clinicAccess = await checkClinicAccess(req, clinicId);
+      if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
       query.clinicId = clinicId;
+    } else {
+      const clinicIds = await getRequestClinicIds(req);
+      if (clinicIds) query.clinicId = { $in: clinicIds };
     }
 
     if (search) {
@@ -101,12 +119,14 @@ export async function updateMedicine(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse("Invalid medicine ID"));
     }
 
-    const { name, genericName, stockQuantity, price, costPrice, expiryDate, batchNumber } = req.body as any;
+    const { name, genericName, stockQuantity, price, costPrice, expiryDate, batchNumber, manufacturer, category, scheduleType } = req.body as any;
 
-    const medicine = await Medicine.findById(id);
+    const medicine: any = await Medicine.findById(id);
     if (!medicine) {
       return reply.code(404).send(errorResponse("Medicine not found"));
     }
+    const medicineAccess = await checkOperationalRecordAccess(req, medicine);
+    if (!medicineAccess.allowed) return sendTenantError(reply, medicineAccess);
 
     if (name !== undefined) medicine.name = name;
     if (genericName !== undefined) medicine.genericName = genericName;
@@ -115,6 +135,9 @@ export async function updateMedicine(req: FastifyRequest, reply: FastifyReply) {
     if (costPrice !== undefined) medicine.costPrice = costPrice;
     if (expiryDate !== undefined) medicine.expiryDate = new Date(expiryDate);
     if (batchNumber !== undefined) medicine.batchNumber = batchNumber;
+    if (manufacturer !== undefined) medicine.manufacturer = manufacturer;
+    if (category !== undefined) medicine.category = category;
+    if (scheduleType !== undefined) medicine.scheduleType = scheduleType;
 
     await medicine.save();
     return reply.code(200).send(successResponse(medicine, "Medicine updated successfully"));
@@ -140,6 +163,8 @@ export async function deleteMedicine(req: FastifyRequest, reply: FastifyReply) {
     if (!medicine) {
       return reply.code(404).send(errorResponse("Medicine not found"));
     }
+    const medicineAccess = await checkOperationalRecordAccess(req, medicine);
+    if (!medicineAccess.allowed) return sendTenantError(reply, medicineAccess);
 
     await Medicine.findByIdAndDelete(id);
     return reply.code(200).send(successResponse(null, "Medicine deleted successfully"));
@@ -175,10 +200,20 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
       return reply.code(400).send(errorResponse("Invalid patientId or clinicId"));
     }
 
+    const clinicAccess = await checkClinicAccess(req, clinicId);
+    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+
     // Verify Patient
     const patient = await Patient.findById(patientId);
     if (!patient) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
+    }
+    if (patient.organizationId && clinicAccess.organizationId && patient.organizationId.toString() !== clinicAccess.organizationId) {
+      return reply.code(404).send(errorResponse("Patient profile not found"));
+    }
+    if (!patient.organizationId && clinicAccess.organizationId) {
+      patient.organizationId = new mongoose.Types.ObjectId(clinicAccess.organizationId);
+      await patient.save();
     }
 
     // Validate doctorId if passed
@@ -188,9 +223,8 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
     }
 
     // Load and validate stocks
-    const medsToUpdate = [];
-    const invoiceItems = [];
-    let subtotal = 0;
+    const medsToUpdate: any[] = [];
+    const medicineIds = new Set<string>();
 
     for (const item of items) {
       if (!mongoose.Types.ObjectId.isValid(item.medicineId)) {
@@ -199,10 +233,20 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
       if (!item.quantity || item.quantity <= 0) {
         return reply.code(400).send(errorResponse("Item quantities must be positive integers"));
       }
+      if (!Number.isInteger(item.quantity)) {
+        return reply.code(400).send(errorResponse("Item quantities must be positive integers"));
+      }
+      if (medicineIds.has(item.medicineId)) {
+        return reply.code(400).send(errorResponse("Each medicine may appear only once per dispense request"));
+      }
+      medicineIds.add(item.medicineId);
 
       const medicine = await Medicine.findById(item.medicineId);
       if (!medicine) {
         return reply.code(404).send(errorResponse(`Medicine ID ${item.medicineId} not found`));
+      }
+      if (medicine.clinicId.toString() !== clinicId) {
+        return reply.code(404).send(errorResponse(`Medicine ID ${item.medicineId} not found in selected clinic`));
       }
 
       if (medicine.stockQuantity < item.quantity) {
@@ -215,74 +259,83 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
         deductAmount: item.quantity
       });
 
-      subtotal += medicine.price * item.quantity;
-      invoiceItems.push({
-        description: `Prescription Medicine: ${medicine.name} (Batch: ${medicine.batchNumber})`,
-        amount: medicine.price,
-        quantity: item.quantity
-      });
     }
 
-    // Perform Stock Updates
-    const updatedMedicines = [];
-    try {
-      for (const m of medsToUpdate) {
-        m.medicine.stockQuantity -= m.deductAmount;
-        await m.medicine.save();
-        updatedMedicines.push(m.medicine);
-      }
-    } catch (stockError) {
-      // Rollback stock updates for any completed saves if one fails mid-way
-      for (const m of medsToUpdate) {
-        const checkUpdated = updatedMedicines.find(um => um._id.toString() === m.medicine._id.toString());
-        if (checkUpdated) {
-          m.medicine.stockQuantity = m.originalStock;
-          await m.medicine.save();
+    const invoice = await withTransaction(async (session) => {
+      const updatedMedicines: any[] = [];
+      const dispensedResults: Array<{ medicine: any; item: { quantity: number }; result: any }> = [];
+      try {
+        for (const m of medsToUpdate) {
+          const { dispenseMedicineFEFO } = await import("../services/PharmacyInventoryService.ts");
+          const result = await dispenseMedicineFEFO(m.medicine._id.toString(), clinicId, m.deductAmount, session);
+          dispensedResults.push({ medicine: m.medicine, item: { quantity: m.deductAmount }, result });
+          updatedMedicines.push(m);
         }
+
+        const invoiceItems = dispensedResults.map(({ medicine, item, result }) => ({
+          description: `Prescription Medicine: ${medicine.name} (Batch: ${result.dispensedBatches.length > 0 ? result.dispensedBatches.map((batch: any) => batch.batchNumber).join(", ") : (medicine.batchNumber || "aggregate stock")})`,
+          amount: result.totalCost / item.quantity,
+          quantity: item.quantity,
+        }));
+        const subtotal = invoiceItems.reduce((total, item) => total + item.amount * item.quantity, 0);
+
+        const year = new Date().getFullYear();
+        const count = await Invoice.countDocuments({}, session ? { session } : undefined);
+        const invoiceNumber = `INV-${year}-${(count + 1).toString().padStart(5, "0")}`;
+        const createdInvoice = await createWithSession(Invoice, {
+          invoiceNumber,
+          patientId,
+          clinicId,
+          organizationId: clinicAccess.organizationId || undefined,
+          doctorId: invoiceDoctorId,
+          items: invoiceItems,
+          subtotal,
+          tax: 0,
+          discount: 0,
+          totalAmount: subtotal,
+          status: "unpaid"
+        }, session);
+
+        await createWithSession(AuditLog, {
+          userId,
+          action: "PRESCRIPTION_DISPENSE",
+          targetId: createdInvoice._id,
+          targetModel: "Invoice",
+          organizationId: clinicAccess.organizationId || undefined,
+          details: { invoiceNumber: createdInvoice.invoiceNumber, totalAmount: subtotal, itemCount: items.length }
+        }, session);
+
+        return createdInvoice;
+      } catch (error) {
+        // Transaction rollback handles replica-set deployments. Keep the
+        // standalone development fallback recoverable as well.
+        if (!session) {
+          for (const m of updatedMedicines) {
+            m.medicine.stockQuantity = m.originalStock;
+            await m.medicine.save();
+          }
+          for (const dispensed of dispensedResults) {
+            for (const batch of dispensed.result.dispensedBatches) {
+              const batchDoc = await MedicineBatch.findById(batch.batchId);
+              if (batchDoc) {
+                batchDoc.quantity += batch.quantity;
+                batchDoc.status = "active";
+                await batchDoc.save();
+              }
+            }
+          }
+        }
+        throw error;
       }
-      throw stockError;
-    }
-
-    let invoice: any = null;
-    try {
-      // Generate Invoice
-      const year = new Date().getFullYear();
-      const count = await Invoice.countDocuments();
-      const invoiceNumber = `INV-${year}-${(count + 1).toString().padStart(5, "0")}`;
-
-      invoice = await Invoice.create({
-        invoiceNumber,
-        patientId,
-        clinicId,
-        doctorId: invoiceDoctorId,
-        items: invoiceItems,
-        subtotal,
-        tax: 0,
-        discount: 0,
-        totalAmount: subtotal,
-        status: "unpaid"
-      });
-    } catch (invoiceError) {
-      // Rollback all stock updates if invoice creation fails
-      for (const m of medsToUpdate) {
-        m.medicine.stockQuantity = m.originalStock;
-        await m.medicine.save();
-      }
-      throw invoiceError;
-    }
-
-    // Create Audit Log
-    await AuditLog.create({
-      userId,
-      action: "PRESCRIPTION_DISPENSE",
-      targetId: invoice._id,
-      targetModel: "Invoice",
-      details: { invoiceNumber: invoice.invoiceNumber, totalAmount: subtotal, itemCount: items.length }
     });
 
     return reply.code(201).send(successResponse(invoice, "Medications dispensed and billed successfully"));
   } catch (err) {
     console.error("dispensePrescription error:", err);
+    const message = err instanceof Error ? err.message : "";
+    if (message.startsWith("Insufficient") || message.includes("expired") || message.includes("allocate")) {
+      return reply.code(400).send(errorResponse(message));
+    }
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -295,6 +348,20 @@ export async function createMedicineBatch(req: FastifyRequest, reply: FastifyRep
 
     if (!medicineId || !clinicId || !batchNumber || !expiryDate || quantity === undefined || purchaseCost === undefined || sellingPrice === undefined) {
       return reply.code(400).send(errorResponse("medicineId, clinicId, batchNumber, expiryDate, quantity, purchaseCost, and sellingPrice are required"));
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(medicineId) || !mongoose.Types.ObjectId.isValid(clinicId)) {
+      return reply.code(400).send(errorResponse("Invalid medicine or clinic ID"));
+    }
+    const clinicAccess = await checkClinicAccess(req, clinicId);
+    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const medicine = await Medicine.findById(medicineId);
+    if (!medicine) return reply.code(404).send(errorResponse("Medicine record not found"));
+    const medicineAccess = await checkOperationalRecordAccess(req, medicine);
+    if (!medicineAccess.allowed) return sendTenantError(reply, medicineAccess);
+    if (medicine.clinicId.toString() !== clinicId) return reply.code(404).send(errorResponse("Medicine not found in selected clinic"));
+    if (!Number.isInteger(quantity) || quantity <= 0 || !Number.isFinite(purchaseCost) || purchaseCost < 0 || !Number.isFinite(sellingPrice) || sellingPrice < 0) {
+      return reply.code(400).send(errorResponse("Quantity must be a positive integer and prices must be non-negative numbers"));
     }
 
     const { addBatchToMedicine } = await import("../services/PharmacyInventoryService.ts");
@@ -326,6 +393,10 @@ export async function getMedicineBatches(req: FastifyRequest, reply: FastifyRepl
     }
 
     const { MedicineBatch } = await import("../models/MedicineBatch.ts");
+    const medicine = await Medicine.findById(id);
+    if (!medicine) return reply.code(404).send(errorResponse("Medicine not found"));
+    const medicineAccess = await checkOperationalRecordAccess(req, medicine);
+    if (!medicineAccess.allowed) return sendTenantError(reply, medicineAccess);
     const batches = await MedicineBatch.find({ medicineId: id }).sort({ expiryDate: 1 });
 
     return reply.code(200).send(successResponse(batches));
@@ -337,14 +408,21 @@ export async function getMedicineBatches(req: FastifyRequest, reply: FastifyRepl
 
 export async function getExpiringMedicinesController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, days } = req.query as { clinicId?: string; days?: string };
-    if (!clinicId || !mongoose.Types.ObjectId.isValid(clinicId)) {
-      return reply.code(400).send(errorResponse("Valid clinicId is required"));
+    const { clinicId, days } = req.query as { clinicId?: string; days?: string | number };
+    const targetClinicId = clinicId || (req as any).user?.clinicId;
+    if (!targetClinicId || !mongoose.Types.ObjectId.isValid(targetClinicId)) {
+      return reply.code(200).send(successResponse([]));
     }
 
-    const daysThreshold = days ? parseInt(days, 10) : 30;
+    const clinicAccess = await checkClinicAccess(req, targetClinicId);
+    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+
+    const daysThreshold = days ? parseInt(String(days), 10) : 30;
+    if (!Number.isInteger(daysThreshold) || daysThreshold < 0) {
+      return reply.code(400).send(errorResponse("days must be a non-negative integer"));
+    }
     const { getExpiringBatches } = await import("../services/PharmacyInventoryService.ts");
-    const expiring = await getExpiringBatches(clinicId, daysThreshold);
+    const expiring = await getExpiringBatches(targetClinicId, daysThreshold);
 
     return reply.code(200).send(successResponse(expiring));
   } catch (err) {
@@ -353,3 +431,66 @@ export async function getExpiringMedicinesController(req: FastifyRequest, reply:
   }
 }
 
+export async function adjustStock(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const userRole = req.user!.role;
+    const userId = req.user!.id;
+    if (userRole !== "admin" && userRole !== "pharmacist" && userRole !== "receptionist" && userRole !== "root") {
+      return reply.code(403).send(errorResponse("Forbidden: Only pharmacy/billing staff can adjust stock"));
+    }
+
+    const { medicineId, newQuantity, reason, notes } = req.body as {
+      medicineId: string;
+      newQuantity: number;
+      reason: "physical_audit" | "damaged" | "expired" | "restock" | "other";
+      notes?: string;
+    };
+
+    if (!medicineId || newQuantity === undefined || !reason) {
+      return reply.code(400).send(errorResponse("medicineId, newQuantity, and reason are required"));
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(medicineId)) {
+      return reply.code(400).send(errorResponse("Invalid medicine ID"));
+    }
+
+    if (!Number.isInteger(newQuantity) || newQuantity < 0) {
+      return reply.code(400).send(errorResponse("newQuantity must be a non-negative integer"));
+    }
+
+    const medicine = await Medicine.findById(medicineId);
+    if (!medicine) return reply.code(404).send(errorResponse("Medicine not found"));
+
+    const medicineAccess = await checkOperationalRecordAccess(req, medicine);
+    if (!medicineAccess.allowed) return sendTenantError(reply, medicineAccess);
+
+    const oldQuantity = medicine.stockQuantity;
+    medicine.stockQuantity = newQuantity;
+    await medicine.save();
+
+    await AuditLog.create({
+      userId,
+      action: "MEDICINE_STOCK_ADJUSTMENT",
+      targetId: medicine._id,
+      targetModel: "Medicine",
+      details: {
+        medicineName: medicine.name,
+        oldQuantity,
+        newQuantity,
+        adjustmentDelta: newQuantity - oldQuantity,
+        reason,
+        notes: notes?.trim() || null,
+      },
+    });
+
+    return reply.code(200).send(
+      successResponse(
+        medicine,
+        `Stock for '${medicine.name}' adjusted from ${oldQuantity} to ${newQuantity} (${reason})`
+      )
+    );
+  } catch (err: any) {
+    console.error("adjustStock error:", err);
+    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+  }
+}

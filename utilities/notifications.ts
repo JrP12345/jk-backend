@@ -4,13 +4,12 @@ import { EVENT_TYPES } from "../events/types.ts";
 import { emailProvider } from "../notifications/providers/emailProvider.ts";
 
 /**
- * Simulates sending an email notification to patients for booking confirmations and cancellations.
- * In a production environment, this would integrate with nodemailer, SendGrid, or AWS SES.
+ * Dispatches existing booking notifications through the configured notification channels.
  */
 export async function sendBookingNotification(appointmentId: any, actionType: "booked" | "cancelled" | "rescheduled") {
   try {
     const appt: any = await Appointment.findById(appointmentId)
-      .populate("clinicId", "name email phone city")
+      .populate("clinicId", "name email phone city organizationId")
       .populate("doctorId", "name email")
       .populate({
         path: "patientId",
@@ -24,7 +23,7 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
 
     const targetUserId = appt.patientId?.userId?._id?.toString() || appt.patientId?.userId?.id || appt.patientId?.userId;
     const patientName = appt.patientId?.userId?.name || "Patient";
-    const patientEmail = appt.patientId?.userId?.email || "no-email@healthos.placeholder.com";
+    const patientEmail = appt.patientId?.userId?.email;
     const doctorName = appt.doctorId?.name || "Doctor";
     const clinicName = appt.clinicId?.name || "Clinic Location";
     const token = appt.tokenNumber;
@@ -48,7 +47,7 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
       });
     }
 
-    if (patientEmail && !patientEmail.includes("placeholder.com")) {
+    if (patientEmail) {
       const subject = actionType === "booked"
         ? `Appointment Confirmed - Token #${token} at ${clinicName}`
         : `Appointment Cancelled - ${clinicName}`;
@@ -68,6 +67,7 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
     if (patientPhone) {
       const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
       sendSmsWhatsAppNotification({
+        organizationId: appt.clinicId?.organizationId?.toString() || appt.organizationId?.toString(),
         phone: patientPhone,
         patientName,
         channel: "whatsapp",

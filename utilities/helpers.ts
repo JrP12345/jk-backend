@@ -26,6 +26,20 @@ export function verifyAccessToken(token: string): JwtPayload {
   return jwt.verify(token, SERVICE_PUBLIC_KEY, { algorithms: ["RS256"] }) as JwtPayload;
 }
 
+export function generateTwoFactorChallenge(userId: string): string {
+  return jwt.sign({ userId, purpose: "login_2fa" }, SERVICE_PRIVATE_KEY, {
+    algorithm: "RS256",
+    expiresIn: "10m",
+    keyid: KEY_ID,
+  });
+}
+
+export function verifyTwoFactorChallenge(token: string): { userId: string; purpose: "login_2fa" } {
+  const payload = jwt.verify(token, SERVICE_PUBLIC_KEY, { algorithms: ["RS256"] }) as { userId?: string; purpose?: string };
+  if (!payload.userId || payload.purpose !== "login_2fa") throw new Error("Invalid two-factor challenge");
+  return { userId: payload.userId, purpose: "login_2fa" };
+}
+
 
 // ─── Refresh Token (opaque random + SHA-256 hash in DB) ─────────
 
@@ -41,7 +55,7 @@ export function verifyAccessToken(token: string): JwtPayload {
  */
 export async function createRefreshToken(
   userId: string,
-  meta?: { ipAddress?: string; userAgent?: string; deviceName?: string }
+  meta?: { ipAddress?: string; userAgent?: string; deviceName?: string; organizationId?: string }
 ): Promise<string> {
   const rawToken = crypto.randomBytes(48).toString("hex");
   const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
@@ -60,6 +74,7 @@ export async function createRefreshToken(
 
   await RefreshToken.create({
     userId,
+    organizationId: meta?.organizationId || undefined,
     tokenHash,
     expiresAt,
     ipAddress: meta?.ipAddress || "",

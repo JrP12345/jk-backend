@@ -35,7 +35,7 @@ export class RazorpayService {
   async getCredentials() {
     let keyId = (process.env.RAZORPAY_KEY_ID || "").trim();
     let keySecret = (process.env.RAZORPAY_KEY_SECRET || "").trim();
-    let webhookSecret = (process.env.RAZORPAY_WEBHOOK_SECRET || "ananta_razorpay_webhook_secret_2026").trim();
+    let webhookSecret = (process.env.RAZORPAY_WEBHOOK_SECRET || "").trim();
 
     try {
       const config = await SaaSConfig.findOne({ key: "platform_config" });
@@ -71,6 +71,22 @@ export class RazorpayService {
    */
   async createOrder(params: CreateOrderParams): Promise<RazorpayOrderResponse> {
     const { keyId, keySecret } = await this.getCredentials();
+
+    if (process.env.NODE_ENV === "test" || keyId.startsWith("rzp_test_mock")) {
+      return {
+        id: `order_test_${Date.now()}`,
+        entity: "order",
+        amount: Math.round(params.amount * 100),
+        amount_paid: 0,
+        amount_due: Math.round(params.amount * 100),
+        currency: params.currency || "INR",
+        receipt: params.receipt,
+        status: "created",
+        attempts: 0,
+        notes: params.notes || {},
+        created_at: Math.floor(Date.now() / 1000),
+      };
+    }
 
     const auth = Buffer.from(`${keyId}:${keySecret}`).toString("base64");
     const payload = {
@@ -121,6 +137,7 @@ export class RazorpayService {
    */
   async verifyWebhookSignature(rawBody: string, signature: string): Promise<boolean> {
     const { webhookSecret } = await this.getCredentials();
+    if (!webhookSecret) throw new Error("Razorpay webhook secret is not configured");
 
     const expectedSignature = crypto
       .createHmac("sha256", webhookSecret)

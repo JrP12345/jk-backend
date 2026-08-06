@@ -321,7 +321,7 @@ export async function adminGetRazorpayConfig(req: FastifyRequest, reply: Fastify
     return reply.code(200).send(successResponse({
       keyId: config?.razorpayKeyId || process.env.RAZORPAY_KEY_ID || "",
       keySecret: config?.razorpayKeySecret || process.env.RAZORPAY_KEY_SECRET || "",
-      webhookSecret: config?.razorpayWebhookSecret || process.env.RAZORPAY_WEBHOOK_SECRET || "ananta_razorpay_webhook_secret_2026",
+      webhookSecret: config?.razorpayWebhookSecret || process.env.RAZORPAY_WEBHOOK_SECRET || "",
       isLiveMode: config?.isLiveMode || false,
     }));
   } catch (err: any) {
@@ -346,7 +346,7 @@ export async function adminSaveRazorpayConfig(req: FastifyRequest, reply: Fastif
       key: "platform_config",
       razorpayKeyId: (keyId || "").trim(),
       razorpayKeySecret: (keySecret || "").trim(),
-      razorpayWebhookSecret: (webhookSecret || "ananta_razorpay_webhook_secret_2026").trim(),
+      razorpayWebhookSecret: (webhookSecret || "").trim(),
       isLiveMode: isLiveMode || false,
     };
 

@@ -8,6 +8,12 @@ import { AuditLog } from "../models/AuditLog.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { OrdersService } from "../services/OrdersService.ts";
+import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds, getRequestOrganizationId, isRootRequest } from "../utilities/tenant.ts";
+import { withTransaction, createWithSession } from "../utilities/transaction.ts";
+
+function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
+  return reply.code(check.statusCode).send(errorResponse(check.message));
+}
 
 // ─── LabTest (Catalog) CRUD Handlers ─────────────────────────────
 
@@ -35,6 +41,9 @@ export async function createLabTest(req: FastifyRequest, reply: FastifyReply) {
     if (!mongoose.Types.ObjectId.isValid(clinicId)) {
       return reply.code(400).send(errorResponse("Invalid clinic ID"));
     }
+
+    const clinicAccess = await checkClinicAccess(req, clinicId);
+    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
 
     // Check if code is unique
     const existing = await LabTest.findOne({ code });
@@ -68,7 +77,12 @@ export async function getLabTests(req: FastifyRequest, reply: FastifyReply) {
       if (!mongoose.Types.ObjectId.isValid(clinicId)) {
         return reply.code(400).send(errorResponse("Invalid clinic ID"));
       }
+      const clinicAccess = await checkClinicAccess(req, clinicId);
+      if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
       query.clinicId = clinicId;
+    } else {
+      const clinicIds = await getRequestClinicIds(req);
+      if (clinicIds) query.clinicId = { $in: clinicIds };
     }
 
     const totalCount = await LabTest.countDocuments(query);
@@ -107,6 +121,9 @@ export async function updateLabTest(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(404).send(errorResponse("Lab test not found"));
     }
 
+    const clinicAccess = await checkClinicAccess(req, test.clinicId);
+    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+
     if (code && code !== test.code) {
       const existing = await LabTest.findOne({ code, _id: { $ne: id } });
       if (existing) {
@@ -130,7 +147,7 @@ export async function updateLabTest(req: FastifyRequest, reply: FastifyReply) {
 }
 
 /**
- * GET /api/laboratory/tat-metrics
+ * GET /api/lab/tat-metrics
  * Turnaround Time (TAT) Analytics for Diagnostic Orders & Panels
  */
 export async function getLabTatMetrics(req: FastifyRequest, reply: FastifyReply) {
@@ -138,8 +155,16 @@ export async function getLabTatMetrics(req: FastifyRequest, reply: FastifyReply)
     const { clinicId } = req.query as { clinicId?: string };
 
     const filter: any = { status: "result-uploaded" };
-    if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
+    if (clinicId) {
+      if (!mongoose.Types.ObjectId.isValid(clinicId)) {
+        return reply.code(400).send(errorResponse("Invalid clinic ID"));
+      }
+      const clinicAccess = await checkClinicAccess(req, clinicId);
+      if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
       filter.clinicId = clinicId;
+    } else {
+      const clinicIds = await getRequestClinicIds(req);
+      if (clinicIds) filter.clinicId = { $in: clinicIds };
     }
 
     const completedOrders = await LabOrder.find(filter).populate("testId", "name code category");
@@ -170,10 +195,10 @@ export async function getLabTatMetrics(req: FastifyRequest, reply: FastifyReply)
     });
 
     const totalCompleted = completedOrders.length;
-    const avgTotalTatHours = totalCompleted > 0 ? Number((totalTatMinutes / totalCompleted / 60).toFixed(1)) : 2.4;
-    const avgStatTatMinutes = statCount > 0 ? Math.round(statTatMinutes / statCount) : 38;
-    const avgRoutineTatHours = routineCount > 0 ? Number((routineTatMinutes / routineCount / 60).toFixed(1)) : 4.2;
-    const tatCompliancePercent = totalCompleted > 0 ? Math.round((metTargetCount / totalCompleted) * 100) : 96;
+    const avgTotalTatHours = totalCompleted > 0 ? Number((totalTatMinutes / totalCompleted / 60).toFixed(1)) : 0;
+    const avgStatTatMinutes = statCount > 0 ? Math.round(statTatMinutes / statCount) : 0;
+    const avgRoutineTatHours = routineCount > 0 ? Number((routineTatMinutes / routineCount / 60).toFixed(1)) : 0;
+    const tatCompliancePercent = totalCompleted > 0 ? Math.round((metTargetCount / totalCompleted) * 100) : 0;
 
     return reply.code(200).send(
       successResponse({
@@ -213,6 +238,9 @@ export async function deleteLabTest(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(404).send(errorResponse("Lab test not found"));
     }
 
+    const clinicAccess = await checkClinicAccess(req, test.clinicId);
+    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+
     await LabTest.findByIdAndDelete(id);
     return reply.code(200).send(successResponse(null, "Lab test catalog entry deleted successfully"));
   } catch (err) {
@@ -247,10 +275,20 @@ export async function createLabOrder(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse("Invalid ObjectID reference"));
     }
 
+    const clinicAccess = await checkClinicAccess(req, clinicId);
+    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+
     // Verify patient
     const patient = await Patient.findById(patientId);
     if (!patient) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
+    }
+    if (patient.organizationId && clinicAccess.organizationId && patient.organizationId.toString() !== clinicAccess.organizationId) {
+      return reply.code(404).send(errorResponse("Patient profile not found"));
+    }
+    if (!patient.organizationId && clinicAccess.organizationId) {
+      patient.organizationId = new mongoose.Types.ObjectId(clinicAccess.organizationId);
+      await patient.save();
     }
 
     // Verify lab test
@@ -258,62 +296,65 @@ export async function createLabOrder(req: FastifyRequest, reply: FastifyReply) {
     if (!test) {
       return reply.code(404).send(errorResponse("Lab test not found in catalog"));
     }
+    if (test.clinicId.toString() !== clinicId) {
+      return reply.code(404).send(errorResponse("Lab test not found in clinic catalog"));
+    }
 
-    let invoice: any = null;
-    try {
-      // 1. Generate sequential Invoice
-      const year = new Date().getFullYear();
-      const count = await Invoice.countDocuments();
-      const invoiceNumber = `INV-${year}-${(count + 1).toString().padStart(5, "0")}`;
+    const labOrder = await withTransaction(async (session) => {
+      let invoice: any = null;
+      let createdOrder: any = null;
+      try {
+        const year = new Date().getFullYear();
+        const count = await Invoice.countDocuments({}, session ? { session } : undefined);
+        const invoiceNumber = `INV-${year}-${(count + 1).toString().padStart(5, "0")}`;
 
-      invoice = await Invoice.create({
-        invoiceNumber,
-        patientId,
-        clinicId,
-        doctorId,
-        items: [
-          {
+        invoice = await createWithSession(Invoice, {
+          invoiceNumber,
+          patientId,
+          clinicId,
+          organizationId: clinicAccess.organizationId || undefined,
+          doctorId,
+          items: [{
             description: `Laboratory Diagnostic Test: ${test.name} (${test.code})`,
             amount: test.price,
             quantity: 1
-          }
-        ],
-        subtotal: test.price,
-        tax: 0,
-        discount: 0,
-        totalAmount: test.price,
-        status: "unpaid"
-      });
-    } catch (invoiceError) {
-      throw invoiceError;
-    }
+          }],
+          subtotal: test.price,
+          tax: 0,
+          discount: 0,
+          totalAmount: test.price,
+          status: "unpaid"
+        }, session);
 
-    let labOrder: any = null;
-    try {
-      // 2. Create Lab Order
-      labOrder = await LabOrder.create({
-        clinicId,
-        patientId,
-        doctorId,
-        orderedBy: doctorId,  // forward-compatible with v1.6 accountability fields
-        testId,
-        status: "ordered"
-      });
-    } catch (orderError) {
-      // Rollback Invoice if Order save fails
-      if (invoice) {
-        await Invoice.findByIdAndDelete(invoice._id);
+        createdOrder = await createWithSession(LabOrder, {
+          organizationId: clinicAccess.organizationId || undefined,
+          clinicId,
+          patientId,
+          doctorId,
+          orderedBy: doctorId,
+          testId,
+          status: "ordered"
+        }, session);
+
+        await createWithSession(AuditLog, {
+          userId,
+          organizationId: clinicAccess.organizationId || undefined,
+          action: "LAB_ORDER_CREATE",
+          targetId: createdOrder._id,
+          targetModel: "LabOrder",
+          details: { testCode: test.code, testName: test.name, invoiceNumber: invoice.invoiceNumber }
+        }, session);
+
+        return createdOrder;
+      } catch (error) {
+        // The transaction handles rollback on replica-set deployments. Keep
+        // the standalone development fallback from leaving an orphan invoice.
+        if (!session) {
+          if (createdOrder?._id) await LabOrder.findByIdAndDelete(createdOrder._id);
+          if (invoice?._id) await Invoice.findByIdAndDelete(invoice._id);
+        }
+        throw error;
       }
-      throw orderError;
-    }
-
-    // Create Audit Log
-    await AuditLog.create({
-      userId,
-      action: "LAB_ORDER_CREATE",
-      targetId: labOrder._id,
-      targetModel: "LabOrder",
-      details: { testCode: test.code, testName: test.name, invoiceNumber: invoice.invoiceNumber }
     });
 
     return reply.code(201).send(successResponse(labOrder, "Diagnostic laboratory order created successfully"));
@@ -342,11 +383,23 @@ export async function getLabOrders(req: FastifyRequest, reply: FastifyReply) {
       if (!patient) return reply.code(200).send(successResponse([]));
       query.patientId = patient.id;
     } else {
-      if (clinicId) query.clinicId = clinicId;
+      if (clinicId) {
+        if (!mongoose.Types.ObjectId.isValid(clinicId)) {
+          return reply.code(400).send(errorResponse("Invalid clinic ID"));
+        }
+        const clinicAccess = await checkClinicAccess(req, clinicId);
+        if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+        query.clinicId = clinicId;
+      } else {
+        const clinicIds = await getRequestClinicIds(req);
+        if (clinicIds) query.clinicId = { $in: clinicIds };
+      }
       if (patientId) {
         if (!mongoose.Types.ObjectId.isValid(patientId)) {
           return reply.code(400).send(errorResponse("Invalid patientId"));
         }
+        const patientAccess = await checkPatientAccess(req, patientId);
+        if (!patientAccess.allowed) return sendTenantError(reply, patientAccess);
         query.patientId = patientId;
       }
     }
@@ -381,7 +434,7 @@ export async function collectSample(req: FastifyRequest, reply: FastifyReply) {
     const userRole = req.user!.role;
     const userId = req.user!.id;
 
-    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "doctor") {
+    if (!["admin", "receptionist", "doctor", "lab_tech"].includes(userRole)) {
       return reply.code(403).send(errorResponse("Forbidden: Only staff can log sample collection"));
     }
 
@@ -394,12 +447,16 @@ export async function collectSample(req: FastifyRequest, reply: FastifyReply) {
     if (!order) {
       return reply.code(404).send(errorResponse("Lab order not found"));
     }
+    const orderAccess = await checkOperationalRecordAccess(req, order);
+    if (!orderAccess.allowed) return sendTenantError(reply, orderAccess);
 
     if (order.status !== "ordered") {
       return reply.code(400).send(errorResponse(`Cannot collect sample for order currently in ${order.status} state`));
     }
 
     order.status = "sample-collected";
+    order.collectedBy = new mongoose.Types.ObjectId(userId);
+    order.sampleCollectedAt = new Date();
     await order.save();
 
     // Create Audit Log
@@ -423,7 +480,7 @@ export async function uploadLabResult(req: FastifyRequest, reply: FastifyReply) 
     const userRole = req.user!.role;
     const userId = req.user!.id;
 
-    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "doctor") {
+    if (!["admin", "receptionist", "doctor", "lab_tech"].includes(userRole)) {
       return reply.code(403).send(errorResponse("Forbidden: Only staff can upload lab results"));
     }
 
@@ -446,12 +503,17 @@ export async function uploadLabResult(req: FastifyRequest, reply: FastifyReply) 
     if (!order) {
       return reply.code(404).send(errorResponse("Lab order not found"));
     }
+    const orderAccess = await checkOperationalRecordAccess(req, order);
+    if (!orderAccess.allowed) return sendTenantError(reply, orderAccess);
 
-    if (order.status === "result-uploaded" || order.status === "cancelled") {
+    if (!["sample-collected", "processing"].includes(order.status)) {
       return reply.code(400).send(errorResponse(`Cannot upload result for order in ${order.status} state.`));
     }
 
     order.status = "result-uploaded";
+    order.resultedBy = new mongoose.Types.ObjectId(userId);
+    if (!order.processingStartedAt) order.processingStartedAt = new Date();
+    order.resultedAt = new Date();
     order.resultValue = resultValue;
     order.resultNotes = resultNotes || "";
     order.attachmentUrl = attachmentUrl || "";
@@ -465,12 +527,77 @@ export async function uploadLabResult(req: FastifyRequest, reply: FastifyReply) 
       action: "LAB_RESULT_UPLOAD",
       targetId: order._id,
       targetModel: "LabOrder",
-      details: { testName: (order.testId as any).name, testCode: (order.testId as any).code, resultValue }
+      details: { testName: (order.testId as any).name, testCode: (order.testId as any).code, resultRecorded: true }
     });
 
     return reply.code(200).send(successResponse(order, "Lab test results successfully saved and finalized"));
   } catch (err) {
     console.error("uploadLabResult error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+/**
+ * Legacy order status bridge. It preserves the same lifecycle enforced by the
+ * encounter-scoped OrdersService for clients that still use /lab-orders.
+ */
+export async function updateLabOrderStatus(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const userRole = req.user!.role;
+    if (!["admin", "receptionist", "doctor", "lab_tech"].includes(userRole)) {
+      return reply.code(403).send(errorResponse("Forbidden: Only authorized laboratory staff can update order status"));
+    }
+
+    const { id } = req.params as { id: string };
+    const { status, cancellationReason } = (req.body as { status?: string; cancellationReason?: string }) || {};
+    if (!mongoose.Types.ObjectId.isValid(id)) return reply.code(400).send(errorResponse("Invalid lab order ID"));
+    if (!["ordered", "sample-collected", "processing", "result-uploaded", "cancelled"].includes(status || "")) {
+      return reply.code(400).send(errorResponse("Invalid laboratory order status"));
+    }
+
+    const order = await LabOrder.findById(id).populate("testId", "name code");
+    if (!order) return reply.code(404).send(errorResponse("Lab order not found"));
+    const orderAccess = await checkOperationalRecordAccess(req, order);
+    if (!orderAccess.allowed) return sendTenantError(reply, orderAccess);
+
+    const transitions: Record<string, string[]> = {
+      ordered: ["sample-collected", "cancelled"],
+      "sample-collected": ["processing", "cancelled"],
+      processing: ["result-uploaded", "cancelled"],
+      "result-uploaded": [],
+      cancelled: [],
+    };
+    if (!(transitions[order.status] || []).includes(status!)) {
+      return reply.code(400).send(errorResponse(`Cannot transition order from ${order.status} to ${status}`));
+    }
+
+    const userId = new mongoose.Types.ObjectId(req.user!.id);
+    if (status === "sample-collected") {
+      order.collectedBy = userId;
+      order.sampleCollectedAt = new Date();
+    } else if (status === "processing") {
+      order.processingStartedAt = new Date();
+    } else if (status === "result-uploaded") {
+      order.resultedBy = userId;
+      order.resultedAt = new Date();
+      order.completedDate = order.resultedAt;
+    } else if (status === "cancelled") {
+      if (!cancellationReason?.trim()) return reply.code(400).send(errorResponse("cancellationReason is required"));
+      order.cancellationReason = cancellationReason.trim();
+    }
+    order.status = status as any;
+    await order.save();
+
+    await AuditLog.create({
+      userId: req.user!.id,
+      action: "LAB_ORDER_STATUS_UPDATE",
+      targetId: order._id,
+      targetModel: "LabOrder",
+      details: { status, cancellationReason: status === "cancelled" ? order.cancellationReason : undefined },
+    });
+    return reply.code(200).send(successResponse(order, "Laboratory order status updated"));
+  } catch (err) {
+    console.error("updateLabOrderStatus error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -498,6 +625,8 @@ export async function placeOrderController(req: FastifyRequest, reply: FastifyRe
     if (encounterId) {
       const encounter = await Encounter.findById(encounterId).lean() as any;
       if (encounter) {
+        const encounterAccess = await checkOperationalRecordAccess(req, encounter);
+        if (!encounterAccess.allowed) return sendTenantError(reply, encounterAccess);
         if (!clinicId) clinicId = encounter.clinicId?.toString();
         if (!patientId) patientId = encounter.patientId?.toString();
       }
@@ -507,8 +636,15 @@ export async function placeOrderController(req: FastifyRequest, reply: FastifyRe
       return reply.code(400).send(errorResponse("testId, clinicId, and patientId are required"));
     }
 
+    const clinicAccess = await checkClinicAccess(req, clinicId);
+    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const patientAccess = await checkPatientAccess(req, patientId);
+    if (!patientAccess.allowed && !(patientAccess.statusCode === 404 && req.user?.role !== "patient")) {
+      return sendTenantError(reply, patientAccess);
+    }
+
     const { order, test } = await OrdersService.placeOrder({
-      organizationId: orgId || clinicId,
+      organizationId: clinicAccess.organizationId || orgId || undefined,
       clinicId,
       encounterId,
       patientId,
@@ -541,6 +677,13 @@ export async function placeOrderController(req: FastifyRequest, reply: FastifyRe
 export async function getEncounterOrdersController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id: encounterId } = req.params as { id: string };
+    if (!mongoose.Types.ObjectId.isValid(encounterId)) {
+      return reply.code(400).send(errorResponse("Invalid encounter ID"));
+    }
+    const encounter = await Encounter.findById(encounterId).lean() as any;
+    if (!encounter) return reply.code(404).send(errorResponse("Encounter not found"));
+    const encounterAccess = await checkOperationalRecordAccess(req, encounter);
+    if (!encounterAccess.allowed) return sendTenantError(reply, encounterAccess);
     const orders = await OrdersService.getOrdersByEncounter(encounterId);
     return reply.code(200).send(successResponse(orders));
   } catch (err: any) {
@@ -557,6 +700,13 @@ export async function collectSampleOrderController(req: FastifyRequest, reply: F
   try {
     const { id: orderId } = req.params as { id: string };
     const userId = req.user?.id!;
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return reply.code(400).send(errorResponse("Invalid lab order ID"));
+    }
+    const existingOrder = await LabOrder.findById(orderId).lean() as any;
+    if (!existingOrder) return reply.code(404).send(errorResponse("Lab order not found"));
+    const orderAccess = await checkOperationalRecordAccess(req, existingOrder);
+    if (!orderAccess.allowed) return sendTenantError(reply, orderAccess);
     const order = await OrdersService.collectSample(orderId, userId);
     return reply.code(200).send(successResponse(order, "Sample collection recorded"));
   } catch (err: any) {
@@ -575,6 +725,13 @@ export async function collectSampleOrderController(req: FastifyRequest, reply: F
 export async function markProcessingController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id: orderId } = req.params as { id: string };
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return reply.code(400).send(errorResponse("Invalid lab order ID"));
+    }
+    const existingOrder = await LabOrder.findById(orderId).lean() as any;
+    if (!existingOrder) return reply.code(404).send(errorResponse("Lab order not found"));
+    const orderAccess = await checkOperationalRecordAccess(req, existingOrder);
+    if (!orderAccess.allowed) return sendTenantError(reply, orderAccess);
     const order = await OrdersService.markProcessing(orderId);
     return reply.code(200).send(successResponse(order, "Order marked as processing"));
   } catch (err: any) {
@@ -595,6 +752,13 @@ export async function recordResultController(req: FastifyRequest, reply: Fastify
   try {
     const { id: orderId } = req.params as { id: string };
     const userId = req.user?.id!;
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return reply.code(400).send(errorResponse("Invalid lab order ID"));
+    }
+    const existingOrder = await LabOrder.findById(orderId).lean() as any;
+    if (!existingOrder) return reply.code(404).send(errorResponse("Lab order not found"));
+    const orderAccess = await checkOperationalRecordAccess(req, existingOrder);
+    if (!orderAccess.allowed) return sendTenantError(reply, orderAccess);
     const {
       value, unit, referenceRange, interpretation,
       isAbnormal, notes, attachmentUrl,
@@ -612,6 +776,16 @@ export async function recordResultController(req: FastifyRequest, reply: Fastify
       resultedBy: userId, value, unit, referenceRange,
       interpretation, isAbnormal, notes, attachmentUrl,
     });
+
+    if (interpretation === "critical" || (abnormalSignal && abnormalSignal.interpretation === "critical")) {
+      await AuditLog.create({
+        userId,
+        action: "LAB_CRITICAL_VALUE_ALERT",
+        targetId: order._id,
+        targetModel: "LabOrder",
+        details: { orderId, value, interpretation: "critical" }
+      });
+    }
 
     return reply.code(200).send(
       successResponse(
@@ -638,6 +812,14 @@ export async function cancelOrderController(req: FastifyRequest, reply: FastifyR
   try {
     const { id: orderId } = req.params as { id: string };
     const { cancellationReason } = (req.body || {}) as { cancellationReason?: string };
+
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return reply.code(400).send(errorResponse("Invalid lab order ID"));
+    }
+    const existingOrder = await LabOrder.findById(orderId).lean() as any;
+    if (!existingOrder) return reply.code(404).send(errorResponse("Lab order not found"));
+    const orderAccess = await checkOperationalRecordAccess(req, existingOrder);
+    if (!orderAccess.allowed) return sendTenantError(reply, orderAccess);
 
     if (!cancellationReason || cancellationReason.trim().length === 0) {
       return reply.code(400).send(errorResponse("cancellationReason is required"));

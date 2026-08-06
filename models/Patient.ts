@@ -1,4 +1,5 @@
 import mongoose, { Schema } from "mongoose";
+import { getNextAtomicSequence } from "./Counter.ts";
 
 const PatientSchema = new Schema({
   userId: { type: Schema.Types.ObjectId, ref: "User", required: true, unique: true, index: true },
@@ -9,6 +10,10 @@ const PatientSchema = new Schema({
   gender: { type: String, enum: ["male", "female", "other"] },
   bloodGroup: { type: String, enum: ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"] },
   address: { type: String },
+  city: { type: String, trim: true, index: true },
+  state: { type: String, trim: true },
+  pincode: { type: String, trim: true },
+  nationality: { type: String, trim: true, default: "Indian" },
   allergies: [{ type: String }],
   conditions: [{ type: String }],
   medicalNotes: { type: String },
@@ -30,7 +35,17 @@ const PatientSchema = new Schema({
     },
   ],
 
+  mrn: { type: String, unique: true, sparse: true, index: true },
   activeConsentGrants: [{ type: Schema.Types.ObjectId, ref: "Consent" }],
+}, { timestamps: true });
+
+PatientSchema.pre("save", async function () {
+  if (!this.mrn) {
+    const year = new Date().getFullYear();
+    const orgPart = this.organizationId ? this.organizationId.toString() : "GLOBAL";
+    const seq = await getNextAtomicSequence(`mrn_${orgPart}_${year}`);
+    this.mrn = `MRN-${year}-${String(seq).padStart(6, "0")}`;
+  }
 });
 
 PatientSchema.virtual("id").get(function() {

@@ -62,10 +62,10 @@ export default async function uploadRoutes(fastify: FastifyInstance) {
           data: { fileKey, publicUrl, url: publicUrl }
         });
       } catch (error) {
-        fastify.log.warn('R2 cloud storage unconfigured or failed, returning local base64 payload');
-        return reply.send({
-          success: true,
-          data: { fileKey: originalFilename, publicUrl: base64Data, url: base64Data }
+        fastify.log.warn('R2 cloud storage unconfigured or failed; upload was not persisted');
+        return reply.code(503).send({
+          success: false,
+          error: 'Cloud storage is unavailable; file was not persisted'
         });
       }
     }

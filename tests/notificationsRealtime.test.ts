@@ -102,12 +102,16 @@ describe("Milestone 6: Notifications & Real-Time Event System Integration Tests"
 
     const notificationDoc = await Notification.create({
       targetUser: user._id,
+      organizationId: user.organization_id,
       category: "patient",
       type: "CLINICAL_ALERT",
       title: "Critical Lab Alert",
       message: "Patient serum potassium is 6.2 mmol/L (Critical High).",
       readAt: null,
     });
+
+    // Wait 100ms for background auth login event listeners to settle
+    await new Promise((r) => setTimeout(r, 100));
 
     // 1. Fetch unread count
     const unreadRes = await app.inject({

@@ -1,7 +1,6 @@
 import { Observation } from "../models/Observation.ts";
 import { ObservationScore } from "../models/ObservationScore.ts";
 import { ObservationAlert } from "../models/ObservationAlert.ts";
-import { Encounter } from "../models/Encounter.ts";
 import { scoringEngine } from "./ScoringEngine.ts";
 import type { ScoringResult } from "../types/scoring.ts";
 
@@ -19,33 +18,6 @@ export class ObservationAnalyticsService {
     recordedBy?: string
   ): Promise<{ scoreDoc: any; alertDoc: any | null }> {
     let observations = await Observation.find({ encounterId }).lean();
-    if (observations.length === 0) {
-      const encounter = await Encounter.findById(encounterId).lean() as any;
-      const fallbackUser = recordedBy || encounter?.doctorId || patientId;
-
-      const defaultVitals = [
-        { code: "SpO2", name: "Oxygen Saturation", value: "98", unit: "%" },
-        { code: "HR", name: "Heart Rate", value: "72", unit: "bpm" },
-        { code: "RR", name: "Respiration Rate", value: "16", unit: "/min" },
-        { code: "Temp", name: "Body Temperature", value: "36.8", unit: "C" },
-        { code: "SBP", name: "Systolic Blood Pressure", value: "120", unit: "mmHg" },
-      ];
-      for (const v of defaultVitals) {
-        await Observation.create({
-          organizationId,
-          clinicId,
-          encounterId,
-          patientId,
-          recordedBy: fallbackUser,
-          code: v.code,
-          name: v.name,
-          value: v.value,
-          unit: v.unit,
-          recordedAt: new Date(),
-        });
-      }
-      observations = await Observation.find({ encounterId }).lean();
-    }
 
     const obsInputs = observations.map((o) => ({
       id: o._id.toString(),

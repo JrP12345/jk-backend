@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { authenticate } from "../middleware/auth.ts";
 import {
   login,
+  verifyLoginTwoFactor,
   registerPatient,
   refreshAccessToken,
   logout,
@@ -34,6 +35,26 @@ export default async function authRoutes(app: FastifyInstance) {
       }
     }
   }, login);
+
+  app.post("/api/auth/login/verify-2fa", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["twoFactorToken", "otp"],
+        properties: {
+          twoFactorToken: { type: "string", minLength: 1 },
+          otp: { type: "string", pattern: "^[0-9]{6}$" },
+        },
+        additionalProperties: false,
+      },
+    },
+    config: {
+      rateLimit: {
+        max: isTest ? 1000 : 5,
+        timeWindow: "1 minute",
+      },
+    },
+  }, verifyLoginTwoFactor);
 
   // POST /api/auth/register     — Patient self-registration → returns accessToken + refreshToken
   app.post("/api/auth/register", {
