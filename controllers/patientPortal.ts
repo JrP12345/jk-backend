@@ -330,15 +330,26 @@ export async function patientSelfBookAppointment(req: FastifyRequest, reply: Fas
       return reply.code(400).send(errorResponse("Doctor is not assigned to the selected clinic"));
     }
 
-    // Validate anti-double-booking slot lock
-    const lockValidation = await validateSlotLockForBooking(clinicId, doctorId, appointmentTime, userId, lockId);
-    if (!lockValidation.valid) {
-      return reply.code(409).send(errorResponse(lockValidation.message));
+    const mode = (assignment as any)?.bookingMode;
+    const isSequentialQueue = mode ? mode === "sequential_queue" : true;
+
+    // Validate anti-double-booking slot lock (only for time_slot mode)
+    let lockValidation: { valid: boolean; message?: string; lockKey?: string } = { valid: true };
+    if (!isSequentialQueue) {
+      lockValidation = await validateSlotLockForBooking(clinicId, doctorId, appointmentTime, userId, lockId);
+      if (!lockValidation.valid) {
+        return reply.code(409).send(errorResponse(lockValidation.message || "Slot is unavailable"));
+      }
     }
 
     const apptDateStr = new Date(appointmentTime).toISOString().split("T")[0];
     const counterId = `queue_${clinicId}_${doctorId}_${apptDateStr}`;
     const tokenNumber = await getNextAtomicSequence(counterId);
+
+    const maxTokens = (assignment as any)?.maxDailyTokens;
+    if (maxTokens && tokenNumber > maxTokens) {
+      return reply.code(400).send(errorResponse(`Daily token limit of ${maxTokens} reached for this practitioner.`));
+    }
 
     const appointment = await Appointment.create({
       patientId: patient._id,
@@ -350,6 +361,7 @@ export async function patientSelfBookAppointment(req: FastifyRequest, reply: Fas
       status: "confirmed",
       tokenNumber,
       queuePosition: tokenNumber,
+      bookingMode: (assignment as any).bookingMode || "sequential_queue",
     });
 
     if (lockValidation.lockKey) {

@@ -64,6 +64,93 @@ export async function getQueue(req: FastifyRequest, reply: FastifyReply) {
   }
 }
 
+export async function getQueueStatus(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { clinicId, doctorId, date } = req.query as { clinicId: string; doctorId: string; date?: string };
+
+    if (!clinicId || !doctorId) {
+      return reply.code(400).send(errorResponse("clinicId and doctorId are required"));
+    }
+
+    const clinicCheck = await checkClinicAccess(req, clinicId);
+    if (!clinicCheck.allowed) {
+      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    }
+
+    const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
+    const duration = assignment?.appointmentDuration || 15;
+    const bookingMode = (assignment as any)?.bookingMode || "sequential_queue";
+    const maxDailyTokens = (assignment as any)?.maxDailyTokens || null;
+
+    const targetDate = date ? new Date(date) : new Date();
+    const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 0, 0, 0, 0);
+    const endOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59, 999);
+
+    const appointments = await Appointment.find({
+      clinicId,
+      doctorId,
+      appointmentTime: { $gte: startOfDay, $lte: endOfDay },
+      status: { $nin: ["cancelled"] }
+    }).sort({ queuePosition: 1, tokenNumber: 1 });
+
+    const totalBooked = appointments.length;
+    const nextToken = totalBooked + 1;
+
+    // Currently serving token
+    const inConsultationAppt = appointments.find((a) => a.status === "in-consultation");
+    const currentlyServing = inConsultationAppt ? inConsultationAppt.tokenNumber : null;
+
+    // Patient specific calculation if authenticated patient
+    let myToken: number | null = null;
+    let myStatus: string | null = null;
+    let peopleAhead = 0;
+    let estimatedWaitMinutes = 0;
+
+    if (req.user?.role === "patient" && req.user?.id) {
+      const { Patient } = await import("../models/Patient.ts");
+      const patient = await Patient.findOne({ userId: req.user.id });
+      if (patient) {
+        const myAppt = appointments.find((a) => a.patientId.toString() === patient._id.toString());
+        if (myAppt) {
+          myToken = myAppt.tokenNumber;
+          myStatus = myAppt.status;
+
+          // Count active appointments ahead of me that haven't been completed or cancelled
+          const waitingStatuses = ["pending", "confirmed", "checked-in"];
+          if (waitingStatuses.includes(myAppt.status)) {
+            peopleAhead = appointments.filter((a) => {
+              const isAhead = (a.queuePosition ?? a.tokenNumber) < (myAppt.queuePosition ?? myAppt.tokenNumber);
+              const isWaitingOrInConsultation = [...waitingStatuses, "in-consultation"].includes(a.status);
+              return isAhead && isWaitingOrInConsultation;
+            }).length;
+
+            estimatedWaitMinutes = peopleAhead * duration;
+          }
+        }
+      }
+    }
+
+    return reply.code(200).send(
+      successResponse({
+        bookingMode,
+        currentlyServing,
+        totalBooked,
+        nextToken,
+        averageDuration: duration,
+        maxDailyTokens,
+        myToken,
+        myStatus,
+        peopleAhead,
+        estimatedWaitMinutes,
+      })
+    );
+  } catch (err) {
+    console.error("getQueueStatus error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+
 export async function reorderQueue(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { clinicId, doctorId, date, orderedAppointmentIds } = req.body as {

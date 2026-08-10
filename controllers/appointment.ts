@@ -91,12 +91,18 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
       return reply.code(400).send(errorResponse("Doctor is not assigned to the selected clinic"));
     }
 
-    // Validate Slot Lock — prevent double-booking
-    const lockValidation = await validateSlotLockForBooking(
-      clinicId, doctorId, appointmentTime, userId, lockId
-    );
-    if (!lockValidation.valid) {
-      return reply.code(409).send(errorResponse(lockValidation.message));
+    const mode = (assignment as any)?.bookingMode;
+    const isSequentialQueue = mode ? mode === "sequential_queue" : true;
+
+    // Validate Slot Lock — prevent double-booking (only for time_slot mode)
+    let lockValidation: { valid: boolean; message?: string; lockKey?: string } = { valid: true };
+    if (!isSequentialQueue) {
+      lockValidation = await validateSlotLockForBooking(
+        clinicId, doctorId, appointmentTime, userId, lockId
+      );
+      if (!lockValidation.valid) {
+        return reply.code(409).send(errorResponse(lockValidation.message || "Slot is unavailable"));
+      }
     }
 
     return await withTransaction(async (session) => {
@@ -220,18 +226,24 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
         {
           doctorId,
           clinicId,
-          appointmentTime: { $gte: startOfDay, $lte: endOfDay }
+          appointmentTime: { $gte: startOfDay, $lte: endOfDay },
+          status: { $nin: ["cancelled"] }
         },
         option
       );
+
+      const maxTokens = (assignment as any)?.maxDailyTokens;
+      if (maxTokens && countToday >= maxTokens) {
+        return reply.code(400).send(errorResponse(`Daily token limit of ${maxTokens} reached for this practitioner.`));
+      }
 
       const tokenNumber = countToday + 1;
       const queuePosition = tokenNumber;
 
       const initialStatus = (userRole === "admin" || userRole === "receptionist") ? "confirmed" : "pending";
-      const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
       const slotDuration = (req.body as any).duration || assignment?.appointmentDuration || 15;
       const visitReason = (req.body as any).reasonForVisit || (followUpForAppointmentId ? "follow_up" : "new_consultation");
+      const currentBookingMode = (assignment as any)?.bookingMode || "sequential_queue";
 
       // 3. Create Appointment Document
       const appointment = await createWithSession(Appointment, {
@@ -244,6 +256,7 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
         status: initialStatus,
         tokenNumber,
         queuePosition,
+        bookingMode: currentBookingMode,
         duration: slotDuration,
         reasonForVisit: visitReason,
         notes: notes || null
@@ -490,16 +503,22 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
       return reply.code(400).send(errorResponse("Cannot reschedule an appointment to a past time"));
     }
 
-    // Validate slot lock anti-double booking
-    const lockValidation = await validateSlotLockForBooking(
-      appointment.clinicId.toString(),
-      appointment.doctorId.toString(),
-      newTime,
-      userId,
-      lockId
-    );
-    if (!lockValidation.valid) {
-      return reply.code(409).send(errorResponse(lockValidation.message));
+    // Validate slot lock anti-double booking (only in time_slot mode)
+    const rescheduleAssignment = await DoctorAssignment.findOne({ doctorId: appointment.doctorId, clinicId: appointment.clinicId, isActive: true });
+    const rescheduleMode = (rescheduleAssignment as any)?.bookingMode;
+    const rescheduleIsQueue = rescheduleMode ? rescheduleMode === "sequential_queue" : true;
+    let lockValidation: { valid: boolean; message?: string; lockKey?: string } = { valid: true };
+    if (!rescheduleIsQueue) {
+      lockValidation = await validateSlotLockForBooking(
+        appointment.clinicId.toString(),
+        appointment.doctorId.toString(),
+        newTime,
+        userId,
+        lockId
+      );
+      if (!lockValidation.valid) {
+        return reply.code(409).send(errorResponse(lockValidation.message ?? "Slot is unavailable"));
+      }
     }
 
     const oldTimeStr = new Date(appointment.appointmentTime).toLocaleString();
@@ -556,7 +575,7 @@ export async function getDoctorSlots(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse("doctorId, clinicId, and date (YYYY-MM-DD) are required"));
     }
 
-    if (!(await ensureAppointmentClinicAccess(req, reply, clinicId))) return;
+    if (req.user && !(await ensureAppointmentClinicAccess(req, reply, clinicId))) return;
 
     const { getDoctorAvailableSlots } = await import("../services/SlotService.ts");
     const result = await getDoctorAvailableSlots(doctorId, clinicId, date, req.user?.id);

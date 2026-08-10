@@ -3,6 +3,34 @@ import { Role } from "../models/Role.ts";
 import { verifyAccessToken } from "../utilities/helpers.ts";
 import type { JwtPayload } from "../utilities/types.ts";
 import { requestContextStore } from "../utilities/context.ts";
+import {
+  ADMIN_PERMISSIONS,
+  DOCTOR_PERMISSIONS,
+  RECEPTIONIST_PERMISSIONS,
+  NURSE_PERMISSIONS,
+  LAB_TECH_PERMISSIONS,
+  PHARMACIST_PERMISSIONS,
+  CASHIER_PERMISSIONS,
+  PATIENT_PERMISSIONS,
+  FAMILY_MEMBER_PERMISSIONS,
+} from "../controllers/onboarding.ts";
+
+/**
+ * Canonical fallback permission map for built-in system roles.
+ * Used when a Role document is missing from the DB or was created
+ * without the full permission set (e.g. via an older admin UI).
+ */
+const BUILTIN_ROLE_PERMISSIONS: Record<string, string[]> = {
+  admin:         ADMIN_PERMISSIONS,
+  doctor:        DOCTOR_PERMISSIONS,
+  receptionist:  RECEPTIONIST_PERMISSIONS,
+  nurse:         NURSE_PERMISSIONS,
+  lab_tech:      LAB_TECH_PERMISSIONS,
+  pharmacist:    PHARMACIST_PERMISSIONS,
+  cashier:       CASHIER_PERMISSIONS,
+  patient:       PATIENT_PERMISSIONS,
+  family_member: FAMILY_MEMBER_PERMISSIONS,
+};
 
 // Extend FastifyRequest to carry the decoded user
 declare module "fastify" {
@@ -98,19 +126,28 @@ export function checkPermission(requiredPermission: string) {
       return reply.code(403).send({ error: "Forbidden: role not configured" });
     }
 
-    if (
-      req.user.role === "root" ||
-      req.user.role === "admin"
-    ) {
+    if (req.user.role === "root" || req.user.role === "admin") {
       return; // Built-in root and admin roles bypass permission checks
     }
 
+    // 1. Check the DB Role document (custom or overridden permissions)
     const roleConfig = await Role.findOne({ name: req.user.role }).lean() as any;
-    if (!roleConfig || !roleConfig.permissions.includes(requiredPermission)) {
-      return reply.code(403).send({ error: "Forbidden: insufficient permissions" });
+    if (roleConfig?.permissions?.includes(requiredPermission)) {
+      return; // Permission found in DB
     }
+
+    // 2. Fallback: check canonical built-in permissions for system roles.
+    //    This handles the case where a custom role was created without the
+    //    full set of built-in permissions (e.g. missing VIEW_CLINICS).
+    const builtinPerms = BUILTIN_ROLE_PERMISSIONS[req.user.role];
+    if (builtinPerms?.includes(requiredPermission)) {
+      return; // Permission found in built-in fallback
+    }
+
+    return reply.code(403).send({ error: "Forbidden: insufficient permissions" });
   };
 }
+
 
 /**
  * Tenant Isolation Guard Middleware.

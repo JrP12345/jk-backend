@@ -15,6 +15,7 @@ const AppointmentSchema = new Schema({
   },
   tokenNumber: { type: Number, required: true },
   queuePosition: { type: Number, index: true },
+  bookingMode: { type: String, enum: ["time_slot", "sequential_queue"], default: "sequential_queue" },
   duration: { type: Number, default: 15 },
   reasonForVisit: { 
     type: String, 

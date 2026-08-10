@@ -11,8 +11,9 @@ export async function assignDoctor(req: FastifyRequest, reply: FastifyReply) {
     const orgId = req.user!.organization_id;
     if (!orgId) return reply.code(400).send(errorResponse("You are not linked to any organization"));
 
-    const { doctorId, clinicId, workingHours, fees, appointmentDuration } = req.body as {
+    const { doctorId, clinicId, workingHours, fees, appointmentDuration, bookingMode, maxDailyTokens } = req.body as {
       doctorId: string; clinicId: string; workingHours: string; fees: number; appointmentDuration?: number;
+      bookingMode?: "time_slot" | "sequential_queue"; maxDailyTokens?: number | null;
     };
 
     if (!doctorId || !clinicId || !workingHours || fees === undefined) {
@@ -23,8 +24,8 @@ export async function assignDoctor(req: FastifyRequest, reply: FastifyReply) {
     const clinic = await Clinic.findOne({ _id: clinicId, organizationId: orgId, isActive: true });
     if (!clinic) return reply.code(404).send(errorResponse("Clinic not found in your organization"));
 
-    // Verify Doctor exists, has role 'doctor', and belongs to organization
-    const doctorUser = await User.findOne({ _id: doctorId, role: "doctor", isActive: true });
+    // Verify Doctor exists and belongs to organization
+    const doctorUser = await User.findOne({ _id: doctorId, isActive: true });
     if (!doctorUser) return reply.code(404).send(errorResponse("Doctor user not found"));
 
     const orgMember = await OrgMember.findOne({ userId: doctorId, organizationId: orgId });
@@ -33,7 +34,14 @@ export async function assignDoctor(req: FastifyRequest, reply: FastifyReply) {
     // Upsert DoctorAssignment
     const assignment = await DoctorAssignment.findOneAndUpdate(
       { doctorId, clinicId, organizationId: orgId },
-      { workingHours, fees, appointmentDuration: appointmentDuration || 15, isActive: true },
+      {
+        workingHours,
+        fees,
+        appointmentDuration: appointmentDuration || 15,
+        bookingMode: bookingMode || "sequential_queue",
+        maxDailyTokens: maxDailyTokens !== undefined ? maxDailyTokens : null,
+        isActive: true,
+      },
       { new: true, upsert: true }
     );
 
@@ -75,8 +83,9 @@ export async function updateAssignment(req: FastifyRequest, reply: FastifyReply)
       return reply.code(400).send(errorResponse("Invalid assignment ID"));
     }
 
-    const { workingHours, fees, appointmentDuration } = req.body as {
+    const { workingHours, fees, appointmentDuration, bookingMode, maxDailyTokens } = req.body as {
       workingHours?: string; fees?: number; appointmentDuration?: number;
+      bookingMode?: "time_slot" | "sequential_queue"; maxDailyTokens?: number | null;
     };
 
     const assignment = await DoctorAssignment.findOne({ _id: id, organizationId: orgId });
@@ -86,6 +95,8 @@ export async function updateAssignment(req: FastifyRequest, reply: FastifyReply)
     if (workingHours !== undefined) updateFields.workingHours = workingHours;
     if (fees !== undefined) updateFields.fees = fees;
     if (appointmentDuration !== undefined) updateFields.appointmentDuration = appointmentDuration;
+    if (bookingMode !== undefined) updateFields.bookingMode = bookingMode;
+    if (maxDailyTokens !== undefined) updateFields.maxDailyTokens = maxDailyTokens;
 
     const updated = await DoctorAssignment.findByIdAndUpdate(id, updateFields, { new: true });
 

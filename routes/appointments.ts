@@ -22,6 +22,7 @@ import {
 } from "../controllers/patient.ts";
 import {
   getQueue,
+  getQueueStatus,
   reorderQueue,
   getAuditLogs,
   callNextPatient,
@@ -55,6 +56,7 @@ export default async function appointmentRoutes(app: FastifyInstance) {
 
   // Queue & VIP Override
   app.get("/api/queue", auth, getQueue);
+  app.get("/api/queue/status", auth, getQueueStatus);
   app.put("/api/queue/reorder", auth, reorderQueue);
   app.post("/api/queue/call-next", auth, callNextPatient);
   app.get("/api/audit-logs", auth, getAuditLogs);

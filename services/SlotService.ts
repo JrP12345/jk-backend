@@ -10,12 +10,22 @@ export interface TimeSlot {
   lockedByOther?: boolean;
 }
 
+export interface GetDoctorSlotsResult {
+  date: string;
+  appointmentDuration: number;
+  bookingMode: "time_slot" | "sequential_queue";
+  maxDailyTokens?: number | null;
+  tokensToday?: number;
+  nextToken?: number;
+  slots: TimeSlot[];
+}
+
 export async function getDoctorAvailableSlots(
   doctorId: string,
   clinicId: string,
   dateStr: string,
   requestingUserId?: string
-): Promise<{ date: string; appointmentDuration: number; slots: TimeSlot[] }> {
+): Promise<GetDoctorSlotsResult> {
   const targetDate = new Date(dateStr);
   if (isNaN(targetDate.getTime())) {
     throw new Error("Invalid date format. Expected YYYY-MM-DD");
@@ -24,6 +34,34 @@ export async function getDoctorAvailableSlots(
   // Find assignment
   const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
   const duration = assignment?.appointmentDuration || 15;
+  const bookingMode = (assignment as any)?.bookingMode || "sequential_queue";
+  const maxDailyTokens = (assignment as any)?.maxDailyTokens || null;
+
+  const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 0, 0, 0, 0);
+  const endOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59, 999);
+
+  // Fetch existing non-cancelled appointments count for this day
+  const existingAppts = await Appointment.find({
+    doctorId,
+    clinicId,
+    appointmentTime: { $gte: startOfDay, $lte: endOfDay },
+    status: { $nin: ["cancelled", "no-show"] }
+  }).select("appointmentTime status tokenNumber");
+
+  const tokensToday = existingAppts.length;
+  const nextToken = tokensToday + 1;
+
+  if (bookingMode === "sequential_queue") {
+    return {
+      date: dateStr,
+      appointmentDuration: duration,
+      bookingMode: "sequential_queue",
+      maxDailyTokens,
+      tokensToday,
+      nextToken,
+      slots: [],
+    };
+  }
 
   // Day of week e.g. "monday"
   const daysOfWeek = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
@@ -55,17 +93,6 @@ export async function getDoctorAvailableSlots(
       // Fallback to default 9am-5pm if parsing fails
     }
   }
-
-  // Fetch existing non-cancelled appointments for this doctor & clinic on this day
-  const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 0, 0, 0, 0);
-  const endOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59, 999);
-
-  const existingAppts = await Appointment.find({
-    doctorId,
-    clinicId,
-    appointmentTime: { $gte: startOfDay, $lte: endOfDay },
-    status: { $nin: ["cancelled", "no-show"] }
-  }).select("appointmentTime status");
 
   const bookedTimes = new Set(
     existingAppts.map(a => {
@@ -121,6 +148,10 @@ export async function getDoctorAvailableSlots(
   return {
     date: dateStr,
     appointmentDuration: duration,
-    slots
+    bookingMode: "time_slot",
+    maxDailyTokens,
+    tokensToday,
+    nextToken,
+    slots,
   };
 }

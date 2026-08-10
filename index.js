@@ -65,6 +65,7 @@ import hbotRoutes from "./routes/hbot.ts";
 import ambulanceDispatchRoutes from "./routes/ambulanceDispatch.ts";
 import platformGatewayRoutes from "./platform/gateway.ts";
 import moduleRegistryRoutes from "./routes/moduleRegistry.ts";
+import { seedDefaultRoles } from "./controllers/onboarding.ts";
 
 import fastifySwagger from "@fastify/swagger";
 import fastifySwaggerUi from "@fastify/swagger-ui";
@@ -258,6 +259,14 @@ async function startServer() {
   try {
     const address = await app.listen({ port: PORT, host: "0.0.0.0" });
     app.log.info(`🚀 HealthOS Fastify Server running at ${address}`);
+
+    // ── One-time migration guard ──────────────────────────────────
+    // Seed all built-in system role documents so checkPermission() works
+    // for every role type even on databases created before this was added.
+    // Uses $setOnInsert — safe to run on every startup; never overwrites
+    // custom permission edits made through the Role admin UI.
+    await seedDefaultRoles();
+    app.log.info("✓ Default system roles verified / seeded.");
   } catch (err) {
     app.log.error(err);
     process.exit(1);

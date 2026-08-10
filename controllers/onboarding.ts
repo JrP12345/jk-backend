@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import mongoose from "mongoose";
 import crypto from "node:crypto";
 import bcrypt from "bcryptjs";
 import { User } from "../models/User.ts";
@@ -40,13 +41,14 @@ import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { encrypt, decrypt } from "../utilities/encryption.ts";
 import { seedModulesForOrg } from "./moduleRegistry.ts";
+import { subscriptionService } from "../services/billing/SubscriptionService.ts";
 
 /**
  * Full set of permission codes granted to the built-in "admin" system role.
  * This is the exhaustive list of all permission tokens currently checked by
  * checkPermission() across all route handlers.
  */
-const ADMIN_PERMISSIONS = [
+export const ADMIN_PERMISSIONS = [
   // Staff management
   "MANAGE_STAFF",
   "VIEW_STAFF",
@@ -163,8 +165,112 @@ export const FAMILY_MEMBER_PERMISSIONS = [
   "VIEW_BILLING",
 ];
 
+/**
+ * Upsert all built-in system role documents into the Role collection.
+ *
+ * This is the single source of truth for default role permissions.
+ * It uses $setOnInsert so custom role edits made via the Role admin UI
+ * are never overwritten on subsequent calls.
+ *
+ * Call this:
+ *  - During org onboarding (createOrganization)
+ *  - On server startup as a one-time migration guard
+ */
+export async function seedDefaultRoles(session?: any) {
+  const defaultRoles = [
+    {
+      name: "admin",
+      description: "Full-access system administrator. Manages all organizational resources.",
+      isSystemRole: true,
+      permissions: ADMIN_PERMISSIONS,
+    },
+    {
+      name: "clinic_manager",
+      description: "Small clinic all-in-one desk operator (OPD Queue, Pharmacy, Cashier).",
+      isSystemRole: true,
+      permissions: [
+        "OPD_VIEW", "OPD_MANAGE", "PATIENT_VIEW", "PATIENT_MANAGE",
+        "PHARMACY_VIEW", "PHARMACY_MANAGE", "PHARMACY_DISPENSE",
+        "INVOICE_VIEW", "INVOICE_CREATE", "INVOICE_COLLECT",
+        "APPOINTMENT_VIEW", "APPOINTMENT_MANAGE", "QUEUE_MANAGE",
+      ],
+    },
+    {
+      name: "doctor",
+      description: "Clinical physician with access to EHR, prescriptions, and appointments.",
+      isSystemRole: true,
+      permissions: DOCTOR_PERMISSIONS,
+    },
+    {
+      name: "receptionist",
+      description: "Front-desk staff managing appointments, queue, billing, and admissions.",
+      isSystemRole: true,
+      permissions: RECEPTIONIST_PERMISSIONS,
+    },
+    {
+      name: "nurse",
+      description: "Nursing staff managing patient care, medication administration, and observations.",
+      isSystemRole: true,
+      permissions: NURSE_PERMISSIONS,
+    },
+    {
+      name: "lab_tech",
+      description: "Laboratory technician managing diagnostic orders and results.",
+      isSystemRole: true,
+      permissions: LAB_TECH_PERMISSIONS,
+    },
+    {
+      name: "pharmacist",
+      description: "Pharmacy staff managing medicine inventory and prescriptions.",
+      isSystemRole: true,
+      permissions: PHARMACIST_PERMISSIONS,
+    },
+    {
+      name: "cashier",
+      description: "Billing and cashier staff managing invoices and payments.",
+      isSystemRole: true,
+      permissions: CASHIER_PERMISSIONS,
+    },
+    {
+      name: "patient",
+      description: "Patient with access to their own health records and appointments.",
+      isSystemRole: true,
+      permissions: PATIENT_PERMISSIONS,
+    },
+    {
+      name: "family_member",
+      description: "Family member with limited access to patient records.",
+      isSystemRole: true,
+      permissions: FAMILY_MEMBER_PERMISSIONS,
+    },
+  ];
+
+  for (const role of defaultRoles) {
+    const opts: any = { upsert: true, new: true };
+    if (session) opts.session = session;
+
+    // Use $addToSet so existing custom roles gain any missing built-in permissions
+    // without losing permissions the admin may have manually added.
+    // $setOnInsert only fires on INSERT — so name/description/isSystemRole are
+    // set on first creation but never overwritten on subsequent runs.
+    await Role.findOneAndUpdate(
+      { name: role.name },
+      {
+        $setOnInsert: {
+          name: role.name,
+          description: role.description,
+          isSystemRole: role.isSystemRole,
+        },
+        $addToSet: { permissions: { $each: role.permissions } },
+      },
+      opts
+    );
+  }
+}
+
 // ─── Step 1: Create Organization + Admin ────────────────────────
 export async function createOrganization(req: FastifyRequest, reply: FastifyReply) {
+
   try {
     // ── Security Gate: Onboarding Secret / Root Admin ─────────────
     let userRole = (req as any).user?.role;
@@ -322,20 +428,14 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
       // Seed default module toggles for the new organization (P1 = enabled, P2/P3 = disabled)
       await seedModulesForOrg(org._id.toString(), adminUser?._id?.toString(), session);
 
-      // Upsert the admin Role document with all permissions.
-      const roleUpdate: any = {
-        name: "admin",
-        description: "Full-access system administrator. Manages all organizational resources.",
-        isSystemRole: true,
-        permissions: ADMIN_PERMISSIONS,
-      };
-      if (session) {
-        await Role.findOneAndUpdate({ name: "admin" }, { $setOnInsert: roleUpdate }, { upsert: true, session });
-      } else {
-        await Role.findOneAndUpdate({ name: "admin" }, { $setOnInsert: roleUpdate }, { upsert: true });
-      }
+      // Upsert all system role documents so that permission checks work for every role type.
+      await seedDefaultRoles(session);
 
       const orgIdStr = org._id.toString();
+
+      // Initialize Subscription with custom trial days if specified
+      const customTrialDays = Number((req.body as any).trialDays) || 15;
+      await subscriptionService.getOrInitializeSubscription(orgIdStr, customTrialDays);
 
       // Only set auth cookies if this is an initial unauthenticated onboarding flow (not a root admin adding orgs)
       if (!isRootUser) {
@@ -699,31 +799,36 @@ export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) 
 // ─── Get Org Staff ──────────────────────────────────────────────
 export async function getOrgStaff(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user!.organization_id;
-    if (!orgId) {
-      if (req.user?.role === "root") {
-        const doctors = await Doctor.find({}).limit(20).populate("userId");
-        const receptionists = await Receptionist.find({}).limit(20).populate("userId").populate("clinicId", "name");
-        const formattedDoctors = doctors.filter((d: any) => d.userId && d.userId.isActive).map((d: any) => ({
-          id: d.userId.id, name: d.userId.name, email: d.userId.email, phone: d.userId.phone, specialization: d.specialization
-        }));
-        const formattedReceptionists = receptionists.filter((r: any) => r.userId && r.userId.isActive).map((r: any) => ({
-          id: r.userId.id, name: r.userId.name, email: r.userId.email, phone: r.userId.phone, shift: r.shift
-        }));
-        return reply.code(200).send(successResponse({ doctors: formattedDoctors, receptionists: formattedReceptionists }));
+    let effectiveOrgId = req.user?.organization_id?.toString();
+
+    const queryClinicId = (req.query as any)?.clinicId || (req.headers as any)["x-clinic-id"];
+    const queryOrgId = (req.query as any)?.organizationId || (req.headers as any)["x-organization-id"];
+
+    if (queryClinicId && mongoose.Types.ObjectId.isValid(queryClinicId)) {
+      const clinic = await Clinic.findById(queryClinicId).select("organizationId").lean();
+      if (clinic?.organizationId) {
+        effectiveOrgId = clinic.organizationId.toString();
       }
-      return reply.code(200).send(successResponse({ doctors: [], receptionists: [] }));
+    } else if (queryOrgId && mongoose.Types.ObjectId.isValid(queryOrgId)) {
+      effectiveOrgId = queryOrgId;
     }
 
-    const doctors = await Doctor.find({ organizationId: orgId }).populate("userId");
-    const receptionists = await Receptionist.find({ organizationId: orgId })
+    const isRootWithoutOrg = req.user?.role === "root" && !effectiveOrgId;
+    const orgFilter = effectiveOrgId ? { organizationId: effectiveOrgId } : isRootWithoutOrg ? {} : null;
+
+    if (orgFilter === null) {
+      return reply.code(200).send(successResponse({ doctors: [], receptionists: [], nurses: [], labTechs: [], pharmacists: [], cashiers: [], allStaff: [] }));
+    }
+
+    const doctors = await Doctor.find(orgFilter).populate("userId");
+    const receptionists = await Receptionist.find(orgFilter)
       .populate("userId")
       .populate("clinicId", "name");
 
     const formattedDoctors = doctors
       .filter((d: any) => d.userId && d.userId.isActive)
       .map((d: any) => ({
-        id: d.userId.id,
+        id: d.userId.id || d.userId._id?.toString(),
         name: d.userId.name,
         email: d.userId.email,
         phone: d.userId.phone,
@@ -740,25 +845,34 @@ export async function getOrgStaff(req: FastifyRequest, reply: FastifyReply) {
     const formattedReceptionists = receptionists
       .filter((r: any) => r.userId && r.userId.isActive)
       .map((r: any) => ({
-        id: r.userId.id,
+        id: r.userId.id || r.userId._id?.toString(),
         name: r.userId.name,
         email: r.userId.email,
         phone: r.userId.phone,
         shift: r.shift,
-        clinicId: r.clinicId?.id || r.clinicId || null,
+        clinicId: r.clinicId?.id || r.clinicId?._id?.toString() || r.clinicId || null,
         clinicName: r.clinicId?.name || null
       }));
 
-    // Fetch generic staff from OrgMember for Nurse, Lab Tech, Pharmacist, Cashier
-    const orgMembers = await OrgMember.find({ organizationId: orgId }).populate("userId");
+    // Fetch all staff members from OrgMember for Nurse, Lab Tech, Pharmacist, Cashier & Custom Roles
+    const orgMembers = await OrgMember.find(orgFilter).populate("userId").populate("organizationId", "name");
+    const doctorUserIds = new Set(doctors.map((d: any) => d.userId?._id?.toString() || d.userId?.id?.toString()));
+    const receptionistUserIds = new Set(receptionists.map((r: any) => r.userId?._id?.toString() || r.userId?.id?.toString()));
+
     const otherStaff = orgMembers
-      .filter((m: any) => m.userId && m.userId.isActive && !["doctor", "receptionist", "admin", "root", "patient"].includes(m.role))
+      .filter((m: any) => {
+        if (!m.userId || !m.userId.isActive) return false;
+        const uId = m.userId._id?.toString() || m.userId.id?.toString();
+        if (doctorUserIds.has(uId) || receptionistUserIds.has(uId)) return false;
+        return !["admin", "root", "patient"].includes(m.role);
+      })
       .map((m: any) => ({
-        id: m.userId.id,
+        id: m.userId.id || m.userId._id?.toString(),
         name: m.userId.name,
         email: m.userId.email,
         phone: m.userId.phone,
-        role: m.role
+        role: m.role,
+        organizationName: m.organizationId?.name || null
       }));
 
     const nurses = otherStaff.filter((s: any) => s.role === "nurse");
@@ -773,7 +887,11 @@ export async function getOrgStaff(req: FastifyRequest, reply: FastifyReply) {
       labTechs,
       pharmacists,
       cashiers,
-      allStaff: [...formattedDoctors.map((d: any) => ({ ...d, role: "doctor" })), ...formattedReceptionists.map((r: any) => ({ ...r, role: "receptionist" })), ...otherStaff]
+      allStaff: [
+        ...formattedDoctors.map((d: any) => ({ ...d, role: "doctor" })),
+        ...formattedReceptionists.map((r: any) => ({ ...r, role: "receptionist" })),
+        ...otherStaff
+      ]
     }));
   } catch (err) {
     console.error("getOrgStaff error:", err);
@@ -791,13 +909,12 @@ export async function addStaff(req: FastifyRequest, reply: FastifyReply) {
       name: string; email: string; password: string; phone?: string; role: string;
     };
 
-    if (!name || !email || !password || !role) {
-      return reply.code(400).send(errorResponse("name, email, password, and role are required"));
-    }
+    const BUILT_IN_ROLES = new Set(["doctor", "receptionist", "nurse", "lab_tech", "pharmacist", "cashier", "admin"]);
+    const isBuiltIn = BUILT_IN_ROLES.has(role);
+    const customRoleDoc = isBuiltIn ? null : await Role.findOne({ name: role }).select("_id").lean();
 
-    const allowedRoles = ["doctor", "receptionist", "nurse", "lab_tech", "pharmacist", "cashier"];
-    if (!allowedRoles.includes(role)) {
-      return reply.code(400).send(errorResponse(`Invalid role. Allowed roles: ${allowedRoles.join(", ")}`));
+    if (!isBuiltIn && !customRoleDoc) {
+      return reply.code(400).send(errorResponse(`Invalid role '${role}'. Role is not configured in organization RBAC system.`));
     }
 
     // Delegate to addDoctor if role === 'doctor'
@@ -805,8 +922,9 @@ export async function addStaff(req: FastifyRequest, reply: FastifyReply) {
     // Delegate to addReceptionist if role === 'receptionist'
     if (role === "receptionist") return addReceptionist(req, reply);
 
-    const emailCheck = await User.findOne({ email });
-    if (emailCheck) return reply.code(409).send(errorResponse("Email already registered"));
+    const cleanEmail = email.trim().toLowerCase();
+    const emailCheck = await User.findOne({ email: cleanEmail });
+    if (emailCheck) return reply.code(409).send(errorResponse("Email address is already registered across the platform. Multiple accounts with the same email are not permitted."));
 
     const strength = validatePasswordStrength(password);
     if (!strength.valid) {
@@ -818,7 +936,7 @@ export async function addStaff(req: FastifyRequest, reply: FastifyReply) {
 
       const newUser = await createWithSession(User, {
         name,
-        email,
+        email: cleanEmail,
         password: hashedPassword,
         phone: phone || null,
         role,
@@ -982,7 +1100,7 @@ export async function updateDoctor(req: FastifyRequest, reply: FastifyReply) {
     const orgId = req.user!.organization_id;
     const { id } = req.params as { id: string };
     const { 
-      name, phone, specialization, qualification, experience_years,
+      name, email, phone, specialization, qualification, experience_years,
       fees, timings, working_days, description, image_url 
     } = req.body as any;
 
@@ -991,7 +1109,17 @@ export async function updateDoctor(req: FastifyRequest, reply: FastifyReply) {
     const doctor = await Doctor.findOne({ userId: id, organizationId: orgId });
     if (!doctor) return reply.code(404).send(errorResponse("Doctor not found or not in your organization"));
 
-    await User.updateOne({ _id: id }, { name, phone: phone || null });
+    if (email && email.trim()) {
+      const cleanEmail = email.trim().toLowerCase();
+      const existingWithEmail = await User.findOne({ email: cleanEmail, _id: { $ne: id } });
+      if (existingWithEmail) {
+        return reply.code(409).send(errorResponse("Email address is already in use by another user account."));
+      }
+      await User.updateOne({ _id: id }, { name, email: cleanEmail, phone: phone || null });
+    } else {
+      await User.updateOne({ _id: id }, { name, phone: phone || null });
+    }
+
     await Doctor.updateOne(
       { userId: id },
       {
@@ -1020,20 +1148,124 @@ export async function updateReceptionist(req: FastifyRequest, reply: FastifyRepl
   try {
     const orgId = req.user!.organization_id;
     const { id } = req.params as { id: string };
-    const { name, phone, shift, clinicId } = req.body as any;
+    const { name, email, phone, shift, clinicId } = req.body as any;
 
     if (!name) return reply.code(400).send(errorResponse("name is required"));
 
     const receptionist = await Receptionist.findOne({ userId: id, organizationId: orgId });
     if (!receptionist) return reply.code(404).send(errorResponse("Receptionist not found or not in your organization"));
 
-    await User.updateOne({ _id: id }, { name, phone: phone || null });
+    if (email && email.trim()) {
+      const cleanEmail = email.trim().toLowerCase();
+      const existingWithEmail = await User.findOne({ email: cleanEmail, _id: { $ne: id } });
+      if (existingWithEmail) {
+        return reply.code(409).send(errorResponse("Email address is already in use by another user account."));
+      }
+      await User.updateOne({ _id: id }, { name, email: cleanEmail, phone: phone || null });
+    } else {
+      await User.updateOne({ _id: id }, { name, phone: phone || null });
+    }
+
     await Receptionist.updateOne({ userId: id }, { shift: shift || null, clinicId: clinicId || null });
 
     return reply.code(200).send(successResponse(null, "Receptionist updated successfully"));
   } catch (err) {
     console.error("updateReceptionist error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+// ─── Update Staff (Generic / Custom Role / Doctor / Receptionist) ────
+export async function updateStaff(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const orgId = req.user!.organization_id;
+    const { id } = req.params as { id: string };
+    const { 
+      name, email, phone, specialization, qualification, experience_years,
+      fees, timings, working_days, description, image_url, shift, clinicId 
+    } = req.body as any;
+
+    if (!name) return reply.code(400).send(errorResponse("Name is required"));
+
+    const orgMember = await OrgMember.findOne({ userId: id, organizationId: orgId });
+    if (!orgMember) return reply.code(404).send(errorResponse("Staff member not found in your organization"));
+
+    if (email && email.trim()) {
+      const cleanEmail = email.trim().toLowerCase();
+      const existingWithEmail = await User.findOne({ email: cleanEmail, _id: { $ne: id } });
+      if (existingWithEmail) {
+        return reply.code(409).send(errorResponse("Email address is already in use by another user account."));
+      }
+      await User.updateOne({ _id: id }, { name, email: cleanEmail, phone: phone || null });
+    } else {
+      await User.updateOne({ _id: id }, { name, phone: phone || null });
+    }
+
+    // If doctor profile exists, update doctor details
+    const doctor = await Doctor.findOne({ userId: id, organizationId: orgId });
+    if (doctor) {
+      await Doctor.updateOne(
+        { userId: id },
+        {
+          specialization: specialization || null,
+          qualification: qualification || null,
+          experience_years: experience_years || null,
+          fees: fees || null,
+          timings: timings || null,
+          working_days: working_days || null,
+          description: description || null,
+          image_url: image_url || null,
+        }
+      );
+    }
+
+    // If receptionist profile exists, update receptionist details
+    const receptionist = await Receptionist.findOne({ userId: id, organizationId: orgId });
+    if (receptionist) {
+      await Receptionist.updateOne({ userId: id }, { shift: shift || null, clinicId: clinicId || null });
+    }
+
+    return reply.code(200).send(successResponse(null, "Staff member updated successfully"));
+  } catch (err) {
+    console.error("updateStaff error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+// ─── Enable Clinical Doctor Profile for Admin / Owner Account ──────────
+export async function enableAdminDoctorProfile(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const orgId = req.user!.organization_id;
+    if (!orgId) return reply.code(400).send(errorResponse("You are not linked to any organization"));
+
+    const { specialization, qualification, experience_years, fees, timings, working_days, description, registrationNumber } = req.body as any;
+
+    if (!specialization) {
+      return reply.code(400).send(errorResponse("Specialization is required (e.g. General Physician, Consultant)"));
+    }
+
+    const doctor = await Doctor.findOneAndUpdate(
+      { userId: req.user!.id, organizationId: orgId },
+      {
+        organizationId: orgId,
+        userId: req.user!.id,
+        specialization: specialization.trim(),
+        qualification: qualification?.trim() || "MD / MBBS",
+        experience_years: experience_years ? Number(experience_years) : 5,
+        fees: fees ? Number(fees) : 500,
+        timings: timings || null,
+        working_days: working_days || null,
+        description: description || null,
+        registrationNumber: registrationNumber?.trim() || null,
+        isActive: true,
+      },
+      { upsert: true, new: true }
+    );
+
+    return reply.code(200).send(successResponse(doctor, "Clinical Doctor Profile linked to Admin Account successfully!"));
+  } catch (err: any) {
+    console.error("enableAdminDoctorProfile error:", err);
+    return reply.code(500).send(errorResponse("Failed to link Doctor Profile to Admin Account"));
   }
 }
 

@@ -6,6 +6,8 @@ import {
   getPublicClinicDetails
 } from "../controllers/public.ts";
 
+import { getDoctorSlots } from "../controllers/appointment.ts";
+
 export default async function publicRoutes(app: FastifyInstance) {
   // GET /api/public/organizations — List all hospitals/clinics
   app.get("/api/public/organizations", getOrganizations);
@@ -18,4 +20,7 @@ export default async function publicRoutes(app: FastifyInstance) {
 
   // GET /api/public/clinics/:id — Get details & assigned doctors for a specific clinic location
   app.get("/api/public/clinics/:id", getPublicClinicDetails);
+
+  // GET /api/public/doctors/:doctorId/slots — Get slot & booking mode availability for unauthenticated guests
+  app.get("/api/public/doctors/:doctorId/slots", getDoctorSlots);
 }

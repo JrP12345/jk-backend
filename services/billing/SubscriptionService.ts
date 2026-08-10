@@ -18,7 +18,7 @@ export class SubscriptionService {
   /**
    * Get or initialize subscription for an organization (defaults to 15-day trial on Starter plan)
    */
-  async getOrInitializeSubscription(organizationId: string) {
+  async getOrInitializeSubscription(organizationId: string, customTrialDays?: number) {
     let sub: any = await Subscription.findOne({ organizationId }).populate("planId");
     
     if (!sub) {
@@ -53,7 +53,8 @@ export class SubscriptionService {
       }
 
       const trialStart = new Date();
-      const trialEnds = new Date(Date.now() + (starterPlan.trialDays || 15) * 24 * 60 * 60 * 1000);
+      const numDays = customTrialDays || starterPlan.trialDays || 15;
+      const trialEnds = new Date(Date.now() + numDays * 24 * 60 * 60 * 1000);
 
       sub = await Subscription.create({
         organizationId,

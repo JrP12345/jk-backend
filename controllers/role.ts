@@ -99,7 +99,16 @@ export async function getRoles(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const roles = await Role.find({}).sort({ isSystemRole: -1, name: 1 });
-    return reply.code(200).send(successResponse(roles));
+    const allCatalogCodes = SYSTEM_PERMISSIONS_CATALOG.map((p) => p.code);
+    const sanitizedRoles = roles.map((r) => {
+      if (r.name === "admin" || r.name === "root") {
+        // Admin and Root system roles possess full entitlement across all catalog permissions by default
+        const mergedPerms = Array.from(new Set([...allCatalogCodes, ...(r.permissions || [])]));
+        return { ...r.toObject(), permissions: mergedPerms };
+      }
+      return r;
+    });
+    return reply.code(200).send(successResponse(sanitizedRoles));
   } catch (err) {
     console.error("getRoles error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -162,6 +171,16 @@ export async function createRole(req: FastifyRequest, reply: FastifyReply) {
   }
 }
 
+const MANDATORY_ADMIN_PERMISSIONS = new Set([
+  "ADMINISTRATIVE_GOVERNANCE",
+  "MANAGE_STAFF",
+  "MANAGE_CLINICS",
+  "MANAGE_ORGANIZATION",
+  "MANAGE_BILLING",
+  "VIEW_PATIENTS",
+  "MANAGE_PATIENTS",
+]);
+
 export async function updateRolePermissions(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user?.role;
@@ -182,6 +201,12 @@ export async function updateRolePermissions(req: FastifyRequest, reply: FastifyR
       return reply.code(400).send(errorResponse("Permissions must contain only catalog permission codes"));
     }
 
+    // Protection: ADMIN and ROOT roles MUST retain mandatory core governance permissions
+    let finalPermissions = [...permissions];
+    if (name === "admin" || name === "root") {
+      finalPermissions = Array.from(new Set([...finalPermissions, ...MANDATORY_ADMIN_PERMISSIONS]));
+    }
+
     let role = await Role.findOne({ name });
     if (!role) {
       // If system role missing in DB, create it
@@ -190,14 +215,14 @@ export async function updateRolePermissions(req: FastifyRequest, reply: FastifyR
         role = await Role.create({
           ...defaultRole,
           description: description || defaultRole.description,
-          permissions,
+          permissions: finalPermissions,
         });
       } else {
         return reply.code(404).send(errorResponse(`Role '${name}' not found`));
       }
     } else {
       if (description !== undefined) role.description = description;
-      role.permissions = permissions;
+      role.permissions = finalPermissions;
       await role.save();
     }
 

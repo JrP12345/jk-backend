@@ -7,6 +7,8 @@ const DoctorAssignmentSchema = new Schema({
   workingHours: { type: String, required: true }, // JSON schedule slots string
   fees: { type: Number, required: true },
   appointmentDuration: { type: Number, default: 15 }, // minutes
+  bookingMode: { type: String, enum: ["time_slot", "sequential_queue"], default: "sequential_queue" },
+  maxDailyTokens: { type: Number, default: null },
   isActive: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now }
 });

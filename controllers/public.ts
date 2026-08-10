@@ -178,7 +178,9 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
         image_url: docProfile?.image_url || null,
         rating: docProfile?.rating || 5,
         reviewsCount: docProfile?.reviewsCount || 0,
-        languages: docProfile?.languages || ["English"]
+        languages: docProfile?.languages || ["English"],
+        bookingMode: assign.bookingMode || "sequential_queue",
+        maxDailyTokens: assign.maxDailyTokens || null,
       };
     }));
 
