@@ -7,6 +7,7 @@ import { Organization } from "../models/Organization.ts";
 import { subscriptionService } from "../services/billing/SubscriptionService.ts";
 import { razorpayService } from "../services/billing/RazorpayService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
+import { resolveTargetOrganizationId } from "../utilities/tenant.ts";
 
 /**
  * Get active commercial SaaS plans
@@ -26,7 +27,7 @@ export async function getSaaSPlans(req: FastifyRequest, reply: FastifyReply) {
  */
 export async function getSubscriptionDetails(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) {
       return reply.code(400).send(errorResponse("No organization linked to account"));
     }
@@ -43,7 +44,7 @@ export async function getSubscriptionDetails(req: FastifyRequest, reply: Fastify
  */
 export async function getOrganizationUsageMetrics(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) {
       return reply.code(400).send(errorResponse("No organization linked to account"));
     }
@@ -60,7 +61,7 @@ export async function getOrganizationUsageMetrics(req: FastifyRequest, reply: Fa
  */
 export async function createCheckoutOrderController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) {
       return reply.code(400).send(errorResponse("No organization linked to account"));
     }
@@ -87,7 +88,7 @@ export async function createCheckoutOrderController(req: FastifyRequest, reply: 
  */
 export async function verifyPaymentController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) {
       return reply.code(400).send(errorResponse("No organization linked to account"));
     }
@@ -136,7 +137,7 @@ export async function razorpayWebhookController(req: FastifyRequest, reply: Fast
  */
 export async function cancelSubscriptionController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) {
       return reply.code(400).send(errorResponse("No organization linked to account"));
     }
@@ -153,7 +154,7 @@ export async function cancelSubscriptionController(req: FastifyRequest, reply: F
  */
 export async function getSaaSInvoices(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) {
       return reply.code(400).send(errorResponse("No organization linked to account"));
     }
@@ -393,10 +394,15 @@ export async function adminGetRazorpayConfig(req: FastifyRequest, reply: Fastify
   try {
     const { SaaSConfig } = await import("../models/SaaSConfig.ts");
     const config = await SaaSConfig.findOne({ key: "platform_config" }).lean();
+    const rawKeySecret = config?.razorpayKeySecret || process.env.RAZORPAY_KEY_SECRET || "";
+    const rawWebhookSecret = config?.razorpayWebhookSecret || process.env.RAZORPAY_WEBHOOK_SECRET || "";
+
     return reply.code(200).send(successResponse({
       keyId: config?.razorpayKeyId || process.env.RAZORPAY_KEY_ID || "",
-      keySecret: config?.razorpayKeySecret || process.env.RAZORPAY_KEY_SECRET || "",
-      webhookSecret: config?.razorpayWebhookSecret || process.env.RAZORPAY_WEBHOOK_SECRET || "",
+      keySecret: rawKeySecret ? "••••••••••••••••" : "",
+      webhookSecret: rawWebhookSecret ? "••••••••••••••••" : "",
+      hasKeySecret: Boolean(rawKeySecret),
+      hasWebhookSecret: Boolean(rawWebhookSecret),
       isLiveMode: config?.isLiveMode || false,
     }));
   } catch (err: any) {
@@ -412,18 +418,32 @@ export async function adminSaveRazorpayConfig(req: FastifyRequest, reply: Fastif
     const { SaaSConfig } = await import("../models/SaaSConfig.ts");
     const { keyId, keySecret, webhookSecret, isLiveMode } = req.body as {
       keyId: string;
-      keySecret: string;
+      keySecret?: string;
       webhookSecret?: string;
       isLiveMode?: boolean;
     };
 
+    const existing = await SaaSConfig.findOne({ key: "platform_config" });
+
     const updateFields: any = {
       key: "platform_config",
       razorpayKeyId: (keyId || "").trim(),
-      razorpayKeySecret: (keySecret || "").trim(),
-      razorpayWebhookSecret: (webhookSecret || "").trim(),
       isLiveMode: isLiveMode || false,
     };
+
+    const trimmedKeySecret = (keySecret || "").trim();
+    if (trimmedKeySecret && !trimmedKeySecret.includes("••••")) {
+      updateFields.razorpayKeySecret = trimmedKeySecret;
+    } else if (existing?.razorpayKeySecret) {
+      updateFields.razorpayKeySecret = existing.razorpayKeySecret;
+    }
+
+    const trimmedWebhookSecret = (webhookSecret || "").trim();
+    if (trimmedWebhookSecret && !trimmedWebhookSecret.includes("••••")) {
+      updateFields.razorpayWebhookSecret = trimmedWebhookSecret;
+    } else if (existing?.razorpayWebhookSecret) {
+      updateFields.razorpayWebhookSecret = existing.razorpayWebhookSecret;
+    }
 
     const config = await SaaSConfig.findOneAndUpdate(
       { key: "platform_config" },
@@ -431,7 +451,14 @@ export async function adminSaveRazorpayConfig(req: FastifyRequest, reply: Fastif
       { upsert: true, returnDocument: "after" }
     );
 
-    return reply.code(200).send(successResponse(config, "Platform Razorpay Gateway credentials saved dynamically to MongoDB!"));
+    return reply.code(200).send(successResponse({
+      keyId: config.razorpayKeyId || "",
+      keySecret: config.razorpayKeySecret ? "••••••••••••••••" : "",
+      webhookSecret: config.razorpayWebhookSecret ? "••••••••••••••••" : "",
+      hasKeySecret: Boolean(config.razorpayKeySecret),
+      hasWebhookSecret: Boolean(config.razorpayWebhookSecret),
+      isLiveMode: config.isLiveMode || false,
+    }, "Platform Razorpay Gateway credentials saved securely!"));
   } catch (err: any) {
     return reply.code(500).send(errorResponse("Failed to save Razorpay config to MongoDB", err.message));
   }

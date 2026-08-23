@@ -36,6 +36,7 @@ beforeAll(async () => {
   // Set environment variables for test DB and Cloudflare R2
   process.env.MONGODB_URI = uri;
   process.env.NODE_ENV = "test";
+  process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
   process.env.CLOUDFLARE_ACCOUNT_ID = "testaccount";
   process.env.R2_ACCESS_KEY_ID = "testaccess";
   process.env.R2_SECRET_ACCESS_KEY = "testsecret";

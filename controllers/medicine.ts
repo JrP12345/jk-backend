@@ -5,6 +5,8 @@ import { Patient } from "../models/Patient.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { MedicineBatch } from "../models/MedicineBatch.ts";
+import { Prescription } from "../models/Prescription.ts";
+import { Appointment } from "../models/Appointment.ts";
 import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds } from "../utilities/tenant.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
@@ -17,11 +19,6 @@ function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCod
 
 export async function createMedicine(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const userRole = req.user!.role;
-    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "root") {
-      return reply.code(403).send(errorResponse("Forbidden: Only staff can manage medicine stock"));
-    }
-
     const {
       clinicId, name, genericName, stockQuantity, price, costPrice,
       expiryDate, batchNumber, manufacturer, category, scheduleType
@@ -69,7 +66,7 @@ export async function getMedicines(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { clinicId, search, page, limit } = req.query as { clinicId?: string; search?: string; page?: string | number; limit?: string | number };
 
-    const query: any = {};
+    const query: any = { deletedAt: null };
     if (clinicId) {
       if (!mongoose.Types.ObjectId.isValid(clinicId)) {
         return reply.code(400).send(errorResponse("Invalid clinic ID"));
@@ -109,11 +106,6 @@ export async function getMedicines(req: FastifyRequest, reply: FastifyReply) {
 
 export async function updateMedicine(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const userRole = req.user!.role;
-    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "root") {
-      return reply.code(403).send(errorResponse("Forbidden: Only staff can edit medicine stock"));
-    }
-
     const { id } = req.params as { id: string };
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return reply.code(400).send(errorResponse("Invalid medicine ID"));
@@ -121,7 +113,7 @@ export async function updateMedicine(req: FastifyRequest, reply: FastifyReply) {
 
     const { name, genericName, stockQuantity, price, costPrice, expiryDate, batchNumber, manufacturer, category, scheduleType } = req.body as any;
 
-    const medicine: any = await Medicine.findById(id);
+    const medicine: any = await Medicine.findOne({ _id: id, deletedAt: null });
     if (!medicine) {
       return reply.code(404).send(errorResponse("Medicine not found"));
     }
@@ -149,27 +141,117 @@ export async function updateMedicine(req: FastifyRequest, reply: FastifyReply) {
 
 export async function deleteMedicine(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const userRole = req.user!.role;
-    if (userRole !== "admin" && userRole !== "root") {
-      return reply.code(403).send(errorResponse("Forbidden: Only admin can delete medicine records"));
-    }
-
     const { id } = req.params as { id: string };
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return reply.code(400).send(errorResponse("Invalid medicine ID"));
     }
 
-    const medicine = await Medicine.findById(id);
+    const medicine = await Medicine.findOne({ _id: id, deletedAt: null });
     if (!medicine) {
       return reply.code(404).send(errorResponse("Medicine not found"));
     }
     const medicineAccess = await checkOperationalRecordAccess(req, medicine);
     if (!medicineAccess.allowed) return sendTenantError(reply, medicineAccess);
 
-    await Medicine.findByIdAndDelete(id);
+    medicine.deletedAt = new Date();
+    await medicine.save();
+
     return reply.code(200).send(successResponse(null, "Medicine deleted successfully"));
   } catch (err) {
     console.error("deleteMedicine error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+// ─── Pending Prescriptions (Pharmacy Dispensing Desk) ─────────────
+
+export async function getPendingPrescriptionsController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { clinicId } = req.query as { clinicId?: string };
+
+    if (!clinicId || !mongoose.Types.ObjectId.isValid(clinicId)) {
+      return reply.code(400).send(errorResponse("Valid clinicId is required"));
+    }
+
+    const clinicAccess = await checkClinicAccess(req, clinicId);
+    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+
+    const prescriptions = await Prescription.find({
+      clinicId,
+      status: "active",
+      deletedAt: null,
+    })
+      .populate("patientId", "name phone userId")
+      .populate("doctorId", "name email phone")
+      .populate("encounterId", "appointmentId startedAt endedAt")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const grouped = new Map<string, {
+      encounterId: string;
+      appointmentId: string | null;
+      appointmentTime: string | null;
+      patientId: { id: string; name: string; phone?: string };
+      doctorId: { id: string; name: string };
+      prescriptions: Array<{
+        id: string;
+        medicineId: string | null;
+        name: string;
+        dosage: string;
+        frequency: string;
+        duration: string;
+        instructions: string;
+      }>;
+    }>();
+
+    for (const rx of prescriptions) {
+      const encounterId = String((rx as any).encounterId?._id || rx.encounterId);
+      if (!grouped.has(encounterId)) {
+        const patientDoc = (rx as any).patientId;
+        const doctorDoc = (rx as any).doctorId;
+        const encounterDoc = (rx as any).encounterId;
+
+        let appointmentTime: string | null = null;
+        let appointmentId: string | null = null;
+        if (encounterDoc?.appointmentId) {
+          appointmentId = String(encounterDoc.appointmentId);
+          const appt = await Appointment.findById(encounterDoc.appointmentId).select("appointmentTime").lean();
+          appointmentTime = appt?.appointmentTime ? new Date(appt.appointmentTime).toISOString() : null;
+        } else if (encounterDoc?.startedAt) {
+          appointmentTime = new Date(encounterDoc.startedAt).toISOString();
+        }
+
+        grouped.set(encounterId, {
+          encounterId,
+          appointmentId,
+          appointmentTime,
+          patientId: {
+            id: String(patientDoc?._id || rx.patientId),
+            name: patientDoc?.name || "Patient",
+            phone: patientDoc?.phone,
+          },
+          doctorId: {
+            id: String(doctorDoc?._id || rx.doctorId),
+            name: doctorDoc?.name || "Doctor",
+          },
+          prescriptions: [],
+        });
+      }
+
+      grouped.get(encounterId)!.prescriptions.push({
+        id: String((rx as any)._id),
+        medicineId: (rx as any).medicineId ? String((rx as any).medicineId) : null,
+        name: (rx as any).medicineName,
+        dosage: (rx as any).dosage,
+        frequency: (rx as any).frequency || "1-0-1",
+        duration: (rx as any).duration,
+        instructions: (rx as any).instructions || "",
+      });
+    }
+
+    return reply.code(200).send(successResponse(Array.from(grouped.values())));
+  } catch (err) {
+    console.error("getPendingPrescriptionsController error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -178,18 +260,14 @@ export async function deleteMedicine(req: FastifyRequest, reply: FastifyReply) {
 
 export async function dispensePrescription(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const userRole = req.user!.role;
     const userId = req.user!.id;
 
-    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "doctor") {
-      return reply.code(403).send(errorResponse("Forbidden: Only staff can dispense medications"));
-    }
-
-    const { patientId, clinicId, doctorId, items } = req.body as {
+    const { patientId, clinicId, doctorId, items, prescriptionIds } = req.body as {
       patientId: string;
       clinicId: string;
-      doctorId?: string; // Optional doctor responsible
+      doctorId?: string;
       items: Array<{ medicineId: string; quantity: number }>;
+      prescriptionIds?: string[];
     };
 
     if (!patientId || !clinicId || !items || !Array.isArray(items) || items.length === 0) {
@@ -279,9 +357,8 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
         }));
         const subtotal = invoiceItems.reduce((total, item) => total + item.amount * item.quantity, 0);
 
-        const year = new Date().getFullYear();
-        const count = await Invoice.countDocuments({}, session ? { session } : undefined);
-        const invoiceNumber = `INV-${year}-${(count + 1).toString().padStart(5, "0")}`;
+        const { generateClinicInvoiceNumber } = await import("../utilities/invoiceNumber.ts");
+        const invoiceNumber = await generateClinicInvoiceNumber(clinicId);
         const createdInvoice = await createWithSession(Invoice, {
           invoiceNumber,
           patientId,
@@ -304,6 +381,23 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
           organizationId: clinicAccess.organizationId || undefined,
           details: { invoiceNumber: createdInvoice.invoiceNumber, totalAmount: subtotal, itemCount: items.length }
         }, session);
+
+        if (prescriptionIds && prescriptionIds.length > 0) {
+          const validIds = prescriptionIds.filter((id) => mongoose.Types.ObjectId.isValid(id));
+          if (validIds.length > 0) {
+            await Prescription.updateMany(
+              {
+                _id: { $in: validIds },
+                clinicId,
+                patientId,
+                status: "active",
+                deletedAt: null,
+              },
+              { $set: { status: "dispensed" } },
+              session ? { session } : undefined,
+            );
+          }
+        }
 
         return createdInvoice;
       } catch (error) {
@@ -433,12 +527,7 @@ export async function getExpiringMedicinesController(req: FastifyRequest, reply:
 
 export async function adjustStock(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const userRole = req.user!.role;
     const userId = req.user!.id;
-    if (userRole !== "admin" && userRole !== "pharmacist" && userRole !== "receptionist" && userRole !== "root") {
-      return reply.code(403).send(errorResponse("Forbidden: Only pharmacy/billing staff can adjust stock"));
-    }
-
     const { medicineId, newQuantity, reason, notes } = req.body as {
       medicineId: string;
       newQuantity: number;

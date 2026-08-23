@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import { decrypt, isEncrypted } from "../../utilities/encryption.ts";
 
 export interface EmailOptions {
   to: string;
@@ -52,14 +53,15 @@ export class EmailProvider {
   }
 
   /**
-   * Build a one-time transporter from an org-level SMTP config.
+   * Build a one-time transporter from an org-level SMTP config (decrypting password if encrypted).
    */
   private buildTransientTransporter(cfg: SmtpConfig): nodemailer.Transporter {
+    const rawPass = cfg.pass && isEncrypted(cfg.pass) ? decrypt(cfg.pass) : cfg.pass;
     return nodemailer.createTransport({
       host: cfg.host,
       port: cfg.port || 587,
       secure: cfg.secure || false,
-      auth: { user: cfg.user, pass: cfg.pass },
+      auth: { user: cfg.user, pass: rawPass },
       tls: { rejectUnauthorized: false },
     });
   }

@@ -9,6 +9,7 @@ import { LabTest } from "../models/LabTest.ts";
 import { Bed } from "../models/Bed.ts";
 import { Admission } from "../models/Admission.ts";
 import { Invoice } from "../models/Invoice.ts";
+import { ModuleRegistry } from "../models/ModuleRegistry.ts";
 
 describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
   let adminCookies: string[] = [];
@@ -16,6 +17,7 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
   let patientId: string;
   let clinicId: string;
   let doctorUserId: string;
+  let orgId: string;
 
   beforeAll(async () => {
     // 1. Create Organization & Admin
@@ -32,6 +34,10 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
     });
     expect(orgRes.statusCode).toBe(201);
     adminCookies = orgRes.headers["set-cookie"] as string[];
+    orgId = JSON.parse(orgRes.body).data.organization.id;
+
+    // Enable all modules for the test organization so Lab & Admission timeline providers run
+    await ModuleRegistry.updateMany({ organizationId: orgId }, { $set: { enabled: true } });
 
     // 2. Create Clinic
     const clinicRes = await app.inject({
@@ -96,7 +102,6 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
     patientId = patientDoc!._id.toString();
 
     // Link Patient to Organization
-    const orgId = JSON.parse(orgRes.body).data.organization.id;
     await Patient.findByIdAndUpdate(patientId, { organizationId: orgId, allergies: ["Penicillin"] });
 
     // 5. Seed OPD Appointment with Diagnosis & Prescriptions
@@ -208,12 +213,38 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
     expect(body.data.events.length).toBe(3);
   });
 
-  // ─── Test 3: Doctor without VIEW_EHR is blocked ──────────────────────────
-  it("should block doctor without VIEW_EHR permission with 403 Forbidden", async () => {
+  // ─── Test 3: Staff without VIEW_EHR is blocked ──────────────────────────
+  it("should block staff without VIEW_EHR permission with 403 Forbidden", async () => {
+    // 1. Create a Receptionist user (receptionist role lacks VIEW_EHR)
+    const recepReg = await app.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      payload: {
+        name: "Recep Staff",
+        email: "recep@ehrtest.com",
+        password: "Password123",
+        phone: "9988776655",
+      },
+    });
+    expect(recepReg.statusCode).toBe(201);
+    const recepUserId = JSON.parse(recepReg.body).data.user.id;
+    await User.findByIdAndUpdate(recepUserId, { role: "receptionist", organization_id: orgId });
+
+    // 2. Login as Receptionist
+    const recepLogin = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: {
+        email: "recep@ehrtest.com",
+        password: "Password123",
+      },
+    });
+    const recepCookies = recepLogin.headers["set-cookie"] as string[];
+
     const res = await app.inject({
       method: "GET",
       url: `/api/patients/${patientId}/timeline`,
-      headers: { cookie: doctorCookies.join("; ") },
+      headers: { cookie: recepCookies.join("; ") },
     });
 
     expect(res.statusCode).toBe(403);
@@ -226,6 +257,16 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
       { $set: { name: "doctor", permissions: ["VIEW_EHR"] } },
       { upsert: true }
     );
+
+    const docLogin = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: {
+        email: "sarah.lin@ehrtest.com",
+        password: "Password123",
+      },
+    });
+    doctorCookies = docLogin.headers["set-cookie"] as string[];
 
     const res = await app.inject({
       method: "GET",

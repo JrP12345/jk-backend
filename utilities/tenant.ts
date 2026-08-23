@@ -22,6 +22,48 @@ export function isRootRequest(req: FastifyRequest): boolean {
   return req.user?.role === "root";
 }
 
+/**
+ * Resolves the target organization ID for an operation.
+ * 1. If req.user.organization_id is present, returns it.
+ * 2. If caller is Root Super-Admin:
+ *    a. Checks query ?organizationId=...
+ *    b. Checks header x-organization-id
+ *    c. Checks body { organizationId: ... }
+ *    d. Checks x-clinic-id header or clinicId in query/body (looks up clinic.organizationId)
+ *    e. Fallback: finds first organization in MongoDB
+ */
+export async function resolveTargetOrganizationId(req: FastifyRequest): Promise<string | undefined> {
+  const jwtOrgId = getRequestOrganizationId(req);
+  if (jwtOrgId) return jwtOrgId;
+
+  if (isRootRequest(req)) {
+    const fromQuery = (req.query as { organizationId?: string })?.organizationId;
+    if (fromQuery && mongoose.Types.ObjectId.isValid(fromQuery)) return fromQuery;
+
+    const fromHeader = req.headers["x-organization-id"] as string;
+    if (fromHeader && mongoose.Types.ObjectId.isValid(fromHeader)) return fromHeader;
+
+    const fromBody = (req.body as { organizationId?: string })?.organizationId;
+    if (fromBody && mongoose.Types.ObjectId.isValid(fromBody)) return fromBody;
+
+    const clinicId =
+      (req.headers["x-clinic-id"] as string) ||
+      (req.query as { clinicId?: string })?.clinicId ||
+      (req.body as { clinicId?: string })?.clinicId;
+
+    if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
+      const clinic = await Clinic.findById(clinicId).select("organizationId").lean();
+      if (clinic?.organizationId) return clinic.organizationId.toString();
+    }
+
+    const { Organization } = await import("../models/Organization.ts");
+    const firstOrg = await Organization.findOne({}).sort({ createdAt: 1 }).select("_id").lean();
+    if (firstOrg) return (firstOrg as any)._id.toString();
+  }
+
+  return undefined;
+}
+
 export type TenantCheck =
   | { allowed: true; organizationId: string | undefined }
   | { allowed: false; statusCode: 400 | 403 | 404; message: string };
@@ -62,10 +104,8 @@ export async function checkClinicAccess(
     return { allowed: true, organizationId: clinic.organizationId.toString() };
   }
 
-  // Patient self-booking is the existing public booking flow.  A newly
-  // registered patient may not have an organization in the JWT yet; resolve
-  // the selected clinic's organization and bind the patient during booking.
-  if (!organizationId && req.user?.role === "patient") {
+  // Patients are public consumers and can view or book across any clinic
+  if (req.user?.role === "patient") {
     return { allowed: true, organizationId: clinic.organizationId.toString() };
   }
 

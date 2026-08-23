@@ -9,6 +9,7 @@ export const createInvoiceSchema = {
       clinicId: { type: "string", pattern: objectIdPattern },
       doctorId: { type: "string", pattern: objectIdPattern },
       appointmentId: { type: "string", pattern: objectIdPattern },
+      encounterId: { type: "string", pattern: objectIdPattern },
       items: {
         type: "array",
         minItems: 1,
@@ -16,15 +17,25 @@ export const createInvoiceSchema = {
           type: "object",
           required: ["description", "amount"],
           properties: {
+            serviceCatalogId: { type: "string", pattern: objectIdPattern },
             description: { type: "string", minLength: 1 },
             amount: { type: "number", minimum: 0 },
-            quantity: { type: "number", minimum: 1 }
+            quantity: { type: "number", minimum: 1 },
+            hsnSacCode: { type: "string" },
+            gstRate: { type: "number", minimum: 0 }
           },
           additionalProperties: false
         }
       },
       tax: { type: "number", minimum: 0 },
-      discount: { type: "number", minimum: 0 }
+      discount: { type: "number", minimum: 0 },
+      supplierGstin: { type: "string" },
+      customerGstin: { type: "string" },
+      invoiceType: { type: "string", enum: ["B2C", "B2B", "SEZ", "EXPORT"] },
+      placeOfSupply: { type: "string" },
+      isInterstate: { type: "boolean" },
+      dueDate: { type: "string" },
+      managerApprovalCode: { type: "string" }
     },
     additionalProperties: false
   }

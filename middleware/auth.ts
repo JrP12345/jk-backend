@@ -1,36 +1,11 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { Role } from "../models/Role.ts";
 import { verifyAccessToken } from "../utilities/helpers.ts";
 import type { JwtPayload } from "../utilities/types.ts";
 import { requestContextStore } from "../utilities/context.ts";
 import {
-  ADMIN_PERMISSIONS,
-  DOCTOR_PERMISSIONS,
-  RECEPTIONIST_PERMISSIONS,
-  NURSE_PERMISSIONS,
-  LAB_TECH_PERMISSIONS,
-  PHARMACIST_PERMISSIONS,
-  CASHIER_PERMISSIONS,
-  PATIENT_PERMISSIONS,
-  FAMILY_MEMBER_PERMISSIONS,
-} from "../controllers/onboarding.ts";
-
-/**
- * Canonical fallback permission map for built-in system roles.
- * Used when a Role document is missing from the DB or was created
- * without the full permission set (e.g. via an older admin UI).
- */
-const BUILTIN_ROLE_PERMISSIONS: Record<string, string[]> = {
-  admin:         ADMIN_PERMISSIONS,
-  doctor:        DOCTOR_PERMISSIONS,
-  receptionist:  RECEPTIONIST_PERMISSIONS,
-  nurse:         NURSE_PERMISSIONS,
-  lab_tech:      LAB_TECH_PERMISSIONS,
-  pharmacist:    PHARMACIST_PERMISSIONS,
-  cashier:       CASHIER_PERMISSIONS,
-  patient:       PATIENT_PERMISSIONS,
-  family_member: FAMILY_MEMBER_PERMISSIONS,
-};
+  getEffectivePermissions,
+  isPrivilegedRole,
+} from "../utilities/permissions.ts";
 
 // Extend FastifyRequest to carry the decoded user
 declare module "fastify" {
@@ -90,16 +65,12 @@ export function authorize(...allowedRoles: string[]) {
       return;
     }
 
-    // Check dynamic user.permissions array if present in JWT token
-    const userPermissions: string[] = (req.user as any).permissions || [];
-    const roleConfig = await Role.findOne({ name: req.user.role }).lean() as any;
-    const rolePermissions: string[] = roleConfig?.permissions || [];
-    const allPermissions = Array.from(new Set([...userPermissions, ...rolePermissions]));
+    const jwtPerms = (req.user as { permissions?: string[] }).permissions || [];
+    const all = await getEffectivePermissions(req.user.role, jwtPerms);
 
-    // Check if user has any permission matching the target role requirement
     const hasPermissionMatch = allowedRoles.some((role) => {
       const permissionName = `MANAGE_${role.toUpperCase()}`;
-      return allPermissions.includes(permissionName) || allPermissions.includes("MANAGE_ORGANIZATION");
+      return all.has(permissionName) || all.has("MANAGE_ORGANIZATION");
     });
 
     if (hasPermissionMatch) {
@@ -126,28 +97,75 @@ export function checkPermission(requiredPermission: string) {
       return reply.code(403).send({ error: "Forbidden: role not configured" });
     }
 
-    if (req.user.role === "root" || req.user.role === "admin") {
-      return; // Built-in root and admin roles bypass permission checks
+    if (isPrivilegedRole(req.user.role)) {
+      return;
     }
 
-    // 1. Check the DB Role document (custom or overridden permissions)
-    const roleConfig = await Role.findOne({ name: req.user.role }).lean() as any;
-    if (roleConfig?.permissions?.includes(requiredPermission)) {
-      return; // Permission found in DB
-    }
-
-    // 2. Fallback: check canonical built-in permissions for system roles.
-    //    This handles the case where a custom role was created without the
-    //    full set of built-in permissions (e.g. missing VIEW_CLINICS).
-    const builtinPerms = BUILTIN_ROLE_PERMISSIONS[req.user.role];
-    if (builtinPerms?.includes(requiredPermission)) {
-      return; // Permission found in built-in fallback
+    const jwtPerms = (req.user as { permissions?: string[] }).permissions || [];
+    const all = await getEffectivePermissions(req.user.role, jwtPerms);
+    if (all.has(requiredPermission)) {
+      return;
     }
 
     return reply.code(403).send({ error: "Forbidden: insufficient permissions" });
   };
 }
 
+/**
+ * Factory: allow access when the caller has ANY of the listed permissions.
+ *
+ * Usage: { preHandler: [authenticate, checkAnyPermission("VIEW_BILLING", "MANAGE_BILLING")] }
+ */
+export function checkAnyPermission(...requiredPermissions: string[]) {
+  return async (req: FastifyRequest, reply: FastifyReply) => {
+    if (!req.user || !req.user.role) {
+      return reply.code(403).send({ error: "Forbidden: role not configured" });
+    }
+
+    if (isPrivilegedRole(req.user.role)) {
+      return;
+    }
+
+    const jwtPerms = (req.user as { permissions?: string[] }).permissions || [];
+    const all = await getEffectivePermissions(req.user.role, jwtPerms);
+    if (requiredPermissions.some((perm) => all.has(perm))) {
+      return;
+    }
+
+    return reply.code(403).send({ error: "Forbidden: insufficient permissions" });
+  };
+}
+
+/**
+ * Factory: allow listed roles through, otherwise require ANY of the permissions.
+ * Used where portal users (patient) share endpoints with staff workflows.
+ */
+export function checkAnyPermissionOrRoles(
+  allowedRoles: string[],
+  ...requiredPermissions: string[]
+) {
+  return async (req: FastifyRequest, reply: FastifyReply) => {
+    if (!req.user || !req.user.role) {
+      return reply.code(403).send({ error: "Forbidden: role not configured" });
+    }
+
+    if (isPrivilegedRole(req.user.role)) {
+      return;
+    }
+
+    if (allowedRoles.includes(req.user.role)) {
+      return;
+    }
+
+    const jwtPerms = (req.user as { permissions?: string[] }).permissions || [];
+    const all = await getEffectivePermissions(req.user.role, jwtPerms);
+    if (requiredPermissions.some((perm) => all.has(perm))) {
+      return;
+    }
+
+    return reply.code(403).send({ error: "Forbidden: insufficient permissions" });
+  };
+}
 
 /**
  * Tenant Isolation Guard Middleware.

@@ -2,9 +2,10 @@ import mongoose, { Schema } from "mongoose";
 
 const UserSchema = new Schema({
   name: { type: String, required: true },
-  email: { type: String, required: true, unique: true, index: true },
-  password: { type: String, required: true },
-  phone: { type: String },
+  email: { type: String, unique: true, sparse: true, index: true },
+  password: { type: String },
+  phone: { type: String, index: true },
+  authMethod: { type: String, enum: ["email_password", "phone_otp", "both"], default: "email_password" },
   role: { type: String, required: true }, // "root" | "admin" | "doctor" | "receptionist" | "nurse" | "lab_tech" | "pharmacist" | "cashier" | "patient" | "family_member"
   twoFactorEnabled: { type: Boolean, default: false },
   twoFactorSecret: { type: String },

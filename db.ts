@@ -7,8 +7,13 @@ const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/jk_hea
 
 export const connectDB = async () => {
   try {
-    await mongoose.connect(MONGODB_URI);
-    console.log("Connected to MongoDB");
+    await mongoose.connect(MONGODB_URI, {
+      maxPoolSize: Number(process.env.MONGODB_MAX_POOL_SIZE) || 25,
+      minPoolSize: Number(process.env.MONGODB_MIN_POOL_SIZE) || 5,
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+    });
+    console.log("Connected to MongoDB with connection pool (min: 5, max: 25)");
   } catch (err) {
     console.error("MongoDB connection error:", err);
     throw err;

@@ -30,7 +30,14 @@ export const bookAppointmentSchema = {
         additionalProperties: false
       },
       followUpForAppointmentId: { type: "string", pattern: objectIdPattern },
-      lockId: { type: "string" }
+      lockId: { type: "string" },
+      forPatientId: { type: "string", pattern: objectIdPattern },
+      duration: { type: "number", minimum: 1 },
+      reasonForVisit: {
+        type: "string",
+        enum: ["new_consultation", "follow_up", "routine_checkup", "second_opinion", "report_review"]
+      },
+      payAtClinic: { type: "boolean" }
     },
     additionalProperties: false
   }

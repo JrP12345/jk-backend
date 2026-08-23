@@ -5,13 +5,25 @@ const AppointmentSchema = new Schema({
   clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
   doctorId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
   patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
+  bookedByUserId: { type: Schema.Types.ObjectId, ref: "User", index: true },
   appointmentTime: { type: Date, required: true, index: true },
   appointmentType: { type: String, enum: ["walk-in", "online", "reception", "qr"], required: true },
   status: { 
     type: String, 
-    enum: ["pending", "confirmed", "checked-in", "in-consultation", "completed", "cancelled", "no-show"], 
+    enum: ["pending_payment", "pending", "confirmed", "checked-in", "in-consultation", "completed", "cancelled", "no-show"], 
     default: "pending",
     index: true
+  },
+  paymentStatus: {
+    type: String,
+    enum: ["not_required", "pending", "paid", "pay_at_clinic", "failed"],
+    default: "pending",
+    index: true
+  },
+  bookingSource: {
+    type: String,
+    enum: ["patient_portal", "guest", "staff", "reception"],
+    default: "patient_portal"
   },
   tokenNumber: { type: Number, required: true },
   queuePosition: { type: Number, index: true },
@@ -39,6 +51,7 @@ const AppointmentSchema = new Schema({
 
 AppointmentSchema.index({ clinicId: 1, doctorId: 1, appointmentTime: 1 });
 AppointmentSchema.index({ organizationId: 1, appointmentTime: -1 });
+AppointmentSchema.index({ clinicId: 1, status: 1, appointmentTime: -1 });
 
 AppointmentSchema.virtual("id").get(function() {
   return this._id.toHexString();

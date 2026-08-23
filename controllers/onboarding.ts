@@ -37,6 +37,7 @@ import {
 } from "../utilities/helpers.ts";
 import { setAuthCookies } from "../utilities/types.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
+import { resolveTargetOrganizationId } from "../utilities/tenant.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { encrypt, decrypt } from "../utilities/encryption.ts";
@@ -90,8 +91,8 @@ export const ADMIN_PERMISSIONS = [
 ];
 
 export const DOCTOR_PERMISSIONS = [
-  "VIEW_STAFF",
   "VIEW_CLINICS",
+  "VIEW_PATIENTS",
   "VIEW_APPOINTMENTS",
   "MANAGE_APPOINTMENTS",
   "MANAGE_QUEUE",
@@ -109,6 +110,8 @@ export const DOCTOR_PERMISSIONS = [
 export const RECEPTIONIST_PERMISSIONS = [
   "VIEW_STAFF",
   "VIEW_CLINICS",
+  "VIEW_PATIENTS",
+  "MANAGE_PATIENTS",
   "MANAGE_APPOINTMENTS",
   "VIEW_APPOINTMENTS",
   "MANAGE_QUEUE",
@@ -142,6 +145,7 @@ export const LAB_TECH_PERMISSIONS = [
 export const PHARMACIST_PERMISSIONS = [
   "VIEW_STAFF",
   "VIEW_CLINICS",
+  "VIEW_PATIENTS",
   "VIEW_EHR",
   "MANAGE_MEDICINES",
 ];
@@ -149,8 +153,22 @@ export const PHARMACIST_PERMISSIONS = [
 export const CASHIER_PERMISSIONS = [
   "VIEW_STAFF",
   "VIEW_CLINICS",
+  "VIEW_PATIENTS",
   "VIEW_BILLING",
   "MANAGE_BILLING",
+];
+
+export const CLINIC_MANAGER_PERMISSIONS = [
+  "VIEW_PATIENTS",
+  "MANAGE_PATIENTS",
+  "VIEW_APPOINTMENTS",
+  "MANAGE_APPOINTMENTS",
+  "MANAGE_QUEUE",
+  "VIEW_CLINICS",
+  "VIEW_BILLING",
+  "MANAGE_BILLING",
+  "MANAGE_MEDICINES",
+  "VIEW_EHR",
 ];
 
 export const PATIENT_PERMISSIONS = [
@@ -188,12 +206,7 @@ export async function seedDefaultRoles(session?: any) {
       name: "clinic_manager",
       description: "Small clinic all-in-one desk operator (OPD Queue, Pharmacy, Cashier).",
       isSystemRole: true,
-      permissions: [
-        "OPD_VIEW", "OPD_MANAGE", "PATIENT_VIEW", "PATIENT_MANAGE",
-        "PHARMACY_VIEW", "PHARMACY_MANAGE", "PHARMACY_DISPENSE",
-        "INVOICE_VIEW", "INVOICE_CREATE", "INVOICE_COLLECT",
-        "APPOINTMENT_VIEW", "APPOINTMENT_MANAGE", "QUEUE_MANAGE",
-      ],
+      permissions: CLINIC_MANAGER_PERMISSIONS,
     },
     {
       name: "doctor",
@@ -333,17 +346,16 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
     }
 
     return await withTransaction(async (session) => {
-      const isTestEnv = process.env.NODE_ENV === "test";
       const selectedPlan = (req.body as any).plan || "starter";
-      let maxClinics = (req.body as any).maxClinics || (isTestEnv ? 999 : 1);
-      let maxDoctors = (req.body as any).maxDoctors || (isTestEnv ? 999 : 2);
-      let maxStaff = (req.body as any).maxStaff || (isTestEnv ? 999 : 2);
+      let maxClinics = (req.body as any).maxClinics || 10;
+      let maxDoctors = (req.body as any).maxDoctors || 50;
+      let maxStaff = (req.body as any).maxStaff || 50;
 
       if (selectedPlan === "pro") {
-        maxClinics = (req.body as any).maxClinics || 5;
-        maxDoctors = (req.body as any).maxDoctors || 15;
-        maxStaff = (req.body as any).maxStaff || 15;
-      } else if (selectedPlan === "enterprise" || isTestEnv) {
+        maxClinics = (req.body as any).maxClinics || 25;
+        maxDoctors = (req.body as any).maxDoctors || 100;
+        maxStaff = (req.body as any).maxStaff || 100;
+      } else if (selectedPlan === "enterprise") {
         maxClinics = (req.body as any).maxClinics || 999;
         maxDoctors = (req.body as any).maxDoctors || 999;
         maxStaff = (req.body as any).maxStaff || 999;
@@ -442,7 +454,7 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
         const userIdStr = adminUser._id.toString();
         const payload = { id: userIdStr, email: adminUser.email, role: adminUser.role, organization_id: orgIdStr };
         const accessToken = generateAccessToken(payload);
-        const refreshToken = await createRefreshToken(userIdStr);
+        const refreshToken = await createRefreshToken(userIdStr, { organizationId: orgIdStr });
         setAuthCookies(reply, accessToken, refreshToken);
       }
 
@@ -1296,7 +1308,7 @@ export async function deleteStaff(req: FastifyRequest, reply: FastifyReply) {
 // ─── Organization Settings ───────────────────────────────────────────────
 export async function getOrganizationSettings(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user!.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
     const org = await Organization.findById(orgId);
     if (!org) return reply.code(404).send(errorResponse("Organization not found"));
@@ -1310,7 +1322,7 @@ export async function getOrganizationSettings(req: FastifyRequest, reply: Fastif
 
 export async function updateOrganizationSettings(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user!.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
     const {
       name, city, address, phone, email, description, image_url, timings, working_days
     } = req.body as any;
@@ -1349,7 +1361,7 @@ export async function updateOrganizationSettings(req: FastifyRequest, reply: Fas
 // ─── SMTP / Email Gateway Config ─────────────────────────────────
 export async function getOrganizationSmtp(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user!.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
     const org = await Organization.findById(orgId);
 
@@ -1377,7 +1389,7 @@ export async function getOrganizationSmtp(req: FastifyRequest, reply: FastifyRep
 
 export async function updateOrganizationSmtp(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user!.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
     const { host, port, secure, user, pass, fromEmail, fromName } = req.body as any;
 
     if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
@@ -1462,7 +1474,7 @@ export async function setupOnboardingTOTP(req: FastifyRequest, reply: FastifyRep
     if (!user) return reply.code(404).send(errorResponse("User not found"));
 
     // Generate fresh TOTP secret for Google Authenticator using TwoFactorService
-    const { base32, otpauthUrl } = TwoFactorService.generateSecret(user.email, "ANANTA");
+    const { base32, otpauthUrl } = TwoFactorService.generateSecret(user.email || user.name || "user", "ANANTA");
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes TTL
 
     await PendingTwoFactorSetup.deleteMany({ userId: user._id }); // Clear previous pending
@@ -1521,10 +1533,10 @@ export async function verifyOnboardingTOTP(req: FastifyRequest, reply: FastifyRe
       return reply.code(400).send(errorResponse("Invalid 6-digit Google Authenticator code. Please check your app."));
     }
 
-    // 1. Mark User 2FA as enabled and save verified secret
+    // 1. Mark User 2FA as enabled and save verified secret (encrypted at rest)
     await User.findByIdAndUpdate(userId, {
       twoFactorEnabled: true,
-      twoFactorSecret: activeSecret,
+      twoFactorSecret: encrypt(activeSecret),
     });
 
     // 2. Delete temporary pending setup record

@@ -23,12 +23,13 @@ describe("Patient Portal Self-Service Integration Tests", () => {
         admin_password: "Password123!",
         admin_name: "Portal Admin",
         city: "Mumbai",
+        plan: "enterprise",
       },
     });
     expect(orgRes.statusCode).toBe(201);
     const orgBody = JSON.parse(orgRes.body);
     orgId = orgBody.data.organization.id;
-    const adminCookies = orgRes.headers["set-cookie"] as string[];
+    const adminCookies = (orgRes.headers["set-cookie"] as string[]).map(c => c.split(";")[0]);
 
     // 2. Create Clinic
     const clinicRes = await app.inject({
@@ -60,7 +61,7 @@ describe("Patient Portal Self-Service Integration Tests", () => {
       },
     });
     expect(regRes.statusCode).toBe(201);
-    patientCookies = regRes.headers["set-cookie"] as string[];
+    patientCookies = (regRes.headers["set-cookie"] as string[]).map(c => c.split(";")[0]);
     patientUserId = JSON.parse(regRes.body).data.user.id;
 
     // Set doctor ID

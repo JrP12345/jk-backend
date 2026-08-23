@@ -46,8 +46,8 @@ export async function createClinic(req: FastifyRequest, reply: FastifyReply) {
       email: email || null,
       address: address || null,
       city,
-      latitude: latitude || null,
-      longitude: longitude || null,
+      latitude: latitude !== undefined ? latitude : null,
+      longitude: longitude !== undefined ? longitude : null,
       timings: timings || null,
       facilities: facilities || [],
     });
@@ -90,7 +90,11 @@ export async function updateClinic(req: FastifyRequest, reply: FastifyReply) {
 
     const {
       name, logo, image_url, description, phone, email, address, city, latitude, longitude, timings, facilities
-    } = req.body as any;
+    } = req.body as {
+      name: string; city: string; logo?: string; image_url?: string; description?: string;
+      phone?: string; email?: string; address?: string; latitude?: number; longitude?: number;
+      timings?: string; facilities?: string[];
+    };
 
     if (!name || !city) {
       return reply.code(400).send(errorResponse("Clinic name and city are required"));
@@ -116,12 +120,12 @@ export async function updateClinic(req: FastifyRequest, reply: FastifyReply) {
         email: email || null,
         address: address || null,
         city,
-        latitude: latitude || null,
-        longitude: longitude || null,
+        latitude: latitude !== undefined ? latitude : null,
+        longitude: longitude !== undefined ? longitude : null,
         timings: timings || null,
         facilities: facilities || [],
       },
-      { new: true }
+      { returnDocument: "after" }
     );
 
     return reply.code(200).send(successResponse(updated, "Clinic updated successfully"));

@@ -23,14 +23,15 @@ describe("Appointments & Queue API Integration Tests", () => {
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
-        org_name: "Apollo Hospitals",
+        org_name: `Apollo Hospitals ${Date.now()}`,
         city: "Surat",
         admin_name: "Amit Mehta",
-        admin_email: "amitadmin@test.com",
+        admin_email: `amitadmin_${Date.now()}@test.com`,
         admin_password: "Password123",
+        plan: "enterprise",
       },
     });
-    adminCookies = bootstrapRes.headers["set-cookie"] as string[];
+    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map(c => c.split(";")[0]);
 
     // 2. Create clinic
     const clinicRes = await app.inject({
@@ -85,7 +86,7 @@ describe("Appointments & Queue API Integration Tests", () => {
         password: "Password123",
       },
     });
-    patientCookies = patRes.headers["set-cookie"] as string[];
+    patientCookies = (patRes.headers["set-cookie"] as string[]).map(c => c.split(";")[0]);
     const patUser = await User.findOne({ email: "vijay@test.com" });
     const patProfile = await Patient.findOne({ userId: patUser!._id });
     patientId = patProfile!._id.toString();

@@ -1,6 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../middleware/auth.ts";
 import {
+  requestOtpController,
+  verifyOtpController,
   login,
   verifyLoginTwoFactor,
   registerPatient,
@@ -24,6 +26,25 @@ export default async function authRoutes(app: FastifyInstance) {
   app.get("/.well-known/jwks.json", async (req, reply) => {
     return reply.code(200).send(getJwks());
   });
+
+  // OTP Passwordless Authentication
+  app.post("/api/auth/otp/request", {
+    config: {
+      rateLimit: {
+        max: isTest ? 1000 : 5,
+        timeWindow: "1 minute"
+      }
+    }
+  }, requestOtpController);
+
+  app.post("/api/auth/otp/verify", {
+    config: {
+      rateLimit: {
+        max: isTest ? 1000 : 10,
+        timeWindow: "1 minute"
+      }
+    }
+  }, verifyOtpController);
 
   // POST /api/auth/login        — Login (all roles) → returns accessToken + refreshToken
   app.post("/api/auth/login", {

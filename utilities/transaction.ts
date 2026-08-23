@@ -14,6 +14,9 @@ export async function withTransaction<T>(
   const isStandalone = topologyType === "Single" || topologyType === "Unknown";
 
   if (isStandalone) {
+    if (process.env.NODE_ENV === "production") {
+      console.warn("⚠️ [Transaction Warning] Standalone MongoDB detected in production. Multi-document ACID transactions require a MongoDB Replica Set.");
+    }
     // Standalone single-instance MongoDB (local dev/test) — execute non-transactionally
     return await fn(null);
   }

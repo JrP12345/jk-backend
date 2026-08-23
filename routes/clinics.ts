@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { authenticate, checkPermission } from "../middleware/auth.ts";
-import { createClinicSchema, assignDoctorSchema, createDepartmentSchema } from "../schemas/onboarding.ts";
+import { requireModule } from "../middleware/moduleGuard.ts";
+import { createClinicSchema, updateClinicSchema, assignDoctorSchema, createDepartmentSchema } from "../schemas/onboarding.ts";
 import {
   createClinic,
   getClinics,
@@ -19,13 +20,13 @@ import {
 } from "../controllers/onboarding.ts";
 
 export default async function clinicRoutes(app: FastifyInstance) {
-  const manageClinics = { preHandler: [authenticate, checkPermission("MANAGE_CLINICS")] };
-  const viewClinics = { preHandler: [authenticate, checkPermission("VIEW_CLINICS")] };
+  const manageClinics = { preHandler: [authenticate, requireModule("clinics"), checkPermission("MANAGE_CLINICS")] };
+  const viewClinics = { preHandler: [authenticate, requireModule("clinics"), checkPermission("VIEW_CLINICS")] };
 
   // Clinic CRUD
   app.post("/api/onboarding/clinics", { ...manageClinics, schema: createClinicSchema }, createClinic);
   app.get("/api/onboarding/clinics", viewClinics, getClinics);
-  app.put("/api/onboarding/clinics/:id", manageClinics, updateClinic);
+  app.put("/api/onboarding/clinics/:id", { ...manageClinics, schema: updateClinicSchema }, updateClinic);
   app.delete("/api/onboarding/clinics/:id", manageClinics, deleteClinic);
 
   // Departments

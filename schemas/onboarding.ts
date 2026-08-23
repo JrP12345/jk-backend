@@ -114,6 +114,36 @@ export const createClinicSchema = {
   }
 };
 
+export const updateClinicSchema = {
+  params: {
+    type: "object",
+    required: ["id"],
+    properties: {
+      id: { type: "string", pattern: objectIdPattern }
+    }
+  },
+  body: {
+    type: "object",
+    required: ["name", "city"],
+    properties: {
+      name: { type: "string", minLength: 1 },
+      city: { type: "string", minLength: 1 },
+      address: { type: "string" },
+      phone: { type: "string" },
+      email: { type: "string" },
+      timings: { type: "string" },
+      workingDays: { type: "string" },
+      facilities: { type: "array", items: { type: "string" } },
+      image_url: { type: "string" },
+      logo: { type: "string" },
+      description: { type: "string" },
+      latitude: { type: "number" },
+      longitude: { type: "number" }
+    },
+    additionalProperties: false
+  }
+};
+
 export const assignDoctorSchema = {
   body: {
     type: "object",

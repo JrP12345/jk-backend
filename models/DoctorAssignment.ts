@@ -9,6 +9,8 @@ const DoctorAssignmentSchema = new Schema({
   appointmentDuration: { type: Number, default: 15 }, // minutes
   bookingMode: { type: String, enum: ["time_slot", "sequential_queue"], default: "sequential_queue" },
   maxDailyTokens: { type: Number, default: null },
+  paymentRequired: { type: Boolean, default: false },
+  allowPayAtClinic: { type: Boolean, default: true },
   isActive: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now }
 });

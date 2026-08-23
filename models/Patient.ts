@@ -2,7 +2,12 @@ import mongoose, { Schema } from "mongoose";
 import { getNextAtomicSequence } from "./Counter.ts";
 
 const PatientSchema = new Schema({
-  userId: { type: Schema.Types.ObjectId, ref: "User", required: true, unique: true, index: true },
+  userId: { type: Schema.Types.ObjectId, ref: "User", unique: true, sparse: true, index: true },
+  name: { type: String, trim: true, index: true },
+  phone: { type: String, trim: true, index: true },
+  email: { type: String, trim: true, index: true },
+  accountType: { type: String, enum: ["self", "dependent", "walkin"], default: "self" },
+  createdBy: { type: Schema.Types.ObjectId, ref: "User" },
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
   personalVaultId: { type: String, unique: true, sparse: true, index: true },
   abdmHealthId: { type: String, sparse: true },

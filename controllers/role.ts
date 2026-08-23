@@ -189,6 +189,9 @@ export async function updateRolePermissions(req: FastifyRequest, reply: FastifyR
     }
 
     const { name } = req.params as { name: string };
+    if (name === "root" && userRole !== "root") {
+      return reply.code(403).send(errorResponse("Forbidden: Only Root Super-Admin can modify permissions of the Root role"));
+    }
     const { description, permissions } = req.body as {
       description?: string;
       permissions: string[];
@@ -272,6 +275,9 @@ export async function updateUserRole(req: FastifyRequest, reply: FastifyReply) {
     if (!newRole) {
       return reply.code(400).send(errorResponse("Target role is required"));
     }
+    if (newRole === "root" && requesterRole !== "root") {
+      return reply.code(403).send(errorResponse("Forbidden: Only Root Super-Admin can assign the Root role"));
+    }
     if (!BUILT_IN_ROLE_NAMES.has(newRole)) {
       const configuredRole = await Role.findOne({ name: newRole }).select("_id").lean();
       if (!configuredRole) return reply.code(400).send(errorResponse("Target role is not configured"));
@@ -280,6 +286,9 @@ export async function updateUserRole(req: FastifyRequest, reply: FastifyReply) {
     const user = await User.findById(id);
     if (!user) {
       return reply.code(404).send(errorResponse("User not found"));
+    }
+    if (user.role === "root" && requesterRole !== "root") {
+      return reply.code(403).send(errorResponse("Forbidden: Only Root Super-Admin can modify accounts with the Root role"));
     }
 
     user.role = newRole;

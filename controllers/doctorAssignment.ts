@@ -54,14 +54,25 @@ export async function assignDoctor(req: FastifyRequest, reply: FastifyReply) {
 
 export async function getDoctorAssignments(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user!.organization_id;
-    if (!orgId) return reply.code(400).send(errorResponse("You are not linked to any organization"));
-
+    const orgId = req.user?.organization_id;
+    const userRole = req.user?.role;
     const { doctorId, clinicId } = req.query as { doctorId?: string; clinicId?: string };
 
-    const query: any = { organizationId: orgId, isActive: true };
-    if (doctorId) query.doctorId = doctorId;
-    if (clinicId) query.clinicId = clinicId;
+    const query: any = { isActive: true };
+
+    if (orgId && userRole !== "patient") {
+      query.organizationId = orgId;
+    }
+    if (doctorId && mongoose.Types.ObjectId.isValid(doctorId)) {
+      query.doctorId = doctorId;
+    }
+    if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
+      query.clinicId = clinicId;
+    }
+
+    if (!orgId && !doctorId && !clinicId && userRole !== "patient") {
+      return reply.code(400).send(errorResponse("You are not linked to any organization"));
+    }
 
     const assignments = await DoctorAssignment.find(query)
       .populate("doctorId", "name email phone")
@@ -76,7 +87,7 @@ export async function getDoctorAssignments(req: FastifyRequest, reply: FastifyRe
 
 export async function updateAssignment(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user!.organization_id;
+    const orgId = req.user?.organization_id;
     const { id } = req.params as { id: string };
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -88,7 +99,10 @@ export async function updateAssignment(req: FastifyRequest, reply: FastifyReply)
       bookingMode?: "time_slot" | "sequential_queue"; maxDailyTokens?: number | null;
     };
 
-    const assignment = await DoctorAssignment.findOne({ _id: id, organizationId: orgId });
+    const query: any = { _id: id };
+    if (orgId) query.organizationId = orgId;
+
+    const assignment = await DoctorAssignment.findOne(query);
     if (!assignment) return reply.code(404).send(errorResponse("Doctor assignment not found"));
 
     const updateFields: any = {};
@@ -109,14 +123,17 @@ export async function updateAssignment(req: FastifyRequest, reply: FastifyReply)
 
 export async function removeAssignment(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user!.organization_id;
+    const orgId = req.user?.organization_id;
     const { id } = req.params as { id: string };
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return reply.code(400).send(errorResponse("Invalid assignment ID"));
     }
 
-    const assignment = await DoctorAssignment.findOne({ _id: id, organizationId: orgId });
+    const query: any = { _id: id };
+    if (orgId) query.organizationId = orgId;
+
+    const assignment = await DoctorAssignment.findOne(query);
     if (!assignment) return reply.code(404).send(errorResponse("Doctor assignment not found"));
 
     await DoctorAssignment.findByIdAndDelete(id);

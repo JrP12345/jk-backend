@@ -34,9 +34,9 @@ export class SubscriptionService {
           trialDays: 15,
           limits: {
             maxHospitals: 1,
-            maxClinics: 1,
-            maxDoctors: 2,
-            maxStaff: 3,
+            maxClinics: 10,
+            maxDoctors: 10,
+            maxStaff: 20,
             maxPatients: 500,
             maxAppointments: 1000,
             maxStorageMB: 1024,
@@ -69,13 +69,15 @@ export class SubscriptionService {
 
       sub = await Subscription.findById(sub._id).populate("planId");
 
-      // Update organization limits
-      await Organization.findByIdAndUpdate(organizationId, {
-        plan: starterPlan.slug,
-        maxClinics: starterPlan.limits?.maxClinics ?? 1,
-        maxDoctors: starterPlan.limits?.maxDoctors ?? 2,
-        maxStaff: starterPlan.limits?.maxStaff ?? 5,
-      });
+      // Update organization limits if lower than plan limits
+      const existingOrg = await Organization.findById(organizationId);
+      if (existingOrg) {
+        const newMaxClinics = Math.max(existingOrg.maxClinics || 1, starterPlan.limits?.maxClinics ?? 10);
+        await Organization.findByIdAndUpdate(organizationId, {
+          plan: existingOrg.plan || starterPlan.slug,
+          maxClinics: newMaxClinics,
+        });
+      }
     }
 
     // Auto-expire trial if trial date passed

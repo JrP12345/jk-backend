@@ -2,7 +2,7 @@
   "name": "backend",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "index.ts",
   "scripts": {
     "test": "vitest run",
     "check:fast": "node ../scripts/dev_check.js",
@@ -13,7 +13,7 @@
     "seed:clean": "node --env-file=.env --experimental-strip-types scripts/seedFreshCleanDB.ts",
     "seed:clinic1": "node --env-file=.env --experimental-strip-types scripts/seedClinicOne.ts",
     "migrate:tenant": "node --env-file=.env --experimental-strip-types scripts/migrateTenantScoping.ts",
-    "dev": "nodemon -e js,ts,json,env --exec \"node --env-file=.env --experimental-strip-types\" index.js"
+    "dev": "nodemon -e js,ts,json,env --exec \"node --env-file=.env --experimental-strip-types\" index.ts"
   },
   "repository": {
     "type": "git",
@@ -46,7 +46,6 @@
   },
   "devDependencies": {
     "@types/jsonwebtoken": "^9.0.8",
-    "@types/mongoose": "^5.11.96",
     "@types/node": "^20.17.19",
     "@types/nodemailer": "^8.0.1",
     "@types/qrcode": "^1.5.6",

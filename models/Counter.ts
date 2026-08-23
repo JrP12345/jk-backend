@@ -19,11 +19,14 @@ export const Counter = mongoose.models.Counter || mongoose.model<ICounter>("Coun
  * Atomic counter sequence generator for clean, predictable audit numbering
  * e.g. generateAtomicSequence("invoice_ORG123_2026") => 1, 2, 3...
  */
-export async function getNextAtomicSequence(counterId: string): Promise<number> {
+export async function getNextAtomicSequence(
+  counterId: string,
+  session?: mongoose.ClientSession | null
+): Promise<number> {
   const result = await Counter.findOneAndUpdate(
     { id: counterId },
     { $inc: { seq: 1 } },
-    { new: true, upsert: true }
+    { returnDocument: "after", upsert: true, ...(session ? { session } : {}) }
   );
   return result.seq;
 }

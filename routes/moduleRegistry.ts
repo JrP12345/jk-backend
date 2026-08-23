@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate, authorize } from "../middleware/auth.ts";
+import { authenticate, authorize, checkPermission } from "../middleware/auth.ts";
 import {
   getModules,
   toggleModule,
@@ -9,7 +9,7 @@ import {
 
 export default async function moduleRegistryRoutes(app: FastifyInstance) {
   const auth = { preHandler: [authenticate] };
-  const adminOnly = { preHandler: [authenticate, authorize("admin")] };
+  const adminOnly = { preHandler: [authenticate, checkPermission("MANAGE_ORGANIZATION")] };
   const rootOnly = { preHandler: [authenticate, authorize("root")] };
 
   // Any authenticated user can read module states (needed for sidebar filtering)

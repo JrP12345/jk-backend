@@ -20,7 +20,7 @@ export async function processSsoLogin(identity: SsoIdentityPayload) {
 
   const tokenPayload = {
     id: user._id.toString(),
-    email: user.email,
+    email: user.email || "",
     role: user.role,
     organization_id: membership.organizationId.toString(),
   };

@@ -8,6 +8,7 @@ import { Appointment } from "../models/Appointment.ts";
 import { Patient } from "../models/Patient.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { checkClinicAccess, checkOperationalRecordAccess } from "../utilities/tenant.ts";
+import { getNextAtomicSequence } from "../models/Counter.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));
@@ -275,28 +276,38 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
       await Appointment.findByIdAndUpdate(updatedEncounter.appointmentId, { status: "completed" });
     }
 
+    if (updatedEncounter) {
+      const orgId = note.organizationId?.toString();
+      const billingEnabled = orgId
+        ? await (await import("../utilities/moduleAccess.ts")).isModuleEnabledForOrganization(orgId, "billing")
+        : false;
+      if (billingEnabled) {
+        try {
+          const { autoGenerateEncounterInvoice } = await import("../services/ChargeCaptureService.ts");
+          await autoGenerateEncounterInvoice(updatedEncounter._id.toString(), userId);
+        } catch (billingErr) {
+          console.error("Auto encounter invoice on sign failed:", billingErr);
+        }
+      }
+    }
+
     let followUpCreationFailed = false;
     // Auto-create Follow-up Appointment if followUpDate is set
     if (note.plan?.followUpDate) {
       try {
         const { Appointment } = await import("../models/Appointment.ts");
-        const existingFollowUp = await Appointment.findOne({ followUpForAppointmentId: note.encounterId });
+        const encounterDoc = await Encounter.findById(note.encounterId);
+        const targetFollowUpId = encounterDoc?.appointmentId || note.encounterId;
+        const existingFollowUp = await Appointment.findOne({ followUpForAppointmentId: targetFollowUpId });
 
         if (!existingFollowUp) {
-          const encounterDoc = await Encounter.findById(note.encounterId);
           const requestedDate = new Date(note.plan.followUpDate);
-          const startOfDay = new Date(requestedDate.getFullYear(), requestedDate.getMonth(), requestedDate.getDate());
-          const endOfDay = new Date(requestedDate.getFullYear(), requestedDate.getMonth(), requestedDate.getDate(), 23, 59, 59, 999);
-
-          const countToday = await Appointment.countDocuments({
-            doctorId: note.doctorId,
-            clinicId: note.clinicId,
-            appointmentTime: { $gte: startOfDay, $lte: endOfDay }
-          });
-
-          const tokenNumber = countToday + 1;
+          const dateStr = requestedDate.toISOString().slice(0, 10);
+          const counterKey = `token_${note.clinicId}_${note.doctorId}_${dateStr}`;
+          const tokenNumber = await getNextAtomicSequence(counterKey);
 
           await Appointment.create({
+            organizationId: note.organizationId || undefined,
             clinicId: note.clinicId,
             doctorId: note.doctorId,
             patientId: note.patientId,
@@ -307,7 +318,7 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
             queuePosition: tokenNumber,
             notes: note.plan.followUpInstructions || "Follow-up consultation",
             followUpRecommended: true,
-            followUpForAppointmentId: encounterDoc?.appointmentId || note.encounterId
+            followUpForAppointmentId: targetFollowUpId
           });
         }
       } catch (followUpErr) {

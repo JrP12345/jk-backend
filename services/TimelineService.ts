@@ -12,6 +12,15 @@ import { BillingProvider } from "./providers/BillingProvider.ts";
 import { MARProvider } from "./providers/MARProvider.ts";
 import { DischargeSummaryProvider } from "./providers/DischargeSummaryProvider.ts";
 import { DocumentUploadProvider } from "./providers/DocumentUploadProvider.ts";
+import { isModuleEnabledForOrganization } from "../utilities/moduleAccess.ts";
+
+/** P3 providers gated by org module toggles — P1 providers always run. */
+const PROVIDER_MODULE_REQUIREMENTS: Record<string, string> = {
+  LabProvider: "laboratory",
+  AdmissionProvider: "admissions",
+  MARProvider: "admissions",
+  DischargeSummaryProvider: "admissions",
+};
 
 export class TimelineProviderRegistry {
   private providers: TimelineProvider[] = [];
@@ -78,8 +87,18 @@ export class TimelineService {
       return null; // 404 Masking for multi-tenancy cross-tenant security
     }
 
-    // 2. Select matching providers from registry
-    const providers = this.registry.getProvidersFor(query);
+    // 2. Select matching providers from registry (skip disabled P3/P2 modules)
+    const allProviders = this.registry.getProvidersFor(query);
+    const providers: TimelineProvider[] = [];
+    for (const provider of allProviders) {
+      const requiredModule = PROVIDER_MODULE_REQUIREMENTS[provider.name];
+      if (!requiredModule) {
+        providers.push(provider);
+        continue;
+      }
+      const enabled = await isModuleEnabledForOrganization(query.organizationId, requiredModule);
+      if (enabled) providers.push(provider);
+    }
     const providerExecutionTimesMs: Record<string, number> = {};
 
     // 3. Execute providers in parallel with timing metrics

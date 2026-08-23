@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate, authorize } from "../middleware/auth.ts";
+import { authenticate, checkPermission } from "../middleware/auth.ts";
 import {
   getRoles,
   getPermissionCatalog,
@@ -11,13 +11,13 @@ import {
 
 export default async function roleRoutes(app: FastifyInstance) {
   const auth = { preHandler: [authenticate] };
-  const adminAuth = { preHandler: [authenticate, authorize("admin", "root")] };
+  const manageRoles = { preHandler: [authenticate, checkPermission("ADMINISTRATIVE_GOVERNANCE")] };
 
   // Roles & Permissions Endpoints
   app.get("/api/roles", auth, getRoles);
   app.get("/api/permissions", auth, getPermissionCatalog);
-  app.post("/api/roles", adminAuth, createRole);
-  app.put("/api/roles/:name", adminAuth, updateRolePermissions);
-  app.delete("/api/roles/:name", adminAuth, deleteRole);
-  app.put("/api/users/:id/role", adminAuth, updateUserRole);
+  app.post("/api/roles", manageRoles, createRole);
+  app.put("/api/roles/:name", manageRoles, updateRolePermissions);
+  app.delete("/api/roles/:name", manageRoles, deleteRole);
+  app.put("/api/users/:id/role", manageRoles, updateUserRole);
 }

@@ -21,9 +21,26 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
       return;
     }
 
-    const targetUserId = appt.patientId?.userId?._id?.toString() || appt.patientId?.userId?.id || appt.patientId?.userId;
-    const patientName = appt.patientId?.userId?.name || "Patient";
-    const patientEmail = appt.patientId?.userId?.email;
+    let targetUserId = appt.patientId?.userId?._id?.toString() || appt.patientId?.userId?.id || appt.patientId?.userId || appt.bookedByUserId?.toString();
+    let patientName = appt.patientId?.name || appt.patientId?.userId?.name || "Patient";
+    let patientEmail = appt.patientId?.email || appt.patientId?.userId?.email;
+    let patientPhone = appt.patientId?.phone || appt.patientId?.userId?.phone;
+
+    // If patient has no contact info & no linked userId, look up guardian FamilyRelationship
+    if (!targetUserId || (!patientEmail && !patientPhone)) {
+      const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
+      const familyRel: any = await FamilyRelationship.findOne({
+        patientId: appt.patientId?._id || appt.patientId,
+        status: "active",
+      }).populate("userId", "name email phone");
+
+      if (familyRel?.userId) {
+        targetUserId = familyRel.userId._id?.toString();
+        if (!patientEmail) patientEmail = familyRel.userId.email;
+        if (!patientPhone) patientPhone = familyRel.userId.phone;
+      }
+    }
+
     const doctorName = appt.doctorId?.name || "Doctor";
     const clinicName = appt.clinicId?.name || "Clinic Location";
     const token = appt.tokenNumber;
@@ -39,8 +56,8 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
         targetUserId: targetUserId.toString(),
         title: actionType === "booked" ? `Appointment Confirmed (#${token})` : `Appointment Cancelled`,
         message: actionType === "booked"
-          ? `Appointment with Dr. ${doctorName} at ${clinicName} confirmed for ${time}. Token: #${token}`
-          : `Your appointment with Dr. ${doctorName} at ${clinicName} scheduled for ${time} has been cancelled.`,
+          ? `Appointment for ${patientName} with Dr. ${doctorName} at ${clinicName} confirmed for ${time}. Token: #${token}`
+          : `Appointment for ${patientName} with Dr. ${doctorName} at ${clinicName} scheduled for ${time} has been cancelled.`,
         severity: actionType === "booked" ? "success" : "warning",
         actionUrl: "/dashboard/appointments",
         metadata: { appointmentId, clinicName, doctorName, token, time },
@@ -63,7 +80,6 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
       });
     }
 
-    const patientPhone = appt.patientId?.userId?.phone;
     if (patientPhone) {
       const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
       sendSmsWhatsAppNotification({

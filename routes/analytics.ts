@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate, authorize, checkPermission } from "../middleware/auth.ts";
+import { authenticate, checkPermission } from "../middleware/auth.ts";
 import {
   getExecutiveAnalytics,
   getClinicalSummaryAnalyticsController,
@@ -9,12 +9,11 @@ import {
 import { getOrganizationQualityMetricsController } from "../controllers/search.ts";
 
 export default async function analyticsRoutes(app: FastifyInstance) {
-  const adminOnly = { preHandler: [authenticate, authorize("admin")] };
   const viewAnalytics = { preHandler: [authenticate, checkPermission("VIEW_ANALYTICS")] };
   const auth = { preHandler: [authenticate] };
 
   // Executive & Quality Metrics Dashboard
-  app.get("/api/analytics/executive", adminOnly, getExecutiveAnalytics);
+  app.get("/api/analytics/executive", viewAnalytics, getExecutiveAnalytics);
   app.get("/api/analytics/quality-metrics", viewAnalytics, getOrganizationQualityMetricsController);
   app.get("/api/analytics/nabh-kpis", auth, getNabhKpis);
 

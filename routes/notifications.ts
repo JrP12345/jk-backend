@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate, authorize } from "../middleware/auth.ts";
+import { authenticate, checkPermission } from "../middleware/auth.ts";
 import { notificationService } from "../notifications/services/NotificationService.ts";
 import { notificationStreamHandler } from "../notifications/websocket.ts";
 import { eventBus } from "../events/eventBus.ts";
@@ -9,6 +9,7 @@ import { Organization } from "../models/Organization.ts";
 import { emailProvider, type SmtpConfig } from "../notifications/providers/emailProvider.ts";
 import { decrypt } from "../utilities/encryption.ts";
 import { OrgMember } from "../models/OrgMember.ts";
+import { resolveTargetOrganizationId } from "../utilities/tenant.ts";
 
 async function getOrganizationSmtp(organizationId?: string | null): Promise<SmtpConfig | null> {
   if (!organizationId) return null;
@@ -28,7 +29,7 @@ async function getOrganizationSmtp(organizationId?: string | null): Promise<Smtp
 }
 
 export default async function notificationRoutes(app: FastifyInstance) {
-  const adminNotifications = { preHandler: [authenticate, authorize("admin")] };
+  const adminNotifications = { preHandler: [authenticate, checkPermission("MANAGE_ORGANIZATION")] };
 
   // ─── Realtime SSE Stream ─────────────────────────────────────────
   app.get("/api/notifications/stream", { preHandler: [authenticate] }, notificationStreamHandler);
@@ -45,7 +46,7 @@ export default async function notificationRoutes(app: FastifyInstance) {
   // ─── SMS/WhatsApp Dispatch Logs ──────────────────────────────────
   app.get("/api/notifications/dispatch-logs", adminNotifications, async (req, reply) => {
     const { NotificationLog } = await import("../models/NotificationLog.ts");
-    const organizationId = req.user!.organization_id;
+    const organizationId = await resolveTargetOrganizationId(req);
     if (!organizationId) return reply.code(403).send({ success: false, message: "Organization context is required" });
     const logs = await NotificationLog.find({ organizationId }).sort({ createdAt: -1 }).limit(50);
     return reply.send({
@@ -196,7 +197,7 @@ export default async function notificationRoutes(app: FastifyInstance) {
 
   // ─── Fetch Organization Users for Recipient Selection ────────────
   app.get("/api/notifications/users", adminNotifications, async (req, reply) => {
-    const organizationId = req.user!.organization_id;
+    const organizationId = await resolveTargetOrganizationId(req);
     if (!organizationId) return reply.code(403).send({ success: false, message: "Organization context is required" });
     const members = await OrgMember.find({ organizationId }).select("userId role").lean();
     const userIds = members.map((member) => member.userId);
@@ -215,7 +216,7 @@ export default async function notificationRoutes(app: FastifyInstance) {
   // ─── Send / Broadcast In-App Notification ────────────────────────
   app.post("/api/notifications/send", adminNotifications, async (req, reply) => {
     const senderUserId = req.user!.id;
-    const organizationId = req.user!.organization_id;
+    const organizationId = await resolveTargetOrganizationId(req);
     const {
       recipientScope = "all",
       targetUserId,

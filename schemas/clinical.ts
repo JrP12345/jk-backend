@@ -56,6 +56,10 @@ export const dispensePrescriptionSchema = {
       patientId: { type: "string", pattern: objectIdPattern },
       clinicId: { type: "string", pattern: objectIdPattern },
       doctorId: { type: "string", pattern: objectIdPattern },
+      prescriptionIds: {
+        type: "array",
+        items: { type: "string", pattern: objectIdPattern },
+      },
       items: {
         type: "array",
         minItems: 1,

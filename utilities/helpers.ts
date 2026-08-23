@@ -149,3 +149,14 @@ export function setPaginationHeaders(
   reply.header("X-Page-Size", pageSize.toString());
   reply.header("Access-Control-Expose-Headers", "X-Total-Count, X-Total-Pages, X-Current-Page, X-Page-Size");
 }
+
+export function normalizePhone(phone: string): string {
+  if (!phone) return "";
+  let clean = phone.replace(/\D/g, "");
+  if (clean.length === 12 && clean.startsWith("91")) {
+    clean = clean.substring(2);
+  } else if (clean.length === 11 && clean.startsWith("0")) {
+    clean = clean.substring(1);
+  }
+  return clean;
+}

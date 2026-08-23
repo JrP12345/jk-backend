@@ -12,6 +12,7 @@ import { LabTest } from "../models/LabTest.ts";
 import { LabOrder } from "../models/LabOrder.ts";
 import { Admission } from "../models/Admission.ts";
 import { Bed } from "../models/Bed.ts";
+import { ModuleRegistry } from "../models/ModuleRegistry.ts";
 
 describe("Discharge Summary Integration Tests", () => {
   let adminCookies: string[] = [];
@@ -40,6 +41,9 @@ describe("Discharge Summary Integration Tests", () => {
     orgId = JSON.parse(orgRes.body).data.organization.id;
     const adminUser = await User.findOne({ email: "discharge-admin@test.com" });
     adminUserId = adminUser!._id.toString();
+
+    // Enable all modules for the test organization so admissions & discharge summary provider run
+    await ModuleRegistry.updateMany({ organizationId: orgId }, { $set: { enabled: true } });
 
     // 2. Create Clinic
     const clinicRes = await app.inject({

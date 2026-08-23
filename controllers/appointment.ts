@@ -1,19 +1,16 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
-import bcrypt from "bcryptjs";
 import { Appointment } from "../models/Appointment.ts";
 import { Patient } from "../models/Patient.ts";
 import { User } from "../models/User.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { OrgMember } from "../models/OrgMember.ts";
-import { Consent } from "../models/Consent.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { sendBookingNotification } from "../utilities/notifications.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
-import { validatePasswordStrength } from "../middleware/auth.ts";
 import {
   acquireSlotLock,
   releaseSlotLock,
@@ -22,6 +19,7 @@ import {
   forceReleaseSlotLock,
 } from "../services/SlotLockService.ts";
 import { checkClinicAccess, getRequestClinicIds } from "../utilities/tenant.ts";
+import { getNextAtomicSequence } from "../models/Counter.ts";
 
 async function ensureAppointmentClinicAccess(
   req: FastifyRequest,
@@ -71,10 +69,6 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
       return reply.code(400).send(errorResponse("clinicId, doctorId, appointmentTime, and appointmentType are required"));
     }
 
-    if (userRole !== "patient" && userRole !== "admin" && userRole !== "receptionist" && userRole !== "root" && userRole !== "doctor") {
-      return reply.code(403).send(errorResponse("Forbidden: role cannot book appointments"));
-    }
-
     const clinicAccess = await checkClinicAccess(req, clinicId);
     if (!clinicAccess.allowed) {
       return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
@@ -107,25 +101,60 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
 
     return await withTransaction(async (session) => {
       const option = session ? { session } : {};
-      let finalPatientId: string;
-
-      // 1. Identify or Create Patient Profile
+      let finalPatientId: string;      // 1. Identify or Create Patient Profile
       if (userRole === "patient") {
-        const patient = await Patient.findOne({ userId }, null, option);
-        if (!patient) {
-          return reply.code(404).send(errorResponse("Patient profile not found for your account"));
+        const targetPatientId = patientId || (req.body as any).forPatientId;
+        
+        if (targetPatientId) {
+          // Verify authorization via FamilyRelationship
+          const isAuthorized = await FamilyRelationship.findOne(
+            { userId, patientId: targetPatientId, status: "active" },
+            null,
+            option
+          );
+          if (!isAuthorized) {
+            return reply.code(403).send(errorResponse("Unauthorized: You do not have permission to book for this patient"));
+          }
+          finalPatientId = targetPatientId;
+        } else {
+          // Default to self patient profile
+          let selfRel = await FamilyRelationship.findOne({ userId, relationship: "self", status: "active" }, null, option);
+          let patient = selfRel ? await Patient.findById(selfRel.patientId, null, option) : await Patient.findOne({ userId }, null, option);
+
+          if (!patient) {
+            const loggedUser = await User.findById(userId, null, option);
+            patient = await createWithSession(Patient, {
+              userId: loggedUser?._id || userId,
+              name: loggedUser?.name || "Patient",
+              phone: loggedUser?.phone || null,
+              email: loggedUser?.email || null,
+              accountType: "self",
+              createdBy: userId,
+              organizationId: orgId,
+            }, session);
+
+            await createWithSession(FamilyRelationship, {
+              userId,
+              patientId: patient!._id,
+              relationship: "self",
+              status: "active",
+            }, session);
+          }
+
+          if (patient!.organizationId && patient!.organizationId.toString() !== orgId) {
+            return reply.code(403).send(errorResponse("Patient is not associated with the selected organization"));
+          }
+          if (!patient!.organizationId && orgId) {
+            patient!.organizationId = orgId as any;
+            await patient!.save(option);
+            if (patient!.userId) {
+              await createWithSession(OrgMember, { userId: patient!.userId, organizationId: orgId, role: "patient" }, session);
+            }
+          }
+          finalPatientId = patient!.id;
         }
-        if (patient.organizationId && patient.organizationId.toString() !== orgId) {
-          return reply.code(403).send(errorResponse("Patient is not associated with the selected organization"));
-        }
-        if (!patient.organizationId && orgId) {
-          patient.organizationId = orgId as any;
-          await patient.save(option);
-          await createWithSession(OrgMember, { userId: patient.userId, organizationId: orgId, role: "patient" }, session);
-        }
-        finalPatientId = patient.id;
       } else {
-        // Staff booking
+        // Staff / Receptionist / Doctor booking
         if (patientId) {
           const patient = await Patient.findById(patientId, null, option);
           if (!patient) return reply.code(404).send(errorResponse("Patient profile not found"));
@@ -143,44 +172,26 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
           }
           finalPatientId = patient.id;
 
-          // Ensure Patient is linked to OrgMember if not already
-          if (orgId) {
+          if (orgId && patient.userId) {
             const memberExists = await OrgMember.findOne({ userId: patient.userId, organizationId: orgId }, null, option);
             if (!memberExists) {
               await createWithSession(OrgMember, { userId: patient.userId, organizationId: orgId, role: "patient" }, session);
             }
           }
         } else if (patientDetails) {
-          const { name, dob, gender, phone, email, password, address, allergies, conditions, medicalNotes } = patientDetails;
-          if (!name || !dob || !gender || !email?.trim() || !password) {
-            return reply.code(400).send(errorResponse("name, dob, gender, email, and password are required for new patient registration"));
+          const { name, dob, gender, phone, email, address, allergies, conditions, medicalNotes } = patientDetails;
+          if (!name || !dob || !gender) {
+            return reply.code(400).send(errorResponse("name, dob, and gender are required for new patient registration"));
           }
-          const strength = validatePasswordStrength(password);
-          if (!strength.valid) {
-            return reply.code(400).send(errorResponse(strength.reason || "Patient password does not meet complexity requirements"));
-          }
-
-          const finalEmail = email.trim().toLowerCase();
-          
-          const emailExists = await User.findOne({ email: finalEmail }, null, option);
-          if (emailExists) {
-            return reply.code(409).send(errorResponse("Email already registered"));
-          }
-
-          const hashedPassword = await bcrypt.hash(password, 10);
-
-          const newPatientUser = await createWithSession(User, {
-            name,
-            email: finalEmail,
-            password: hashedPassword,
-            phone: phone || null,
-            role: "patient"
-          }, session);
 
           const patientProfile = await createWithSession(Patient, {
-            userId: newPatientUser._id,
+            name: name.trim(),
+            phone: phone?.trim() || null,
+            email: email?.trim().toLowerCase() || null,
+            accountType: "walkin",
+            createdBy: userId,
             organizationId: orgId,
-            personalVaultId: `pvt_${newPatientUser._id.toString()}`,
+            personalVaultId: `pvt_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`,
             dob: new Date(dob),
             gender,
             address: address || null,
@@ -189,71 +200,57 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
             medicalNotes: medicalNotes || null
           }, session);
 
-          if (orgId) {
-            await createWithSession(OrgMember, {
-              userId: newPatientUser._id,
-              organizationId: orgId,
-              role: "patient"
-            }, session);
-
-            // ANANTA v1.0: Automatically create initial Consent Grant for clinic
-            const consentGrant = await createWithSession(Consent, {
-              patientId: patientProfile._id,
-              grantee: { organizationId: orgId, doctorId },
-              status: "active",
-              scope: ["READ_TIMELINE", "WRITE_ENCOUNTER", "VIEW_LABS", "VIEW_IMAGING"],
-              period: { start: new Date(), end: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) }, // 1 Year Initial Grant
-              provision: { type: "permit", purpose: ["TREATMENT", "BILLING"] },
-              audit: { grantedAt: new Date(), grantedVia: "DEFAULT_INITIAL_REGISTRATION" },
-            }, session);
-
-            // Update patient activeConsentGrants
-            await Patient.findByIdAndUpdate(patientProfile._id, { $addToSet: { activeConsentGrants: consentGrant._id } }, option);
-          }
-
           finalPatientId = patientProfile.id;
         } else {
           return reply.code(400).send(errorResponse("Either patientId or patientDetails is required for staff booking"));
         }
       }
 
-      // 2. Generate Sequential Daily Token Number for Doctor + Clinic
+      // 1b. Duplicate active appointment guard
       const requestedDate = new Date(appointmentTime);
-      const startOfDay = new Date(requestedDate.getFullYear(), requestedDate.getMonth(), requestedDate.getDate());
-      const endOfDay = new Date(requestedDate.getFullYear(), requestedDate.getMonth(), requestedDate.getDate(), 23, 59, 59, 999);
+      const existingDuplicate = await Appointment.findOne({
+        patientId: finalPatientId,
+        doctorId,
+        clinicId,
+        appointmentTime: requestedDate,
+        status: { $in: ["pending", "pending_payment", "confirmed", "checked-in", "in-consultation"] }
+      }, null, option);
+      if (existingDuplicate) {
+        return reply.code(409).send(errorResponse("An active appointment for this patient with this practitioner at the selected time already exists"));
+      }
 
-      const countToday = await Appointment.countDocuments(
-        {
-          doctorId,
-          clinicId,
-          appointmentTime: { $gte: startOfDay, $lte: endOfDay },
-          status: { $nin: ["cancelled"] }
-        },
-        option
-      );
+      // 2. Generate Atomic Sequential Daily Token Number for Doctor + Clinic
+      const dateStr = requestedDate.toISOString().slice(0, 10);
+      const counterKey = `token_${clinicId}_${doctorId}_${dateStr}`;
+      const tokenNumber = await getNextAtomicSequence(counterKey, session);
 
       const maxTokens = (assignment as any)?.maxDailyTokens;
-      if (maxTokens && countToday >= maxTokens) {
+      if (maxTokens && tokenNumber > maxTokens) {
         return reply.code(400).send(errorResponse(`Daily token limit of ${maxTokens} reached for this practitioner.`));
       }
 
-      const tokenNumber = countToday + 1;
       const queuePosition = tokenNumber;
 
-      const initialStatus = (userRole === "admin" || userRole === "receptionist") ? "confirmed" : "pending";
+      const initialStatus = userRole === "patient" ? "pending" : "confirmed";
       const slotDuration = (req.body as any).duration || assignment?.appointmentDuration || 15;
       const visitReason = (req.body as any).reasonForVisit || (followUpForAppointmentId ? "follow_up" : "new_consultation");
       const currentBookingMode = (assignment as any)?.bookingMode || "sequential_queue";
 
       // 3. Create Appointment Document
+      const isPaymentRequired = (assignment as any)?.paymentRequired === true;
+      const initialPaymentStatus = isPaymentRequired ? "pending" : ((req.body as any).payAtClinic ? "pay_at_clinic" : "not_required");
+
       const appointment = await createWithSession(Appointment, {
         organizationId: orgId || clinicAccess.organizationId || null,
         clinicId,
         doctorId,
         patientId: finalPatientId,
+        bookedByUserId: userId,
         appointmentTime: requestedDate,
         appointmentType,
-        status: initialStatus,
+        status: isPaymentRequired ? "pending_payment" : initialStatus,
+        paymentStatus: initialPaymentStatus,
+        bookingSource: userRole === "patient" ? "patient_portal" : "staff",
         tokenNumber,
         queuePosition,
         bookingMode: currentBookingMode,
@@ -262,26 +259,38 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
         notes: notes || null
       }, session);
 
-      // 4. Optionally handle Follow-Up link
+      // 4. Optionally handle Follow-Up link with validation
       if (followUpForAppointmentId) {
-        await Appointment.findByIdAndUpdate(followUpForAppointmentId, { status: "completed" }, option);
+        if (!mongoose.Types.ObjectId.isValid(followUpForAppointmentId)) {
+          return reply.code(400).send(errorResponse("Invalid followUpForAppointmentId"));
+        }
+        const parentAppt = await Appointment.findOne({
+          _id: followUpForAppointmentId,
+          patientId: finalPatientId
+        }, null, option);
+        if (parentAppt && parentAppt.status !== "completed") {
+          parentAppt.status = "completed";
+          await parentAppt.save(option);
+        }
       }
 
       // 5. Automatically generate Consultation Fee Invoice
       if (assignment?.fees && assignment.fees > 0) {
-        const year = requestedDate.getFullYear();
-        const count = await Invoice.countDocuments({}, option);
-        const invoiceNumber = `INV-${year}-${(count + 1).toString().padStart(5, "0")}`;
+        const doctorUser = await User.findById(doctorId, null, option);
+        const doctorName = doctorUser?.name ? `Dr. ${doctorUser.name}` : `Dr. ${doctorId}`;
+        const { generateClinicInvoiceNumber } = await import("../utilities/invoiceNumber.ts");
+        const invoiceNumber = await generateClinicInvoiceNumber(clinicId, requestedDate.getFullYear());
 
         await createWithSession(Invoice, {
           invoiceNumber,
+          organizationId: orgId || clinicAccess.organizationId || null,
           patientId: finalPatientId,
           appointmentId: appointment._id,
           clinicId,
           doctorId,
           items: [
             {
-              description: `Consultation Fee - Dr. ${doctorId}`,
+              description: `Consultation Fee - ${doctorName}`,
               amount: assignment.fees,
               quantity: 1
             }
@@ -294,9 +303,10 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
         }, session);
       }
 
-      // 6. Audit Log
+      // 6. Audit Log with Organization Context
       await createWithSession(AuditLog, {
         userId,
+        organizationId: orgId || clinicAccess.organizationId || undefined,
         action: "APPOINTMENT_CREATE",
         targetId: appointment._id,
         targetModel: "Appointment",
@@ -521,21 +531,16 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
       }
     }
 
-    const oldTimeStr = new Date(appointment.appointmentTime).toLocaleString();
+    const oldTimeStr = new Date(appointment.appointmentTime).toISOString();
 
-    // Recalculate daily token number & queue position for the new date
-    const startOfDay = new Date(newDateObj.getFullYear(), newDateObj.getMonth(), newDateObj.getDate());
-    const endOfDay = new Date(newDateObj.getFullYear(), newDateObj.getMonth(), newDateObj.getDate(), 23, 59, 59, 999);
-    const countToday = await Appointment.countDocuments({
-      doctorId: appointment.doctorId,
-      clinicId: appointment.clinicId,
-      appointmentTime: { $gte: startOfDay, $lte: endOfDay },
-      _id: { $ne: appointment._id },
-    });
+    // Recalculate atomic daily token number & queue position for the new date
+    const newDateStr = newDateObj.toISOString().slice(0, 10);
+    const counterKey = `token_${appointment.clinicId}_${appointment.doctorId}_${newDateStr}`;
+    const tokenNumber = await getNextAtomicSequence(counterKey);
 
     appointment.appointmentTime = newDateObj;
-    appointment.tokenNumber = countToday + 1;
-    appointment.queuePosition = countToday + 1;
+    appointment.tokenNumber = tokenNumber;
+    appointment.queuePosition = tokenNumber;
     appointment.status = "confirmed";
     if (reason) {
       appointment.notes = appointment.notes
@@ -552,13 +557,14 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
 
     await AuditLog.create({
       userId,
+      organizationId: appointment.organizationId || undefined,
       action: "APPOINTMENT_RESCHEDULE",
       targetId: appointment._id,
       targetModel: "Appointment",
       details: { oldTime: oldTimeStr, newTime, reason }
     });
 
-    return reply.code(200).send(successResponse(appointment, `Appointment successfully rescheduled to ${newDateObj.toLocaleString()}`));
+    return reply.code(200).send(successResponse(appointment, `Appointment successfully rescheduled to ${newDateObj.toISOString()}`));
   } catch (err) {
     console.error("rescheduleAppointment error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -598,6 +604,27 @@ export async function cancelAppointment(req: FastifyRequest, reply: FastifyReply
 
     if (!(await ensureAppointmentClinicAccess(req, reply, appointment.clinicId))) return;
 
+    // Check IDOR / Patient ownership for cancellation
+    const userRole = req.user!.role;
+    const userId = req.user!.id;
+    if (userRole === "patient") {
+      const selfPatient = await Patient.findOne({
+        $or: [
+          { userId },
+          ...(mongoose.Types.ObjectId.isValid(userId) ? [{ userId: new mongoose.Types.ObjectId(userId) }] : [])
+        ]
+      });
+      const familyRels = await FamilyRelationship.find({ userId, status: "active" }).select("patientId").lean();
+      const allowedPatientIds = [
+        ...(selfPatient ? [selfPatient._id.toString()] : []),
+        ...familyRels.map((r) => r.patientId.toString())
+      ];
+      const isBookedByUser = appointment.bookedByUserId && appointment.bookedByUserId.toString() === userId;
+      if (!isBookedByUser && !allowedPatientIds.includes(appointment.patientId.toString())) {
+        return reply.code(403).send(errorResponse("Forbidden: You do not have permission to cancel this appointment"));
+      }
+    }
+
     if (appointment.status === "completed" || appointment.status === "cancelled") {
       return reply.code(400).send(errorResponse(`Cannot cancel appointment already in '${appointment.status}' status`));
     }
@@ -610,6 +637,7 @@ export async function cancelAppointment(req: FastifyRequest, reply: FastifyReply
 
     await AuditLog.create({
       userId: req.user!.id,
+      organizationId: appointment.organizationId || undefined,
       action: "PATIENT_CANCEL_APPOINTMENT",
       targetId: appointment._id,
       targetModel: "Appointment",

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate, authorize } from "../middleware/auth.ts";
+import { authenticate, authorize, checkAnyPermission, checkAnyPermissionOrRoles } from "../middleware/auth.ts";
+import { requireModule } from "../middleware/moduleGuard.ts";
 import { createInvoiceSchema, collectPaymentSchema } from "../schemas/billing.ts";
 import {
   createInvoice,
@@ -38,6 +39,20 @@ import {
 export default async function billingRoutes(app: FastifyInstance) {
   const auth = { preHandler: [authenticate] };
   const rootAdminAuth = { preHandler: [authenticate, authorize("root")] };
+  const viewInvoices = {
+    preHandler: [authenticate, requireModule("billing"), checkAnyPermissionOrRoles(["patient"], "VIEW_BILLING", "MANAGE_BILLING")],
+  };
+  const manageInvoices = {
+    preHandler: [authenticate, requireModule("billing"), checkAnyPermission("MANAGE_BILLING")],
+  };
+  const encounterBilling = {
+    preHandler: [
+      authenticate,
+      requireModule("billing"),
+      requireModule("consultations"),
+      checkAnyPermission("MANAGE_BILLING"),
+    ],
+  };
 
   // ─── Commercial SaaS Plans & Subscriptions ─────────────────────
   // Public Plans Listing
@@ -67,21 +82,21 @@ export default async function billingRoutes(app: FastifyInstance) {
   app.post("/api/admin/billing/razorpay-config", rootAdminAuth, adminSaveRazorpayConfig);
 
   // ─── Clinical / Patient Medical Invoices & Payment Collections ──
-  app.post("/api/invoices", { ...auth, schema: createInvoiceSchema }, createInvoice);
-  app.get("/api/invoices", auth, getInvoices);
-  app.get("/api/invoices/:id", auth, getInvoiceDetails);
-  app.put("/api/invoices/:id/pay", { ...auth, schema: collectPaymentSchema }, collectPayment);
-  app.post("/api/invoices/:id/payments", auth, recordPartialPayment);
+  app.post("/api/invoices", { ...manageInvoices, schema: createInvoiceSchema }, createInvoice);
+  app.get("/api/invoices", viewInvoices, getInvoices);
+  app.get("/api/invoices/:id", viewInvoices, getInvoiceDetails);
+  app.put("/api/invoices/:id/pay", { ...manageInvoices, schema: collectPaymentSchema }, collectPayment);
+  app.post("/api/invoices/:id/payments", manageInvoices, recordPartialPayment);
 
   // Auto Charge Capture from Encounter
-  app.get("/api/encounters/:encounterId/charges-preview", auth, getEncounterChargesPreview);
-  app.post("/api/encounters/:encounterId/auto-invoice", auth, autoGenerateInvoiceForEncounter);
+  app.get("/api/encounters/:encounterId/charges-preview", encounterBilling, getEncounterChargesPreview);
+  app.post("/api/encounters/:encounterId/auto-invoice", encounterBilling, autoGenerateInvoiceForEncounter);
 
   // Online Payment Link Generation (for Patient Medical Invoices)
-  app.post("/api/billing/payment-link", auth, createPaymentLinkController);
+  app.post("/api/billing/payment-link", manageInvoices, createPaymentLinkController);
 
   // Medical Insurance Claims & Adjudication
-  app.post("/api/billing/claims", auth, createClaimController);
-  app.get("/api/billing/claims", auth, getClaimsController);
-  app.post("/api/billing/claims/:id/adjudicate", auth, adjudicateClaimController);
+  app.post("/api/billing/claims", manageInvoices, createClaimController);
+  app.get("/api/billing/claims", viewInvoices, getClaimsController);
+  app.post("/api/billing/claims/:id/adjudicate", manageInvoices, adjudicateClaimController);
 }

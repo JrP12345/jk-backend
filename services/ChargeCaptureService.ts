@@ -1,6 +1,5 @@
 import mongoose from "mongoose";
 import { Encounter } from "../models/Encounter.ts";
-import { Patient } from "../models/Patient.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { LabOrder } from "../models/LabOrder.ts";
 import { LabTest } from "../models/LabTest.ts";
@@ -10,7 +9,8 @@ import { Admission } from "../models/Admission.ts";
 import { Bed } from "../models/Bed.ts";
 import { ServiceCatalog } from "../models/ServiceCatalog.ts";
 import { Invoice } from "../models/Invoice.ts";
-import { getNextAtomicSequence } from "../models/Counter.ts";
+import { generateClinicInvoiceNumber } from "../utilities/invoiceNumber.ts";
+import { isModuleEnabledForOrganization } from "../utilities/moduleAccess.ts";
 
 export interface CapturedChargeItem {
   serviceCatalogId?: string;
@@ -36,46 +36,67 @@ export async function compileEncounterCharges(encounterId: string): Promise<{
     throw new Error("Encounter not found");
   }
 
-  const { patientId, doctorId, clinicId } = encounter;
+  const { patientId, doctorId, clinicId, organizationId, appointmentId } = encounter;
   const items: CapturedChargeItem[] = [];
 
-  // 1. Doctor Consultation Fee
-  const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
-  const consultFee = assignment?.fees || 500;
+  // 1. Doctor Consultation Fee (skip if already invoiced at booking)
+  let skipConsultFee = false;
+  if (appointmentId) {
+    const existingApptInvoice = await Invoice.findOne({ appointmentId });
+    if (existingApptInvoice) skipConsultFee = true;
+  }
 
-  // Try to match with ServiceCatalog for SAC code & GST
-  const opdCatalogItem = await ServiceCatalog.findOne({
-    category: "consultation",
-    isActive: true,
-  });
+  if (!skipConsultFee) {
+    const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
+    const consultFee = assignment?.fees || 500;
 
-  items.push({
-    serviceCatalogId: opdCatalogItem ? opdCatalogItem._id.toString() : undefined,
-    description: `Physician Consultation - Dr. ${encounter.doctorId}`,
-    amount: consultFee,
-    quantity: 1,
-    hsnSacCode: opdCatalogItem?.hsnSacCode || "999312",
-    gstRate: opdCatalogItem?.gstRate || 0,
-    category: "consultation",
-  });
-
-  // 2. Lab Orders linked to Encounter
-  const labOrders = await LabOrder.find({ encounterId }).populate("testId");
-  for (const order of labOrders) {
-    const test = order.testId as any;
-    if (test) {
-      items.push({
-        description: `Lab Test: ${test.name || "Diagnostic Order"}`,
-        amount: test.price || 0,
-        quantity: 1,
-        hsnSacCode: "999316",
-        gstRate: 0, // Healthcare diagnostic tests usually GST exempt
-        category: "lab_test",
+    const catalogBase = {
+      organizationId: encounter.organizationId,
+      category: "consultation",
+      isActive: true,
+    };
+    let opdCatalogItem = await ServiceCatalog.findOne({ ...catalogBase, clinicId: encounter.clinicId });
+    if (!opdCatalogItem) {
+      opdCatalogItem = await ServiceCatalog.findOne({
+        ...catalogBase,
+        $or: [{ clinicId: { $exists: false } }, { clinicId: null }],
       });
+    }
+
+    items.push({
+      serviceCatalogId: opdCatalogItem ? opdCatalogItem._id.toString() : undefined,
+      description: `Physician Consultation - Dr. ${encounter.doctorId}`,
+      amount: consultFee,
+      quantity: 1,
+      hsnSacCode: opdCatalogItem?.hsnSacCode || "999312",
+      gstRate: opdCatalogItem?.gstRate || 0,
+      category: "consultation",
+    });
+  }
+
+  const orgId = organizationId?.toString();
+  const labEnabled = orgId ? await isModuleEnabledForOrganization(orgId, "laboratory") : false;
+  const admissionsEnabled = orgId ? await isModuleEnabledForOrganization(orgId, "admissions") : false;
+
+  // 2. Lab Orders linked to Encounter (only when laboratory module is enabled)
+  if (labEnabled) {
+    const labOrders = await LabOrder.find({ encounterId }).populate("testId");
+    for (const order of labOrders) {
+      const test = order.testId as any;
+      if (test) {
+        items.push({
+          description: `Lab Test: ${test.name || "Diagnostic Order"}`,
+          amount: test.price || 0,
+          quantity: 1,
+          hsnSacCode: "999316",
+          gstRate: 0,
+          category: "lab_test",
+        });
+      }
     }
   }
 
-  // 3. Prescriptions linked to Encounter
+  // 3. Prescriptions linked to Encounter (P1 pharmacy — always compiled when present)
   const prescriptions = await Prescription.find({ encounterId }).populate("medicineId");
   for (const rx of prescriptions) {
     const med = rx.medicineId as any;
@@ -91,22 +112,28 @@ export async function compileEncounterCharges(encounterId: string): Promise<{
     }
   }
 
-  // 4. Inpatient Bed Stay Charges (if IPD admission exists)
-  const admission = await Admission.findOne({ patientId, status: { $in: ["admitted", "discharged"] } }).populate("bedId");
-  if (admission && admission.bedId) {
-    const bed = admission.bedId as any;
-    const admitDate = new Date((admission as any).admittedAt || (admission as any).admissionDate || (admission as any).createdAt);
-    const dischargeDate = (admission as any).dischargedAt || (admission as any).dischargeDate ? new Date((admission as any).dischargedAt || (admission as any).dischargeDate) : new Date();
-    const days = Math.max(1, Math.ceil((dischargeDate.getTime() - admitDate.getTime()) / (1000 * 3600 * 24)));
+  // 4. Inpatient Bed Stay Charges (only when admissions module is enabled)
+  if (admissionsEnabled) {
+    const admission = await Admission.findOne({
+      patientId,
+      clinicId: encounter.clinicId,
+      status: { $in: ["admitted", "discharged"] },
+    }).populate("bedId");
+    if (admission && admission.bedId) {
+      const bed = admission.bedId as any;
+      const admitDate = new Date((admission as any).admittedAt || (admission as any).admissionDate || (admission as any).createdAt);
+      const dischargeDate = (admission as any).dischargedAt || (admission as any).dischargeDate ? new Date((admission as any).dischargedAt || (admission as any).dischargeDate) : new Date();
+      const days = Math.max(1, Math.ceil((dischargeDate.getTime() - admitDate.getTime()) / (1000 * 3600 * 24)));
 
-    items.push({
-      description: `IPD Bed Stay (${bed.wardName || "Ward"} - Bed #${bed.bedNumber}) - ${days} Days`,
-      amount: bed.pricePerDay || 1000,
-      quantity: days,
-      hsnSacCode: "999311",
-      gstRate: 0,
-      category: "bed_charge",
-    });
+      items.push({
+        description: `IPD Bed Stay (${bed.wardName || "Ward"} - Bed #${bed.bedNumber}) - ${days} Days`,
+        amount: bed.pricePerDay || 1000,
+        quantity: days,
+        hsnSacCode: "999311",
+        gstRate: 0,
+        category: "bed_charge",
+      });
+    }
   }
 
   // Compute GST & Totals
@@ -150,10 +177,15 @@ export async function autoGenerateEncounterInvoice(encounterId: string, createdB
   const compiled = await compileEncounterCharges(encounterId);
   const { encounter, items, subtotal, cgstTotal, sgstTotal, igstTotal, totalAmount } = compiled;
 
-  const currentYear = new Date().getFullYear();
-  const counterId = `invoice_${encounter.clinicId}_${currentYear}`;
-  const seq = await getNextAtomicSequence(counterId);
-  const invoiceNumber = `INV-${currentYear}-${seq.toString().padStart(6, "0")}`;
+  if (items.length === 0) {
+    if (encounter.appointmentId) {
+      const apptInvoice = await Invoice.findOne({ appointmentId: encounter.appointmentId });
+      if (apptInvoice) return apptInvoice;
+    }
+    return null;
+  }
+
+  const invoiceNumber = await generateClinicInvoiceNumber(encounter.clinicId.toString());
 
   const formattedItems = items.map((i) => {
     const lineBase = i.amount * i.quantity;

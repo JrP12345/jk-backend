@@ -4,16 +4,16 @@ import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
 import { Prescription } from "../models/Prescription.ts";
 import { RefillRequest } from "../models/RefillRequest.ts";
-import { LabOrder } from "../models/LabOrder.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { domainEventBus } from "../platform/events/DomainEventBus.ts";
 import { checkClinicAccess, checkOperationalRecordAccess } from "../utilities/tenant.ts";
+import { requestHasAnyPermission } from "../utilities/permissions.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));
 }
 
-function requirePatient(req: FastifyRequest, reply: FastifyReply) {
+function requirePortalPatient(req: FastifyRequest, reply: FastifyReply) {
   if (req.user?.role !== "patient") {
     reply.code(403).send(errorResponse("Patient account required"));
     return false;
@@ -24,7 +24,7 @@ function requirePatient(req: FastifyRequest, reply: FastifyReply) {
 // ─── GET /api/patient/me ──────────────────────────────────────────────
 export async function getCurrentPatientProfile(req: FastifyRequest, reply: FastifyReply) {
   try {
-    if (!requirePatient(req, reply)) return;
+    if (!requirePortalPatient(req, reply)) return;
     const userId = req.user?.id;
     if (!userId) {
       return reply.code(401).send(errorResponse("Unauthorized"));
@@ -40,12 +40,31 @@ export async function getCurrentPatientProfile(req: FastifyRequest, reply: Fasti
       // Auto-create patient record if not exists
       patient = await Patient.create({
         userId: user._id,
+        name: user.name,
+        phone: user.phone,
+        email: user.email || undefined,
+        accountType: "self",
+        createdBy: user._id,
         organizationId: req.user?.organization_id ? new mongoose.Types.ObjectId(req.user.organization_id) : undefined,
       });
+      const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
+      await FamilyRelationship.findOneAndUpdate(
+        { userId: user._id, patientId: patient._id },
+        { relationship: "self", status: "active" },
+        { upsert: true }
+      );
       patient = await Patient.findById(patient._id).populate("userId", "name email phone role avatar");
     }
 
-    return reply.code(200).send(successResponse({ user, patient }));
+    const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
+    const familyRels = await FamilyRelationship.find({ userId: user._id, status: "active" }).populate("patientId");
+    const familyMembers = familyRels.map((rel: any) => ({
+      relationshipId: rel._id.toString(),
+      relationship: rel.relationship,
+      patient: rel.patientId,
+    }));
+
+    return reply.code(200).send(successResponse({ user, patient, familyMembers }));
   } catch (err) {
     console.error("getCurrentPatientProfile error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -55,7 +74,7 @@ export async function getCurrentPatientProfile(req: FastifyRequest, reply: Fasti
 // ─── PUT /api/patient/me ──────────────────────────────────────────────
 export async function updateCurrentPatientProfile(req: FastifyRequest, reply: FastifyReply) {
   try {
-    if (!requirePatient(req, reply)) return;
+    if (!requirePortalPatient(req, reply)) return;
     const userId = req.user?.id;
     if (!userId) {
       return reply.code(401).send(errorResponse("Unauthorized"));
@@ -125,7 +144,7 @@ export async function updateCurrentPatientProfile(req: FastifyRequest, reply: Fa
 // ─── POST /api/prescriptions/:id/refill ────────────────────────────────
 export async function createPrescriptionRefillRequest(req: FastifyRequest, reply: FastifyReply) {
   try {
-    if (!requirePatient(req, reply)) return;
+    if (!requirePortalPatient(req, reply)) return;
     const { id } = req.params as { id: string }; // prescriptionId
     const userId = req.user?.id;
     const { reason } = req.body as { reason: string };
@@ -213,8 +232,11 @@ export async function getPrescriptionRefillRequests(req: FastifyRequest, reply: 
       filter.organizationId = req.user.organization_id;
     }
 
-    if (userRole !== "patient" && userRole !== "doctor" && !["admin", "receptionist", "root"].includes(userRole || "")) {
-      return reply.code(403).send(errorResponse("You are not allowed to view refill requests"));
+    if (userRole !== "patient" && userRole !== "doctor") {
+      const allowed = await requestHasAnyPermission(req, "MANAGE_MEDICINES", "VIEW_EHR", "MANAGE_APPOINTMENTS");
+      if (!allowed) {
+        return reply.code(403).send(errorResponse("You are not allowed to view refill requests"));
+      }
     }
 
     const totalCount = await RefillRequest.countDocuments(filter);
@@ -245,7 +267,7 @@ export async function updatePrescriptionRefillRequestStatus(req: FastifyRequest,
     const { status, decisionNotes } = req.body as { status: "approved" | "rejected"; decisionNotes?: string };
     const userId = req.user?.id;
 
-    if (!userId || !["admin", "receptionist", "doctor", "root"].includes(req.user?.role || "")) {
+    if (!userId || !(await requestHasAnyPermission(req, "MANAGE_MEDICINES", "MANAGE_APPOINTMENTS"))) {
       return reply.code(403).send(errorResponse("Only authorized clinical staff can decide refill requests"));
     }
 
@@ -280,17 +302,19 @@ export async function updatePrescriptionRefillRequestStatus(req: FastifyRequest,
 // ─── POST /api/patient-portal/self-book ────────────────────────────────
 export async function patientSelfBookAppointment(req: FastifyRequest, reply: FastifyReply) {
   try {
-    if (!requirePatient(req, reply)) return;
+    if (!requirePortalPatient(req, reply)) return;
     const userId = req.user!.id;
     const orgId = req.user?.organization_id;
 
-    const { clinicId, doctorId, appointmentTime, appointmentType, notes, lockId } = req.body as {
+    const { clinicId, doctorId, appointmentTime, appointmentType, notes, lockId, forPatientId, payAtClinic } = req.body as {
       clinicId: string;
       doctorId: string;
       appointmentTime: string;
       appointmentType?: "online" | "walk-in" | "reception";
       notes?: string;
       lockId?: string;
+      forPatientId?: string;
+      payAtClinic?: boolean;
     };
 
     if (!clinicId || !doctorId || !appointmentTime) {
@@ -303,18 +327,37 @@ export async function patientSelfBookAppointment(req: FastifyRequest, reply: Fas
     const clinicAccess = await checkClinicAccess(req, clinicId);
     if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
 
-    // Ensure patient profile exists
-    let patient = await Patient.findOne({ userId });
-    if (!patient) {
-      patient = await Patient.create({
-        userId,
-        organizationId: clinicAccess.organizationId ? new mongoose.Types.ObjectId(clinicAccess.organizationId) : (orgId ? new mongoose.Types.ObjectId(orgId) : undefined),
-      });
-    } else if (patient.organizationId && clinicAccess.organizationId && patient.organizationId.toString() !== clinicAccess.organizationId) {
-      return reply.code(404).send(errorResponse("Patient profile not found"));
-    } else if (!patient.organizationId && clinicAccess.organizationId) {
-      patient.organizationId = new mongoose.Types.ObjectId(clinicAccess.organizationId);
-      await patient.save();
+    const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
+    let targetPatientId: string;
+
+    if (forPatientId) {
+      const isAuthorized = await FamilyRelationship.findOne({ userId, patientId: forPatientId, status: "active" });
+      if (!isAuthorized) {
+        return reply.code(403).send(errorResponse("Unauthorized: You do not have permission to book for this patient"));
+      }
+      targetPatientId = forPatientId;
+    } else {
+      let selfRel = await FamilyRelationship.findOne({ userId, relationship: "self", status: "active" });
+      let patient = selfRel ? await Patient.findById(selfRel.patientId) : await Patient.findOne({ userId });
+
+      if (!patient) {
+        const userObj = await User.findById(userId);
+        patient = await Patient.create({
+          userId,
+          name: userObj?.name || "Patient",
+          phone: userObj?.phone || undefined,
+          email: userObj?.email || undefined,
+          accountType: "self",
+          createdBy: userId,
+          organizationId: clinicAccess.organizationId ? new mongoose.Types.ObjectId(clinicAccess.organizationId) : (orgId ? new mongoose.Types.ObjectId(orgId) : undefined),
+        });
+        await FamilyRelationship.findOneAndUpdate(
+          { userId, patientId: patient._id },
+          { relationship: "self", status: "active" },
+          { upsert: true }
+        );
+      }
+      targetPatientId = patient.id;
     }
 
     const { validateSlotLockForBooking, forceReleaseSlotLock } = await import("../services/SlotLockService.ts");
@@ -351,14 +394,21 @@ export async function patientSelfBookAppointment(req: FastifyRequest, reply: Fas
       return reply.code(400).send(errorResponse(`Daily token limit of ${maxTokens} reached for this practitioner.`));
     }
 
+    const isPaymentRequired = (assignment as any)?.paymentRequired === true;
+    const initialStatus = isPaymentRequired ? "pending_payment" : "confirmed";
+    const initialPaymentStatus = isPaymentRequired ? "pending" : (payAtClinic ? "pay_at_clinic" : "not_required");
+
     const appointment = await Appointment.create({
-      patientId: patient._id,
+      patientId: targetPatientId,
+      bookedByUserId: userId,
       doctorId,
       clinicId,
       appointmentTime: new Date(appointmentTime),
       appointmentType: appointmentType || "online",
       notes: notes?.trim(),
-      status: "confirmed",
+      status: initialStatus,
+      paymentStatus: initialPaymentStatus,
+      bookingSource: "patient_portal",
       tokenNumber,
       queuePosition: tokenNumber,
       bookingMode: (assignment as any).bookingMode || "sequential_queue",
@@ -375,7 +425,7 @@ export async function patientSelfBookAppointment(req: FastifyRequest, reply: Fas
       action: "PATIENT_SELF_BOOKING",
       targetId: appointment._id,
       targetModel: "Appointment",
-      details: { tokenNumber, appointmentTime, clinicId, doctorId }
+      details: { tokenNumber, appointmentTime, clinicId, doctorId, targetPatientId }
     });
 
     return reply.code(201).send(
@@ -384,6 +434,8 @@ export async function patientSelfBookAppointment(req: FastifyRequest, reply: Fas
           appointment,
           tokenNumber,
           queuePosition: tokenNumber,
+          paymentRequired: isPaymentRequired,
+          fees: assignment.fees || 0,
         },
         `Appointment booked successfully! Your Queue Token Number is #${tokenNumber}`
       )
@@ -397,17 +449,23 @@ export async function patientSelfBookAppointment(req: FastifyRequest, reply: Fas
 // ─── GET /api/patient-portal/appointments ─────────────────────────────
 export async function getPatientAppointmentsHistory(req: FastifyRequest, reply: FastifyReply) {
   try {
-    if (!requirePatient(req, reply)) return;
+    if (!requirePortalPatient(req, reply)) return;
     const userId = req.user!.id;
-    const patient = await Patient.findOne({ userId });
-    if (!patient) {
-      return reply.code(200).send(successResponse([]));
-    }
+
+    const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
+    const relationships = await FamilyRelationship.find({ userId, status: "active" });
+    const familyPatientIds = relationships.map((r) => r.patientId);
 
     const { Appointment } = await import("../models/Appointment.ts");
-    const appointments = await Appointment.find({ patientId: patient._id })
+    const appointments = await Appointment.find({
+      $or: [
+        { patientId: { $in: familyPatientIds } },
+        { bookedByUserId: userId },
+      ],
+    })
       .populate("doctorId", "name email phone")
       .populate("clinicId", "name address phone")
+      .populate("patientId", "name phone email dob gender accountType mrn")
       .sort({ appointmentTime: -1 });
 
     return reply.code(200).send(successResponse(appointments));
@@ -420,7 +478,7 @@ export async function getPatientAppointmentsHistory(req: FastifyRequest, reply: 
 // ─── GET /api/patient-portal/records ─────────────────────────────────
 export async function getPatientMedicalRecords(req: FastifyRequest, reply: FastifyReply) {
   try {
-    if (!requirePatient(req, reply)) return;
+    if (!requirePortalPatient(req, reply)) return;
     const userId = req.user!.id;
     const patient = await Patient.findOne({ userId }).populate("userId", "name email phone");
     if (!patient) {

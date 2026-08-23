@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { authenticate, checkPermission } from "../middleware/auth.ts";
+import { requireModule } from "../middleware/moduleGuard.ts";
 import { getPatientTimelineController } from "../controllers/patient.ts";
 import {
   createEncounterController,
@@ -20,8 +21,8 @@ import {
 } from "../controllers/observationAnalytics.ts";
 
 export default async function clinicalRoutes(app: FastifyInstance) {
-  const viewEhr = { preHandler: [authenticate, checkPermission("VIEW_EHR")] };
-  const manageNotes = { preHandler: [authenticate, checkPermission("MANAGE_CLINICAL_NOTES")] };
+  const viewEhr = { preHandler: [authenticate, requireModule("consultations"), checkPermission("VIEW_EHR")] };
+  const manageNotes = { preHandler: [authenticate, requireModule("consultations"), checkPermission("MANAGE_CLINICAL_NOTES")] };
 
   // Longitudinal EHR Timeline
   app.get("/api/patients/:id/timeline", viewEhr, getPatientTimelineController);

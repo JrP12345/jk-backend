@@ -1468,7 +1468,7 @@ async function runSeed() {
     await NotificationDelivery.create({
       notificationId: notif1._id,
       channel: "inApp",
-      recipient: drMarcusUser.email,
+      recipient: drMarcusUser.email!,
       status: "delivered",
       sentAt: nowTime,
     });
@@ -1492,7 +1492,7 @@ async function runSeed() {
     await NotificationDelivery.create({
       notificationId: notif2._id,
       channel: "inApp",
-      recipient: labRobertUser.email,
+      recipient: labRobertUser.email!,
       status: "delivered",
       sentAt: nowTime,
     });

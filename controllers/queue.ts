@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { AuditLog } from "../models/AuditLog.ts";
-import { successResponse, errorResponse } from "../utilities/helpers.ts";
+import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { checkClinicAccess, getRequestOrganizationId } from "../utilities/tenant.ts";
 
 export async function getQueue(req: FastifyRequest, reply: FastifyReply) {
@@ -161,11 +161,6 @@ export async function reorderQueue(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse("clinicId, doctorId, date, and orderedAppointmentIds array are required"));
     }
 
-    const userRole = req.user!.role;
-    if (userRole !== "admin" && userRole !== "receptionist") {
-      return reply.code(403).send(errorResponse("Forbidden: only staff can reorder the queue"));
-    }
-
     const clinicCheck = await checkClinicAccess(req, clinicId);
     if (!clinicCheck.allowed) {
       return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
@@ -233,16 +228,26 @@ export async function reorderQueue(req: FastifyRequest, reply: FastifyReply) {
 
 export async function getAuditLogs(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const userRole = req.user!.role;
-    if (userRole !== "admin" && userRole !== "root") {
-      return reply.code(403).send(errorResponse("Forbidden: only administrators can view audit logs"));
+    const filter: any = {};
+    if (req.user?.role !== "root") {
+      const orgId = getRequestOrganizationId(req);
+      if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
+      filter.organizationId = orgId;
     }
 
-    const logs = await AuditLog.find()
-      .where(req.user?.role === "root" ? {} : { organizationId: getRequestOrganizationId(req) })
+    const { page, limit } = req.query as { page?: string | number; limit?: string | number };
+    const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
+
+    const totalCount = await AuditLog.countDocuments(filter);
+    const totalPages = Math.ceil(totalCount / pageSize);
+
+    const logs = await AuditLog.find(filter)
       .populate("userId", "name email role")
       .sort({ createdAt: -1 })
-      .limit(100);
+      .skip(skip)
+      .limit(pageSize);
+
+    setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
 
     return reply.code(200).send(successResponse(logs));
   } catch (err) {

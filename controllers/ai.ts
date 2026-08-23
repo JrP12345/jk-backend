@@ -19,7 +19,7 @@ import { aiGateway } from "../services/ai/AIGateway.ts";
 import { timelineService } from "../services/TimelineService.ts";
 import { PHIAnonymizer } from "../utilities/phiAnonymizer.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { checkClinicAccess, getRequestClinicIds } from "../utilities/tenant.ts";
+import { checkClinicAccess, getRequestClinicIds, resolveTargetOrganizationId } from "../utilities/tenant.ts";
 
 // ─── POST /api/ai/soap-notes/generate ─────────────────────────────────
 export async function generateSOAPNoteController(req: FastifyRequest, reply: FastifyReply) {
@@ -53,7 +53,7 @@ export async function generateSOAPNoteController(req: FastifyRequest, reply: Fas
 async function buildRAGContext(req: FastifyRequest, patientId?: string, customSummary?: string): Promise<{ finalSummary: string; targetPatientId?: string }> {
   const requesterUserId = req.user?.id;
   const requesterRole = req.user?.role;
-  const requesterOrgId = req.user?.organization_id;
+  const requesterOrgId = await resolveTargetOrganizationId(req);
 
   let finalSummary = customSummary || "";
   let targetPatientId = patientId;
@@ -243,7 +243,7 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
 export async function listChatSessionsController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userId = req.user?.id;
-    const orgId = req.user?.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
 
     if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
     if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
@@ -273,7 +273,7 @@ export async function listChatSessionsController(req: FastifyRequest, reply: Fas
 export async function createChatSessionController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userId = req.user?.id;
-    const orgId = req.user?.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
 
     if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
     if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
@@ -310,7 +310,7 @@ export async function getChatSessionController(req: FastifyRequest, reply: Fasti
   try {
     const { sessionId } = req.params as { sessionId: string };
     const userId = req.user?.id;
-    const orgId = req.user?.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
 
     if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
     if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
@@ -339,7 +339,7 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
     const { sessionId } = req.params as { sessionId: string };
     const { query, currentRoute, activePatientId } = req.body as { query: string; currentRoute?: string; activePatientId?: string };
     const userId = req.user?.id;
-    const requesterOrgId = req.user?.organization_id;
+    const requesterOrgId = await resolveTargetOrganizationId(req);
 
     if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
     if (!requesterOrgId) return reply.code(403).send(errorResponse("Organization context is required"));
@@ -439,7 +439,7 @@ export async function deleteChatSessionController(req: FastifyRequest, reply: Fa
   try {
     const { sessionId } = req.params as { sessionId: string };
     const userId = req.user?.id;
-    const orgId = req.user?.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
 
     if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
     if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));

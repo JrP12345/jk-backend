@@ -25,7 +25,180 @@ import { validatePasswordStrength } from "../middleware/auth.ts";
 import { RefreshToken } from "../models/RefreshToken.ts";
 import { emailProvider } from "../notifications/providers/emailProvider.ts";
 import { TwoFactorService } from "../services/TwoFactorService.ts";
+import { otpService } from "../services/OtpService.ts";
+import { patientMatchingService } from "../services/PatientMatchingService.ts";
+import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import mongoose from "mongoose";
+import { encrypt, decrypt, isEncrypted } from "../utilities/encryption.ts";
+
+// ─── Request OTP ────────────────────────────────────────────────
+export async function requestOtpController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { phone, purpose } = req.body as { phone: string; purpose?: "authentication" | "phone_verification" | "record_claim" };
+    if (!phone || !phone.trim()) {
+      return reply.code(400).send(errorResponse("Mobile phone number is required"));
+    }
+
+    const result = await otpService.requestOtp(phone, purpose || "authentication");
+    return reply.code(200).send(successResponse(result, result.message));
+  } catch (err: any) {
+    console.error("requestOtpController error:", err);
+    return reply.code(400).send(errorResponse(err.message || "Failed to request OTP"));
+  }
+}
+
+// ─── Verify OTP (Passwordless Login / Registration) ─────────────
+export async function verifyOtpController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { phone, otp, purpose, name } = req.body as {
+      phone: string;
+      otp: string;
+      purpose?: "authentication" | "phone_verification" | "record_claim";
+      name?: string;
+    };
+
+    if (!phone || !otp) {
+      return reply.code(400).send(errorResponse("Phone number and OTP code are required"));
+    }
+
+    const verifyResult = await otpService.verifyOtp(phone, otp, purpose || "authentication");
+    if (!verifyResult.verified) {
+      return reply.code(400).send(errorResponse(verifyResult.message));
+    }
+
+    const normPhone = otpService.normalizePhone(phone);
+    const nameInput = name?.trim();
+
+    // Find or create User by phone (optimized direct indexed query with fallback)
+    let user = await User.findOne({ phone: normPhone });
+    if (!user) {
+      user = await User.findOne({ phone: { $in: [`+91${normPhone}`, `91${normPhone}`] } });
+    }
+    let isNewUser = false;
+
+    if (user && user.phone !== normPhone) {
+      user.phone = normPhone;
+      await user.save();
+    }
+
+    if (!user) {
+      isNewUser = true;
+      user = await User.create({
+        name: nameInput || `Patient ${normPhone.slice(-4)}`,
+        phone: normPhone,
+        role: "patient",
+        authMethod: "phone_otp",
+        isEmailVerified: false,
+      });
+    } else if (nameInput && user.name !== nameInput) {
+      // Update primary display name to the currently logging-in patient name
+      user.name = nameInput;
+      await user.save();
+    }
+
+    if (!user.isActive) {
+      return reply.code(403).send(errorResponse("Account is deactivated"));
+    }
+
+    // Check existing Patient links for this User account
+    let patient: any = null;
+
+    if (nameInput) {
+      // Look for a patient record matching this exact name under the account
+      const familyRels = await FamilyRelationship.find({ userId: user._id, status: "active" }).populate("patientId");
+      const matchingRel = familyRels.find(
+        (rel: any) => rel.patientId && rel.patientId.name && rel.patientId.name.trim().toLowerCase() === nameInput.toLowerCase()
+      );
+
+      if (matchingRel) {
+        patient = matchingRel.patientId;
+      } else {
+        patient = await Patient.findOne({ userId: user._id, name: new RegExp(`^${nameInput.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, "i") });
+      }
+    }
+
+    // Fallback: check for 'self' relationship or primary patient record
+    if (!patient) {
+      let selfRelationship = await FamilyRelationship.findOne({ userId: user._id, relationship: "self", status: "active" }).populate("patientId");
+      patient = selfRelationship ? (selfRelationship.patientId as any) : await Patient.findOne({ userId: user._id });
+    }
+
+    // If patient is found and has a generic or empty name, sync with input
+    if (patient && nameInput && (patient.name.startsWith("Patient ") || patient.accountType === "self")) {
+      patient.name = nameInput;
+      await patient.save();
+    }
+
+    // Check for high-confidence matching unlinked clinic records if patient doesn't exist
+    let potentialMatch: any = null;
+    if (!patient) {
+      const matches = await patientMatchingService.findMatchingPatients({ phone: normPhone, name: nameInput || user.name });
+      if (matches.highConfidence.length > 0) {
+        potentialMatch = matches.highConfidence[0];
+      }
+    }
+
+    // Auto-create Patient for this name/phone if no patient record exists
+    if (!patient && !potentialMatch) {
+      const isFirstPatient = !(await Patient.exists({ userId: user._id }));
+      patient = await Patient.create({
+        userId: user._id,
+        name: nameInput || user.name,
+        phone: user.phone,
+        email: user.email || undefined,
+        accountType: isFirstPatient ? "self" : "dependent",
+        createdBy: user._id,
+      });
+
+      await FamilyRelationship.findOneAndUpdate(
+        { userId: user._id, patientId: patient._id },
+        { relationship: isFirstPatient ? "self" : "dependent", status: "active" },
+        { upsert: true }
+      );
+    } else if (patient) {
+      const isSelf = !(await FamilyRelationship.exists({ userId: user._id, relationship: "self" }));
+      await FamilyRelationship.findOneAndUpdate(
+        { userId: user._id, patientId: patient._id },
+        { relationship: isSelf ? "self" : "dependent", status: "active" },
+        { upsert: true }
+      );
+    }
+
+    const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
+    const permissions = roleConfig ? roleConfig.permissions : [];
+
+    const payload = { id: user.id, email: user.email || "", role: user.role, organization_id: (user as any).organization_id };
+    const accessToken = generateAccessToken(payload);
+    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
+    const userAgent = (req.headers["user-agent"] as string) || "";
+    const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
+
+    const refreshToken = await createRefreshToken(user.id, { ipAddress, userAgent, deviceName });
+    setAuthCookies(reply, accessToken, refreshToken);
+
+    return reply.code(200).send(
+      successResponse(
+        {
+          user: {
+            id: user.id,
+            name: user.name,
+            email: user.email || null,
+            phone: user.phone,
+            role: user.role,
+            permissions,
+          },
+          patient: patient || null,
+          potentialMatch: potentialMatch || null,
+          isNewUser,
+        },
+        "OTP verified — logged in successfully"
+      )
+    );
+  } catch (err) {
+    console.error("verifyOtpController error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
 
 // ─── Login ──────────────────────────────────────────────────────
 export async function login(req: FastifyRequest, reply: FastifyReply) {
@@ -50,6 +223,10 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
     if ((user as any).lockoutUntil && (user as any).lockoutUntil > new Date()) {
       const remainingMinutes = Math.ceil(((user as any).lockoutUntil.getTime() - Date.now()) / 60000);
       return reply.code(429).send(errorResponse(`Account locked due to multiple failed login attempts. Try again in ${remainingMinutes} minute(s).`));
+    }
+
+    if (!user.password) {
+      return reply.code(401).send(errorResponse("This account logs in using Mobile OTP"));
     }
 
     const valid = await bcrypt.compare(password, user.password);
@@ -104,7 +281,7 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
       );
     }
 
-    const payload = { id: user.id, email: user.email, role: user.role, organization_id };
+    const payload = { id: user.id, email: user.email || "", role: user.role, organization_id };
     const accessToken = generateAccessToken(payload);
 
     // Extract device metadata for session tracking
@@ -123,7 +300,7 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
       category: "auth",
       targetUserId: user.id,
       title: "New Account Login",
-      message: `Successful login to Ananta account (${user.email}).`,
+      message: `Successful login to Ananta account (${user.email || user.name}).`,
       severity: "info",
       organizationId: organization_id,
     });
@@ -131,7 +308,7 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(200).send(
       successResponse(
         {
-          user: { id: user.id, name: user.name, email: user.email, role: user.role, organization_id, permissions },
+          user: { id: user.id, name: user.name, email: user.email || null, role: user.role, organization_id, permissions },
         },
         "Login successful"
       )
@@ -168,7 +345,8 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
       return reply.code(401).send(errorResponse("Two-factor authentication is not available for this account"));
     }
 
-    if (!TwoFactorService.verifyToken(user.twoFactorSecret, otp)) {
+    const secret = isEncrypted(user.twoFactorSecret) ? decrypt(user.twoFactorSecret) : user.twoFactorSecret;
+    if (!TwoFactorService.verifyToken(secret, otp)) {
       return reply.code(401).send(errorResponse("Invalid two-factor code"));
     }
 
@@ -183,7 +361,7 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
 
     const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
     const permissions = roleConfig?.permissions || [];
-    const payload = { id: user.id, email: user.email, role: user.role, organization_id };
+    const payload = { id: user.id, email: user.email || "", role: user.role, organization_id };
     const accessToken = generateAccessToken(payload);
     const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
     const userAgent = (req.headers["user-agent"] as string) || "";
@@ -196,7 +374,7 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
       category: "auth",
       targetUserId: user.id,
       title: "New Account Login",
-      message: `Successful login to Ananta account (${user.email}).`,
+      message: `Successful login to Ananta account (${user.email || user.name}).`,
       severity: "info",
       organizationId: organization_id,
     });
@@ -257,7 +435,7 @@ export async function forgotPassword(req: FastifyRequest, reply: FastifyReply) {
 
     const resetUrl = `${process.env.CORS_ALLOWED_ORIGINS || "http://localhost:3000"}/reset-password?token=${resetToken}`;
     const sent = await emailProvider.sendEmail({
-      to: user.email,
+      to: user.email!,
       subject: "ANANTA Account Password Reset",
       text: `Reset your ANANTA password using this link (valid for 1 hour): ${resetUrl}`,
       html: `<p>Click here to reset your password: <a href="${resetUrl}">${resetUrl}</a></p>`,
@@ -349,7 +527,7 @@ export async function revokeSession(req: FastifyRequest, reply: FastifyReply) {
 
 
 
-// ─── Refresh Access Token ───────────────────────────────────────
+// ─── Refresh Access Token (with Token Rotation & Reuse Detection) ───────────
 export async function refreshAccessToken(req: FastifyRequest, reply: FastifyReply) {
   try {
     // Read refresh token from httpOnly cookie
@@ -358,26 +536,30 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
       return reply.code(401).send(errorResponse("Missing refresh token"));
     }
 
-    const userId = await validateRefreshToken(rawRefreshToken);
-    if (!userId) {
-      return reply.code(401).send(errorResponse("Invalid or expired refresh token"));
-    }
-
-    const user = await User.findOne({ _id: userId, isActive: true });
-
-    if (!user) {
-      return reply.code(401).send(errorResponse("User not found or deactivated"));
-    }
-
     const tokenHash = crypto.createHash("sha256").update(rawRefreshToken).digest("hex");
+
+    // Check if token was already revoked (potential token reuse / theft detection)
+    const revokedCheck = await RefreshToken.findOne({ tokenHash, revoked: true });
+    if (revokedCheck) {
+      // Automatic breach response: revoke all sessions for this compromised account
+      await revokeAllRefreshTokens(revokedCheck.userId.toString());
+      clearAuthCookies(reply);
+      return reply.code(401).send(errorResponse("Revoked session token reuse detected. All sessions invalidated for security."));
+    }
+
     const refreshRecord = await RefreshToken.findOne({
       tokenHash,
-      userId: user._id,
       revoked: false,
       expiresAt: { $gt: new Date() },
     });
+
     if (!refreshRecord) {
       return reply.code(401).send(errorResponse("Invalid or expired refresh token"));
+    }
+
+    const user = await User.findOne({ _id: refreshRecord.userId, isActive: true });
+    if (!user) {
+      return reply.code(401).send(errorResponse("User not found or deactivated"));
     }
 
     const orgMember = await OrgMember.findOne({ userId: user._id });
@@ -389,20 +571,28 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
       }
     }
 
-    refreshRecord.set("lastActiveAt", new Date());
+    // 1. Invalidate current refresh token (one-time use)
+    refreshRecord.revoked = true;
+    refreshRecord.lastActiveAt = new Date();
     await refreshRecord.save();
 
-    const payload = { id: user.id, email: user.email, role: user.role, organization_id };
+    // 2. Issue new rotated refresh token + access token
+    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || refreshRecord.ipAddress;
+    const userAgent = (req.headers["user-agent"] as string) || refreshRecord.userAgent;
+    const deviceName = refreshRecord.deviceName || (userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser");
+
+    const newRefreshToken = await createRefreshToken(user.id, {
+      ipAddress,
+      userAgent,
+      deviceName,
+      organizationId: organization_id,
+    });
+
+    const payload = { id: user.id, email: user.email || "", role: user.role, organization_id };
     const accessToken = generateAccessToken(payload);
 
-    // Update the access token cookie only
-    reply.setCookie("access_token", accessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      maxAge: 15 * 60,
-    });
+    // Set rotated auth cookies
+    setAuthCookies(reply, accessToken, newRefreshToken);
 
     return reply.code(200).send(successResponse(null, "Token refreshed"));
   } catch (err) {

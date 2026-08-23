@@ -51,6 +51,8 @@ export async function getEncounterSummaryReportController(req: FastifyRequest, r
   }
 }
 
+import { resolveTargetOrganizationId } from "../utilities/tenant.ts";
+
 /**
  * GET /api/analytics/quality-metrics
  * Generates organization-wide quality metrics grouped by clinical domains.
@@ -58,7 +60,7 @@ export async function getEncounterSummaryReportController(req: FastifyRequest, r
  */
 export async function getOrganizationQualityMetricsController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) {
       return reply.code(403).send(errorResponse("Organization context is required"));
     }

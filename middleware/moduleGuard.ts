@@ -1,6 +1,38 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { ModuleRegistry } from "../models/ModuleRegistry.ts";
+import mongoose from "mongoose";
+import { Clinic } from "../models/Clinic.ts";
+import { isModuleEnabledForOrganization } from "../utilities/moduleAccess.ts";
 import { MODULE_KEYS, getAlwaysOnModules } from "../data/moduleKeys.ts";
+
+async function resolveModuleOrganizationId(req: FastifyRequest): Promise<string | undefined> {
+  if (req.user?.organization_id) {
+    return req.user.organization_id;
+  }
+
+  // Portal patients often book across clinics without an org claim in their JWT.
+  const clinicId =
+    (req.headers["x-clinic-id"] as string) ||
+    (req.body as { clinicId?: string })?.clinicId ||
+    (req.query as { clinicId?: string })?.clinicId;
+
+  if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
+    const clinic = await Clinic.findById(clinicId).select("organizationId").lean();
+    return clinic?.organizationId?.toString();
+  }
+
+  const paramId = (req.params as { id?: string; appointmentId?: string })?.id || (req.params as { id?: string; appointmentId?: string })?.appointmentId;
+  if (paramId && mongoose.Types.ObjectId.isValid(paramId)) {
+    const { Appointment } = await import("../models/Appointment.ts");
+    const appt = await Appointment.findById(paramId).select("organizationId clinicId").lean();
+    if (appt?.organizationId) return appt.organizationId.toString();
+    if (appt?.clinicId) {
+      const clinic = await Clinic.findById(appt.clinicId).select("organizationId").lean();
+      if (clinic?.organizationId) return clinic.organizationId.toString();
+    }
+  }
+
+  return undefined;
+}
 
 /**
  * Module Guard Middleware Factory.
@@ -20,19 +52,17 @@ export function requireModule(moduleKey: string) {
     }
 
     // Always-on modules are never gated
-    const alwaysOn = getAlwaysOnModules();
-    if (alwaysOn.includes(moduleKey)) {
+    if (getAlwaysOnModules().includes(moduleKey)) {
       return;
     }
 
     // Validate the module key is known
     if (!MODULE_KEYS[moduleKey]) {
-      // Unknown module key — allow request but log warning
       req.log?.warn(`requireModule: unknown module key '${moduleKey}', allowing request`);
       return;
     }
 
-    const orgId = req.user?.organization_id;
+    const orgId = await resolveModuleOrganizationId(req);
     if (!orgId) {
       return reply.code(403).send({
         success: false,
@@ -41,16 +71,7 @@ export function requireModule(moduleKey: string) {
       });
     }
 
-    const record = await ModuleRegistry.findOne({
-      organizationId: orgId,
-      moduleKey,
-    }).lean();
-
-    // If no record exists, default to the module's priority-based default
-    // P1 modules default to enabled, P2/P3 default to disabled
-    const isEnabled = record
-      ? (record as any).enabled
-      : MODULE_KEYS[moduleKey].priority === "P1";
+    const isEnabled = await isModuleEnabledForOrganization(orgId, moduleKey);
 
     if (!isEnabled) {
       return reply.code(403).send({

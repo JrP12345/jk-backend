@@ -3,15 +3,23 @@ import { ClinicalNote } from "../models/ClinicalNote.ts";
 import { Prescription } from "../models/Prescription.ts";
 import { Patient } from "../models/Patient.ts";
 import { User } from "../models/User.ts";
-import { Clinic } from "../models/Clinic.ts";
-import { authenticate } from "../middleware/auth.ts";
+import { authenticate, checkAnyPermission } from "../middleware/auth.ts";
+import { requireModule } from "../middleware/moduleGuard.ts";
 import { generatePrintablePrescriptionHtml } from "../utilities/prescriptionFormatter.ts";
 import { checkOperationalRecordAccess } from "../utilities/tenant.ts";
 
 export default async function prescriptionPrintRoutes(fastify: FastifyInstance) {
+  const printPrescription = {
+    preHandler: [
+      authenticate,
+      requireModule("consultations"),
+      checkAnyPermission("VIEW_EHR", "MANAGE_CLINICAL_NOTES"),
+    ],
+  };
+
   fastify.get(
     "/api/v1/encounters/:encounterId/prescription/print",
-    { preHandler: [authenticate] },
+    printPrescription,
     async (request, reply) => {
       const { encounterId } = request.params as { encounterId: string };
 
