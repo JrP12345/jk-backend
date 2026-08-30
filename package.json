@@ -13,6 +13,7 @@
     "seed:clean": "node --env-file=.env --experimental-strip-types scripts/seedFreshCleanDB.ts",
     "seed:clinic1": "node --env-file=.env --experimental-strip-types scripts/seedClinicOne.ts",
     "migrate:tenant": "node --env-file=.env --experimental-strip-types scripts/migrateTenantScoping.ts",
+    "start": "node --experimental-strip-types index.ts",
     "dev": "nodemon -e js,ts,json,env --exec \"node --env-file=.env --experimental-strip-types\" index.ts"
   },
   "repository": {
@@ -37,7 +38,7 @@
     "@fastify/swagger-ui": "^6.1.0",
     "bcryptjs": "^3.0.3",
     "fastify": "^5.8.5",
-    "ioredis": "^5.11.1",
+    "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.7.0",
     "nodemailer": "^9.0.3",
@@ -46,7 +47,7 @@
   },
   "devDependencies": {
     "@types/jsonwebtoken": "^9.0.8",
-    "@types/node": "^20.17.19",
+    "@types/node": "^26.4.0",
     "@types/nodemailer": "^8.0.1",
     "@types/qrcode": "^1.5.6",
     "@types/speakeasy": "^2.0.10",
