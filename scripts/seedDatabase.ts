@@ -11,14 +11,11 @@ import { Doctor } from "../models/Doctor.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Receptionist } from "../models/Receptionist.ts";
 import { Patient } from "../models/Patient.ts";
-import { Bed } from "../models/Bed.ts";
-import { Admission } from "../models/Admission.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { ClinicalNote } from "../models/ClinicalNote.ts";
 import { Prescription } from "../models/Prescription.ts";
 import { Medicine } from "../models/Medicine.ts";
-import { MedicationAdministration } from "../models/MedicationAdministration.ts";
 import { LabTest } from "../models/LabTest.ts";
 import { LabOrder } from "../models/LabOrder.ts";
 import { Observation } from "../models/Observation.ts";
@@ -31,7 +28,6 @@ import { Notification } from "../models/Notification.ts";
 import { NotificationDelivery } from "../models/NotificationDelivery.ts";
 import { NotificationPreference } from "../models/NotificationPreference.ts";
 import { NotificationTemplate } from "../models/NotificationTemplate.ts";
-import { DischargeDocument } from "../models/DischargeDocument.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { Counter } from "../models/Counter.ts";
 import { Role } from "../models/Role.ts";
@@ -54,7 +50,7 @@ async function runSeed() {
     // -------------------------------------------------------------------------
     // 1. WIPE ALL EXISTING COLLECTIONS
     // -------------------------------------------------------------------------
-    console.log("\n🧹 Purging all 37 database collections...");
+    console.log("\n🧹 Purging all database collections...");
     await Promise.all([
       User.deleteMany({}),
       Organization.deleteMany({}),
@@ -65,14 +61,11 @@ async function runSeed() {
       DoctorAssignment.deleteMany({}),
       Receptionist.deleteMany({}),
       Patient.deleteMany({}),
-      Bed.deleteMany({}),
-      Admission.deleteMany({}),
       Encounter.deleteMany({}),
       Appointment.deleteMany({}),
       ClinicalNote.deleteMany({}),
       Prescription.deleteMany({}),
       Medicine.deleteMany({}),
-      MedicationAdministration.deleteMany({}),
       LabTest.deleteMany({}),
       LabOrder.deleteMany({}),
       Observation.deleteMany({}),
@@ -85,7 +78,6 @@ async function runSeed() {
       NotificationDelivery.deleteMany({}),
       NotificationPreference.deleteMany({}),
       NotificationTemplate.deleteMany({}),
-      DischargeDocument.deleteMany({}),
       AuditLog.deleteMany({}),
       Counter.deleteMany({}),
       Role.deleteMany({}),
@@ -506,101 +498,7 @@ async function runSeed() {
     });
 
     // -------------------------------------------------------------------------
-    // 6. BEDS & WARDS (INPATIENT FACILITIES)
-    // -------------------------------------------------------------------------
-    console.log("\n🛏️ Seeding Inpatient Wards & Bed Infrastructure...");
-
-    const bedICU101 = await Bed.create({
-      clinicId: clinic._id,
-      wardName: "Intensive Care Unit (ICU)",
-      bedNumber: "ICU-101",
-      status: "available",
-      pricePerDay: 1500,
-      occupiedBy: null,
-    });
-
-    const bedICU102 = await Bed.create({
-      clinicId: clinic._id,
-      wardName: "Intensive Care Unit (ICU)",
-      bedNumber: "ICU-102",
-      status: "occupied",
-      pricePerDay: 1500,
-      occupiedBy: mariaPatient._id,
-    });
-
-    const bedICU103 = await Bed.create({
-      clinicId: clinic._id,
-      wardName: "Intensive Care Unit (ICU)",
-      bedNumber: "ICU-103",
-      status: "maintenance",
-      pricePerDay: 1500,
-      occupiedBy: null,
-    });
-
-    const bedGW201 = await Bed.create({
-      clinicId: clinic._id,
-      wardName: "General Inpatient Ward B",
-      bedNumber: "GW-201",
-      status: "occupied",
-      pricePerDay: 400,
-      occupiedBy: robertSmithPatient._id,
-    });
-
-    const bedGW202 = await Bed.create({
-      clinicId: clinic._id,
-      wardName: "General Inpatient Ward B",
-      bedNumber: "GW-202",
-      status: "available",
-      pricePerDay: 400,
-      occupiedBy: null,
-    });
-
-    const bedVIP301 = await Bed.create({
-      clinicId: clinic._id,
-      wardName: "Surgical Recovery VIP Suite",
-      bedNumber: "VIP-301",
-      status: "occupied",
-      pricePerDay: 1200,
-      occupiedBy: jamesWilsonPatient._id,
-    });
-
-    // Admissions
-    const mariaAdmission = await Admission.create({
-      clinicId: clinic._id,
-      patientId: mariaPatient._id,
-      bedId: bedICU102._id,
-      admissionDate: new Date(Date.now() - 12 * 3600 * 1000), // 12 hours ago
-      reasonForAdmission: "Acute Severe Asthma Exacerbation with Respiratory Distress",
-      doctorInCharge: drMarcusUser._id,
-      status: "admitted",
-      notes: "High-flow O2 therapy started. Continuous SpO2 monitoring active.",
-    });
-
-    const robertAdmission = await Admission.create({
-      clinicId: clinic._id,
-      patientId: robertSmithPatient._id,
-      bedId: bedGW201._id,
-      admissionDate: new Date(Date.now() - 3 * 24 * 3600 * 1000), // 3 days ago
-      dischargeDate: new Date(),
-      reasonForAdmission: "Glycemic Dysregulation & Rehabilitation Post Stroke",
-      doctorInCharge: drPriyaUser._id,
-      status: "discharged",
-      notes: "Glycemic targets met. Ready for discharge.",
-    });
-
-    const jamesAdmission = await Admission.create({
-      clinicId: clinic._id,
-      patientId: jamesWilsonPatient._id,
-      bedId: bedVIP301._id,
-      admissionDate: new Date(Date.now() - 2 * 24 * 3600 * 1000), // 2 days ago
-      reasonForAdmission: "Laparoscopic Appendectomy Post-Operative Management",
-      doctorInCharge: drMarcusUser._id,
-      status: "admitted",
-      notes: "Wound clean. Tolerating soft diet well.",
-    });
-
-    // -------------------------------------------------------------------------
-    // 7. PHARMACY CATALOG (MEDICINES)
+    // 6. PHARMACY CATALOG (MEDICINES)
     // -------------------------------------------------------------------------
     console.log("\n💊 Seeding Pharmacy Inventory & Medications...");
 
@@ -1121,59 +1019,6 @@ async function runSeed() {
       status: "active",
     });
 
-    // Medication Administration Records (MAR)
-    await MedicationAdministration.create({
-      organizationId: org._id,
-      clinicId: clinic._id,
-      encounterId: mariaEncounter._id,
-      prescriptionId: mariaRx1._id,
-      patientId: mariaPatient._id,
-      medicineName: "Albuterol HFA Inhaler 90mcg",
-      prescribedDose: "2 puffs",
-      doseGiven: "2 puffs",
-      route: "inhaled",
-      scheduledTime: new Date(nowTime.getTime() - 2 * 3600 * 1000),
-      administeredTime: new Date(nowTime.getTime() - 110 * 60 * 1000),
-      administeredBy: nurseEmilyUser._id,
-      recordedBy: nurseEmilyUser._id,
-      status: "administered",
-      notes: "Given via nebulizer spacer in ICU-102.",
-    });
-
-    await MedicationAdministration.create({
-      organizationId: org._id,
-      clinicId: clinic._id,
-      encounterId: mariaEncounter._id,
-      prescriptionId: mariaRx2._id,
-      patientId: mariaPatient._id,
-      medicineName: "Amoxicillin 500mg Capsules",
-      prescribedDose: "500mg",
-      doseGiven: "500mg",
-      route: "oral",
-      scheduledTime: new Date(nowTime.getTime() - 1 * 3600 * 1000),
-      administeredTime: new Date(nowTime.getTime() - 55 * 60 * 1000),
-      administeredBy: nurseEmilyUser._id,
-      recordedBy: nurseEmilyUser._id,
-      status: "administered",
-      notes: "Tolerated well.",
-    });
-
-    await MedicationAdministration.create({
-      organizationId: org._id,
-      clinicId: clinic._id,
-      encounterId: mariaEncounter._id,
-      prescriptionId: mariaRx1._id,
-      patientId: mariaPatient._id,
-      medicineName: "Albuterol HFA Inhaler 90mcg",
-      prescribedDose: "2 puffs",
-      doseGiven: "",
-      route: "inhaled",
-      scheduledTime: new Date(nowTime.getTime() + 2 * 3600 * 1000),
-      recordedBy: nurseEmilyUser._id,
-      status: "scheduled",
-      notes: "Upcoming dose.",
-    });
-
     // Urgent Lab Orders for Maria
     const mariaLabCBC = await LabOrder.create({
       organizationId: org._id,
@@ -1215,20 +1060,20 @@ async function runSeed() {
       clinicId: clinic._id,
       doctorId: drMarcusUser._id,
       items: [
-        { description: "ICU Level 1 Emergency Bed Care (Per Day)", amount: 1500, quantity: 1 },
+        { description: "Urgent Clinic Consultation", amount: 500, quantity: 1 },
         { description: "High-Flow Oxygen & Nebulization Services", amount: 250, quantity: 1 },
         { description: "STAT Complete Blood Count (CBC)", amount: 45, quantity: 1 },
         { description: "Digital Chest X-Ray PA View", amount: 120, quantity: 1 },
       ],
-      subtotal: 1915,
+      subtotal: 915,
       tax: 0,
-      discount: 100,
-      totalAmount: 1815,
+      discount: 0,
+      totalAmount: 915,
       status: "unpaid",
       createdAt: nowTime,
     });
 
-    // ------------------- WORKFLOW 3: ROBERT SMITH (Discharged IPD Patient) -------------------
+    // ------------------- WORKFLOW 3: ROBERT SMITH (Outpatient Chronic Care) -------------------
     const threeDaysAgo = new Date(Date.now() - 3 * 24 * 3600 * 1000);
 
     const robertEncounter = await Encounter.create({
@@ -1236,7 +1081,7 @@ async function runSeed() {
       clinicId: clinic._id,
       patientId: robertSmithPatient._id,
       doctorId: drPriyaUser._id,
-      encounterType: "ipd",
+      encounterType: "opd",
       status: "closed",
       startedAt: threeDaysAgo,
       endedAt: nowTime,
@@ -1286,77 +1131,6 @@ async function runSeed() {
       },
     });
 
-    // Finalized Discharge Document for Robert Smith
-    await DischargeDocument.create({
-      organizationId: org._id,
-      clinicId: clinic._id,
-      encounterId: robertEncounter._id,
-      patientId: robertSmithPatient._id,
-      authoredBy: drPriyaUser._id,
-      status: "finalized",
-      compiledAt: nowTime,
-      finalizedAt: nowTime,
-      countersignedBy: drPriyaUser._id,
-      countersignedAt: nowTime,
-      snapshotHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      aggregated: {
-        encounterSummary: {
-          encounterType: "ipd",
-          startedAt: threeDaysAgo,
-          endedAt: nowTime,
-          stayDurationDays: 3,
-        },
-        diagnoses: [
-          { code: "E11.9", description: "Type 2 diabetes mellitus without complications", codingSystem: "ICD-10", status: "active" },
-          { code: "I69.30", description: "Unspecified sequelae of cerebral infarction", codingSystem: "ICD-10", status: "active" },
-        ],
-        vitalsOnAdmission: {
-          recordedAt: threeDaysAgo,
-          vitals: { BP: "138/86", HR: 76, SpO2: "98%", Temp: "98.4°F" },
-        },
-        vitalsOnDischarge: {
-          recordedAt: nowTime,
-          vitals: { BP: "124/78", HR: 72, SpO2: "99%", Temp: "98.6°F" },
-        },
-        news2Summary: {
-          peakScore: 3,
-          finalScore: 0,
-          alertLevel: "LOW",
-        },
-        medications: [
-          {
-            medicineName: "Metformin 850mg ER Tablets",
-            dosage: "850mg",
-            frequency: "1-0-1",
-            instructions: "Take twice daily after meals",
-            status: "dispensed",
-            administrationSummary: "All 6 inpatient doses administered per MAR.",
-          },
-        ],
-        labResults: [
-          {
-            testName: "HbA1c Glycated Hemoglobin",
-            testCode: "LAB-A1C-04",
-            value: "7.8",
-            unit: "%",
-            referenceRange: "< 5.7",
-            interpretation: "high",
-            isAbnormal: true,
-          },
-        ],
-        procedures: ["Rehabilitation Physical Therapy", "Capillary Blood Glucose Profiling"],
-      },
-      clinicianInput: {
-        primaryDiagnosis: "Type 2 Diabetes Mellitus with Mild Hyperglycemia & Ischemic Stroke Sequelae",
-        conditionOnDischarge: "Stable, afebrile, ambulatory with minor assistance.",
-        dischargeInstructions: "Maintain diabetic meal plan (< 45g carbs/meal). Check fasting & 2h postprandial glucose daily.",
-        followUpPlan: "Outpatient Endocrinology consultation in 2 weeks. Physical therapy twice weekly.",
-        medicationsOnDischarge: "Metformin ER 850mg twice daily after meals.",
-        restrictions: "Avoid strenuous heavy lifting (> 15 lbs) for 2 weeks.",
-      },
-      createdAt: nowTime,
-    });
-
     // Paid Invoice via Insurance for Robert Smith
     await Invoice.create({
       invoiceNumber: "INV-2026-0003",
@@ -1364,14 +1138,14 @@ async function runSeed() {
       clinicId: clinic._id,
       doctorId: drPriyaUser._id,
       items: [
-        { description: "General Ward Inpatient Stay (3 Days @ $400/day)", amount: 1200, quantity: 3 },
-        { description: "Inpatient Physical Therapy & Rehabilitation", amount: 650, quantity: 1 },
-        { description: "Endocrinology Inpatient Consultations & Labs", amount: 450, quantity: 1 },
+        { description: "Specialist Comprehensive Consultation", amount: 800, quantity: 1 },
+        { description: "Outpatient Physical Therapy & Rehabilitation", amount: 650, quantity: 1 },
+        { description: "Endocrinology Consultations & Labs", amount: 450, quantity: 1 },
       ],
-      subtotal: 2300,
+      subtotal: 1900,
       tax: 0,
       discount: 0,
-      totalAmount: 2300,
+      totalAmount: 1900,
       status: "paid",
       paymentMethod: "insurance",
       paymentDate: nowTime,
@@ -1418,8 +1192,8 @@ async function runSeed() {
 
     await TaskModel.create({
       organizationId: org._id,
-      title: "Evaluate ICU Bed 102 (Maria Garcia) SpO2 response after nebulization",
-      description: "Check repeat SpO2 and arterial blood gas values post 2nd Albuterol dose.",
+      title: "Evaluate Maria Garcia SpO2 response after nebulization",
+      description: "Check repeat SpO2 and vitals values post 2nd Albuterol dose.",
       status: "in_progress",
       priority: "urgent",
       dueDate: new Date(nowTime.getTime() + 1 * 3600 * 1000),
@@ -1430,7 +1204,7 @@ async function runSeed() {
     await TaskModel.create({
       organizationId: org._id,
       title: "Process STAT CBC & Chest X-Ray for Maria Garcia",
-      description: "Priority processing requested by Dr. Marcus Vance for acute asthma ICU patient.",
+      description: "Priority processing requested by Dr. Marcus Vance for acute asthma patient.",
       status: "todo",
       priority: "high",
       dueDate: new Date(nowTime.getTime() + 30 * 60 * 1000),
@@ -1440,7 +1214,7 @@ async function runSeed() {
 
     await TaskModel.create({
       organizationId: org._id,
-      title: "Verify discharge insurance authorization for Robert Smith",
+      title: "Verify insurance authorization for Robert Smith",
       description: "Insurance pre-authorization form verified and payment settled.",
       status: "completed",
       priority: "medium",
@@ -1455,11 +1229,11 @@ async function runSeed() {
       targetUser: drMarcusUser._id,
       category: "patient",
       type: "CRITICAL_OBSERVATION_ALERT",
-      title: "HIGH RISK NEWS2 SCORE - ICU BED 102",
+      title: "HIGH RISK NEWS2 SCORE - MARIA GARCIA",
       message: "Patient Maria Garcia SpO2 dropped to 89%. Immediate review requested.",
       priority: "urgent",
       severity: "error",
-      actionUrl: "/ipd/beds/ICU-102",
+      actionUrl: "/dashboard/consultations",
       entityType: "ObservationAlert",
       entityId: mariaAlert._id.toString(),
       createdAt: nowTime,
@@ -1539,10 +1313,10 @@ async function runSeed() {
 
     await AuditLog.create({
       userId: drPriyaUser._id,
-      action: "DISCHARGE_DOCUMENT_FINALIZED",
+      action: "ENCOUNTER_COMPLETED",
       targetId: robertEncounter._id,
-      targetModel: "DischargeDocument",
-      details: { patientId: robertSmithPatient._id, snapshotHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+      targetModel: "Encounter",
+      details: { patientId: robertSmithPatient._id, status: "closed" },
     });
 
     await Counter.create({

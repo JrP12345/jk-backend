@@ -49,7 +49,8 @@ PatientSchema.pre("save", async function () {
     const year = new Date().getFullYear();
     const orgPart = this.organizationId ? this.organizationId.toString() : "GLOBAL";
     const seq = await getNextAtomicSequence(`mrn_${orgPart}_${year}`);
-    this.mrn = `MRN-${year}-${String(seq).padStart(6, "0")}`;
+    const orgSuffix = this.organizationId ? this.organizationId.toString().slice(-4).toUpperCase() : "GEN";
+    this.mrn = `MRN-${year}-${orgSuffix}-${String(seq).padStart(6, "0")}`;
   }
 });
 

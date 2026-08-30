@@ -7,7 +7,7 @@ import { Prescription } from "../models/Prescription.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Patient } from "../models/Patient.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { checkClinicAccess, checkOperationalRecordAccess } from "../utilities/tenant.ts";
+import { checkClinicAccess, checkOperationalRecordAccess, resolveTargetOrganizationId } from "../utilities/tenant.ts";
 import { getNextAtomicSequence } from "../models/Counter.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
@@ -16,7 +16,7 @@ function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCod
 
 export async function createEncounterController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    let orgId = await resolveTargetOrganizationId(req);
     const userId = req.user?.id;
     const { clinicId, appointmentId, patientId, doctorId, encounterType } = req.body as {
       clinicId: string;
@@ -25,8 +25,6 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
       doctorId?: string;
       encounterType?: string;
     };
-
-    if (!orgId) return reply.code(403).send(errorResponse("Organization context required"));
 
     let finalClinicId = clinicId;
     let finalPatientId = patientId;
@@ -62,6 +60,12 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
 
     const clinicAccess = await checkClinicAccess(req, finalClinicId);
     if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+
+    if (!orgId && clinicAccess.organizationId) {
+      orgId = clinicAccess.organizationId;
+    }
+    if (!orgId) return reply.code(403).send(errorResponse("Organization context required"));
+
     const patient = await Patient.findById(finalPatientId);
     if (!patient) return reply.code(404).send(errorResponse("Patient profile not found"));
     if (patient.organizationId && clinicAccess.organizationId && patient.organizationId.toString() !== clinicAccess.organizationId) {
@@ -80,7 +84,7 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
       existingFilter.patientId = finalPatientId;
       existingFilter.clinicId = finalClinicId;
     }
-    existingFilter.organizationId = clinicAccess.organizationId;
+    existingFilter.organizationId = clinicAccess.organizationId || orgId;
 
     const existingEncounter = await Encounter.findOne(existingFilter).sort({ createdAt: -1 });
     if (existingEncounter) {
@@ -107,7 +111,7 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
 
 export async function saveDraftClinicalNoteController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    let orgId = await resolveTargetOrganizationId(req);
     const userId = req.user?.id;
     const {
       clinicId,
@@ -126,7 +130,6 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
       followUpInstructions,
     } = req.body as any;
 
-    if (!orgId) return reply.code(403).send(errorResponse("Organization context required"));
     if (!encounterId || !patientId || !chiefComplaint) {
       return reply.code(400).send(errorResponse("encounterId, patientId, and chiefComplaint are required"));
     }
@@ -138,6 +141,11 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
     if (!encounter) return reply.code(404).send(errorResponse("Encounter not found"));
     const encounterAccess = await checkOperationalRecordAccess(req, encounter);
     if (!encounterAccess.allowed) return sendTenantError(reply, encounterAccess);
+
+    if (!orgId && encounter.organizationId) {
+      orgId = encounter.organizationId.toString();
+    }
+    if (!orgId) return reply.code(403).send(errorResponse("Organization context required"));
     if (encounter.patientId.toString() !== patientId) return reply.code(400).send(errorResponse("Encounter patient does not match patientId"));
     if (clinicId && encounter.clinicId.toString() !== clinicId) return reply.code(400).send(errorResponse("Encounter clinic does not match clinicId"));
     const effectiveClinicId = encounter.clinicId.toString();
@@ -268,7 +276,7 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
     const updatedEncounter = await Encounter.findOneAndUpdate(
       { _id: note.encounterId, organizationId: note.organizationId, clinicId: note.clinicId },
       { status: "completed", endedAt: new Date() },
-      { new: true }
+      { returnDocument: "after" }
     );
 
     if (updatedEncounter?.appointmentId) {
@@ -402,7 +410,7 @@ export async function amendClinicalNoteController(req: FastifyRequest, reply: Fa
 export async function getClinicalNoteHistoryController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id } = req.params as { id: string }; // patientId
-    const orgId = req.user?.organization_id;
+    let orgId = await resolveTargetOrganizationId(req);
 
     if (!mongoose.Types.ObjectId.isValid(id)) return reply.code(400).send(errorResponse("Invalid patient ID"));
     const patient = await Patient.findById(id).lean() as any;
@@ -410,12 +418,20 @@ export async function getClinicalNoteHistoryController(req: FastifyRequest, repl
     if (req.user?.role === "patient" && patient.userId.toString() !== req.user.id) {
       return reply.code(404).send(errorResponse("Patient not found"));
     }
-    if (patient.organizationId && orgId && patient.organizationId.toString() !== orgId) {
+    if (!orgId && patient.organizationId) {
+      orgId = patient.organizationId.toString();
+    }
+    if (patient.organizationId && orgId && patient.organizationId.toString() !== orgId && req.user?.role !== "root") {
       return reply.code(404).send(errorResponse("Patient not found"));
     }
     if (!orgId) return reply.code(403).send(errorResponse("Organization context required"));
 
-    const notes = await ClinicalNote.find({ patientId: id, organizationId: orgId })
+    const query: any = { patientId: id };
+    if (orgId && req.user?.role !== "root") {
+      query.organizationId = orgId;
+    }
+
+    const notes = await ClinicalNote.find(query)
       .populate("doctorId", "name email")
       .populate("objective.observationIds")
       .populate("plan.prescriptionIds")

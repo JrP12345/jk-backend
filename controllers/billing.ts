@@ -289,13 +289,13 @@ export async function adminExtendTrial(req: FastifyRequest, reply: FastifyReply)
       try {
         await emailProvider.sendEmail({
           to: org.email,
-          subject: `[ANANTA] Free Trial Extended for ${org.name}`,
+          subject: `[ANANT] Free Trial Extended for ${org.name}`,
           html: `<div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">
             <h2>Great News! Free Trial Extended 🎉</h2>
             <p>Dear ${org.name},</p>
-            <p>Your free trial of ANANTA Healthcare SaaS has been extended by <strong>${daysToAdd} additional days</strong>.</p>
+            <p>Your free trial of ANANT Healthcare SaaS has been extended by <strong>${daysToAdd} additional days</strong>.</p>
             <p>Your trial will now expire on <strong>${subscription.trialEndsAt.toLocaleDateString()}</strong>.</p>
-            <p>Best regards,<br/>ANANTA Platform Operations</p>
+            <p>Best regards,<br/>ANANT Platform Operations</p>
           </div>`,
         });
       } catch (e) {

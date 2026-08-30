@@ -6,7 +6,7 @@ import mongoose from "mongoose";
 import { requestContextStore } from "./utilities/context.ts";
 import { redisClient } from "./utilities/redis.ts";
 import { notificationQueue } from "./notifications/services/NotificationQueue.ts";
-import fastify from "fastify";
+import fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
@@ -16,13 +16,10 @@ import staffRoutes from "./routes/staff.ts";
 import clinicRoutes from "./routes/clinics.ts";
 import appointmentRoutes from "./routes/appointments.ts";
 import clinicalRoutes from "./routes/clinical.ts";
-import marRoutes from "./routes/mar.ts";
 import laboratoryRoutes from "./routes/laboratory.ts";
-import inpatientRoutes from "./routes/inpatient.ts";
 import pharmacyRoutes from "./routes/pharmacy.ts";
 import billingRoutes from "./routes/billing.ts";
 import analyticsRoutes from "./routes/analytics.ts";
-import fhirRoutes from "./routes/fhir.ts";
 import searchRoutes from "./routes/search.ts";
 import publicRoutes from "./routes/public.ts";
 import uploadRoutes from "./routes/upload.ts";
@@ -40,31 +37,14 @@ import preAuthRoutes from "./routes/preAuth.ts";
 import insuranceTariffRoutes from "./routes/insuranceTariff.ts";
 import soapTemplateRoutes from "./routes/soapTemplate.ts";
 import checkInRoutes from "./routes/checkIn.ts";
-import cdsRoutes from "./routes/cds.ts";
 import imagingRoutes from "./routes/imaging.ts";
-import otRoutes from "./routes/ot.ts";
-import bloodBankRoutes from "./routes/bloodBank.ts";
 import teleconsultationRoutes from "./routes/teleconsultation.ts";
-import facilityTransferRoutes from "./routes/facilityTransfer.ts";
 import pecRoutes from "./routes/pec.ts";
 import reportExportRoutes from "./routes/reportExport.ts";
 import ssoRoutes from "./routes/sso.ts";
 import feedbackRoutes from "./routes/feedback.ts";
 import roleRoutes from "./routes/role.ts";
-import emergencyRoutes from "./routes/emergency.ts";
 import shiftRoutes from "./routes/shifts.ts";
-import infectionControlRoutes from "./routes/infectionControl.ts";
-import dietaryRoutes from "./routes/dietary.ts";
-import biomedicalRoutes from "./routes/biomedical.ts";
-import transplantRoutes from "./routes/transplant.ts";
-import mortuaryRoutes from "./routes/mortuary.ts";
-import biohazardRoutes from "./routes/biohazard.ts";
-import geneticsRoutes from "./routes/genetics.ts";
-import cssdRoutes from "./routes/cssd.ts";
-import occupationalHealthRoutes from "./routes/occupationalHealth.ts";
-import homeRPMRoutes from "./routes/homeRPM.ts";
-import hbotRoutes from "./routes/hbot.ts";
-import ambulanceDispatchRoutes from "./routes/ambulanceDispatch.ts";
 import platformGatewayRoutes from "./platform/gateway.ts";
 import moduleRegistryRoutes from "./routes/moduleRegistry.ts";
 import { seedDefaultRoles } from "./controllers/onboarding.ts";
@@ -81,11 +61,14 @@ const app = fastify({ logger: true, bodyLimit: 10485760, trustProxy: true }); //
 app.register(fastifySwagger, {
   openapi: {
     info: {
-      title: "ANANTA Healthcare Infrastructure Platform API",
+      title: "ANANT Healthcare Infrastructure Platform API",
       description: "Production-Grade Enterprise AI-First Healthcare Infrastructure Platform API Specification",
       version: "1.0.0",
     },
     servers: [
+      ...(process.env.CORS_ALLOWED_ORIGINS
+        ? [{ url: process.env.CORS_ALLOWED_ORIGINS.split(",")[0].trim().replace(/:\d+$/, `:${process.env.PORT || 5000}`), description: "Production Server" }]
+        : []),
       { url: "http://localhost:5000", description: "Local Development Server" },
     ],
     components: {
@@ -127,7 +110,7 @@ app.addHook("preValidation", sanitizeMiddleware);
 // Register CSRF protection guard on state-changing requests
 app.addHook("preHandler", csrfProtection);
 
-app.setErrorHandler((error, request, reply) => {
+app.setErrorHandler((error: any, request, reply) => {
   if (error.validation) {
     return reply.code(400).send({
       success: false,
@@ -137,9 +120,12 @@ app.setErrorHandler((error, request, reply) => {
   }
   
   const statusCode = error.statusCode || 500;
+  const isProd = process.env.NODE_ENV === "production";
   reply.code(statusCode).send({
     success: false,
-    message: error.message || "Internal server error"
+    message: statusCode >= 500 && isProd
+      ? "Internal server error"
+      : (error.message || "Internal server error")
   });
 });
 
@@ -175,13 +161,10 @@ app.register(staffRoutes);
 app.register(clinicRoutes);
 app.register(appointmentRoutes);
 app.register(clinicalRoutes);
-app.register(marRoutes);
 app.register(laboratoryRoutes);
-app.register(inpatientRoutes);
 app.register(pharmacyRoutes);
 app.register(billingRoutes);
 app.register(analyticsRoutes);
-app.register(fhirRoutes);
 app.register(searchRoutes);
 app.register(publicRoutes);
 app.register(uploadRoutes, { prefix: '/api' });
@@ -199,31 +182,14 @@ app.register(preAuthRoutes);
 app.register(insuranceTariffRoutes);
 app.register(soapTemplateRoutes);
 app.register(checkInRoutes);
-app.register(cdsRoutes);
 app.register(imagingRoutes);
-app.register(otRoutes);
-app.register(bloodBankRoutes);
 app.register(teleconsultationRoutes);
-app.register(facilityTransferRoutes);
 app.register(pecRoutes);
 app.register(reportExportRoutes);
 app.register(ssoRoutes);
 app.register(feedbackRoutes);
 app.register(roleRoutes);
-app.register(emergencyRoutes);
 app.register(shiftRoutes, { prefix: "/api/shifts" });
-app.register(infectionControlRoutes, { prefix: "/api/infection-control" });
-app.register(dietaryRoutes, { prefix: "/api/dietary" });
-app.register(biomedicalRoutes, { prefix: "/api/biomedical" });
-app.register(transplantRoutes, { prefix: "/api/transplant" });
-app.register(mortuaryRoutes, { prefix: "/api/mortuary" });
-app.register(biohazardRoutes, { prefix: "/api/biohazard" });
-app.register(geneticsRoutes, { prefix: "/api/genetics" });
-app.register(cssdRoutes, { prefix: "/api/cssd" });
-app.register(occupationalHealthRoutes, { prefix: "/api/occupational-health" });
-app.register(homeRPMRoutes, { prefix: "/api/home-rpm" });
-app.register(hbotRoutes, { prefix: "/api/hbot" });
-app.register(ambulanceDispatchRoutes, { prefix: "/api/ambulance-dispatch" });
 app.register(platformGatewayRoutes, { prefix: "/api/platform" });
 app.register(moduleRegistryRoutes);
 
@@ -236,7 +202,7 @@ const livenessHandler = async () => {
   return { status: "ok" };
 };
 
-const readinessHandler = async (request, reply) => {
+const readinessHandler = async (request: FastifyRequest, reply: FastifyReply) => {
   const dbState = mongoose.connection.readyState;
   const isDbReady = dbState === 1; // 1 = connected
 
@@ -285,7 +251,7 @@ async function startServer() {
   }
 }
 
-const gracefulShutdown = async (signal) => {
+const gracefulShutdown = async (signal: string) => {
   app.log.info(`Received ${signal}. Shutting down gracefully...`);
   try {
     await notificationQueue.shutdown();
@@ -299,7 +265,7 @@ const gracefulShutdown = async (signal) => {
     app.log.info("Server closed successfully.");
     process.exit(0);
   } catch (err) {
-    app.log.error("Error during graceful shutdown:", err);
+    app.log.error(err, "Error during graceful shutdown:");
     process.exit(1);
   }
 };

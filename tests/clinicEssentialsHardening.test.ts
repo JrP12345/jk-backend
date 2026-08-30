@@ -88,7 +88,6 @@ describe("Clinic Essentials Hardening & Security Audit Fixes", () => {
       userId: doctorAId,
       organizationId: orgAId,
       role: "doctor",
-      status: "active",
     });
 
     await DoctorAssignment.create({
@@ -255,7 +254,6 @@ describe("Clinic Essentials Hardening & Security Audit Fixes", () => {
       email: orgAAdmin.email!,
       role: "admin",
       organization_id: orgAId,
-      permissions: ["VIEW_AUDIT_LOGS"],
     });
 
     // Create audit log in Org B

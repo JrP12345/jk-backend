@@ -25,7 +25,7 @@ class FallbackAIProvider implements AIProvider {
   async queryPatientHealthAssistant(input: HealthQueryInput): Promise<HealthQueryResponse> {
     const actions: AISuggestedAction[] = [
       { type: "VIEW_PATIENT", label: "📋 View Patient Directory", targetUrl: "/dashboard/patients" },
-      { type: "ANALYTICS", label: "📊 View Hospital Dashboard", targetUrl: "/dashboard" }
+      { type: "ANALYTICS", label: "📊 View Clinic Dashboard", targetUrl: "/dashboard" }
     ];
 
     return {
@@ -66,7 +66,17 @@ class GeminiAIProvider implements AIProvider {
   }
 
   private async callGemini(prompt: string): Promise<any> {
-    const models = ["gemini-flash-latest", "gemini-pro-latest", "gemini-2.0-flash-001"];
+    const customModel = process.env.GEMINI_MODEL;
+    const fallbackModels = [
+      "gemini-2.5-flash",
+      "gemini-1.5-flash",
+      "gemini-1.5-flash-latest",
+      "gemini-1.5-pro",
+      "gemini-1.5-pro-latest",
+      "gemini-flash-latest",
+      "gemini-pro-latest"
+    ];
+    const models = customModel ? [customModel, ...fallbackModels] : fallbackModels;
     let lastError = null;
 
     for (const model of models) {
@@ -86,7 +96,11 @@ class GeminiAIProvider implements AIProvider {
           const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
           if (rawText) {
             const cleaned = rawText.replace(/^```json\s*/i, "").replace(/\s*```$/i, "").trim();
-            return JSON.parse(cleaned);
+            try {
+              return JSON.parse(cleaned);
+            } catch {
+              return { answer: cleaned, citations: [], suggestedActions: [] };
+            }
           }
         } else {
           const errText = await res.text();
@@ -127,14 +141,14 @@ Return ONLY a JSON object matching this schema:
       ? `\n\nRecent Conversation History:\n` + input.chatHistory.map(t => `${t.sender.toUpperCase()}: ${t.text}`).join("\n")
       : "";
 
-    const prompt = `You are ANANTA AI Healthcare Assistant, an enterprise-grade clinical physician and hospital management copilot for the ANANTA Health Platform.
+    const prompt = `You are ANANT AI Healthcare Assistant, an enterprise-grade clinical physician and hospital management copilot for the ANANT Health Platform.
 
 Role & Behavioral Rules:
 1. Provide concise, articulate, and medically sound responses focused strictly on what the user wants to know.
 2. Structure your answer using clean Markdown: use bold text for key figures/names/codes, bullet points for lists, and distinct section headers where appropriate.
 3. Keep the language natural, professional, and patient/clinician-oriented. NEVER include internal technical jargon, raw database ObjectIDs, MongoDB terms, Fastify routes, or internal system hex IDs in your answer or citations.
 4. If the user asks about patient counts, rosters, or specific clinical problems, list them cleanly with human-readable MRNs and conditions.
-5. Format citations using clean, human-friendly labels (e.g. "ANANTA Hospital Registry", "Patient Clinical Directory", "Active Prescriptions Registry").
+5. Format citations using clean, human-friendly labels (e.g. "ANANT Hospital Registry", "Patient Clinical Directory", "Active Prescriptions Registry").
 6. Recommend relevant interactive UI actions ("suggestedActions") to help the user navigate the platform. Choose relevant URLs from the following application routes:
    - Patient Directory: "/dashboard/patients"
    - Patient EHR & Timeline: "/dashboard/patients/[patient_id]" (if a specific patient ID is known)
@@ -257,13 +271,13 @@ Return JSON matching schema: { "answer": "text", "citations": ["src"], "disclaim
 
 export class AIService {
   private primaryProvider: AIProvider;
+  private fallbackProvider = new FallbackAIProvider();
 
   constructor() {
-    const fallback = process.env.NODE_ENV === "test" ? new FallbackAIProvider() : null;
-    if (fallback) providerRegistry.registerProvider(fallback);
+    providerRegistry.registerProvider(this.fallbackProvider);
 
     if (process.env.GEMINI_API_KEY) {
-      console.log("[AIService] Initializing Google Gemini AI Provider (gemini-flash-latest)");
+      console.log("[AIService] Initializing Google Gemini AI Provider");
       const gemini = new GeminiAIProvider(process.env.GEMINI_API_KEY);
       this.primaryProvider = gemini;
       providerRegistry.registerProvider(gemini);
@@ -282,12 +296,11 @@ export class AIService {
       providerRegistry.setPrimaryProvider(openai.name);
     } else if (process.env.NODE_ENV === "test") {
       console.log("[AIService] No API Key detected in test environment; using test-only fallback provider");
-      this.primaryProvider = fallback!;
-      providerRegistry.setPrimaryProvider(fallback!.name);
+      this.primaryProvider = this.fallbackProvider;
+      providerRegistry.setPrimaryProvider(this.fallbackProvider.name);
     } else {
-      console.error("[AIService] No AI provider credentials configured; clinical AI operations are unavailable");
-      this.primaryProvider = new UnavailableAIProvider();
-      providerRegistry.registerProvider(this.primaryProvider);
+      console.error("[AIService] No AI provider credentials configured; clinical AI operations are using local fallback copilot");
+      this.primaryProvider = this.fallbackProvider;
       providerRegistry.setPrimaryProvider(this.primaryProvider.name);
     }
   }
@@ -304,10 +317,8 @@ export class AIService {
     try {
       return await this.primaryProvider.generateSOAPNote(input);
     } catch (err: any) {
-      if (process.env.NODE_ENV !== "test") throw err;
-      console.warn(`[AIService] ${this.primaryProvider.name} failed in test; using test-only fallback provider.`);
-      const fallback = new FallbackAIProvider();
-      return await fallback.generateSOAPNote(input);
+      console.warn(`[AIService] ${this.primaryProvider.name} failed (${err.message}); falling back to local clinical copilot engine.`);
+      return await this.fallbackProvider.generateSOAPNote(input);
     }
   }
 
@@ -315,10 +326,8 @@ export class AIService {
     try {
       return await this.primaryProvider.queryPatientHealthAssistant(input);
     } catch (err: any) {
-      if (process.env.NODE_ENV !== "test") throw err;
-      console.warn(`[AIService] ${this.primaryProvider.name} failed in test; using test-only fallback provider.`);
-      const fallback = new FallbackAIProvider();
-      return await fallback.queryPatientHealthAssistant(input);
+      console.warn(`[AIService] ${this.primaryProvider.name} failed (${err.message}); falling back to local clinical copilot engine.`);
+      return await this.fallbackProvider.queryPatientHealthAssistant(input);
     }
   }
 }

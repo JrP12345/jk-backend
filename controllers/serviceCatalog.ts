@@ -195,13 +195,13 @@ export async function seedDefaultServices(req: FastifyRequest, reply: FastifyRep
     const defaultServices = [
       { code: "SRV-CONS-OPD", name: "OPD General Consultation", department: "General Medicine", category: "consultation", price: 500, hsnSacCode: "999312", gstRate: 0, description: "Standard outpatient physician consultation" },
       { code: "SRV-CONS-SPEC", name: "Specialist Consultation", department: "Specialist Medicine", category: "consultation", price: 1000, hsnSacCode: "999312", gstRate: 0, description: "Senior consultant / specialist consultation fee" },
-      { code: "SRV-CONS-EMG", name: "Emergency Consultation & Triage", department: "Emergency", category: "consultation", price: 1500, hsnSacCode: "999312", gstRate: 0, description: "Emergency department immediate assessment" },
+      { code: "SRV-CONS-URGENT", name: "Urgent Care OPD Consultation", department: "General Medicine", category: "consultation", price: 1200, hsnSacCode: "999312", gstRate: 0, description: "Priority walk-in outpatient assessment" },
       { code: "SRV-LAB-CBC", name: "Complete Blood Count (CBC)", department: "Pathology", category: "lab_test", price: 350, hsnSacCode: "999316", gstRate: 0, description: "Full blood cell count & differential" },
       { code: "SRV-LAB-LFT", name: "Liver Function Test (LFT)", department: "Biochemistry", category: "lab_test", price: 800, hsnSacCode: "999316", gstRate: 0, description: "Bilirubin, SGOT, SGPT, Alkaline Phosphatase" },
       { code: "SRV-RAD-XRAY", name: "X-Ray Chest PA View", department: "Radiology", category: "radiology", price: 600, hsnSacCode: "999315", gstRate: 0, description: "Digital chest radiograph" },
       { code: "SRV-RAD-USG", name: "Ultrasound Abdomen & Pelvis", department: "Radiology", category: "radiology", price: 1500, hsnSacCode: "999315", gstRate: 0, description: "Abdominal & pelvic sonography" },
-      { code: "SRV-BED-GEN", name: "General Ward Bed Daily Rate", department: "IPD Wards", category: "bed_charge", price: 1200, hsnSacCode: "999311", gstRate: 0, description: "Per day bed & nursing charge general ward" },
-      { code: "SRV-BED-ICU", name: "ICU Bed Daily Charge with Monitoring", department: "Intensive Care", category: "bed_charge", price: 6500, hsnSacCode: "999311", gstRate: 0, description: "Critical care bed rate per 24 hours" },
+      { code: "SRV-PROC-ECG", name: "12-Lead Electrocardiogram (ECG)", department: "Cardiology", category: "procedure", price: 500, hsnSacCode: "999312", gstRate: 0, description: "Standard 12-lead resting ECG" },
+      { code: "SRV-PROC-NEB", name: "Aerosol Nebulization Therapy", department: "Nursing", category: "procedure", price: 200, hsnSacCode: "999312", gstRate: 0, description: "Nebulizer breathing treatment" },
       { code: "SRV-PROC-DRESS", name: "Wound Dressing & Bandaging", department: "Nursing", category: "procedure", price: 250, hsnSacCode: "999312", gstRate: 0, description: "Minor procedure dressing" },
       { code: "SRV-PROC-IV", name: "IV Infusion & Nursing Care", department: "Nursing", category: "nursing", price: 300, hsnSacCode: "999312", gstRate: 0, description: "Intravenous line setup and medication administration" }
     ];

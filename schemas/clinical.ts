@@ -1,35 +1,5 @@
 const objectIdPattern = "^[0-9a-fA-F]{24}$";
 
-export const createBedSchema = {
-  body: {
-    type: "object",
-    required: ["clinicId", "wardName", "bedNumber", "pricePerDay"],
-    properties: {
-      clinicId: { type: "string", pattern: objectIdPattern },
-      wardName: { type: "string", minLength: 1 },
-      bedNumber: { type: "string", minLength: 1 },
-      pricePerDay: { type: "number", minimum: 0 }
-    },
-    additionalProperties: false
-  }
-};
-
-export const admitPatientSchema = {
-  body: {
-    type: "object",
-    required: ["clinicId", "patientId", "bedId", "doctorInCharge", "reasonForAdmission"],
-    properties: {
-      clinicId: { type: "string", pattern: objectIdPattern },
-      patientId: { type: "string", pattern: objectIdPattern },
-      bedId: { type: "string", pattern: objectIdPattern },
-      doctorInCharge: { type: "string", pattern: objectIdPattern },
-      reasonForAdmission: { type: "string", minLength: 1 },
-      notes: { type: "string" }
-    },
-    additionalProperties: false
-  }
-};
-
 export const createMedicineSchema = {
   body: {
     type: "object",

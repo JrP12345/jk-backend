@@ -12,8 +12,6 @@ import { Clinic } from "../models/Clinic.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Encounter } from "../models/Encounter.ts";
-import { Bed } from "../models/Bed.ts";
-import { Admission } from "../models/Admission.ts";
 import { Medicine } from "../models/Medicine.ts";
 import { Prescription } from "../models/Prescription.ts";
 import { LabTest } from "../models/LabTest.ts";
@@ -259,7 +257,7 @@ export async function seedDefaultRoles(session?: any) {
   ];
 
   for (const role of defaultRoles) {
-    const opts: any = { upsert: true, new: true };
+    const opts: any = { upsert: true, returnDocument: "after" };
     if (session) opts.session = session;
 
     // Use $addToSet so existing custom roles gain any missing built-in permissions
@@ -463,7 +461,7 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
         category: "organization",
         targetUserId: adminUser._id.toString(),
         title: "Organization Created",
-        message: `Welcome to Ananta! Organization workspace (${org_name}) is now active.`,
+        message: `Welcome to Anant! Organization workspace (${org_name}) is now active.`,
         severity: "success",
         organizationId: orgIdStr,
         actionUrl: "/dashboard",
@@ -473,9 +471,9 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
         const portalUrl = `${process.env.CORS_ALLOWED_ORIGINS || "http://localhost:3000"}/login`;
         emailProvider.sendEmail({
           to: admin_email.trim().toLowerCase(),
-          subject: `Welcome to ANANTA - ${org_name} Workspace Provisioned`,
-          text: `Hello ${admin_name},\n\nYour organization workspace (${org_name}) has been provisioned on ANANTA Healthcare OS.\n\nLogin Portal: ${portalUrl}\nEmail: ${admin_email}\nPassword: ${admin_password}\n\nPlease sign in to configure your clinical staff and operational settings.`,
-          html: `<p>Hello <strong>${admin_name}</strong>,</p><p>Your organization workspace (<strong>${org_name}</strong>) has been provisioned on ANANTA Healthcare OS.</p><ul><li><strong>Login Portal:</strong> <a href="${portalUrl}">${portalUrl}</a></li><li><strong>Email:</strong> ${admin_email}</li><li><strong>Password:</strong> ${admin_password}</li></ul><p>Please sign in to configure your clinical staff and operational settings.</p>`,
+          subject: `Welcome to ANANT - ${org_name} Workspace Provisioned`,
+          text: `Hello ${admin_name},\n\nYour organization workspace (${org_name}) has been provisioned on ANANT Healthcare OS.\n\nLogin Portal: ${portalUrl}\nEmail: ${admin_email}\nPassword: ${admin_password}\n\nPlease sign in to configure your clinical staff and operational settings.`,
+          html: `<p>Hello <strong>${admin_name}</strong>,</p><p>Your organization workspace (<strong>${org_name}</strong>) has been provisioned on ANANT Healthcare OS.</p><ul><li><strong>Login Portal:</strong> <a href="${portalUrl}">${portalUrl}</a></li><li><strong>Email:</strong> ${admin_email}</li><li><strong>Password:</strong> ${admin_password}</li></ul><p>Please sign in to configure your clinical staff and operational settings.</p>`,
         }).catch((e) => console.error("Welcome email send error:", e));
       }
 
@@ -588,10 +586,6 @@ export async function deleteOrganizationById(req: FastifyRequest, reply: Fastify
       // Appointments & Encounters
       Appointment.deleteMany({ $or: [{ clinicId: { $in: clinicIds } }, { organizationId: id }] }),
       Encounter.deleteMany({ clinicId: { $in: clinicIds } }),
-
-      // Inpatient Admissions & Beds
-      Bed.deleteMany({ clinicId: { $in: clinicIds } }),
-      Admission.deleteMany({ clinicId: { $in: clinicIds } }),
 
       // Pharmacy & Inventory
       Medicine.deleteMany({ clinicId: { $in: clinicIds } }),
@@ -718,7 +712,7 @@ export async function addDoctor(req: FastifyRequest, reply: FastifyReply) {
         category: "organization",
         targetUserId: newDoctorUser._id.toString(),
         title: "Joined Organization",
-        message: `You have been added as a Doctor in Ananta.`,
+        message: `You have been added as a Doctor in Anant.`,
         severity: "info",
         organizationId: orgId,
       });
@@ -792,7 +786,7 @@ export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) 
         category: "organization",
         targetUserId: newRecUser._id.toString(),
         title: "Joined Organization",
-        message: `You have been added as a Receptionist in Ananta.`,
+        message: `You have been added as a Receptionist in Anant.`,
         severity: "info",
         organizationId: orgId,
       });
@@ -965,7 +959,7 @@ export async function addStaff(req: FastifyRequest, reply: FastifyReply) {
         category: "organization",
         targetUserId: newUser._id.toString(),
         title: "Joined Organization",
-        message: `You have been added as a ${role.replace("_", " ").toUpperCase()} in Ananta.`,
+        message: `You have been added as a ${role.replace("_", " ").toUpperCase()} in Anant.`,
         severity: "info",
         organizationId: orgId,
       });
@@ -1009,9 +1003,9 @@ export async function inviteStaff(req: FastifyRequest, reply: FastifyReply) {
     const inviteUrl = `${process.env.CORS_ALLOWED_ORIGINS || "http://localhost:3000"}/accept-invite?token=${rawToken}`;
     const sent = await emailProvider.sendEmail({
       to: email,
-      subject: "Invitation to join ANANTA Healthcare Platform",
-      text: `You have been invited to join ANANTA as a ${role.toUpperCase()}. Click here to set up your account: ${inviteUrl}`,
-      html: `<p>You have been invited to join ANANTA as a <strong>${role.toUpperCase()}</strong>.</p><p><a href="${inviteUrl}">Click here to accept invitation</a> (valid for 48 hours).</p>`,
+      subject: "Invitation to join ANANT Healthcare Platform",
+      text: `You have been invited to join ANANT as a ${role.toUpperCase()}. Click here to set up your account: ${inviteUrl}`,
+      html: `<p>You have been invited to join ANANT as a <strong>${role.toUpperCase()}</strong>.</p><p><a href="${inviteUrl}">Click here to accept invitation</a> (valid for 48 hours).</p>`,
     });
     if (!sent) {
       await OrgInvite.deleteOne({ tokenHash });
@@ -1271,7 +1265,7 @@ export async function enableAdminDoctorProfile(req: FastifyRequest, reply: Fasti
         registrationNumber: registrationNumber?.trim() || null,
         isActive: true,
       },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: "after" }
     );
 
     return reply.code(200).send(successResponse(doctor, "Clinical Doctor Profile linked to Admin Account successfully!"));
@@ -1441,7 +1435,7 @@ export async function saveDraft(req: FastifyRequest, reply: FastifyReply) {
     const draft = await OnboardingDraft.findOneAndUpdate(
       { token },
       { step: step || 0, formData: formData || {}, updatedAt: new Date() },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: "after" }
     );
 
     return reply.send(successResponse(draft, "Draft saved successfully"));
@@ -1578,7 +1572,7 @@ export async function verifyOnboardingTOTP(req: FastifyRequest, reply: FastifyRe
   }
 }
 
-// ─── Hospital Department Management ──────────────────────────────
+// ─── Department Management ───────────────────────────────────────
 export async function createDepartment(req: FastifyRequest, reply: FastifyReply) {
   try {
     const orgId = req.user!.organization_id;
@@ -1599,7 +1593,7 @@ export async function createDepartment(req: FastifyRequest, reply: FastifyReply)
       headDoctorId,
     });
 
-    return reply.code(201).send(successResponse(dept, "Hospital Department created successfully"));
+    return reply.code(201).send(successResponse(dept, "Department created successfully"));
   } catch (err: any) {
     if (err.code === 11000) return reply.code(409).send(errorResponse("Department code already exists in this organization"));
     console.error("createDepartment error:", err);
@@ -1609,10 +1603,19 @@ export async function createDepartment(req: FastifyRequest, reply: FastifyReply)
 
 export async function getDepartments(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user!.organization_id;
-    if (!orgId) return reply.code(400).send(errorResponse("Organization ID required"));
+    let orgId = req.user?.organization_id;
+    const query = req.query as any;
 
-    const departments = await Department.find({ organizationId: orgId })
+    if (req.user?.role === "root" && query?.organizationId) {
+      orgId = query.organizationId;
+    }
+
+    const filter: any = {};
+    if (orgId) {
+      filter.organizationId = orgId;
+    }
+
+    const departments = await Department.find(filter)
       .populate("headDoctorId", "name email specialization")
       .populate("clinicId", "name city")
       .sort({ name: 1 });

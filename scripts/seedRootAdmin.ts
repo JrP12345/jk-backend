@@ -54,7 +54,7 @@ async function seedDatabase() {
 
     const seedClinic = await Clinic.create({
       organizationId: seedOrg._id,
-      name: "ANANTA Central Hospital",
+      name: "ANANTA Central Clinic",
       city: "San Francisco",
       address: "100 Medical Center Drive, Suite 100",
       phone: "+1 415 555 0199",

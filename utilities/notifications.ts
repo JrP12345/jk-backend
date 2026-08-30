@@ -69,8 +69,8 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
         ? `Appointment Confirmed - Token #${token} at ${clinicName}`
         : `Appointment Cancelled - ${clinicName}`;
       const body = actionType === "booked"
-        ? `Hello ${patientName},\n\nYour appointment booking with Dr. ${doctorName} at ${clinicName} is confirmed for ${time}.\n\nYour assigned daily queue token is #${token}.\n\nPlease scan the reception QR code or check the Queue Dashboard when you arrive to view live wait times.\n\nBest regards,\nAnanta Health Desk`
-        : `Hello ${patientName},\n\nThis is to inform you that your appointment with Dr. ${doctorName} at ${clinicName} scheduled for ${time} has been cancelled.\n\nIf you believe this is an error, please contact clinic reception.\n\nBest regards,\nAnanta Health Desk`;
+        ? `Hello ${patientName},\n\nYour appointment booking with Dr. ${doctorName} at ${clinicName} is confirmed for ${time}.\n\nYour assigned daily queue token is #${token}.\n\nPlease scan the reception QR code or check the Queue Dashboard when you arrive to view live wait times.\n\nBest regards,\nAnant Health Desk`
+        : `Hello ${patientName},\n\nThis is to inform you that your appointment with Dr. ${doctorName} at ${clinicName} scheduled for ${time} has been cancelled.\n\nIf you believe this is an error, please contact clinic reception.\n\nBest regards,\nAnant Health Desk`;
 
       await emailProvider.sendEmail({
         to: patientEmail,

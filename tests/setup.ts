@@ -14,8 +14,6 @@ import "../models/DoctorAssignment.ts";
 import "../models/Patient.ts";
 import "../models/Appointment.ts";
 import "../models/Invoice.ts";
-import "../models/Bed.ts";
-import "../models/Admission.ts";
 import "../models/Medicine.ts";
 import "../models/LabTest.ts";
 import "../models/LabOrder.ts";

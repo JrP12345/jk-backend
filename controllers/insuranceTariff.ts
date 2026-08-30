@@ -41,7 +41,7 @@ export async function upsertTariff(req: FastifyRequest, reply: FastifyReply) {
         coPayPercentage: coPayPercentage || 0,
         isActive: true,
       },
-      { new: true, upsert: true }
+      { returnDocument: "after", upsert: true }
     );
 
     return reply.code(200).send(successResponse(tariff, "Insurance tariff rate updated successfully"));

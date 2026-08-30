@@ -17,7 +17,6 @@ const defaultPlans = [
     displayOrder: 1,
     isPopular: false,
     limits: {
-      maxHospitals: 1,
       maxClinics: 1,
       maxDoctors: 2,
       maxStaff: 5,
@@ -46,7 +45,6 @@ const defaultPlans = [
     displayOrder: 2,
     isPopular: true,
     limits: {
-      maxHospitals: 3,
       maxClinics: 5,
       maxDoctors: 15,
       maxStaff: 25,
@@ -66,7 +64,7 @@ const defaultPlans = [
   {
     name: "Enterprise",
     slug: "enterprise",
-    description: "Advanced infrastructure with dedicated AI engines, unlimited branches, and custom SLA for hospitals.",
+    description: "Advanced infrastructure with dedicated AI engines, unlimited branches, and custom SLA for large healthcare organizations.",
     monthlyPrice: 14999,
     annualPrice: 149990,
     currency: "INR",
@@ -75,7 +73,6 @@ const defaultPlans = [
     displayOrder: 3,
     isPopular: false,
     limits: {
-      maxHospitals: 99,
       maxClinics: 99,
       maxDoctors: 999,
       maxStaff: 999,

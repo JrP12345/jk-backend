@@ -11,14 +11,11 @@ import { Doctor } from "../models/Doctor.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Receptionist } from "../models/Receptionist.ts";
 import { Patient } from "../models/Patient.ts";
-import { Bed } from "../models/Bed.ts";
-import { Admission } from "../models/Admission.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { ClinicalNote } from "../models/ClinicalNote.ts";
 import { Prescription } from "../models/Prescription.ts";
 import { Medicine } from "../models/Medicine.ts";
-import { MedicationAdministration } from "../models/MedicationAdministration.ts";
 import { LabTest } from "../models/LabTest.ts";
 import { LabOrder } from "../models/LabOrder.ts";
 import { Observation } from "../models/Observation.ts";
@@ -31,7 +28,6 @@ import { Notification } from "../models/Notification.ts";
 import { NotificationDelivery } from "../models/NotificationDelivery.ts";
 import { NotificationPreference } from "../models/NotificationPreference.ts";
 import { NotificationTemplate } from "../models/NotificationTemplate.ts";
-import { DischargeDocument } from "../models/DischargeDocument.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { Counter } from "../models/Counter.ts";
 import { Role } from "../models/Role.ts";
@@ -67,14 +63,11 @@ async function runPureRootOnlySeed() {
       DoctorAssignment.deleteMany({}),
       Receptionist.deleteMany({}),
       Patient.deleteMany({}),
-      Bed.deleteMany({}),
-      Admission.deleteMany({}),
       Encounter.deleteMany({}),
       Appointment.deleteMany({}),
       ClinicalNote.deleteMany({}),
       Prescription.deleteMany({}),
       Medicine.deleteMany({}),
-      MedicationAdministration.deleteMany({}),
       LabTest.deleteMany({}),
       LabOrder.deleteMany({}),
       Observation.deleteMany({}),
@@ -87,7 +80,6 @@ async function runPureRootOnlySeed() {
       NotificationDelivery.deleteMany({}),
       NotificationPreference.deleteMany({}),
       NotificationTemplate.deleteMany({}),
-      DischargeDocument.deleteMany({}),
       AuditLog.deleteMany({}),
       Counter.deleteMany({}),
       Role.deleteMany({}),
@@ -116,7 +108,7 @@ async function runPureRootOnlySeed() {
         status: "active",
         displayOrder: 1,
         isPopular: false,
-        limits: { maxHospitals: 1, maxClinics: 1, maxDoctors: 2, maxStaff: 5, maxPatients: 500, maxAppointments: 1000, maxStorageMB: 2048 },
+        limits: { maxClinics: 1, maxDoctors: 2, maxStaff: 5, maxPatients: 500, maxAppointments: 1000, maxStorageMB: 2048 },
         features: { analytics: true, auditLogs: false, multiBranch: false, dataExport: false, apiAccess: false, aiFeatures: false }
       },
       {
@@ -130,13 +122,13 @@ async function runPureRootOnlySeed() {
         status: "active",
         displayOrder: 2,
         isPopular: true,
-        limits: { maxHospitals: 3, maxClinics: 5, maxDoctors: 15, maxStaff: 25, maxPatients: 5000, maxAppointments: 10000, maxStorageMB: 10240 },
+        limits: { maxClinics: 5, maxDoctors: 15, maxStaff: 25, maxPatients: 5000, maxAppointments: 10000, maxStorageMB: 10240 },
         features: { analytics: true, auditLogs: true, multiBranch: true, dataExport: true, apiAccess: false, aiFeatures: true }
       },
       {
         name: "Enterprise",
         slug: "enterprise",
-        description: "Advanced infrastructure with dedicated AI engines, unlimited branches, and custom SLA for hospitals.",
+        description: "Advanced infrastructure with dedicated AI engines, unlimited branches, and custom SLA for large healthcare organizations.",
         monthlyPrice: 14999,
         annualPrice: 149990,
         currency: "INR",
@@ -144,7 +136,7 @@ async function runPureRootOnlySeed() {
         status: "active",
         displayOrder: 3,
         isPopular: false,
-        limits: { maxHospitals: 99, maxClinics: 99, maxDoctors: 999, maxStaff: 999, maxPatients: 99999, maxAppointments: 999999, maxStorageMB: 102400 },
+        limits: { maxClinics: 99, maxDoctors: 999, maxStaff: 999, maxPatients: 99999, maxAppointments: 999999, maxStorageMB: 102400 },
         features: { analytics: true, auditLogs: true, multiBranch: true, dataExport: true, apiAccess: true, aiFeatures: true }
       }
     ]);

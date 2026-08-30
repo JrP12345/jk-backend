@@ -37,7 +37,7 @@ export default async function platformGatewayRoutes(fastify: FastifyInstance) {
 
   fastify.get("/api/v1/platform/manifest", async (request, reply) => {
     return reply.send({
-      platform: "ANANTA Healthcare Intelligence Operating System",
+      platform: "ANANT Healthcare Intelligence Operating System",
       version: "1.0.0",
       status: "active",
       apis: {

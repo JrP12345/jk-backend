@@ -102,7 +102,7 @@ export function generatePrintablePrescriptionHtml(data: PrintPrescriptionData): 
 
   <div class="footer">
     <div style="font-size: 11px; color: #6b7280;">
-      ANANTA Digital Health Record &bull; Generated on ${new Date().toLocaleString()}
+      ANANT Digital Health Record &bull; Generated on ${new Date().toLocaleString()}
     </div>
     <div class="signature-box">
       ${data.doctorSignatureUrl ? `<img src="${data.doctorSignatureUrl}" style="max-height: 40px; margin-bottom: 4px;">` : ""}

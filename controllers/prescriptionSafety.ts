@@ -6,7 +6,7 @@ import { CDSEvaluation } from "../models/CDSEvaluation.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { cdsEngine } from "../services/CDSEngine.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess } from "../utilities/tenant.ts";
+import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, resolveTargetOrganizationId } from "../utilities/tenant.ts";
 
 function sendTenantError(reply: FastifyReply, result: { statusCode: number; message: string }) {
   return reply.code(result.statusCode).send(errorResponse(result.message));
@@ -55,9 +55,10 @@ export async function evaluatePrescriptionSafetyController(req: FastifyRequest, 
   }
 }
 
-export async function overrideCDSEvaluationController(req: FastifyRequest, reply: FastifyReply) {
+export async function recordSafetyDecisionController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    let orgId = await resolveTargetOrganizationId(req);
+    const userId = req.user?.id;
     const {
       clinicId,
       encounterId,
@@ -76,7 +77,6 @@ export async function overrideCDSEvaluationController(req: FastifyRequest, reply
       overrideReason?: string;
     };
 
-    if (!orgId) return reply.code(403).send(errorResponse("Organization context required"));
     if (!patientId || !clinicId || !clinicianDecision) {
       return reply.code(400).send(errorResponse("clinicId, patientId and clinicianDecision are required"));
     }
@@ -86,7 +86,14 @@ export async function overrideCDSEvaluationController(req: FastifyRequest, reply
     }
     const clinicAccess = await checkClinicAccess(req, clinicId);
     if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
-    if (clinicAccess.organizationId !== orgId) return reply.code(403).send(errorResponse("Clinic does not belong to the active organization"));
+
+    if (!orgId && clinicAccess.organizationId) {
+      orgId = clinicAccess.organizationId;
+    }
+    if (!orgId) return reply.code(403).send(errorResponse("Organization context required"));
+    if (clinicAccess.organizationId && clinicAccess.organizationId !== orgId && req.user?.role !== "root") {
+      return reply.code(403).send(errorResponse("Clinic does not belong to the active organization"));
+    }
     const patientAccess = await checkPatientAccess(req, patientId);
     if (!patientAccess.allowed) return sendTenantError(reply, patientAccess);
 
@@ -126,3 +133,5 @@ export async function overrideCDSEvaluationController(req: FastifyRequest, reply
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
+
+export const overrideCDSEvaluationController = recordSafetyDecisionController;

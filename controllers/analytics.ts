@@ -3,7 +3,6 @@ import mongoose from "mongoose";
 import { Clinic } from "../models/Clinic.ts";
 import { Organization } from "../models/Organization.ts";
 import { Invoice } from "../models/Invoice.ts";
-import { Bed } from "../models/Bed.ts";
 import { Medicine } from "../models/Medicine.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Doctor } from "../models/Doctor.ts";
@@ -101,21 +100,7 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
 
     const totalRevenue = paidEntry ? paidEntry.total : 0;
     const outstandingBilling = unpaidEntry ? unpaidEntry.total : 0;
-
-    // 3. Bed Occupancy Aggregation ($group)
-    const bedAgg = await Bed.aggregate([
-      { $match: { clinicId: { $in: clinicIds } } },
-      {
-        $group: {
-          _id: "$status",
-          count: { $sum: 1 },
-        },
-      },
-    ]);
-
-    const totalBeds = bedAgg.reduce((acc, curr) => acc + curr.count, 0);
-    const occupiedBeds = bedAgg.find((b) => b._id === "occupied")?.count || 0;
-    const bedOccupancyRate = totalBeds > 0 ? Math.round((occupiedBeds / totalBeds) * 100) : 0;
+    const bedOccupancyRate = 0;
 
     // 4. Low Stock Medicines Aggregation
     const lowStockMedicines = await Medicine.countDocuments({
@@ -245,8 +230,6 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
 export async function getNabhKpis(req: FastifyRequest, reply: FastifyReply) {
   try {
     const orgId = req.user?.organization_id;
-    const { Admission } = await import("../models/Admission.ts");
-    const { MedicationAdministration } = await import("../models/MedicationAdministration.ts");
 
     let clinics = orgId ? await Clinic.find({ organizationId: orgId, isActive: true }) : [];
     if (clinics.length === 0 && req.user?.role === "root") {
@@ -255,59 +238,7 @@ export async function getNabhKpis(req: FastifyRequest, reply: FastifyReply) {
       clinics = await Clinic.find({ organizationId: { $in: rootOrgIds }, isActive: true });
     }
     const clinicIds = clinics.map((c) => c._id);
-
-    // 1. Average Length of Stay (ALOS)
     const clinicFilter = { clinicId: { $in: clinicIds } };
-    const dischargedAdmissions = await Admission.find({ status: "discharged", ...clinicFilter });
-
-    let totalInpatientDays = 0;
-    dischargedAdmissions.forEach((adm) => {
-      const start = adm.admissionDate || adm.createdAt;
-      const end = adm.dischargeDate || adm.updatedAt;
-      if (start && end) {
-        const diffMs = new Date(end).getTime() - new Date(start).getTime();
-        const days = Math.max(1, Math.ceil(diffMs / (1000 * 3600 * 24)));
-        totalInpatientDays += days;
-      }
-    });
-
-    const totalDischarges = dischargedAdmissions.length;
-    const alosDays = totalDischarges > 0 ? Number((totalInpatientDays / totalDischarges).toFixed(1)) : null;
-
-    // 2. Bed Occupancy Rate (BOR)
-    const beds = await Bed.find({ clinicId: { $in: clinicIds } });
-    const totalBeds = beds.length;
-    const occupiedBeds = beds.filter((b) => b.status === "occupied").length;
-    const bedOccupancyRate = totalBeds > 0 ? Math.round((occupiedBeds / totalBeds) * 100) : null;
-
-    // 3. 30-Day Hospital Readmission Rate
-    // Patients with > 1 admission within 30 days
-    const patientAdmissionsMap: Record<string, Date[]> = {};
-    const allAdmissions = await Admission.find(clinicFilter).sort({ createdAt: 1 });
-    allAdmissions.forEach((adm) => {
-      const pId = adm.patientId.toString();
-      if (!patientAdmissionsMap[pId]) patientAdmissionsMap[pId] = [];
-      patientAdmissionsMap[pId].push(new Date(adm.admissionDate || adm.createdAt));
-    });
-
-    let readmissionCount = 0;
-    Object.values(patientAdmissionsMap).forEach((dates) => {
-      for (let i = 1; i < dates.length; i++) {
-        const diffDays = (dates[i].getTime() - dates[i - 1].getTime()) / (1000 * 3600 * 24);
-        if (diffDays <= 30) {
-          readmissionCount++;
-          break;
-        }
-      }
-    });
-
-    const uniquePatientsCount = Object.keys(patientAdmissionsMap).length;
-    const readmissionRate = uniquePatientsCount > 0 ? Number(((readmissionCount / uniquePatientsCount) * 100).toFixed(1)) : null;
-
-    // 4. MAR Medication Safety Compliance Rate
-    const totalMarDoses = await MedicationAdministration.countDocuments(clinicFilter);
-    const administeredDoses = await MedicationAdministration.countDocuments({ ...clinicFilter, status: "given" });
-    const marComplianceRate = totalMarDoses > 0 ? Math.round((administeredDoses / totalMarDoses) * 100) : null;
 
     const feedback = await PatientFeedback.find(clinicFilter).select("rating").lean();
     const patientSatisfactionScore = feedback.length > 0
@@ -316,20 +247,17 @@ export async function getNabhKpis(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(
       successResponse({
-        nabhStandardsVersion: "NABH 5th Edition Standards",
+        nabhStandardsVersion: "NABH Clinic Quality Standards",
         indicators: {
-          averageLengthOfStayDays: alosDays,
-          bedOccupancyRatePercent: bedOccupancyRate,
-          readmissionRate30DaysPercent: readmissionRate,
-          marMedicationCompliancePercent: marComplianceRate,
+          averageLengthOfStayDays: null,
+          bedOccupancyRatePercent: null,
+          readmissionRate30DaysPercent: null,
+          marMedicationCompliancePercent: null,
           hospitalAcquiredInfectionRatePer1000: null,
           patientSatisfactionScorePercent: patientSatisfactionScore,
         },
         benchmarks: {
-          targetALOS: "3.0 - 5.0 days",
-          targetBOR: "75 - 85%",
-          targetReadmissionRate: "< 5.0%",
-          targetMARCompliance: "> 95%",
+          targetSatisfaction: "> 90%",
         },
       })
     );
@@ -405,7 +333,7 @@ export async function exportAnalyticsReportController(req: FastifyRequest, reply
       exportedAt: new Date().toISOString(),
       organizationId: orgId || "GLOBAL",
       reportType,
-      summary: "ANANTA Healthcare Executive & NABH Quality Accreditation Report",
+      summary: "ANANT Healthcare Executive & NABH Quality Accreditation Report",
       status: "generated",
       metrics: { invoiceCount, appointmentCount, encounterCount, claimCount },
     };

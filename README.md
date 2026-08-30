@@ -1,4 +1,4 @@
-# HealthOS / Ananta Health — Backend API Engine
+# HealthOS / Anant Health — Backend API Engine
 
 An enterprise healthcare platform backend built with **Fastify 5**, **Node.js (ES Modules)**, **MongoDB (Mongoose 9)**, **Redis**, and asymmetric **RS256 JWT authentication**.
 

@@ -51,7 +51,7 @@ export class RazorpayService {
 
     if (!keyId || !keySecret) {
       throw new Error(
-        "Razorpay Credentials Not Saved in MongoDB. Please go to Root Admin Console (http://localhost:3000/dashboard/admin/billing -> Razorpay Platform Gateway tab), enter your Razorpay Key ID & Key Secret, and click 'Save Gateway Credentials'."
+        "Razorpay Credentials Not Saved in MongoDB. Please go to Root Admin Console (Dashboard → Admin → Billing → Razorpay Platform Gateway tab), enter your Razorpay Key ID & Key Secret, and click 'Save Gateway Credentials'."
       );
     }
 
@@ -110,7 +110,7 @@ export class RazorpayService {
       const errText = await response.text();
       if (response.status === 401) {
         throw new Error(
-          `Razorpay Authentication Failed (401): The Key ID '${keyId}' or Key Secret saved in MongoDB is invalid or rejected by Razorpay. Please re-enter your valid Razorpay Key ID (rzp_test_...) and Key Secret at http://localhost:3000/dashboard/admin/billing and click Save.`
+          `Razorpay Authentication Failed (401): The Key ID '${keyId}' or Key Secret saved in MongoDB is invalid or rejected by Razorpay. Please re-enter your valid Razorpay Key ID (rzp_test_...) and Key Secret in Dashboard → Admin → Billing and click Save.`
         );
       }
       throw new Error(`Razorpay API Order Creation Failed (${response.status}): ${errText}`);

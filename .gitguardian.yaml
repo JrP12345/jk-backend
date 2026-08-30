@@ -1,0 +1,12 @@
+version: 2
+
+# GitGuardian Secret Detection Configuration
+secret:
+  ignored_paths:
+    - "tests/**"
+    - "scripts/**"
+  ignored_matches:
+    - name: "User AuthMethod enum string"
+      match: "phone_otp"
+    - name: "Test Mock Password"
+      match: "Password123!"

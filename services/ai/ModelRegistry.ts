@@ -26,7 +26,7 @@ export class ModelRegistry {
     this.mappings.set("CLINICAL_FAST", {
       alias: "CLINICAL_FAST",
       providerName: "GoogleGeminiAI",
-      modelEndpoint: "gemini-flash-latest",
+      modelEndpoint: "gemini-1.5-flash",
       costPer1kTokensUSD: 0.000075
     });
 
@@ -40,7 +40,7 @@ export class ModelRegistry {
     this.mappings.set("CLINICAL_REASONING", {
       alias: "CLINICAL_REASONING",
       providerName: "GoogleGeminiAI",
-      modelEndpoint: "gemini-2.0-flash-001",
+      modelEndpoint: "gemini-2.5-flash",
       costPer1kTokensUSD: 0.00015
     });
   }

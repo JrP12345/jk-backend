@@ -7,19 +7,13 @@ import type {
 } from "../types/timeline.ts";
 import { ConsultationProvider } from "./providers/ConsultationProvider.ts";
 import { LabProvider } from "./providers/LabProvider.ts";
-import { AdmissionProvider } from "./providers/AdmissionProvider.ts";
 import { BillingProvider } from "./providers/BillingProvider.ts";
-import { MARProvider } from "./providers/MARProvider.ts";
-import { DischargeSummaryProvider } from "./providers/DischargeSummaryProvider.ts";
 import { DocumentUploadProvider } from "./providers/DocumentUploadProvider.ts";
 import { isModuleEnabledForOrganization } from "../utilities/moduleAccess.ts";
 
-/** P3 providers gated by org module toggles — P1 providers always run. */
+/** P2 providers gated by org module toggles — P1 providers always run. */
 const PROVIDER_MODULE_REQUIREMENTS: Record<string, string> = {
   LabProvider: "laboratory",
-  AdmissionProvider: "admissions",
-  MARProvider: "admissions",
-  DischargeSummaryProvider: "admissions",
 };
 
 export class TimelineProviderRegistry {
@@ -42,12 +36,7 @@ export class TimelineService {
     // Register built-in clinical & financial providers
     this.registry.register(new ConsultationProvider());
     this.registry.register(new LabProvider());
-    this.registry.register(new AdmissionProvider());
     this.registry.register(new BillingProvider());
-    // v1.5.0: Medication Administration Record (MAR) provider
-    this.registry.register(new MARProvider());
-    // v1.7.0: Discharge Summary provider
-    this.registry.register(new DischargeSummaryProvider());
     // ANANTA v1.0: Patient & Clinic Document Upload provider
     this.registry.register(new DocumentUploadProvider());
   }

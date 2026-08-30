@@ -5,8 +5,6 @@ import { LabOrder } from "../models/LabOrder.ts";
 import { LabTest } from "../models/LabTest.ts";
 import { Prescription } from "../models/Prescription.ts";
 import { Medicine } from "../models/Medicine.ts";
-import { Admission } from "../models/Admission.ts";
-import { Bed } from "../models/Bed.ts";
 import { ServiceCatalog } from "../models/ServiceCatalog.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { generateClinicInvoiceNumber } from "../utilities/invoiceNumber.ts";
@@ -52,7 +50,7 @@ export async function compileEncounterCharges(encounterId: string): Promise<{
 
     const catalogBase = {
       organizationId: encounter.organizationId,
-      category: "consultation",
+      category: "consultation" as const,
       isActive: true,
     };
     let opdCatalogItem = await ServiceCatalog.findOne({ ...catalogBase, clinicId: encounter.clinicId });
@@ -76,7 +74,6 @@ export async function compileEncounterCharges(encounterId: string): Promise<{
 
   const orgId = organizationId?.toString();
   const labEnabled = orgId ? await isModuleEnabledForOrganization(orgId, "laboratory") : false;
-  const admissionsEnabled = orgId ? await isModuleEnabledForOrganization(orgId, "admissions") : false;
 
   // 2. Lab Orders linked to Encounter (only when laboratory module is enabled)
   if (labEnabled) {
@@ -112,30 +109,6 @@ export async function compileEncounterCharges(encounterId: string): Promise<{
     }
   }
 
-  // 4. Inpatient Bed Stay Charges (only when admissions module is enabled)
-  if (admissionsEnabled) {
-    const admission = await Admission.findOne({
-      patientId,
-      clinicId: encounter.clinicId,
-      status: { $in: ["admitted", "discharged"] },
-    }).populate("bedId");
-    if (admission && admission.bedId) {
-      const bed = admission.bedId as any;
-      const admitDate = new Date((admission as any).admittedAt || (admission as any).admissionDate || (admission as any).createdAt);
-      const dischargeDate = (admission as any).dischargedAt || (admission as any).dischargeDate ? new Date((admission as any).dischargedAt || (admission as any).dischargeDate) : new Date();
-      const days = Math.max(1, Math.ceil((dischargeDate.getTime() - admitDate.getTime()) / (1000 * 3600 * 24)));
-
-      items.push({
-        description: `IPD Bed Stay (${bed.wardName || "Ward"} - Bed #${bed.bedNumber}) - ${days} Days`,
-        amount: bed.pricePerDay || 1000,
-        quantity: days,
-        hsnSacCode: "999311",
-        gstRate: 0,
-        category: "bed_charge",
-      });
-    }
-  }
-
   // Compute GST & Totals
   let subtotal = 0;
   let cgstTotal = 0;
@@ -167,7 +140,7 @@ export async function compileEncounterCharges(encounterId: string): Promise<{
   };
 }
 
-export async function autoGenerateEncounterInvoice(encounterId: string, createdByUserId: string): Promise<any> {
+export async function autoGenerateEncounterInvoice(encounterId: string, createdByUserId?: string): Promise<any> {
   // Check if invoice already exists for this encounter
   const existing = await Invoice.findOne({ encounterId });
   if (existing) {

@@ -34,36 +34,16 @@ export const MODULE_KEYS: Record<string, ModuleDefinition> = {
   "staff":           { route: "/dashboard/staff",          priority: "P1", label: "Staff Accounts",                      section: "Administration",         description: "Manage doctors, nurses, receptionists, and other staff" },
   "clinics":         { route: "/dashboard/clinics",        priority: "P1", label: "Clinic Branches",                     section: "Administration",         description: "Add and manage multi-location clinic branches" },
 
-  // ─── P2 — Important ──────────────────────────────────────────────
+  // ─── P2 — Important / Extended ────────────────────────────────────
   "laboratory":      { route: "/dashboard/laboratory",     priority: "P2", label: "Laboratory & LIS",                   section: "Diagnostics & Pharmacy", description: "Lab test ordering, sample tracking, and result management" },
   "radiology":       { route: "/dashboard/radiology",      priority: "P2", label: "Radiology & PACS",                   section: "Diagnostics & Pharmacy", description: "Imaging orders, radiology reports, and PACS integration" },
   "analytics":       { route: "/dashboard/analytics",      priority: "P2", label: "Analytics",                          section: "Core Workspace",         description: "Operational and financial analytics dashboards" },
   "service-catalog": { route: "/dashboard/billing/services", priority: "P2", label: "Service Catalog",                  section: "Billing & Finance",      description: "Define and manage billable services and pricing" },
   "insurance":       { route: "/dashboard/insurance",      priority: "P2", label: "Insurance & Claims",                 section: "Billing & Finance",      description: "Insurance tariffs, claims processing, and pre-authorization" },
   "teleconsultation": { route: "/dashboard/teleconsultation", priority: "P2", label: "Teleconsultation",                section: "Outpatient (OPD)",       description: "Video consultations with virtual waiting rooms" },
+  "shifts":          { route: "/dashboard/shifts",          priority: "P2", label: "Shift Roster",                      section: "Administration",         description: "Staff shift scheduling and roster management" },
+  "audit":           { route: "/dashboard/audit",           priority: "P2", label: "Audit Logs",                        section: "Administration",         description: "System-wide audit trail and activity logging" },
   "feedback":        { route: "/dashboard/feedback",       priority: "P2", label: "Patient Feedback",                   section: "Administration",         description: "Collect and analyze patient experience feedback" },
-
-  // ─── P3 — Hospital / Specialty ────────────────────────────────────
-  "emergency":             { route: "/dashboard/emergency",             priority: "P3", label: "Emergency Triage",        section: "Inpatient & Emergency",  description: "Emergency department triage with NEWS2 scoring" },
-  "admissions":            { route: "/dashboard/admissions",            priority: "P3", label: "Ward Admissions (IPD)",   section: "Inpatient & Emergency",  description: "Inpatient admissions, bed management, and discharges" },
-  "ot":                    { route: "/dashboard/ot",                    priority: "P3", label: "Operating Theatre",       section: "Inpatient & Emergency",  description: "Surgical booking, OT scheduling, and case management" },
-  "dietary":               { route: "/dashboard/dietary",               priority: "P3", label: "Dietary & Nutrition",     section: "Inpatient & Emergency",  description: "Inpatient diet orders, meal plans, and nutritional tracking" },
-  "transplant":            { route: "/dashboard/transplant",            priority: "P3", label: "Transplant Management",   section: "Inpatient & Emergency",  description: "Organ transplant case tracking and donor matching" },
-  "blood-bank":            { route: "/dashboard/blood-bank",            priority: "P3", label: "Blood Bank",              section: "Diagnostics & Pharmacy", description: "Blood unit inventory, cross-matching, and transfusion records" },
-  "genetics":              { route: "/dashboard/genetics",              priority: "P3", label: "Genetics & Molecular",    section: "Diagnostics & Pharmacy", description: "Genetic testing, molecular diagnostics, and reports" },
-  "hbot":                  { route: "/dashboard/hbot",                  priority: "P3", label: "HBOT Therapy",            section: "Diagnostics & Pharmacy", description: "Hyperbaric oxygen therapy session management" },
-  "fhir":                  { route: "/dashboard/fhir",                  priority: "P3", label: "FHIR Gateway",            section: "Diagnostics & Pharmacy", description: "HL7 FHIR interoperability gateway and resource exchange" },
-  "cds":                   { route: "/dashboard/cds",                   priority: "P3", label: "CDS Engine",              section: "Outpatient (OPD)",       description: "Clinical Decision Support rules and alerts" },
-  "ambulance-dispatch":    { route: "/dashboard/ambulance-dispatch",    priority: "P3", label: "Ambulance Dispatch",      section: "Outpatient (OPD)",       description: "Ambulance fleet tracking and emergency dispatch" },
-  "home-rpm":              { route: "/dashboard/home-rpm",              priority: "P3", label: "Home RPM",                section: "Outpatient (OPD)",       description: "Remote patient monitoring with IoT device integration" },
-  "shifts":                { route: "/dashboard/shifts",                priority: "P3", label: "Shift Roster",            section: "Administration",         description: "Staff shift scheduling and roster management" },
-  "biomedical":            { route: "/dashboard/biomedical",            priority: "P3", label: "Biomedical Assets",       section: "Administration",         description: "Medical equipment inventory and maintenance tracking" },
-  "cssd":                  { route: "/dashboard/cssd",                  priority: "P3", label: "CSSD Sterilization",      section: "Administration",         description: "Central sterile supply department tray tracking" },
-  "biohazard":             { route: "/dashboard/biohazard",             priority: "P3", label: "Biohazard Waste",         section: "Administration",         description: "Biomedical waste segregation and disposal tracking" },
-  "infection-control":     { route: "/dashboard/infection-control",     priority: "P3", label: "Infection Control",       section: "Administration",         description: "HAI surveillance, outbreak tracking, and IC protocols" },
-  "occupational-health":   { route: "/dashboard/occupational-health",   priority: "P3", label: "Occupational Health",     section: "Administration",         description: "Employee health screenings and workplace injury records" },
-  "mortuary":              { route: "/dashboard/mortuary",              priority: "P3", label: "Mortuary Desk",           section: "Administration",         description: "Mortuary intake, release, and documentation" },
-  "audit":                 { route: "/dashboard/audit",                 priority: "P3", label: "Audit Logs",              section: "Administration",         description: "System-wide audit trail and activity logging" },
 };
 
 /** All module key strings */

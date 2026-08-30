@@ -12,7 +12,6 @@ const SaaSPlanSchema = new Schema({
   displayOrder: { type: Number, default: 0 },
   isPopular: { type: Boolean, default: false },
   limits: {
-    maxHospitals: { type: Number, default: 1 },
     maxClinics: { type: Number, default: 1 },
     maxDoctors: { type: Number, default: 2 },
     maxStaff: { type: Number, default: 5 },

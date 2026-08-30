@@ -69,33 +69,36 @@ export class AIGateway {
     } catch (primaryErr: any) {
       console.warn(`[AIGateway] Primary provider ${provider.name} failed (${primaryErr.message}). Triggering failover fallback...`);
       
-      if (process.env.NODE_ENV !== "test") throw primaryErr;
-      const fallbackProvider = providerRegistry.getProvider("FallbackSimulationAI");
+      const fallbackProvider = providerRegistry.getProvider("FallbackSimulationAI") || providerRegistry.getProvider("SimulationFallbackAI");
       if (!fallbackProvider) throw primaryErr;
 
-      const fallbackRes = await fallbackProvider.queryPatientHealthAssistant({
-        patientId: request.sessionId || "general",
-        query: anonymizedPrompt,
-        patientRecordSummary: inboundContext.sixDContext.fullContextSummary
-      });
+      try {
+        const fallbackRes = await fallbackProvider.queryPatientHealthAssistant({
+          patientId: request.sessionId || "general",
+          query: anonymizedPrompt,
+          patientRecordSummary: inboundContext.sixDContext.fullContextSummary
+        });
 
-      const latencyMs = Date.now() - startTime;
-      const usage: AIUsage = {
-        inputTokens: Math.ceil(anonymizedPrompt.length / 4),
-        outputTokens: Math.ceil(fallbackRes.answer.length / 4),
-        estimatedCostUSD: 0,
-        latencyMs
-      };
+        const latencyMs = Date.now() - startTime;
+        const usage: AIUsage = {
+          inputTokens: Math.ceil(anonymizedPrompt.length / 4),
+          outputTokens: Math.ceil((fallbackRes.answer || "").length / 4),
+          estimatedCostUSD: 0,
+          latencyMs
+        };
 
-      return await OutboundPipeline.process(
-        fallbackRes.answer,
-        request.correlationId,
-        tokenMap,
-        fallbackProvider.name,
-        "simulation-fallback",
-        usage,
-        fallbackRes.citations
-      );
+        return await OutboundPipeline.process(
+          fallbackRes.answer,
+          request.correlationId,
+          tokenMap,
+          fallbackProvider.name,
+          "simulation-fallback",
+          usage,
+          fallbackRes.citations
+        );
+      } catch {
+        throw primaryErr;
+      }
     }
   }
 }

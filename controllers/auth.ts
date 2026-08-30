@@ -300,7 +300,7 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
       category: "auth",
       targetUserId: user.id,
       title: "New Account Login",
-      message: `Successful login to Ananta account (${user.email || user.name}).`,
+      message: `Successful login to Anant account (${user.email || user.name}).`,
       severity: "info",
       organizationId: organization_id,
     });
@@ -374,7 +374,7 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
       category: "auth",
       targetUserId: user.id,
       title: "New Account Login",
-      message: `Successful login to Ananta account (${user.email || user.name}).`,
+      message: `Successful login to Anant account (${user.email || user.name}).`,
       severity: "info",
       organizationId: organization_id,
     });
@@ -436,9 +436,9 @@ export async function forgotPassword(req: FastifyRequest, reply: FastifyReply) {
     const resetUrl = `${process.env.CORS_ALLOWED_ORIGINS || "http://localhost:3000"}/reset-password?token=${resetToken}`;
     const sent = await emailProvider.sendEmail({
       to: user.email!,
-      subject: "ANANTA Account Password Reset",
-      text: `Reset your ANANTA password using this link (valid for 1 hour): ${resetUrl}`,
-      html: `<p>Click here to reset your password: <a href="${resetUrl}">${resetUrl}</a></p>`,
+      subject: "ANANT Account Password Reset",
+      text: `Reset your ANANT password using this link (valid for 1 hour): ${resetUrl}`,
+      html: `<p>Click here to reset your ANANT password: <a href="${resetUrl}">${resetUrl}</a></p>`,
     });
     if (!sent) {
       console.error("forgotPassword: reset email delivery was unavailable");
@@ -682,7 +682,7 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
         await OrgMember.findOneAndUpdate(
           { userId: newUser._id, organizationId: selectedClinic.organizationId },
           { $setOnInsert: { role: "patient" } },
-          { upsert: true, new: true }
+          { upsert: true, returnDocument: "after" }
         );
       }
     } catch (err) {
@@ -693,9 +693,9 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
     const verificationUrl = `${process.env.CORS_ALLOWED_ORIGINS || "http://localhost:3000"}/verify-email?token=${emailVerificationToken}`;
     await emailProvider.sendEmail({
       to: normalizedEmail,
-      subject: "Verify your ANANTA account",
+      subject: "Verify your ANANT account",
       text: `Verify your account using this link (valid for 24 hours): ${verificationUrl}`,
-      html: `<p>Verify your ANANTA account: <a href="${verificationUrl}">${verificationUrl}</a></p>`,
+      html: `<p>Verify your ANANT account: <a href="${verificationUrl}">${verificationUrl}</a></p>`,
     });
 
     const roleConfig = await Role.findOne({ name: "patient" }).lean() as any;

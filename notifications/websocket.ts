@@ -115,13 +115,17 @@ export async function notificationStreamHandler(req: FastifyRequest, reply: Fast
     return reply.code(401).send({ success: false, message: "Unauthorized" });
   }
 
-  const origin = (req.headers.origin as string) || "http://localhost:3000";
+  const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS
+    ? process.env.CORS_ALLOWED_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
+    : ["http://localhost:3000"];
+  const requestOrigin = req.headers.origin as string | undefined;
+  const validOrigin = requestOrigin && allowedOrigins.includes(requestOrigin) ? requestOrigin : allowedOrigins[0];
   reply.raw.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
-    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Origin": validOrigin,
     "Access-Control-Allow-Credentials": "true",
   });
 

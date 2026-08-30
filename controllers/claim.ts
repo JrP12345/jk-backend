@@ -6,7 +6,7 @@ import { paymentProvider } from "../services/payment/PaymentProvider.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import crypto from "node:crypto";
 import mongoose from "mongoose";
-import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds } from "../utilities/tenant.ts";
+import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds, resolveTargetOrganizationId } from "../utilities/tenant.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));
@@ -15,7 +15,7 @@ function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCod
 // ─── POST /api/billing/claims ──────────────────────────────────────────
 export async function createClaimController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    let orgId = await resolveTargetOrganizationId(req);
     const {
       clinicId,
       patientId,
@@ -34,7 +34,6 @@ export async function createClaimController(req: FastifyRequest, reply: FastifyR
       totalClaimAmount: number;
     };
 
-    if (!orgId) return reply.code(403).send(errorResponse("Organization context required"));
     if (!clinicId || !patientId || !payerName || !policyNumber || totalClaimAmount === undefined) {
       return reply.code(400).send(errorResponse("clinicId, patientId, payerName, policyNumber, and totalClaimAmount are required"));
     }
@@ -46,6 +45,11 @@ export async function createClaimController(req: FastifyRequest, reply: FastifyR
     }
     const clinicAccess = await checkClinicAccess(req, clinicId);
     if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+
+    if (!orgId && clinicAccess.organizationId) {
+      orgId = clinicAccess.organizationId;
+    }
+    if (!orgId) return reply.code(403).send(errorResponse("Organization context required"));
 
     const patient = await Patient.findById(patientId);
     if (!patient) return reply.code(404).send(errorResponse("Patient not found"));

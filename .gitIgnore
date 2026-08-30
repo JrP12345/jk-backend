@@ -15,6 +15,7 @@ keys/
 # Build outputs & Logs
 dist/
 build/
+index.js
 *.log
 
 # OS & IDE metadata

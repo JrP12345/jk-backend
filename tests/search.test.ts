@@ -7,10 +7,8 @@ import { ClinicalNote } from "../models/ClinicalNote.ts";
 import { Observation } from "../models/Observation.ts";
 import { ObservationScore } from "../models/ObservationScore.ts";
 import { Prescription } from "../models/Prescription.ts";
-import { MedicationAdministration } from "../models/MedicationAdministration.ts";
 import { LabTest } from "../models/LabTest.ts";
 import { LabOrder } from "../models/LabOrder.ts";
-import { DischargeDocument } from "../models/DischargeDocument.ts";
 import { domainEventBus } from "../platform/events/DomainEventBus.ts";
 import { EventTypes } from "../platform/events/types.ts";
 import { ClinicalSearchService } from "../services/ClinicalSearchService.ts";
@@ -145,23 +143,6 @@ describe("Clinical Search & Longitudinal Analytics Integration Tests", () => {
       status: "active",
     });
 
-    await MedicationAdministration.create({
-      organizationId: orgId,
-      clinicId,
-      encounterId,
-      prescriptionId: rx._id,
-      patientId,
-      medicineName: "Amoxicillin 500mg",
-      prescribedDose: "500mg",
-      doseGiven: "500mg",
-      route: "oral",
-      scheduledTime: new Date(),
-      administeredTime: new Date(),
-      administeredBy: adminUserId,
-      recordedBy: adminUserId,
-      status: "administered",
-    });
-
     const labTest = await LabTest.create({
       clinicId,
       name: "Sputum Culture for Amoxicillin sensitivity",
@@ -190,23 +171,6 @@ describe("Clinical Search & Longitudinal Analytics Integration Tests", () => {
         isAbnormal: false,
       },
     });
-
-    await DischargeDocument.create({
-      organizationId: orgId,
-      clinicId,
-      encounterId,
-      patientId,
-      authoredBy: adminUserId,
-      status: "finalized",
-      finalizedAt: new Date(),
-      snapshotHash: "abc123hash",
-      aggregated: {},
-      clinicianInput: {
-        primaryDiagnosis: "Acute bacterial bronchitis treated with oral amoxicillin",
-        conditionOnDischarge: "Resolved, stable",
-        dischargeInstructions: "Complete 7-day amoxicillin course",
-      },
-    });
   });
 
   // ─── Test 1: Cross-Engine Unified Search & Deterministic Ranking ────────────
@@ -220,14 +184,12 @@ describe("Clinical Search & Longitudinal Analytics Integration Tests", () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body).data;
     expect(body.items).toBeDefined();
-    expect(body.items.length).toBeGreaterThanOrEqual(4);
+    expect(body.items.length).toBeGreaterThanOrEqual(2);
 
     // Verify stable resourceType properties
     const resourceTypes = body.items.map((i: any) => i.resourceType);
     expect(resourceTypes).toContain("ClinicalNote");
-    expect(resourceTypes).toContain("MedicationAdministration");
     expect(resourceTypes).toContain("LabOrder");
-    expect(resourceTypes).toContain("DischargeDocument");
 
     // Verify deterministic sorting: score desc, then occurredAt desc, then id asc
     for (let i = 0; i < body.items.length - 1; i++) {
@@ -259,7 +221,7 @@ describe("Clinical Search & Longitudinal Analytics Integration Tests", () => {
   });
 
   // ─── Test 3: Encounter Summary Report (Clinical Story) ─────────────────────
-  it("should generate encounter summary report with vitals, news2, MAR compliance, and lab summary", async () => {
+  it("should generate encounter summary report with vitals, news2, and lab summary", async () => {
     const res = await app.inject({
       method: "GET",
       url: `/api/encounters/${encounterId}/summary-report`,
@@ -272,9 +234,6 @@ describe("Clinical Search & Longitudinal Analytics Integration Tests", () => {
     expect(report.primaryDiagnosis).toContain("bronchitis");
     expect(report.vitalsTrend.length).toBeGreaterThanOrEqual(1);
     expect(report.news2Trajectory.length).toBeGreaterThanOrEqual(1);
-    expect(report.marCompliance.total).toBe(1);
-    expect(report.marCompliance.administered).toBe(1);
-    expect(report.marCompliance.complianceRate).toBe(100);
     expect(report.labSummary.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -289,13 +248,11 @@ describe("Clinical Search & Longitudinal Analytics Integration Tests", () => {
     expect(res.statusCode).toBe(200);
     const metrics = JSON.parse(res.body).data;
     expect(metrics.medication).toBeDefined();
-    expect(metrics.medication.complianceRatePercentage).toBeGreaterThanOrEqual(0);
     expect(metrics.diagnostics).toBeDefined();
     expect(metrics.diagnostics.totalOrders).toBeGreaterThanOrEqual(1);
     expect(metrics.clinical).toBeDefined();
     expect(metrics.clinical.totalNews2Evaluations).toBeGreaterThanOrEqual(1);
     expect(metrics.discharge).toBeDefined();
-    expect(metrics.discharge.totalFinalizedSummaries).toBeGreaterThanOrEqual(1);
   });
 
   // ─── Test 5: Event-Driven Derived Metric Reactivity ─────────────────────────

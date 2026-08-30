@@ -34,15 +34,15 @@ export async function migrateTenantScoping() {
 
   const targetCollections = [
     "appointments",
-    "beds",
     "laborders",
     "prescriptions",
     "clinicalnotes",
     "encounters",
     "imagingstudies",
     "medicines",
+    "invoices",
     "auditlogs",
-    "homeRPMRecords",
+    "patients",
   ];
 
   let totalUpdated = 0;

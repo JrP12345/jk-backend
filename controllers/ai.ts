@@ -6,8 +6,6 @@ import { Clinic } from "../models/Clinic.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Prescription } from "../models/Prescription.ts";
 import { LabOrder } from "../models/LabOrder.ts";
-import { Admission } from "../models/Admission.ts";
-import { Bed } from "../models/Bed.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { Organization } from "../models/Organization.ts";
@@ -80,10 +78,9 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
       const orgId = requesterOrgId || (patient.organizationId ? patient.organizationId.toString() : null);
       
       const patientRecordScope = orgId ? { organizationId: orgId } : {};
-      const [activeMeds, recentLabs, activeAdmission] = await Promise.all([
+      const [activeMeds, recentLabs] = await Promise.all([
         Prescription.find({ patientId: targetPatientId, ...patientRecordScope, status: "active" }).select("medicineName dosage duration").lean(),
         LabOrder.find({ patientId: targetPatientId, ...patientRecordScope }).sort({ createdAt: -1 }).limit(5).select("orderNumber testId status").lean(),
-        Admission.findOne({ patientId: targetPatientId, ...patientRecordScope, status: "admitted" }).lean(),
       ]);
 
       let eventsSummary = "No recent timeline events.";
@@ -103,10 +100,9 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
       
       const medsSummary = activeMeds.length ? activeMeds.map(m => `- ${m.medicineName} (${m.dosage || "As directed"})`).join("\n") : "No active prescriptions.";
       const labsSummary = recentLabs.length ? recentLabs.map((l: any) => `- Order #${l.orderNumber || l._id} (Status: ${l.status})`).join("\n") : "No lab orders recorded.";
-      const admissionSummary = activeAdmission ? `Currently Admitted (Admission ID: ${activeAdmission._id}, Reason: ${activeAdmission.reasonForAdmission || "IPD"})` : "Not currently admitted.";
 
       const pUser = (patient.userId as any) || {};
-      finalSummary = `Patient Name: ${pUser.name || "Patient Profile"}\nEmail: ${pUser.email || "N/A"}\nPhone: ${pUser.phone || "N/A"}\nMRN Code: ${(patient as any).mrn || targetPatientId}\nGender: ${patient.gender || "Unknown"}\nBlood Group: ${patient.bloodGroup || "Unknown"}\nAllergies: ${patient.allergies?.join(", ") || "None"}\nChronic Conditions: ${patient.conditions?.join(", ") || "None"}\nIPD Status: ${admissionSummary}\n\nActive Prescriptions:\n${medsSummary}\n\nRecent Lab Orders:\n${labsSummary}\n\nClinical Timeline:\n${eventsSummary}`;
+      finalSummary = `Patient Name: ${pUser.name || "Patient Profile"}\nEmail: ${pUser.email || "N/A"}\nPhone: ${pUser.phone || "N/A"}\nMRN Code: ${(patient as any).mrn || targetPatientId}\nGender: ${patient.gender || "Unknown"}\nBlood Group: ${patient.bloodGroup || "Unknown"}\nAllergies: ${patient.allergies?.join(", ") || "None"}\nChronic Conditions: ${patient.conditions?.join(", ") || "None"}\n\nActive Prescriptions:\n${medsSummary}\n\nRecent Lab Orders:\n${labsSummary}\n\nClinical Timeline:\n${eventsSummary}`;
     }
   }
 
@@ -122,11 +118,9 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
 
     const invoiceQuery = { clinicId: { $in: clinicIds } };
 
-    const [patientCount, apptCount, activeAdmissionsCount, bedsList, doctorsList, invoicesList, samplePatients, recentAppts] = await Promise.all([
+    const [patientCount, apptCount, doctorsList, invoicesList, samplePatients, recentAppts] = await Promise.all([
       Patient.countDocuments(orgFilter),
       Appointment.countDocuments(orgFilter),
-      Admission.countDocuments({ ...orgFilter, status: "admitted" }),
-      Bed.find({ status: "occupied", clinicId: { $in: clinicIds } }).lean(),
       Doctor.find(orgFilter).select("name specialization").lean(),
       Invoice.find(invoiceQuery)
         .populate({ path: "patientId", populate: { path: "userId", select: "name email" } })
@@ -196,7 +190,6 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
       : "No paid transactions recorded yet.";
 
     const clinicNames = clinicsList.map(c => `${c.name} (${c.city})`).join(", ") || "No clinic data available";
-    const occupiedBedsCount = bedsList.length;
 
     const patientNamesList = samplePatients.map((p, idx) => {
       const uName = (p.userId as any)?.name || "Patient";
@@ -217,7 +210,7 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
     const orgObj = requesterOrgId ? await Organization.findById(requesterOrgId).lean() : null;
     const dynamicOrgName = orgObj?.name || "Organization name unavailable";
 
-    const systemStats = `\n\nHospital System Operational & Financial Ledger Metrics:\n` +
+    const systemStats = `\n\nClinic System Operational & Financial Ledger Metrics:\n` +
       `- Organization / Facility: ${dynamicOrgName}\n` +
       `- Active Clinics (${clinicsList.length}): ${clinicNames}\n` +
       `- Today's Revenue Collections: ₹${effectiveTodayRevenue.toLocaleString()} (${paidInvoicesCount} paid transactions)\n` +
@@ -226,14 +219,12 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
       `- Single Highest Paying Client / Patient: ${topPayingClient}\n` +
       `- Total Registered Patients: ${patientCount}\n` +
       `- Total Appointments / Patient Visits Booked: ${apptCount}\n` +
-      `- Active Inpatient Admissions: ${activeAdmissionsCount}\n` +
-      `- Occupied Hospital Beds: ${occupiedBedsCount}\n` +
       `- Active Doctors (${doctorsList.length}): ${doctorsList.map(d => (d as any).name || "Doctor").join(", ") || "Staff Medical Team"}\n\n` +
       `Highest Paying Clients Breakdown:\n${topClientsRoster}\n\n` +
       `Registered Patients Roster:\n${patientNamesList || "No registered patients."}\n\n` +
       `Recent Appointments Summary:\n${recentApptsList || "No recent appointments."}`;
 
-    finalSummary = (finalSummary ? finalSummary + systemStats : `Hospital System Context:\nUser: ${(req.user as any)?.name || "Staff"} (${requesterRole || "Clinician"})\nHospital Organization: ${dynamicOrgName}${systemStats}`);
+    finalSummary = (finalSummary ? finalSummary + systemStats : `Clinic System Context:\nUser: ${(req.user as any)?.name || "Staff"} (${requesterRole || "Clinician"})\nOrganization: ${dynamicOrgName}${systemStats}`);
   }
 
   return { finalSummary, targetPatientId };
@@ -283,7 +274,7 @@ export async function createChatSessionController(req: FastifyRequest, reply: Fa
     const welcomeMsg = {
       id: "m1",
       sender: "ai",
-      text: `Hello ${(req.user as any)?.name || "User"}! I am your Ananta Clinical AI Copilot.\n\nI can assist you with real-time patient records, hospital operational analytics, active prescriptions, lab reports, or IPD bed occupancy. How can I help you today?`,
+      text: `Hello ${(req.user as any)?.name || "User"}! I am your Anant Clinical AI Copilot.\n\nI can assist you with real-time patient records, clinic operational analytics, active prescriptions, lab reports, or appointment scheduling. How can I help you today?`,
       citations: [],
       suggestedActions: [],
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),

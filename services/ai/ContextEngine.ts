@@ -6,7 +6,6 @@ import { LabOrder } from "../../models/LabOrder.ts";
 import { Appointment } from "../../models/Appointment.ts";
 import { Clinic } from "../../models/Clinic.ts";
 import { Invoice } from "../../models/Invoice.ts";
-import { Bed } from "../../models/Bed.ts";
 import { Organization } from "../../models/Organization.ts";
 
 export interface ContextDimensionInput {
@@ -148,11 +147,7 @@ export class ContextEngine {
           : "None recorded yet";
 
         const appointmentsCount = await Appointment.countDocuments(clinicIds.length > 0 ? { clinicId: { $in: clinicIds } } : {});
-        const beds = await Bed.find(clinicIds.length > 0 ? { clinicId: { $in: clinicIds } } : {}).select("status").lean();
-        const occupiedBeds = beds.filter((b) => b.status === "occupied").length;
-        const totalBeds = beds.length;
-
-        const clinicNames = clinics.map(c => `${c.name} (${c.city})`).join(", ") || "Main Pavilion";
+        const clinicNames = clinics.map(c => `${c.name} (${c.city})`).join(", ") || "Main Clinic";
 
         organizationContext = [
           `Facility / Organization Context:`,
@@ -164,7 +159,6 @@ export class ContextEngine {
           `- Outstanding Billings (Unpaid): ₹${outstandingBilling.toLocaleString()} (${unpaidInvoicesCount} pending invoices)`,
           `- Top / Highest Paying Client: ${topPayingClient}`,
           `- Total Patient Visits / Appointments: ${appointmentsCount} recorded`,
-          `- IPD Bed Census: ${occupiedBeds} occupied of ${totalBeds} total beds (${totalBeds > 0 ? Math.round((occupiedBeds / totalBeds) * 100) : 0}% occupancy)`
         ].join("\n");
 
         // Cache the formatted organizationContext

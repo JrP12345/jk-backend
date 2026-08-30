@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { withTransaction } from "../utilities/transaction.ts";
-import { Bed } from "../models/Bed.ts";
 
 describe("ACID Session Transaction Helper Tests", () => {
   it("should execute operations successfully within withTransaction", async () => {

@@ -42,7 +42,7 @@ export async function assignDoctor(req: FastifyRequest, reply: FastifyReply) {
         maxDailyTokens: maxDailyTokens !== undefined ? maxDailyTokens : null,
         isActive: true,
       },
-      { new: true, upsert: true }
+      { returnDocument: "after", upsert: true }
     );
 
     return reply.code(201).send(successResponse(assignment, "Doctor assigned to clinic successfully"));
@@ -112,7 +112,7 @@ export async function updateAssignment(req: FastifyRequest, reply: FastifyReply)
     if (bookingMode !== undefined) updateFields.bookingMode = bookingMode;
     if (maxDailyTokens !== undefined) updateFields.maxDailyTokens = maxDailyTokens;
 
-    const updated = await DoctorAssignment.findByIdAndUpdate(id, updateFields, { new: true });
+    const updated = await DoctorAssignment.findByIdAndUpdate(id, updateFields, { returnDocument: "after" });
 
     return reply.code(200).send(successResponse(updated, "Doctor assignment updated successfully"));
   } catch (err) {

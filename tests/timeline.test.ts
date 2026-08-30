@@ -6,8 +6,6 @@ import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { LabOrder } from "../models/LabOrder.ts";
 import { LabTest } from "../models/LabTest.ts";
-import { Bed } from "../models/Bed.ts";
-import { Admission } from "../models/Admission.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { ModuleRegistry } from "../models/ModuleRegistry.ts";
 
@@ -140,26 +138,7 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
       resultNotes: "Follow up in 2 weeks",
     });
 
-    // 7. Seed Bed & Admission
-    const bed = await Bed.create({
-      clinicId,
-      bedNumber: "BED-EHR-1",
-      wardName: "Cardiology IPD",
-      pricePerDay: 3000,
-      status: "occupied",
-    });
-
-    await Admission.create({
-      clinicId,
-      patientId,
-      bedId: bed._id,
-      admissionDate: new Date("2026-07-21T09:00:00Z"),
-      reasonForAdmission: "Hypertensive Crisis Observation",
-      doctorInCharge: doctorUserId,
-      status: "admitted",
-    });
-
-    // 8. Seed Invoice
+    // 7. Seed Invoice
     await Invoice.create({
       invoiceNumber: "INV-EHR-001",
       clinicId,
@@ -186,7 +165,7 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
     expect(body.success).toBe(true);
     expect(body.data.version).toBe(1);
     expect(Array.isArray(body.data.events)).toBe(true);
-    expect(body.data.events.length).toBe(4); // Appointment, Lab, Admission, Invoice
+    expect(body.data.events.length).toBe(3); // Appointment, Lab, Invoice
 
     const firstEvent = body.data.events[0];
     expect(firstEvent).toHaveProperty("id");
@@ -210,7 +189,7 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
     const body = JSON.parse(res.body);
     const types = body.data.events.map((e: any) => e.type);
     expect(types).not.toContain("billing");
-    expect(body.data.events.length).toBe(3);
+    expect(body.data.events.length).toBe(2);
   });
 
   // ─── Test 3: Staff without VIEW_EHR is blocked ──────────────────────────
@@ -295,7 +274,7 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
   it("should paginate timeline events with cursor and limit", async () => {
     const res1 = await app.inject({
       method: "GET",
-      url: `/api/patients/${patientId}/timeline?limit=2`,
+      url: `/api/patients/${patientId}/timeline?limit=2&includeFinancial=true`,
       headers: { cookie: adminCookies.join("; ") },
     });
 
@@ -308,7 +287,7 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
     // Fetch page 2 using cursor
     const res2 = await app.inject({
       method: "GET",
-      url: `/api/patients/${patientId}/timeline?limit=2&cursor=${encodeURIComponent(body1.data.nextCursor)}`,
+      url: `/api/patients/${patientId}/timeline?limit=2&includeFinancial=true&cursor=${encodeURIComponent(body1.data.nextCursor)}`,
       headers: { cookie: adminCookies.join("; ") },
     });
 

@@ -33,7 +33,6 @@ describe("Clinic Essentials — Patient Directory Tenant Isolation", () => {
       userId: staffA._id,
       organizationId: orgAId,
       role: "receptionist",
-      status: "active",
     });
 
     staffAToken = generateAccessToken({

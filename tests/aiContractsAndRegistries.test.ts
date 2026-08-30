@@ -22,7 +22,7 @@ describe("Work Package A: Enterprise AI Contracts, Registries & Feature Flags", 
     const fastModel = modelRegistry.getModelMapping("CLINICAL_FAST");
     expect(fastModel.alias).toBe("CLINICAL_FAST");
     expect(fastModel.providerName).toBe("GoogleGeminiAI");
-    expect(fastModel.modelEndpoint).toBe("gemini-flash-latest");
+    expect(fastModel.modelEndpoint).toBe("gemini-1.5-flash");
     expect(fastModel.costPer1kTokensUSD).toBeGreaterThan(0);
 
     const accurateModel = modelRegistry.getModelMapping("CLINICAL_ACCURATE");

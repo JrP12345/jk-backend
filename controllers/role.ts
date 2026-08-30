@@ -94,7 +94,7 @@ export async function getRoles(req: FastifyRequest, reply: FastifyReply) {
       await Role.findOneAndUpdate(
         { name: sysRole.name },
         { $setOnInsert: sysRole },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: "after" }
       );
     }
 

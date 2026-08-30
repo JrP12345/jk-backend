@@ -1,11 +1,14 @@
 import mongoose, { Schema } from "mongoose";
 
+export const AUTH_METHOD_OPTIONS = ["email_password", "phone_otp", "both"] as const;
+export type AuthMethod = (typeof AUTH_METHOD_OPTIONS)[number];
+
 const UserSchema = new Schema({
   name: { type: String, required: true },
   email: { type: String, unique: true, sparse: true, index: true },
   password: { type: String },
   phone: { type: String, index: true },
-  authMethod: { type: String, enum: ["email_password", "phone_otp", "both"], default: "email_password" },
+  authMethod: { type: String, enum: AUTH_METHOD_OPTIONS, default: AUTH_METHOD_OPTIONS[0] },
   role: { type: String, required: true }, // "root" | "admin" | "doctor" | "receptionist" | "nurse" | "lab_tech" | "pharmacist" | "cashier" | "patient" | "family_member"
   twoFactorEnabled: { type: Boolean, default: false },
   twoFactorSecret: { type: String },

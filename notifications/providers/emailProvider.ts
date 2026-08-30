@@ -71,8 +71,8 @@ export class EmailProvider {
    * If orgSmtp is provided and has credentials, it is used instead of .env.
    */
   public async sendEmail(options: EmailOptions, orgSmtp?: SmtpConfig | null): Promise<boolean> {
-    const fromEmail = orgSmtp?.fromEmail || options.from || process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER || "noreply@ananta.health";
-    const fromName = orgSmtp?.fromName || process.env.SMTP_FROM_NAME || "Ananta Health";
+    const fromEmail = orgSmtp?.fromEmail || options.from || process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER || "noreply@anant.health";
+    const fromName = orgSmtp?.fromName || process.env.SMTP_FROM_NAME || "Anant Health";
     const formattedFrom = fromEmail.includes("<") ? fromEmail : `"${fromName}" <${fromEmail}>`;
 
     // Use org-level SMTP if fully configured

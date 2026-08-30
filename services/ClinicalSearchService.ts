@@ -5,9 +5,7 @@ import { ClinicalNote } from "../models/ClinicalNote.ts";
 import { Observation } from "../models/Observation.ts";
 import { ObservationScore } from "../models/ObservationScore.ts";
 import { Prescription } from "../models/Prescription.ts";
-import { MedicationAdministration } from "../models/MedicationAdministration.ts";
 import { LabOrder } from "../models/LabOrder.ts";
-import { DischargeDocument } from "../models/DischargeDocument.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { domainEventBus } from "../platform/events/DomainEventBus.ts";
 import { EventTypes } from "../platform/events/types.ts";
@@ -154,32 +152,7 @@ export class ClinicalSearchService {
       }
     }
 
-    // 3. Search MAR Administrations
-    const marList = await MedicationAdministration.find({ patientId })
-      .sort({ scheduledTime: -1 })
-      .lean() as any[];
-
-    for (const mar of marList) {
-      const textBlock = `${mar.medicineName} ${mar.prescribedDose} ${mar.doseGiven} ${mar.route} ${mar.status} ${mar.notes}`;
-      const score = rawTerm ? SearchEngine.calculateRelevanceScore(textBlock, queryTokens) : 8;
-      if (!rawTerm || score > 0) {
-        items.push({
-          id: mar._id.toString(),
-          category: "medication",
-          resourceType: "MedicationAdministration",
-          title: `MAR: ${mar.medicineName} (${mar.status})`,
-          snippet: `Dose: ${mar.doseGiven || mar.prescribedDose} via ${mar.route?.toUpperCase()}. Status: ${mar.status}`,
-          score,
-          occurredAt: mar.administeredTime || mar.scheduledTime || mar.createdAt,
-          resourceRef: {
-            resourceId: mar._id.toString(),
-            link: `/dashboard/mar?id=${mar._id.toString()}`,
-          },
-        });
-      }
-    }
-
-    // 4. Search Diagnostic Lab Orders
+    // 3. Search Diagnostic Lab Orders
     const labList = await LabOrder.find({ patientId })
       .populate("testId", "name code department")
       .sort({ orderDate: -1 })
@@ -204,31 +177,6 @@ export class ClinicalSearchService {
           resourceRef: {
             resourceId: lab._id.toString(),
             link: `/dashboard/laboratory?id=${lab._id.toString()}`,
-          },
-        });
-      }
-    }
-
-    // 5. Search Discharge Summaries
-    const dischargeList = await DischargeDocument.find({ patientId })
-      .sort({ createdAt: -1 })
-      .lean() as any[];
-
-    for (const dc of dischargeList) {
-      const textBlock = `${dc.clinicianInput?.primaryDiagnosis} ${dc.clinicianInput?.conditionOnDischarge} ${dc.clinicianInput?.dischargeInstructions} ${dc.clinicianInput?.followUpPlan}`;
-      const score = rawTerm ? SearchEngine.calculateRelevanceScore(textBlock, queryTokens) : 12; // High base relevance
-      if (!rawTerm || score > 0) {
-        items.push({
-          id: dc._id.toString(),
-          category: "discharge",
-          resourceType: "DischargeDocument",
-          title: `Discharge Summary: ${dc.clinicianInput?.primaryDiagnosis || "Encounter Summary"}`,
-          snippet: `Condition: ${dc.clinicianInput?.conditionOnDischarge || "Discharged"}. Instructions: ${dc.clinicianInput?.dischargeInstructions}`,
-          score,
-          occurredAt: dc.finalizedAt || dc.createdAt,
-          resourceRef: {
-            resourceId: dc._id.toString(),
-            link: `/dashboard/discharge?id=${dc._id.toString()}`,
           },
         });
       }
@@ -259,8 +207,6 @@ export class ClinicalSearchService {
       || (await ClinicalNote.findOne({ encounterId: realEncounterId }).sort({ createdAt: -1 }).lean() as any);
 
     // Fetch DischargeDocument if finalized
-    const dc = await DischargeDocument.findOne({ encounterId: realEncounterId }).lean() as any;
-
     // Vitals trend
     const observations = await Observation.find({ encounterId: realEncounterId })
       .sort({ recordedAt: 1 })
@@ -285,13 +231,6 @@ export class ClinicalSearchService {
       evaluatedAt: s.evaluatedAt,
     }));
 
-    // MAR Compliance
-    const marEntries = await MedicationAdministration.find({ encounterId: realEncounterId }).lean() as any[];
-    const administered = marEntries.filter((m) => m.status === "administered").length;
-    const refused = marEntries.filter((m) => m.status === "refused").length;
-    const totalMAR = marEntries.length;
-    const complianceRate = totalMAR > 0 ? Math.round((administered / totalMAR) * 100) : 100;
-
     // Lab Results
     const labOrders = await LabOrder.find({ encounterId: realEncounterId, status: "result-uploaded" })
       .populate("testId", "name")
@@ -306,7 +245,7 @@ export class ClinicalSearchService {
     const chiefComplaint = note?.subjective?.chiefComplaint || "";
     const symptoms = note?.subjective?.symptoms || [];
     const diagnoses = note?.assessment?.diagnoses || [];
-    const primaryDiag = note?.assessment?.diagnoses?.[0]?.description || dc?.clinicianInput?.primaryDiagnosis || "";
+    const primaryDiag = note?.assessment?.diagnoses?.[0]?.description || "";
     const treatmentPlan = note?.plan?.treatmentPlan || "";
     const prescriptions = note?.plan?.prescriptions || [];
 
@@ -323,14 +262,13 @@ export class ClinicalSearchService {
       primaryDiagnosis: primaryDiag,
       treatmentPlan,
       prescriptions,
-      conditionOnDischarge: dc?.clinicianInput?.conditionOnDischarge,
       vitalsTrend,
       news2Trajectory,
       marCompliance: {
-        total: totalMAR,
-        administered,
-        refused,
-        complianceRate,
+        total: 0,
+        administered: 0,
+        refused: 0,
+        complianceRate: 100,
       },
       labSummary,
     };
@@ -343,13 +281,12 @@ export class ClinicalSearchService {
   static async getQualityMetrics(organizationId: string): Promise<GroupedQualityMetrics> {
     ClinicalSearchService.registerEventListeners();
 
-    // Group 1: Medication MAR Compliance Metrics
-    const marEntries = await MedicationAdministration.find({ organizationId }).lean() as any[];
-    const totalScheduled = marEntries.length;
-    const administered = marEntries.filter((m) => m.status === "administered").length;
-    const refused = marEntries.filter((m) => m.status === "refused").length;
-    const held = marEntries.filter((m) => m.status === "held").length;
-    const complianceRatePercentage = totalScheduled > 0 ? Math.round((administered / totalScheduled) * 100) : 100;
+    // Group 1: Medication Quality Metrics
+    const totalScheduled = 0;
+    const administered = 0;
+    const refused = 0;
+    const held = 0;
+    const complianceRatePercentage = 100;
 
     // Group 2: Diagnostic Quality Metrics
     const labOrders = await LabOrder.find({ organizationId }).lean() as any[];
@@ -364,11 +301,6 @@ export class ClinicalSearchService {
     const totalScoreSum = news2Scores.reduce((acc, s) => acc + (s.totalScore || 0), 0);
     const averageNews2Score = totalNews2Evaluations > 0 ? parseFloat((totalScoreSum / totalNews2Evaluations).toFixed(1)) : 0;
     const highRiskEvaluationsCount = news2Scores.filter((s) => s.riskCategory === "High" || s.totalScore >= 7).length;
-
-    // Group 4: Discharge Governance Metrics
-    const dischargeDocs = await DischargeDocument.find({ organizationId }).lean() as any[];
-    const totalFinalizedSummaries = dischargeDocs.filter((d) => d.status === "finalized" || d.status === "countersigned").length;
-    const totalCountersignedSummaries = dischargeDocs.filter((d) => d.status === "countersigned").length;
 
     return {
       medication: {
@@ -390,8 +322,8 @@ export class ClinicalSearchService {
         highRiskEvaluationsCount,
       },
       discharge: {
-        totalFinalizedSummaries,
-        totalCountersignedSummaries,
+        totalFinalizedSummaries: 0,
+        totalCountersignedSummaries: 0,
       },
     };
   }

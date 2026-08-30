@@ -2,11 +2,12 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { ModuleRegistry } from "../models/ModuleRegistry.ts";
 import { MODULE_KEYS, getAlwaysOnModules } from "../data/moduleKeys.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
+import { resolveTargetOrganizationId } from "../utilities/tenant.ts";
 
 // ─── GET /api/modules — List all modules for current org ─────────
 export async function getModules(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) {
       // Fallback for Root Admin / pre-onboarding context: Return default P1 modules enabled
       const defaultList = Object.entries(MODULE_KEYS).map(([key, def]) => ({
@@ -58,7 +59,7 @@ export async function getModules(req: FastifyRequest, reply: FastifyReply) {
 // ─── PUT /api/modules/:moduleKey — Toggle a single module ────────
 export async function toggleModule(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) {
       return reply.code(400).send(errorResponse("Organization context required"));
     }
@@ -87,7 +88,7 @@ export async function toggleModule(req: FastifyRequest, reply: FastifyReply) {
         enabled,
         updatedBy: req.user?.id,
       },
-      { new: true, upsert: true }
+      { returnDocument: "after", upsert: true }
     ).lean();
 
     return reply.send(successResponse(updated, `Module '${moduleKey}' ${enabled ? "enabled" : "disabled"}`));
@@ -100,7 +101,7 @@ export async function toggleModule(req: FastifyRequest, reply: FastifyReply) {
 // ─── PUT /api/modules/bulk — Bulk toggle multiple modules ────────
 export async function bulkToggleModules(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) {
       return reply.code(400).send(errorResponse("Organization context required"));
     }
