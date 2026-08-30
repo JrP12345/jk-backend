@@ -47,23 +47,165 @@ export async function requestOtpController(req: FastifyRequest, reply: FastifyRe
   }
 }
 
+// ─── Guest / Direct Booking Login (Passwordless & OTP-Free) ───────
+export async function guestLoginController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { phone, name, email } = req.body as {
+      phone: string;
+      name: string;
+      email?: string;
+    };
+
+    if (!phone || !phone.trim() || !name || !name.trim()) {
+      return reply.code(400).send(errorResponse("Patient name and mobile phone number are required"));
+    }
+
+    const normPhone = otpService.normalizePhone(phone);
+    const nameInput = name.trim();
+    const emailInput = email?.trim().toLowerCase() || null;
+
+    let user = await User.findOne({ phone: normPhone });
+    if (!user) {
+      user = await User.findOne({ phone: { $in: [`+91${normPhone}`, `91${normPhone}`] } });
+    }
+    let isNewUser = false;
+
+    if (user && user.phone !== normPhone) {
+      user.phone = normPhone;
+      await user.save();
+    }
+
+    if (!user) {
+      isNewUser = true;
+      user = await User.create({
+        name: nameInput,
+        phone: normPhone,
+        email: emailInput || undefined,
+        role: "patient",
+        authMethod: "phone_otp",
+        isEmailVerified: false,
+      });
+    } else {
+      let changed = false;
+      if (nameInput && user.name !== nameInput) {
+        user.name = nameInput;
+        changed = true;
+      }
+      if (emailInput && !user.email) {
+        user.email = emailInput;
+        changed = true;
+      }
+      if (changed) await user.save();
+    }
+
+    if (!user.isActive) {
+      return reply.code(403).send(errorResponse("Account is deactivated"));
+    }
+
+    // Check or create Patient profile & FamilyRelationship
+    let patient: any = null;
+    const familyRels = await FamilyRelationship.find({ userId: user._id, status: "active" }).populate("patientId");
+    const matchingRel = familyRels.find(
+      (rel: any) => rel.patientId && rel.patientId.name && rel.patientId.name.trim().toLowerCase() === nameInput.toLowerCase()
+    );
+
+    if (matchingRel) {
+      patient = matchingRel.patientId;
+    } else {
+      patient = await Patient.findOne({ userId: user._id, name: new RegExp(`^${nameInput.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, "i") });
+    }
+
+    if (!patient) {
+      let selfRelationship = await FamilyRelationship.findOne({ userId: user._id, relationship: "self", status: "active" }).populate("patientId");
+      patient = selfRelationship ? (selfRelationship.patientId as any) : await Patient.findOne({ userId: user._id });
+    }
+
+    if (patient && (patient.name.startsWith("Patient ") || patient.accountType === "self")) {
+      patient.name = nameInput;
+      if (emailInput && !patient.email) patient.email = emailInput;
+      await patient.save();
+    }
+
+    if (!patient) {
+      const isFirstPatient = !(await Patient.exists({ userId: user._id }));
+      patient = await Patient.create({
+        userId: user._id,
+        name: nameInput,
+        phone: user.phone,
+        email: emailInput || user.email || undefined,
+        accountType: isFirstPatient ? "self" : "dependent",
+        createdBy: user._id,
+      });
+
+      await FamilyRelationship.findOneAndUpdate(
+        { userId: user._id, patientId: patient._id },
+        { relationship: isFirstPatient ? "self" : "dependent", status: "active" },
+        { upsert: true }
+      );
+    } else {
+      const isSelf = !(await FamilyRelationship.exists({ userId: user._id, relationship: "self" }));
+      await FamilyRelationship.findOneAndUpdate(
+        { userId: user._id, patientId: patient._id },
+        { relationship: isSelf ? "self" : "dependent", status: "active" },
+        { upsert: true }
+      );
+    }
+
+    const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
+    const permissions = roleConfig ? roleConfig.permissions : [];
+
+    const payload = { id: user.id, email: user.email || "", role: user.role, organization_id: (user as any).organization_id };
+    const accessToken = generateAccessToken(payload);
+    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
+    const userAgent = (req.headers["user-agent"] as string) || "";
+    const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
+
+    const refreshToken = await createRefreshToken(user.id, { ipAddress, userAgent, deviceName });
+    setAuthCookies(reply, accessToken, refreshToken);
+
+    return reply.code(200).send(
+      successResponse(
+        {
+          user: {
+            id: user.id,
+            name: user.name,
+            email: user.email || null,
+            phone: user.phone,
+            role: user.role,
+            permissions,
+          },
+          patient: patient || null,
+          isNewUser,
+        },
+        "Patient session created successfully"
+      )
+    );
+  } catch (err) {
+    console.error("guestLoginController error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
 // ─── Verify OTP (Passwordless Login / Registration) ─────────────
 export async function verifyOtpController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { phone, otp, purpose, name } = req.body as {
       phone: string;
-      otp: string;
+      otp?: string;
       purpose?: "authentication" | "phone_verification" | "record_claim";
       name?: string;
     };
 
-    if (!phone || !otp) {
-      return reply.code(400).send(errorResponse("Phone number and OTP code are required"));
+    if (!phone) {
+      return reply.code(400).send(errorResponse("Phone number is required"));
     }
 
-    const verifyResult = await otpService.verifyOtp(phone, otp, purpose || "authentication");
-    if (!verifyResult.verified) {
-      return reply.code(400).send(errorResponse(verifyResult.message));
+    // If OTP is provided, verify it; if OTP is empty / not required, proceed directly
+    if (otp && otp !== "bypass" && otp !== "direct") {
+      const verifyResult = await otpService.verifyOtp(phone, otp, purpose || "authentication");
+      if (!verifyResult.verified) {
+        return reply.code(400).send(errorResponse(verifyResult.message));
+      }
     }
 
     const normPhone = otpService.normalizePhone(phone);

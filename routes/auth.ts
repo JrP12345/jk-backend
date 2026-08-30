@@ -3,6 +3,7 @@ import { authenticate } from "../middleware/auth.ts";
 import {
   requestOtpController,
   verifyOtpController,
+  guestLoginController,
   login,
   verifyLoginTwoFactor,
   registerPatient,
@@ -26,6 +27,25 @@ export default async function authRoutes(app: FastifyInstance) {
   app.get("/.well-known/jwks.json", async (req, reply) => {
     return reply.code(200).send(getJwks());
   });
+
+  // Direct Guest / Passwordless Login without OTP
+  app.post("/api/auth/guest", {
+    config: {
+      rateLimit: {
+        max: isTest ? 1000 : 20,
+        timeWindow: "1 minute"
+      }
+    }
+  }, guestLoginController);
+
+  app.post("/api/auth/guest-login", {
+    config: {
+      rateLimit: {
+        max: isTest ? 1000 : 20,
+        timeWindow: "1 minute"
+      }
+    }
+  }, guestLoginController);
 
   // OTP Passwordless Authentication
   app.post("/api/auth/otp/request", {

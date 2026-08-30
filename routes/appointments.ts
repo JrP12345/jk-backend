@@ -32,7 +32,7 @@ import {
 
 export default async function appointmentRoutes(app: FastifyInstance) {
   const viewAppointments = {
-    preHandler: [authenticate, requireModule("appointments"), checkAnyPermission("VIEW_APPOINTMENTS", "MANAGE_APPOINTMENTS")],
+    preHandler: [authenticate, requireModule("appointments"), checkAnyPermissionOrRoles(["patient"], "VIEW_APPOINTMENTS", "MANAGE_APPOINTMENTS")],
   };
   const bookAppointments = {
     preHandler: [authenticate, requireModule("appointments"), checkAnyPermissionOrRoles(["patient"], "MANAGE_APPOINTMENTS")],
@@ -41,7 +41,7 @@ export default async function appointmentRoutes(app: FastifyInstance) {
     preHandler: [authenticate, requireModule("appointments"), checkAnyPermissionOrRoles(["patient"], "MANAGE_APPOINTMENTS")],
   };
   const viewPatients = {
-    preHandler: [authenticate, requireModule("patients"), checkAnyPermission("VIEW_PATIENTS", "MANAGE_PATIENTS")],
+    preHandler: [authenticate, requireModule("patients"), checkAnyPermissionOrRoles(["patient"], "VIEW_PATIENTS", "MANAGE_PATIENTS")],
   };
   const managePatients = {
     preHandler: [authenticate, requireModule("patients"), checkAnyPermissionOrRoles(["patient"], "MANAGE_PATIENTS")],
