@@ -65,6 +65,10 @@ let redisSubscriber: Redis | null = null;
 if (redisClient) {
   try {
     redisSubscriber = redisClient.duplicate();
+    redisSubscriber.on("error", (err: Error) => {
+      // Suppress unhandled EventEmitter crash if redis drops
+    });
+
     redisSubscriber.psubscribe("user_notifications:*", (err) => {
       if (err) {
         console.warn("[Redis Subscriber Warning] Failed psubscribe to user_notifications:*", err);

@@ -52,7 +52,7 @@ class NotificationQueueManager {
       createdAt: new Date(),
     };
 
-    if (redisClient) {
+    if (redisClient && redisClient.status === "ready") {
       try {
         await redisClient.lpush("notification_delivery_queue", JSON.stringify(fullJob));
         return jobId;
@@ -75,7 +75,7 @@ class NotificationQueueManager {
     try {
       let job: DeliveryJob | null = null;
 
-      if (redisClient) {
+      if (redisClient && redisClient.status === "ready") {
         try {
           const rawJob = await redisClient.rpop("notification_delivery_queue");
           if (rawJob) {

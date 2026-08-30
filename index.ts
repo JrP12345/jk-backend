@@ -206,17 +206,14 @@ const readinessHandler = async (request: FastifyRequest, reply: FastifyReply) =>
   const dbState = mongoose.connection.readyState;
   const isDbReady = dbState === 1; // 1 = connected
 
-  const isRedisReady = redisClient
-    ? redisClient.status === "ready"
-    : process.env.NODE_ENV !== "production";
-
-  const isReady = isDbReady && isRedisReady;
+  const isRedisReady = redisClient ? redisClient.status === "ready" : true;
+  const isReady = isDbReady;
   const statusCode = isReady ? 200 : 503;
 
   return reply.code(statusCode).send({
     status: isReady ? "ready" : "unhealthy",
     database: isDbReady ? "connected" : "disconnected",
-    redis: isRedisReady ? "ready" : (redisClient ? "connecting" : "not_configured"),
+    redis: redisClient ? (isRedisReady ? "ready" : redisClient.status) : "in_memory_fallback",
     timestamp: new Date().toISOString()
   });
 };
