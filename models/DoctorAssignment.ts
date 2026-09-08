@@ -11,6 +11,8 @@ const DoctorAssignmentSchema = new Schema({
   maxDailyTokens: { type: Number, default: null },
   paymentRequired: { type: Boolean, default: false },
   allowPayAtClinic: { type: Boolean, default: true },
+  onlineBookingSafetyBuffer: { type: Number, default: 30 }, // Minutes before shift end when online same-day booking closes
+  cabinNumber: { type: String, default: "Cabin 1" },
   isActive: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now }
 });

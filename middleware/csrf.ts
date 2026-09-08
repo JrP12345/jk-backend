@@ -12,7 +12,11 @@ export async function csrfProtection(req: FastifyRequest, reply: FastifyReply) {
   }
 
   // Bypass for webhooks and health probes
-  if (req.url.startsWith("/api/health") || req.url.startsWith("/api/billing/webhook")) {
+  if (
+    req.url.startsWith("/api/health") ||
+    req.url.startsWith("/api/billing/webhook") ||
+    req.url.startsWith("/api/webhooks")
+  ) {
     return;
   }
 

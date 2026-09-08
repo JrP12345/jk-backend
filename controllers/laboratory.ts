@@ -45,16 +45,17 @@ export async function createLabTest(req: FastifyRequest, reply: FastifyReply) {
     const clinicAccess = await checkClinicAccess(req, clinicId);
     if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
 
-    // Check if code is unique
-    const existing = await LabTest.findOne({ code });
+    // Check if code is unique within this clinic
+    const existing = await LabTest.findOne({ clinicId, code: code.trim() });
     if (existing) {
-      return reply.code(400).send(errorResponse(`A lab test with code ${code} already exists`));
+      return reply.code(400).send(errorResponse(`A lab test with code ${code} already exists in this clinic`));
     }
 
     const test = await LabTest.create({
+      organizationId: clinicAccess.organizationId,
       clinicId,
       name,
-      code,
+      code: code.trim(),
       department,
       sampleType,
       price,
@@ -406,20 +407,25 @@ export async function getLabOrders(req: FastifyRequest, reply: FastifyReply) {
 
     if (status) query.status = status;
 
-    const totalCount = await LabOrder.countDocuments(query);
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
-    const totalPages = Math.ceil(totalCount / pageSize);
 
-    const orders = await LabOrder.find(query)
-      .populate({
-        path: "patientId",
-        populate: { path: "userId", select: "name phone email" }
-      })
-      .populate("doctorId", "name specialization")
-      .populate("testId", "name code department sampleType normalRange")
-      .sort({ orderDate: -1 })
-      .skip(skip)
-      .limit(pageSize);
+    const [totalCount, rawOrders] = await Promise.all([
+      LabOrder.countDocuments(query),
+      LabOrder.find(query)
+        .populate({
+          path: "patientId",
+          populate: { path: "userId", select: "name phone email" }
+        })
+        .populate("doctorId", "name specialization")
+        .populate("testId", "name code department sampleType normalRange")
+        .sort({ orderDate: -1 })
+        .skip(skip)
+        .limit(pageSize)
+        .lean(),
+    ]);
+
+    const totalPages = Math.ceil(totalCount / pageSize);
+    const orders = rawOrders.map((o: any) => ({ ...o, id: o._id.toString() }));
 
     setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
     return reply.code(200).send(successResponse(orders));
@@ -506,12 +512,13 @@ export async function uploadLabResult(req: FastifyRequest, reply: FastifyReply) 
     const orderAccess = await checkOperationalRecordAccess(req, order);
     if (!orderAccess.allowed) return sendTenantError(reply, orderAccess);
 
-    if (!["sample-collected", "processing"].includes(order.status)) {
+    if (!["ordered", "sample-collected", "processing"].includes(order.status)) {
       return reply.code(400).send(errorResponse(`Cannot upload result for order in ${order.status} state.`));
     }
 
     order.status = "result-uploaded";
     order.resultedBy = new mongoose.Types.ObjectId(userId);
+    if (!order.sampleCollectedAt) order.sampleCollectedAt = new Date();
     if (!order.processingStartedAt) order.processingStartedAt = new Date();
     order.resultedAt = new Date();
     order.resultValue = resultValue;
@@ -520,6 +527,8 @@ export async function uploadLabResult(req: FastifyRequest, reply: FastifyReply) 
     order.completedDate = new Date();
 
     await order.save();
+
+    await syncLabOrderToAppointment(order, resultValue, resultNotes);
 
     // Create Audit Log
     await AuditLog.create({
@@ -537,9 +546,163 @@ export async function uploadLabResult(req: FastifyRequest, reply: FastifyReply) 
   }
 }
 
+export function evaluatePanicCriticalValue(testName: string, val: string): { isPanic: boolean; reason: string } {
+  const cleanName = (testName || "").toLowerCase();
+  const cleanVal = (val || "").trim().toLowerCase();
+  const num = parseFloat(cleanVal);
+
+  if (cleanName.includes("troponin") && (cleanVal.includes("pos") || cleanVal.includes("reactive") || num > 0.04)) {
+    return { isPanic: true, reason: "Troponin positive / elevated (Rule out Acute Myocardial Infarction)" };
+  }
+  if (cleanName.includes("ecg") && (cleanVal.includes("st elevation") || cleanVal.includes("st depression") || cleanVal.includes("infarct") || cleanVal.includes("vtach"))) {
+    return { isPanic: true, reason: "ECG showing acute ischemia or malignant arrhythmia" };
+  }
+  if ((cleanName.includes("potassium") || cleanName.includes("serum k")) && !isNaN(num)) {
+    if (num < 2.8) return { isPanic: true, reason: `Severe Hypokalemia (K+ ${num} mEq/L < 2.8) - Cardiac Arrest Risk` };
+    if (num > 6.2) return { isPanic: true, reason: `Severe Hyperkalemia (K+ ${num} mEq/L > 6.2) - Fatal Arrhythmia Risk` };
+  }
+  if ((cleanName.includes("glucose") || cleanName.includes("sugar") || cleanName.includes("rbs") || cleanName.includes("fbs")) && !isNaN(num)) {
+    if (num < 50) return { isPanic: true, reason: `Severe Hypoglycemia (${num} mg/dL < 50) - Impending Coma Risk` };
+    if (num > 400) return { isPanic: true, reason: `Hyperglycemic Crisis / DKA Warning (${num} mg/dL > 400)` };
+  }
+  if (cleanName.includes("platelet") && !isNaN(num)) {
+    if (num < 30000 || (num < 30 && num > 0)) return { isPanic: true, reason: `Critical Thrombocytopenia (${num} < 30,000 /uL) - Spontaneous Bleeding Risk` };
+  }
+  if ((cleanName.includes("hemoglobin") || cleanName.includes("hb ")) && !isNaN(num)) {
+    if (num < 6.5) return { isPanic: true, reason: `Critical Anemia (Hb ${num} g/dL < 6.5) - Decompensation Risk` };
+  }
+  if (cleanVal.includes("critical") || cleanVal.includes("panic")) {
+    return { isPanic: true, reason: `Panic/Critical Laboratory Value Reported: ${val}` };
+  }
+
+  return { isPanic: false, reason: "" };
+}
+
+async function syncLabOrderToAppointment(order: any, resultVal?: string, notes?: string) {
+  try {
+    if (!order.appointmentId) return;
+    const { Appointment } = await import("../models/Appointment.ts");
+    const appt = await Appointment.findById(order.appointmentId);
+    if (!appt) return;
+
+    const testDoc = order.testId as any;
+    const testName = testDoc?.name || "Diagnostic Test";
+    const val = resultVal || order.resultValue || order.result?.value || "Completed";
+    const refRange = testDoc?.normalRange || order.result?.referenceRange || "Standard Reference";
+
+    const panicCheck = evaluatePanicCriticalValue(testName, val);
+    const isAbnormal = Boolean(
+      panicCheck.isPanic ||
+      order.result?.isAbnormal ||
+      (notes && notes.toLowerCase().includes("abnormal")) ||
+      (val && (val.toLowerCase().includes("high") || val.toLowerCase().includes("critical") || val.toLowerCase().includes("positive")))
+    );
+
+    if (panicCheck.isPanic) {
+      if (!order.result) order.result = {};
+      order.result.interpretation = "critical";
+      order.result.isAbnormal = true;
+      appt.hasPanicAlert = true;
+      appt.panicAlertDetails = panicCheck.reason;
+    }
+
+    if (!Array.isArray(appt.investigationResults)) {
+      (appt as any).investigationResults = [];
+    }
+
+    const existingIdx = appt.investigationResults.findIndex(
+      (r: any) => r.labOrderId?.toString() === order._id.toString() || r.testName?.toLowerCase() === testName.toLowerCase()
+    );
+
+    const resultEntry = {
+      testId: testDoc?._id || undefined,
+      testName,
+      value: val,
+      unit: order.result?.unit || "",
+      referenceRange: refRange,
+      isAbnormal,
+      resultNotes: notes || order.resultNotes || (panicCheck.isPanic ? `CRITICAL PANIC: ${panicCheck.reason}` : ""),
+      attachmentUrl: order.attachmentUrl || order.result?.attachmentUrl || "",
+      resultedAt: new Date(),
+      labOrderId: order._id,
+    };
+
+    if (existingIdx >= 0) {
+      appt.investigationResults[existingIdx] = resultEntry as any;
+    } else {
+      appt.investigationResults.push(resultEntry as any);
+    }
+    await appt.save();
+
+    const { broadcastClinicalRealtime, broadcastRealtimeNotification, broadcastQueueUpdate } = await import("../notifications/websocket.ts");
+
+    if (panicCheck.isPanic) {
+      const panicAlert = {
+        type: "CLINICAL_PANIC_ALERT" as const,
+        data: {
+          clinicId: order.clinicId.toString(),
+          appointmentId: appt._id.toString(),
+          tokenNumber: appt.tokenNumber,
+          testName,
+          resultValue: val,
+          panicReason: panicCheck.reason,
+        },
+        message: `🚨 CRITICAL PANIC ALERT for Token #${appt.tokenNumber} (${testName}): ${panicCheck.reason}`,
+        timestamp: new Date().toISOString(),
+      };
+
+      // 1. Broadcast panic alert to authenticated clinical staff channel
+      broadcastClinicalRealtime(order.clinicId.toString(), panicAlert);
+
+      // 2. Direct real-time alert to ordering doctor
+      if (appt.doctorId) {
+        broadcastRealtimeNotification(appt.doctorId.toString(), panicAlert);
+      }
+    }
+
+    const labResultAlert = {
+      type: "LAB_RESULTS_READY" as const,
+      data: {
+        clinicId: order.clinicId.toString(),
+        appointmentId: appt._id.toString(),
+        tokenNumber: appt.tokenNumber,
+        testName,
+        resultValue: val,
+        isAbnormal,
+        isPanic: panicCheck.isPanic,
+        referenceRange: refRange,
+      },
+      message: `Lab results ready for Token #${appt.tokenNumber}: ${testName}`,
+      timestamp: new Date().toISOString(),
+    };
+
+    // 1. Broadcast to authenticated clinical staff channel
+    broadcastClinicalRealtime(order.clinicId.toString(), labResultAlert);
+
+    // 2. Direct alert to ordering doctor
+    if (appt.doctorId) {
+      broadcastRealtimeNotification(appt.doctorId.toString(), labResultAlert);
+    }
+
+    // 3. Sanitized status update for public waiting-room TV (token number only, zero PHI/lab data)
+    broadcastQueueUpdate(order.clinicId.toString(), {
+      type: "QUEUE_UPDATED",
+      data: {
+        clinicId: order.clinicId.toString(),
+        appointmentId: appt._id.toString(),
+        tokenNumber: appt.tokenNumber,
+      },
+      message: `Status updated for Token #${appt.tokenNumber}`,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error("syncLabOrderToAppointment notice:", err);
+  }
+}
+
 /**
- * Legacy order status bridge. It preserves the same lifecycle enforced by the
- * encounter-scoped OrdersService for clients that still use /lab-orders.
+ * Direct lab order status update endpoint. Enforces the validated lifecycle
+ * transitions matching OrdersService.
  */
 export async function updateLabOrderStatus(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -587,6 +750,10 @@ export async function updateLabOrderStatus(req: FastifyRequest, reply: FastifyRe
     }
     order.status = status as any;
     await order.save();
+
+    if (status === "result-uploaded") {
+      await syncLabOrderToAppointment(order);
+    }
 
     await AuditLog.create({
       userId: req.user!.id,
@@ -834,3 +1001,213 @@ export async function cancelOrderController(req: FastifyRequest, reply: FastifyR
     return reply.code(code).send(errorResponse(err.message || "Internal server error"));
   }
 }
+
+/**
+ * In-Cabin Lab Investigation Report Viewer & 1-Click Comparison:
+ * Aggregates all diagnostic test results across past encounters and lab orders for a patient.
+ * Groups by test name, computes chronological trends, delta differences, and abnormal flags.
+ */
+export async function getPatientLabComparison(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { patientId } = req.params as { patientId: string };
+    const { testName: filterTestName } = (req.query || {}) as { testName?: string };
+
+    if (!patientId || !mongoose.Types.ObjectId.isValid(patientId)) {
+      return reply.code(400).send(errorResponse("Invalid patientId"));
+    }
+
+    const patientAccess = await checkPatientAccess(req, patientId);
+    if (!patientAccess.allowed) return sendTenantError(reply, patientAccess);
+
+    const patient = await Patient.findById(patientId).select("name dob gender phone").lean();
+    if (!patient) {
+      return reply.code(404).send(errorResponse("Patient not found"));
+    }
+
+    // 1. Fetch finalized Lab Orders
+    const labOrders = await LabOrder.find({
+      patientId,
+      status: "result-uploaded",
+      deletedAt: null,
+    })
+      .populate("testId", "name code department sampleType normalRange")
+      .populate("doctorId", "name specialization")
+      .sort({ resultedAt: -1, orderDate: -1 })
+      .lean();
+
+    // 2. Fetch completed Appointment investigationResults
+    const { Appointment } = await import("../models/Appointment.ts");
+    const appts = await Appointment.find({
+      patientId,
+      "investigationResults.0": { $exists: true },
+    })
+      .populate("doctorId", "name specialization")
+      .select("appointmentTime doctorId investigationResults tokenNumber")
+      .sort({ appointmentTime: -1 })
+      .lean();
+
+    interface DataPoint {
+      id: string;
+      source: "lab_order" | "appointment_result";
+      date: string;
+      value: string;
+      numericValue: number | null;
+      unit: string;
+      referenceRange: string;
+      isAbnormal: boolean;
+      notes: string;
+      attachmentUrl: string;
+      doctorName: string;
+      orderId?: string;
+      appointmentId?: string;
+      tokenNumber?: number;
+    }
+
+    const testMap: Record<string, { testName: string; department?: string; sampleType?: string; readings: DataPoint[] }> = {};
+
+    const extractNumber = (str?: string | null): number | null => {
+      if (!str) return null;
+      const match = String(str).match(/[-+]?[0-9]*\.?[0-9]+/);
+      return match ? parseFloat(match[0]) : null;
+    };
+
+    // Ingest Lab Orders
+    for (const order of labOrders) {
+      const t = order.testId as any;
+      const name = t?.name || "Diagnostic Investigation";
+      if (filterTestName && !name.toLowerCase().includes(filterTestName.toLowerCase())) continue;
+
+      if (!testMap[name]) {
+        testMap[name] = {
+          testName: name,
+          department: t?.department || "Laboratory",
+          sampleType: t?.sampleType || "Blood",
+          readings: [],
+        };
+      }
+
+      const val = order.resultValue || order.result?.value || "";
+      const dateStr = (order.resultedAt || order.completedDate || order.orderDate || (order as any).createdAt).toISOString();
+      const numVal = extractNumber(val);
+
+      testMap[name].readings.push({
+        id: order._id.toString(),
+        source: "lab_order",
+        date: dateStr,
+        value: val,
+        numericValue: numVal,
+        unit: order.result?.unit || "",
+        referenceRange: order.result?.referenceRange || t?.normalRange || "",
+        isAbnormal: Boolean(order.result?.isAbnormal || (val && (val.toLowerCase().includes("high") || val.toLowerCase().includes("critical") || val.toLowerCase().includes("positive")))),
+        notes: order.resultNotes || order.result?.notes || "",
+        attachmentUrl: order.attachmentUrl || order.result?.attachmentUrl || "",
+        doctorName: (order.doctorId as any)?.name || "Ordering Physician",
+        orderId: order._id.toString(),
+        appointmentId: order.appointmentId?.toString(),
+      });
+    }
+
+    // Ingest Appointment Investigation Results
+    for (const appt of appts) {
+      if (!Array.isArray(appt.investigationResults)) continue;
+      for (const res of appt.investigationResults) {
+        const name = res.testName || "Diagnostic Investigation";
+        if (filterTestName && !name.toLowerCase().includes(filterTestName.toLowerCase())) continue;
+
+        if (!testMap[name]) {
+          testMap[name] = {
+            testName: name,
+            readings: [],
+          };
+        }
+
+        // Skip if this labOrderId was already ingested from labOrders
+        if (res.labOrderId && testMap[name].readings.some((r) => r.orderId === res.labOrderId?.toString())) {
+          continue;
+        }
+
+        const dateStr = (res.resultedAt || appt.appointmentTime || new Date()).toISOString();
+        const numVal = extractNumber(res.value);
+
+        testMap[name].readings.push({
+          id: (res as any)._id ? (res as any)._id.toString() : `${appt._id}_${name}`,
+          source: "appointment_result",
+          date: dateStr,
+          value: res.value || "",
+          numericValue: numVal,
+          unit: res.unit || "",
+          referenceRange: res.referenceRange || "",
+          isAbnormal: Boolean(res.isAbnormal),
+          notes: res.resultNotes || "",
+          attachmentUrl: (res as any).attachmentUrl || "",
+          doctorName: (appt.doctorId as any)?.name || "Physician",
+          appointmentId: appt._id.toString(),
+          tokenNumber: appt.tokenNumber,
+        });
+      }
+    }
+
+    // Calculate delta and trends for each test group
+    const comparisonResults: Record<string, any> = {};
+
+    for (const [key, group] of Object.entries(testMap)) {
+      group.readings.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+      if (group.readings.length === 0) continue;
+
+      const latest = group.readings[0];
+      const previous = group.readings.length > 1 ? group.readings[1] : null;
+
+      let delta: number | null = null;
+      let percentChange: number | null = null;
+      let trend: "improved" | "worsened" | "stable" | "changed" = "stable";
+
+      if (previous && latest.numericValue !== null && previous.numericValue !== null && previous.numericValue !== undefined) {
+        delta = Number((latest.numericValue - previous.numericValue).toFixed(2));
+        if (previous.numericValue !== 0) {
+          percentChange = Number(((delta / previous.numericValue) * 100).toFixed(1));
+        }
+
+        if (previous.isAbnormal && !latest.isAbnormal) {
+          trend = "improved";
+        } else if (!previous.isAbnormal && latest.isAbnormal) {
+          trend = "worsened";
+        } else if (delta === 0) {
+          trend = "stable";
+        } else {
+          trend = "changed";
+        }
+      } else if (previous) {
+        if (previous.isAbnormal && !latest.isAbnormal) trend = "improved";
+        else if (!previous.isAbnormal && latest.isAbnormal) trend = "worsened";
+      }
+
+      comparisonResults[key] = {
+        testName: group.testName,
+        department: group.department,
+        sampleType: group.sampleType,
+        totalReadings: group.readings.length,
+        latest,
+        previous,
+        delta,
+        percentChange,
+        trend,
+        history: group.readings,
+      };
+    }
+
+    return reply.code(200).send(
+      successResponse({
+        patientId: patient._id.toString(),
+        patientName: patient.name || "Patient",
+        gender: patient.gender,
+        totalTestsTracked: Object.keys(comparisonResults).length,
+        tests: comparisonResults,
+      })
+    );
+  } catch (err) {
+    console.error("getPatientLabComparison error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+

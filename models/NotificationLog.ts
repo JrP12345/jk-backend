@@ -8,8 +8,12 @@ export interface INotificationLog extends Document {
   channel: "sms" | "whatsapp" | "email";
   templateId: string;
   messageContent: string;
-  status: "queued" | "sent" | "delivered" | "failed";
+  status: "queued" | "sent" | "delivered" | "read" | "failed";
   providerMessageId?: string;
+  metaMessageId?: string;
+  idempotencyKey?: string;
+  creditsDeducted?: number;
+  rawResponse?: any;
   errorReason?: string;
   createdAt: Date;
 }
@@ -47,12 +51,31 @@ const notificationLogSchema = new Schema<INotificationLog>(
     },
     status: {
       type: String,
-      enum: ["queued", "sent", "delivered", "failed"],
+      enum: ["queued", "sent", "delivered", "read", "failed"],
       default: "queued",
       index: true,
     },
     providerMessageId: {
       type: String,
+      index: true,
+    },
+    metaMessageId: {
+      type: String,
+      sparse: true,
+      index: true,
+    },
+    idempotencyKey: {
+      type: String,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
+    creditsDeducted: {
+      type: Number,
+      default: 0,
+    },
+    rawResponse: {
+      type: Schema.Types.Mixed,
     },
     errorReason: {
       type: String,

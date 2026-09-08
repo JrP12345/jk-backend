@@ -15,6 +15,7 @@ import {
   errorResponse,
   generateTwoFactorChallenge,
   verifyTwoFactorChallenge,
+  normalizePhone,
 } from "../utilities/helpers.ts";
 import { setAuthCookies, clearAuthCookies } from "../utilities/types.ts";
 import { eventBus } from "../events/eventBus.ts";
@@ -30,6 +31,8 @@ import { patientMatchingService } from "../services/PatientMatchingService.ts";
 import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import mongoose from "mongoose";
 import { encrypt, decrypt, isEncrypted } from "../utilities/encryption.ts";
+import { verifyGoogleIdToken, authenticateWithGoogleProfile, exchangeGoogleAuthCode } from "../services/GoogleAuthService.ts";
+import { getFrontendBaseUrl } from "../utilities/config.ts";
 
 // ─── Request OTP ────────────────────────────────────────────────
 export async function requestOtpController(req: FastifyRequest, reply: FastifyReply) {
@@ -60,7 +63,7 @@ export async function guestLoginController(req: FastifyRequest, reply: FastifyRe
       return reply.code(400).send(errorResponse("Patient name and mobile phone number are required"));
     }
 
-    const normPhone = otpService.normalizePhone(phone);
+    const normPhone = normalizePhone(phone);
     const nameInput = name.trim();
     const emailInput = email?.trim().toLowerCase() || null;
 
@@ -86,8 +89,10 @@ export async function guestLoginController(req: FastifyRequest, reply: FastifyRe
         isEmailVerified: false,
       });
     } else {
+      // Security: Do NOT overwrite verified name/email from an unauthenticated guest flow.
+      // Only set name if the account was registered with a temporary placeholder name.
       let changed = false;
-      if (nameInput && user.name !== nameInput) {
+      if (nameInput && user.name.startsWith("Patient ")) {
         user.name = nameInput;
         changed = true;
       }
@@ -120,7 +125,7 @@ export async function guestLoginController(req: FastifyRequest, reply: FastifyRe
       patient = selfRelationship ? (selfRelationship.patientId as any) : await Patient.findOne({ userId: user._id });
     }
 
-    if (patient && (patient.name.startsWith("Patient ") || patient.accountType === "self")) {
+    if (patient && patient.name.startsWith("Patient ")) {
       patient.name = nameInput;
       if (emailInput && !patient.email) patient.email = emailInput;
       await patient.save();
@@ -142,25 +147,31 @@ export async function guestLoginController(req: FastifyRequest, reply: FastifyRe
         { relationship: isFirstPatient ? "self" : "dependent", status: "active" },
         { upsert: true }
       );
-    } else {
-      const isSelf = !(await FamilyRelationship.exists({ userId: user._id, relationship: "self" }));
-      await FamilyRelationship.findOneAndUpdate(
-        { userId: user._id, patientId: patient._id },
-        { relationship: isSelf ? "self" : "dependent", status: "active" },
-        { upsert: true }
-      );
     }
 
-    const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
-    const permissions = roleConfig ? roleConfig.permissions : [];
+    // Scoped Guest Session: Under no circumstance do we grant unauthenticated access to the full 'patient' role
+    // or longitudinal EHR records. Guest callers receive a scoped 'guest' session strictly for the current booking.
+    const scopedRole = "guest";
+    const guestPermissions = ["CREATE_APPOINTMENTS"];
 
-    const payload = { id: user.id, email: user.email || "", role: user.role, organization_id: (user as any).organization_id };
+    const payload = {
+      id: user.id,
+      email: user.email || "",
+      role: scopedRole,
+      organization_id: (user as any).organization_id,
+      permissions: guestPermissions,
+    };
     const accessToken = generateAccessToken(payload);
     const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
     const userAgent = (req.headers["user-agent"] as string) || "";
     const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
 
-    const refreshToken = await createRefreshToken(user.id, { ipAddress, userAgent, deviceName });
+    const refreshToken = await createRefreshToken(user.id, {
+      ipAddress,
+      userAgent,
+      deviceName,
+      isGuest: true,
+    });
     setAuthCookies(reply, accessToken, refreshToken);
 
     return reply.code(200).send(
@@ -171,13 +182,14 @@ export async function guestLoginController(req: FastifyRequest, reply: FastifyRe
             name: user.name,
             email: user.email || null,
             phone: user.phone,
-            role: user.role,
-            permissions,
+            role: scopedRole,
+            permissions: guestPermissions,
           },
-          patient: patient || null,
+          // Expose only minimal identifier for booking confirmation; no historical PHI
+          patient: patient ? { id: patient.id || patient._id?.toString(), name: patient.name } : null,
           isNewUser,
         },
-        "Patient session created successfully"
+        "Guest session created successfully"
       )
     );
   } catch (err) {
@@ -189,26 +201,35 @@ export async function guestLoginController(req: FastifyRequest, reply: FastifyRe
 // ─── Verify OTP (Passwordless Login / Registration) ─────────────
 export async function verifyOtpController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { phone, otp, purpose, name } = req.body as {
+    const { phone, otp, purpose, name, gender, dateOfBirth, email } = req.body as {
       phone: string;
       otp?: string;
       purpose?: "authentication" | "phone_verification" | "record_claim";
       name?: string;
+      gender?: "male" | "female" | "other";
+      dateOfBirth?: string;
+      email?: string;
     };
 
     if (!phone) {
       return reply.code(400).send(errorResponse("Phone number is required"));
     }
 
-    // If OTP is provided, verify it; if OTP is empty / not required, proceed directly
-    if (otp && otp !== "bypass" && otp !== "direct") {
-      const verifyResult = await otpService.verifyOtp(phone, otp, purpose || "authentication");
+    const isTestEnv = process.env.NODE_ENV === "test";
+    const isBypass = (otp === "bypass" || otp === "direct") && isTestEnv;
+
+    if (!otp && !isBypass) {
+      return reply.code(400).send(errorResponse("OTP is required"));
+    }
+
+    if (!isBypass) {
+      const verifyResult = await otpService.verifyOtp(phone, otp!, purpose || "authentication");
       if (!verifyResult.verified) {
         return reply.code(400).send(errorResponse(verifyResult.message));
       }
     }
 
-    const normPhone = otpService.normalizePhone(phone);
+    const normPhone = normalizePhone(phone);
     const nameInput = name?.trim();
 
     // Find or create User by phone (optimized direct indexed query with fallback)
@@ -228,14 +249,24 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
       user = await User.create({
         name: nameInput || `Patient ${normPhone.slice(-4)}`,
         phone: normPhone,
+        email: email?.trim().toLowerCase() || undefined,
         role: "patient",
         authMethod: "phone_otp",
         isEmailVerified: false,
       });
-    } else if (nameInput && user.name !== nameInput) {
-      // Update primary display name to the currently logging-in patient name
-      user.name = nameInput;
-      await user.save();
+    } else {
+      let shouldSave = false;
+      if (nameInput && user.name !== nameInput) {
+        user.name = nameInput;
+        shouldSave = true;
+      }
+      if (email && !user.email) {
+        user.email = email.trim().toLowerCase();
+        shouldSave = true;
+      }
+      if (shouldSave) {
+        await user.save();
+      }
     }
 
     if (!user.isActive) {
@@ -287,7 +318,9 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
         userId: user._id,
         name: nameInput || user.name,
         phone: user.phone,
-        email: user.email || undefined,
+        email: email?.trim().toLowerCase() || user.email || undefined,
+        gender: (gender && ["male", "female", "other"].includes(gender) ? (gender as "male" | "female" | "other") : undefined),
+        dob: dateOfBirth ? new Date(dateOfBirth) : undefined,
         accountType: isFirstPatient ? "self" : "dependent",
         createdBy: user._id,
       });
@@ -298,6 +331,23 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
         { upsert: true }
       );
     } else if (patient) {
+      let patientDirty = false;
+      if (gender && !patient.gender && ["male", "female", "other"].includes(gender)) {
+        patient.gender = gender as "male" | "female" | "other";
+        patientDirty = true;
+      }
+      if (dateOfBirth && !patient.dob) {
+        patient.dob = new Date(dateOfBirth);
+        patientDirty = true;
+      }
+      if (email && !patient.email) {
+        patient.email = email.trim().toLowerCase();
+        patientDirty = true;
+      }
+      if (patientDirty) {
+        await patient.save();
+      }
+
       const isSelf = !(await FamilyRelationship.exists({ userId: user._id, relationship: "self" }));
       await FamilyRelationship.findOneAndUpdate(
         { userId: user._id, patientId: patient._id },
@@ -575,7 +625,7 @@ export async function forgotPassword(req: FastifyRequest, reply: FastifyReply) {
     user.set("passwordResetExpires", expires);
     await user.save();
 
-    const resetUrl = `${process.env.CORS_ALLOWED_ORIGINS || "http://localhost:3000"}/reset-password?token=${resetToken}`;
+    const resetUrl = `${getFrontendBaseUrl()}/reset-password?token=${resetToken}`;
     const sent = await emailProvider.sendEmail({
       to: user.email!,
       subject: "ANANT Account Password Reset",
@@ -722,15 +772,22 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
     const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || refreshRecord.ipAddress;
     const userAgent = (req.headers["user-agent"] as string) || refreshRecord.userAgent;
     const deviceName = refreshRecord.deviceName || (userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser");
+    const isGuestToken = (refreshRecord as any).isGuest === true;
+    const targetRole = isGuestToken ? "guest" : user.role;
+    const targetPermissions = isGuestToken ? ["CREATE_APPOINTMENTS"] : undefined;
 
     const newRefreshToken = await createRefreshToken(user.id, {
       ipAddress,
       userAgent,
       deviceName,
       organizationId: organization_id,
+      isGuest: isGuestToken,
     });
 
-    const payload = { id: user.id, email: user.email || "", role: user.role, organization_id };
+    const payload: any = { id: user.id, email: user.email || "", role: targetRole, organization_id };
+    if (targetPermissions) {
+      payload.permissions = targetPermissions;
+    }
     const accessToken = generateAccessToken(payload);
 
     // Set rotated auth cookies
@@ -832,12 +889,12 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
       throw err;
     }
 
-    const verificationUrl = `${process.env.CORS_ALLOWED_ORIGINS || "http://localhost:3000"}/verify-email?token=${emailVerificationToken}`;
+    const verificationUrl = `${getFrontendBaseUrl()}/verify-email?token=${emailVerificationToken}`;
     await emailProvider.sendEmail({
       to: normalizedEmail,
-      subject: "Verify your ANANT account",
+      subject: "Verify your ANANTA account",
       text: `Verify your account using this link (valid for 24 hours): ${verificationUrl}`,
-      html: `<p>Verify your ANANT account: <a href="${verificationUrl}">${verificationUrl}</a></p>`,
+      html: `<p>Verify your ANANTA account: <a href="${verificationUrl}">${verificationUrl}</a></p>`,
     });
 
     const roleConfig = await Role.findOne({ name: "patient" }).lean() as any;
@@ -956,3 +1013,45 @@ export async function switchOrganization(req: FastifyRequest, reply: FastifyRepl
     return reply.code(500).send(errorResponse("Failed to switch organization context"));
   }
 }
+
+// ─── Google OAuth & Credential Sign-In ──────────────────────────
+export async function googleLoginController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { credential, idToken, token, code, redirectUri } = (req.body as any) || {};
+    const candidateToken = credential || idToken || token;
+
+    let profile = null;
+    if (candidateToken) {
+      profile = await verifyGoogleIdToken(candidateToken);
+    } else if (code && redirectUri) {
+      profile = await exchangeGoogleAuthCode(code, redirectUri);
+    }
+
+    if (!profile) {
+      return reply.code(401).send(errorResponse("Invalid Google authentication credentials"));
+    }
+
+    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
+    const userAgent = (req.headers["user-agent"] as string) || "";
+    const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
+
+    const authResult = await authenticateWithGoogleProfile(profile, { ipAddress, userAgent, deviceName });
+
+    setAuthCookies(reply, authResult.accessToken, authResult.refreshToken);
+
+    return reply.code(200).send(
+      successResponse(
+        {
+          user: authResult.user,
+          patient: authResult.patient,
+          isNewUser: authResult.isNewUser,
+        },
+        "Google authentication successful"
+      )
+    );
+  } catch (err: any) {
+    console.error("googleLoginController error:", err);
+    return reply.code(400).send(errorResponse(err.message || "Failed to authenticate with Google"));
+  }
+}
+

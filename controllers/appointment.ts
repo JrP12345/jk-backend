@@ -21,6 +21,8 @@ import {
 import { checkClinicAccess, getRequestClinicIds } from "../utilities/tenant.ts";
 import { getNextAtomicSequence } from "../models/Counter.ts";
 
+import { appointmentService, AppointmentDomainError, type BookAppointmentInput } from "../services/AppointmentService.ts";
+
 async function ensureAppointmentClinicAccess(
   req: FastifyRequest,
   reply: FastifyReply,
@@ -40,308 +42,44 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
     const userId = req.user!.id;
     let orgId = req.user?.organization_id;
 
-    const {
-      clinicId, doctorId, appointmentTime, appointmentType, notes, patientId, patientDetails, followUpForAppointmentId, lockId
-    } = req.body as {
-      clinicId: string;
-      doctorId: string;
-      appointmentTime: string;
-      appointmentType: "walk-in" | "online" | "reception" | "qr";
-      notes?: string;
-      patientId?: string; // Optional for staff booking existing patients
-      patientDetails?: {  // Optional for staff booking new patients
-        name: string;
-        dob: string;
-        gender: "male" | "female" | "other";
-        phone?: string;
-        email?: string;
-        password: string;
-        address?: string;
-        allergies?: string[];
-        conditions?: string[];
-        medicalNotes?: string;
-      };
-      followUpForAppointmentId?: string;
-      lockId?: string; // Optional: slot lock ID from prior lock acquisition
-    };
-
-    if (!clinicId || !doctorId || !appointmentTime || !appointmentType) {
+    const body = (req.body || {}) as BookAppointmentInput;
+    if (!body?.clinicId || !body?.doctorId || !body?.appointmentTime || !body?.appointmentType) {
       return reply.code(400).send(errorResponse("clinicId, doctorId, appointmentTime, and appointmentType are required"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, clinicId);
+    const clinicAccess = await checkClinicAccess(req, body.clinicId);
     if (!clinicAccess.allowed) {
       return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
     }
     if (!orgId && clinicAccess.organizationId) orgId = clinicAccess.organizationId;
 
-    if (userRole !== "root" && !orgId) {
-      return reply.code(403).send(errorResponse("Organization context is required to book an appointment"));
+    const appointment = await appointmentService.book(
+      { id: userId, role: userRole, organizationId: orgId },
+      body,
+      orgId
+    );
+
+    return reply.code(201).send(
+      successResponse(
+        {
+          id: appointment.id,
+          clinicId: appointment.clinicId,
+          doctorId: appointment.doctorId,
+          patientId: appointment.patientId,
+          appointmentTime: appointment.appointmentTime,
+          appointmentType: appointment.appointmentType,
+          status: appointment.status,
+          tokenNumber: appointment.tokenNumber,
+          queuePosition: appointment.queuePosition,
+          notes: appointment.notes
+        },
+        "Appointment booked successfully"
+      )
+    );
+  } catch (err: any) {
+    if (err instanceof AppointmentDomainError) {
+      return reply.code(err.statusCode).send(errorResponse(err.message));
     }
-
-    // Validate Doctor Assignment at Clinic
-    const assignment = await DoctorAssignment.findOne({ doctorId, clinicId });
-    if (!assignment) {
-      return reply.code(400).send(errorResponse("Doctor is not assigned to the selected clinic"));
-    }
-
-    const mode = (assignment as any)?.bookingMode;
-    const isSequentialQueue = mode ? mode === "sequential_queue" : true;
-
-    // Validate Slot Lock — prevent double-booking (only for time_slot mode)
-    let lockValidation: { valid: boolean; message?: string; lockKey?: string } = { valid: true };
-    if (!isSequentialQueue) {
-      lockValidation = await validateSlotLockForBooking(
-        clinicId, doctorId, appointmentTime, userId, lockId
-      );
-      if (!lockValidation.valid) {
-        return reply.code(409).send(errorResponse(lockValidation.message || "Slot is unavailable"));
-      }
-    }
-
-    return await withTransaction(async (session) => {
-      const option = session ? { session } : {};
-      let finalPatientId: string;      // 1. Identify or Create Patient Profile
-      if (userRole === "patient") {
-        const targetPatientId = patientId || (req.body as any).forPatientId;
-        
-        if (targetPatientId) {
-          // Verify authorization via FamilyRelationship
-          const isAuthorized = await FamilyRelationship.findOne(
-            { userId, patientId: targetPatientId, status: "active" },
-            null,
-            option
-          );
-          if (!isAuthorized) {
-            return reply.code(403).send(errorResponse("Unauthorized: You do not have permission to book for this patient"));
-          }
-          finalPatientId = targetPatientId;
-        } else {
-          // Default to self patient profile
-          let selfRel = await FamilyRelationship.findOne({ userId, relationship: "self", status: "active" }, null, option);
-          let patient = selfRel ? await Patient.findById(selfRel.patientId, null, option) : await Patient.findOne({ userId }, null, option);
-
-          if (!patient) {
-            const loggedUser = await User.findById(userId, null, option);
-            patient = await createWithSession(Patient, {
-              userId: loggedUser?._id || userId,
-              name: loggedUser?.name || "Patient",
-              phone: loggedUser?.phone || null,
-              email: loggedUser?.email || null,
-              accountType: "self",
-              createdBy: userId,
-              organizationId: orgId,
-            }, session);
-
-            await createWithSession(FamilyRelationship, {
-              userId,
-              patientId: patient!._id,
-              relationship: "self",
-              status: "active",
-            }, session);
-          }
-
-          if (patient!.organizationId && patient!.organizationId.toString() !== orgId) {
-            return reply.code(403).send(errorResponse("Patient is not associated with the selected organization"));
-          }
-          if (!patient!.organizationId && orgId) {
-            patient!.organizationId = orgId as any;
-            await patient!.save(option);
-            if (patient!.userId) {
-              await createWithSession(OrgMember, { userId: patient!.userId, organizationId: orgId, role: "patient" }, session);
-            }
-          }
-          finalPatientId = patient!.id;
-        }
-      } else {
-        // Staff / Receptionist / Doctor booking
-        if (patientId) {
-          const patient = await Patient.findById(patientId, null, option);
-          if (!patient) return reply.code(404).send(errorResponse("Patient profile not found"));
-          if (
-            userRole !== "root" &&
-            orgId &&
-            patient.organizationId &&
-            patient.organizationId.toString() !== orgId
-          ) {
-            return reply.code(404).send(errorResponse("Patient not found"));
-          }
-          if (!patient.organizationId && orgId) {
-            patient.organizationId = orgId as any;
-            await patient.save(option);
-          }
-          finalPatientId = patient.id;
-
-          if (orgId && patient.userId) {
-            const memberExists = await OrgMember.findOne({ userId: patient.userId, organizationId: orgId }, null, option);
-            if (!memberExists) {
-              await createWithSession(OrgMember, { userId: patient.userId, organizationId: orgId, role: "patient" }, session);
-            }
-          }
-        } else if (patientDetails) {
-          const { name, dob, gender, phone, email, address, allergies, conditions, medicalNotes } = patientDetails;
-          if (!name || !dob || !gender) {
-            return reply.code(400).send(errorResponse("name, dob, and gender are required for new patient registration"));
-          }
-
-          const patientProfile = await createWithSession(Patient, {
-            name: name.trim(),
-            phone: phone?.trim() || null,
-            email: email?.trim().toLowerCase() || null,
-            accountType: "walkin",
-            createdBy: userId,
-            organizationId: orgId,
-            personalVaultId: `pvt_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`,
-            dob: new Date(dob),
-            gender,
-            address: address || null,
-            allergies: allergies || [],
-            conditions: conditions || [],
-            medicalNotes: medicalNotes || null
-          }, session);
-
-          finalPatientId = patientProfile.id;
-        } else {
-          return reply.code(400).send(errorResponse("Either patientId or patientDetails is required for staff booking"));
-        }
-      }
-
-      // 1b. Duplicate active appointment guard
-      const requestedDate = new Date(appointmentTime);
-      const existingDuplicate = await Appointment.findOne({
-        patientId: finalPatientId,
-        doctorId,
-        clinicId,
-        appointmentTime: requestedDate,
-        status: { $in: ["pending", "pending_payment", "confirmed", "checked-in", "in-consultation"] }
-      }, null, option);
-      if (existingDuplicate) {
-        return reply.code(409).send(errorResponse("An active appointment for this patient with this practitioner at the selected time already exists"));
-      }
-
-      // 2. Generate Atomic Sequential Daily Token Number for Doctor + Clinic
-      const dateStr = requestedDate.toISOString().slice(0, 10);
-      const counterKey = `token_${clinicId}_${doctorId}_${dateStr}`;
-      const tokenNumber = await getNextAtomicSequence(counterKey, session);
-
-      const maxTokens = (assignment as any)?.maxDailyTokens;
-      if (maxTokens && tokenNumber > maxTokens) {
-        return reply.code(400).send(errorResponse(`Daily token limit of ${maxTokens} reached for this practitioner.`));
-      }
-
-      const queuePosition = tokenNumber;
-
-      const initialStatus = userRole === "patient" ? "pending" : "confirmed";
-      const slotDuration = (req.body as any).duration || assignment?.appointmentDuration || 15;
-      const visitReason = (req.body as any).reasonForVisit || (followUpForAppointmentId ? "follow_up" : "new_consultation");
-      const currentBookingMode = (assignment as any)?.bookingMode || "sequential_queue";
-
-      // 3. Create Appointment Document
-      const isPaymentRequired = (assignment as any)?.paymentRequired === true;
-      const initialPaymentStatus = isPaymentRequired ? "pending" : ((req.body as any).payAtClinic ? "pay_at_clinic" : "not_required");
-
-      const appointment = await createWithSession(Appointment, {
-        organizationId: orgId || clinicAccess.organizationId || null,
-        clinicId,
-        doctorId,
-        patientId: finalPatientId,
-        bookedByUserId: userId,
-        appointmentTime: requestedDate,
-        appointmentType,
-        status: isPaymentRequired ? "pending_payment" : initialStatus,
-        paymentStatus: initialPaymentStatus,
-        bookingSource: userRole === "patient" ? "patient_portal" : "staff",
-        tokenNumber,
-        queuePosition,
-        bookingMode: currentBookingMode,
-        duration: slotDuration,
-        reasonForVisit: visitReason,
-        notes: notes || null
-      }, session);
-
-      // 4. Optionally handle Follow-Up link with validation
-      if (followUpForAppointmentId) {
-        if (!mongoose.Types.ObjectId.isValid(followUpForAppointmentId)) {
-          return reply.code(400).send(errorResponse("Invalid followUpForAppointmentId"));
-        }
-        const parentAppt = await Appointment.findOne({
-          _id: followUpForAppointmentId,
-          patientId: finalPatientId
-        }, null, option);
-        if (parentAppt && parentAppt.status !== "completed") {
-          parentAppt.status = "completed";
-          await parentAppt.save(option);
-        }
-      }
-
-      // 5. Automatically generate Consultation Fee Invoice
-      if (assignment?.fees && assignment.fees > 0) {
-        const doctorUser = await User.findById(doctorId, null, option);
-        const doctorName = doctorUser?.name ? `Dr. ${doctorUser.name}` : `Dr. ${doctorId}`;
-        const { generateClinicInvoiceNumber } = await import("../utilities/invoiceNumber.ts");
-        const invoiceNumber = await generateClinicInvoiceNumber(clinicId, requestedDate.getFullYear());
-
-        await createWithSession(Invoice, {
-          invoiceNumber,
-          organizationId: orgId || clinicAccess.organizationId || null,
-          patientId: finalPatientId,
-          appointmentId: appointment._id,
-          clinicId,
-          doctorId,
-          items: [
-            {
-              description: `Consultation Fee - ${doctorName}`,
-              amount: assignment.fees,
-              quantity: 1
-            }
-          ],
-          subtotal: assignment.fees,
-          tax: 0,
-          discount: 0,
-          totalAmount: assignment.fees,
-          status: "unpaid"
-        }, session);
-      }
-
-      // 6. Audit Log with Organization Context
-      await createWithSession(AuditLog, {
-        userId,
-        organizationId: orgId || clinicAccess.organizationId || undefined,
-        action: "APPOINTMENT_CREATE",
-        targetId: appointment._id,
-        targetModel: "Appointment",
-        details: { tokenNumber, appointmentTime, clinicId, doctorId }
-      }, session);
-
-      // 7. Release Slot Lock (if one was held)
-      if (lockValidation.lockKey) {
-        forceReleaseSlotLock(lockValidation.lockKey).catch((err) =>
-          console.error("Slot lock release failed (non-critical):", err)
-        );
-      }
-
-      // 8. Async Notification Dispatch
-      sendBookingNotification(appointment._id, "booked").catch((err) => console.error("Notification dispatch failed:", err));
-
-      return reply.code(201).send(
-        successResponse(
-          {
-            id: appointment.id,
-            clinicId,
-            doctorId,
-            patientId: finalPatientId,
-            appointmentTime: appointment.appointmentTime,
-            appointmentType: appointment.appointmentType,
-            status: appointment.status,
-            tokenNumber: appointment.tokenNumber,
-            queuePosition: appointment.queuePosition,
-            notes: appointment.notes
-          },
-          "Appointment booked successfully"
-        )
-      );
-    });
-  } catch (err) {
     console.error("bookAppointment error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
@@ -359,10 +97,18 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
 
     const filter: any = {};
 
-    if (userRole === "patient") {
+    if (userRole === "patient" || userRole === "family_member") {
       const patient = await Patient.findOne({ userId });
-      if (!patient) return reply.code(404).send(errorResponse("Patient profile not found"));
-      filter.patientId = patient._id;
+      if (userRole === "patient") {
+        if (!patient) return reply.code(404).send(errorResponse("Patient profile not found"));
+        filter.patientId = patient._id;
+      } else {
+        const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
+        const rels = await FamilyRelationship.find({ userId, status: "active" }).select("patientId").lean();
+        const familyPatientIds: any[] = rels.map((r: any) => r.patientId).filter(Boolean);
+        if (patient) familyPatientIds.push(patient._id);
+        filter.patientId = { $in: familyPatientIds };
+      }
     } else if (userRole === "doctor") {
       filter.doctorId = userId;
     }
@@ -370,7 +116,7 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
     if (clinicId) {
       if (!(await ensureAppointmentClinicAccess(req, reply, clinicId))) return;
       filter.clinicId = clinicId;
-    } else if (orgId && userRole !== "patient") {
+    } else if (orgId && userRole !== "patient" && userRole !== "family_member") {
       // Limit to clinics in requesting user's organization
       const clinicIds = await getRequestClinicIds(req);
       filter.clinicId = { $in: clinicIds };
@@ -396,19 +142,23 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
       filter.appointmentTime = { $gte: startOfDay, $lte: endOfDay };
     }
 
-    const totalCount = await Appointment.countDocuments(filter);
-    const totalPages = Math.ceil(totalCount / pageSize);
+    const [totalCount, rawAppointments] = await Promise.all([
+      Appointment.countDocuments(filter),
+      Appointment.find(filter)
+        .populate("clinicId", "name city address")
+        .populate("doctorId", "name specialization fees")
+        .populate({
+          path: "patientId",
+          populate: { path: "userId", select: "name email phone" }
+        })
+        .sort({ appointmentTime: 1 })
+        .skip(skip)
+        .limit(pageSize)
+        .lean(),
+    ]);
 
-    const appointments = await Appointment.find(filter)
-      .populate("clinicId", "name city address")
-      .populate("doctorId", "name specialization fees")
-      .populate({
-        path: "patientId",
-        populate: { path: "userId", select: "name email phone" }
-      })
-      .sort({ appointmentTime: 1 })
-      .skip(skip)
-      .limit(pageSize);
+    const totalPages = Math.ceil(totalCount / pageSize);
+    const appointments = rawAppointments.map((a: any) => ({ ...a, id: a._id.toString() }));
 
     setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
 
@@ -423,7 +173,31 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
 export async function updateAppointmentStatus(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id } = req.params as { id: string };
-    const { status, notes } = req.body as { status: string; notes?: string };
+    const {
+      status,
+      notes,
+      symptoms,
+      diagnosis,
+      prescriptions,
+      followUpRecommended,
+      followUpTimeline,
+      followUpNotes,
+      dispatchWhatsAppRx,
+      recipientPhone,
+      cdsOverrideReason,
+    } = (req.body || {}) as {
+      status: string;
+      notes?: string;
+      symptoms?: string;
+      diagnosis?: string;
+      prescriptions?: Array<{ name: string; dosage?: string; duration?: string; frequency?: string; instructions?: string }>;
+      followUpRecommended?: boolean;
+      followUpTimeline?: string;
+      followUpNotes?: string;
+      dispatchWhatsAppRx?: boolean;
+      recipientPhone?: string;
+      cdsOverrideReason?: string;
+    };
 
     if (!status) return reply.code(400).send(errorResponse("status is required"));
 
@@ -437,8 +211,91 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
 
     if (!(await ensureAppointmentClinicAccess(req, reply, appointment.clinicId))) return;
 
+    // ── Clinical Decision Support (CDS) Safety Gate ──────────────────
+    let cdsEvaluationResult: any = null;
+    let cdsDecision: "accepted" | "overridden" | "blocked" = "accepted";
+
+    if (status === "completed" && prescriptions && Array.isArray(prescriptions) && prescriptions.length > 0) {
+      const validPrescriptions = prescriptions.filter((p) => p.name && p.name.trim());
+      if (validPrescriptions.length > 0) {
+        const { cdsEngine } = await import("../services/CDSEngine.ts");
+        const { CDSEvaluation } = await import("../models/CDSEvaluation.ts");
+        const { Prescription } = await import("../models/Prescription.ts");
+
+        const patientDoc = await Patient.findById(appointment.patientId).lean();
+        const activeRxs = await Prescription.find({
+          patientId: appointment.patientId,
+          status: "active",
+        }).select("medicineName").lean();
+
+        const evaluation = await cdsEngine.evaluate({
+          patient: {
+            id: appointment.patientId.toString(),
+            dob: (patientDoc as any)?.dob,
+            gender: (patientDoc as any)?.gender,
+            allergies: ((patientDoc as any)?.allergies || []) as string[],
+            conditions: ((patientDoc as any)?.conditions || []) as string[],
+          },
+          activeMedications: activeRxs.map((r: any) => ({ medicineName: r.medicineName })),
+          proposedPrescriptions: validPrescriptions.map((p) => ({
+            medicineName: p.name.trim(),
+            dosage: p.dosage || "As directed",
+            frequency: p.frequency || "1-0-1",
+          })),
+        });
+
+        cdsEvaluationResult = evaluation;
+
+        const criticalFindings = evaluation.findings.filter(
+          (f) => f.systemAction === "override_required" || f.systemAction === "hard_stop" || f.severity === "critical"
+        );
+
+        if (criticalFindings.length > 0) {
+          if (!cdsOverrideReason || !cdsOverrideReason.trim()) {
+            await CDSEvaluation.create({
+              organizationId: (appointment as any).organizationId,
+              clinicId: appointment.clinicId,
+              patientId: appointment.patientId,
+              engineVersion: evaluation.engineVersion,
+              terminologyVersion: evaluation.terminologyVersion,
+              interactionDatasetVersion: evaluation.datasetVersion,
+              findings: evaluation.findings,
+              clinicianDecision: "blocked",
+              overrideReason: "",
+              metrics: evaluation.metrics,
+              evaluatedAt: new Date(),
+            }).catch(() => {});
+
+            return reply.code(400).send({
+              success: false,
+              code: "CDS_SAFETY_CONTRAINDICATION",
+              message: "Clinical Decision Support detected critical safety contraindications. Clinical override justification required.",
+              findings: evaluation.findings,
+              criticalFindings,
+            });
+          }
+
+          cdsDecision = "overridden";
+        }
+      }
+    }
+
     appointment.status = status as any;
     if (notes) appointment.notes = notes;
+
+    if (symptoms) appointment.symptoms = symptoms;
+    if (diagnosis) appointment.diagnosis = diagnosis;
+    if (prescriptions && Array.isArray(prescriptions)) {
+      appointment.prescriptions = prescriptions.map((p) => ({
+        name: p.name,
+        dosage: p.dosage || "As directed",
+        duration: p.duration || "5 days",
+      })) as any;
+    }
+    if (followUpRecommended !== undefined) appointment.followUpRecommended = Boolean(followUpRecommended);
+    if (followUpTimeline) appointment.followUpTimeline = followUpTimeline;
+    if (followUpNotes) appointment.followUpNotes = followUpNotes;
+
     await appointment.save();
 
     if (status === "in-consultation") {
@@ -458,6 +315,262 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
       }
     }
 
+    if (status === "completed") {
+      const { Encounter } = await import("../models/Encounter.ts");
+      const now = new Date();
+      let encounter = await Encounter.findOne({ appointmentId: appointment._id, status: { $ne: "cancelled" } });
+      if (!encounter) {
+        encounter = await Encounter.create({
+          organizationId: (appointment as any).organizationId,
+          clinicId: appointment.clinicId,
+          appointmentId: appointment._id,
+          patientId: appointment.patientId,
+          doctorId: appointment.doctorId,
+          encounterType: appointment.appointmentType === "online" ? "telehealth" : "opd",
+          status: "completed",
+          startedAt: appointment.appointmentTime || now,
+          endedAt: now,
+        });
+      } else {
+        encounter.status = "completed";
+        encounter.endedAt = now;
+        await encounter.save();
+      }
+
+      // Create individual Prescription records in MongoDB for in-house pharmacy dispensing & timeline
+      const createdPrescriptionIds: mongoose.Types.ObjectId[] = [];
+      if (prescriptions && Array.isArray(prescriptions) && prescriptions.length > 0) {
+        const { Prescription } = await import("../models/Prescription.ts");
+        for (const p of prescriptions) {
+          if (!p.name || !p.name.trim()) continue;
+          const rxDoc = await Prescription.create({
+            organizationId: (appointment as any).organizationId,
+            clinicId: appointment.clinicId,
+            encounterId: encounter._id,
+            patientId: appointment.patientId,
+            doctorId: appointment.doctorId,
+            medicineName: p.name.trim(),
+            dosage: p.dosage || "As directed",
+            frequency: p.frequency || "1-0-1",
+            duration: p.duration || "5 days",
+            instructions: p.instructions || "Follow prescribed meal instructions",
+            status: "active",
+          });
+          createdPrescriptionIds.push((rxDoc as any)._id);
+        }
+      }
+
+      // Persist clinical CDSEvaluation record & AuditLog
+      if (cdsEvaluationResult) {
+        const { CDSEvaluation } = await import("../models/CDSEvaluation.ts");
+        await CDSEvaluation.create({
+          organizationId: (appointment as any).organizationId,
+          clinicId: appointment.clinicId,
+          encounterId: encounter._id,
+          patientId: appointment.patientId,
+          prescriptionIds: createdPrescriptionIds,
+          engineVersion: cdsEvaluationResult.engineVersion,
+          terminologyVersion: cdsEvaluationResult.terminologyVersion,
+          interactionDatasetVersion: cdsEvaluationResult.datasetVersion,
+          findings: cdsEvaluationResult.findings,
+          clinicianDecision: cdsDecision,
+          overrideReason: cdsOverrideReason || "",
+          metrics: cdsEvaluationResult.metrics,
+          evaluatedAt: new Date(),
+        }).catch((err) => console.error("CDSEvaluation create error:", err));
+
+        if (cdsDecision === "overridden") {
+          await AuditLog.create({
+            action: "CDS_OVERRIDE",
+            category: "CLINICAL_WRITE",
+            targetId: appointment._id,
+            targetModel: "Appointment",
+            userId: req.user?.id,
+            details: {
+              appointmentId: appointment._id,
+              encounterId: encounter._id,
+              patientId: appointment.patientId,
+              overrideReason: cdsOverrideReason,
+              findingsCount: cdsEvaluationResult.findings.length,
+            },
+          }).catch(() => {});
+        }
+      }
+
+      // Calculate follow-up target date
+      let followUpDate: Date | undefined;
+      if (followUpRecommended && followUpTimeline) {
+        const target = new Date();
+        if (followUpTimeline.includes("day")) {
+          const days = parseInt(followUpTimeline, 10) || 7;
+          target.setDate(target.getDate() + days);
+        } else if (followUpTimeline.includes("week")) {
+          const weeks = parseInt(followUpTimeline, 10) || 1;
+          target.setDate(target.getDate() + weeks * 7);
+        } else if (followUpTimeline.includes("month")) {
+          const months = parseInt(followUpTimeline, 10) || 1;
+          target.setMonth(target.getMonth() + months);
+        } else {
+          target.setDate(target.getDate() + 7);
+        }
+        followUpDate = target;
+      }
+
+      // Create / update ClinicalNote
+      try {
+        const { ClinicalNote } = await import("../models/ClinicalNote.ts");
+        const docUser = await User.findById(appointment.doctorId).select("name").lean();
+        const docName = docUser?.name || "Doctor";
+
+        let note = await ClinicalNote.findOne({ encounterId: encounter._id, isLatest: true });
+        if (!note) {
+          await ClinicalNote.create({
+            organizationId: (appointment as any).organizationId,
+            clinicId: appointment.clinicId,
+            encounterId: encounter._id,
+            patientId: appointment.patientId,
+            doctorId: appointment.doctorId,
+            version: 1,
+            isLatest: true,
+            subjective: {
+              chiefComplaint: symptoms || "General Outpatient Assessment",
+              historyOfPresentIllness: symptoms || "",
+              symptoms: symptoms ? [symptoms] : [],
+            },
+            objective: {
+              physicalExamination: "Conducted physical examination during consultation.",
+            },
+            assessment: {
+              diagnoses: diagnosis
+                ? [{ code: "CLINICAL", description: diagnosis, status: "active" }]
+                : [{ code: "EVAL", description: "Clinical Evaluation Completed", status: "active" }],
+              severity: "moderate",
+            },
+            plan: {
+              treatmentPlan: followUpNotes || "Follow prescribed medical regimen and medication schedule.",
+              prescriptionIds: createdPrescriptionIds as any,
+              followUpDate,
+              followUpInstructions: followUpNotes || (followUpRecommended ? `Follow up in ${followUpTimeline}` : undefined),
+            },
+            status: "signed",
+            signature: {
+              signerId: appointment.doctorId,
+              signerName: `Dr. ${docName.replace(/^dr\.?\s+/i, "")}`,
+              signedAt: now,
+              signingMethod: "RS256_JWT",
+            },
+          });
+        } else {
+          if (symptoms) (note as any).subjective.chiefComplaint = symptoms;
+          if (diagnosis) {
+            (note as any).assessment.diagnoses = [{ code: "CLINICAL", description: diagnosis, status: "active" } as any];
+          }
+          if (createdPrescriptionIds.length > 0) {
+            (note as any).plan.prescriptionIds = createdPrescriptionIds as any;
+          }
+          if (followUpDate) (note as any).plan.followUpDate = followUpDate;
+          if (followUpNotes) (note as any).plan.followUpInstructions = followUpNotes;
+          note.status = "signed";
+          await note.save();
+        }
+      } catch (noteErr) {
+        console.warn("Clinical note persistence notice:", noteErr);
+      }
+
+      // Auto-schedule confirmed follow-up review appointment in MongoDB
+      if (followUpRecommended && followUpDate && appointment.clinicId && appointment.patientId && appointment.doctorId) {
+        try {
+          const existingFollowUp = await Appointment.findOne({
+            followUpForAppointmentId: appointment._id,
+            status: { $ne: "cancelled" },
+          });
+
+          if (!existingFollowUp) {
+            const dateStr = followUpDate.toISOString().slice(0, 10);
+            const counterKey = `token_${appointment.clinicId}_${appointment.doctorId}_${dateStr}`;
+            const tokenNumber = await getNextAtomicSequence(counterKey);
+
+            const followUp = await Appointment.create({
+              organizationId: (appointment as any).organizationId || undefined,
+              clinicId: appointment.clinicId,
+              doctorId: appointment.doctorId,
+              patientId: appointment.patientId,
+              appointmentTime: followUpDate,
+              appointmentType: "walk-in",
+              status: "confirmed",
+              tokenNumber,
+              queuePosition: tokenNumber,
+              notes: followUpNotes || `Recommended Follow-up Review (${followUpTimeline})`,
+              followUpRecommended: true,
+              followUpForAppointmentId: appointment._id,
+              paymentStatus: "unpaid",
+            });
+
+            (appointment as any).followUpAppointmentId = followUp._id;
+            await appointment.save();
+          } else {
+            (appointment as any).followUpAppointmentId = existingFollowUp._id;
+            await appointment.save();
+          }
+        } catch (followUpErr) {
+          console.warn("Auto follow-up appointment creation warning:", followUpErr);
+        }
+      }
+
+      if (dispatchWhatsAppRx !== false) {
+        const { sendConsultationCompletedNotification } = await import("../utilities/notifications.ts");
+        await sendConsultationCompletedNotification(appointment._id, {
+          phone: recipientPhone?.trim() || undefined,
+          channel: "whatsapp",
+        }).catch((err) =>
+          console.error("sendConsultationCompletedNotification dispatch failed:", err)
+        );
+        (appointment as any).rxDispatchedAt = new Date();
+        if (recipientPhone) (appointment as any).rxDispatchPhone = recipientPhone.trim();
+        await appointment.save();
+      }
+
+      // Real-time pharmacy broadcast for dispensary desk
+      if (createdPrescriptionIds.length > 0 && appointment.clinicId) {
+        try {
+          const { broadcastQueueUpdate } = await import("../notifications/websocket.ts");
+          let patientName = "Patient";
+          if ((appointment.patientId as any)?.name) {
+            patientName = (appointment.patientId as any).name;
+          } else if ((appointment.patientId as any)?.userId?.name) {
+            patientName = (appointment.patientId as any).userId.name;
+          } else if (appointment.patientId) {
+            const patientDoc = (await Patient.findById(appointment.patientId).populate("userId", "name").lean()) as any;
+            patientName = patientDoc?.userId?.name || patientDoc?.name || "Patient";
+          }
+
+          broadcastQueueUpdate(appointment.clinicId.toString(), {
+            type: "PRESCRIPTION_ISSUED",
+            data: {
+              appointmentId: appointment._id.toString(),
+              encounterId: encounter._id.toString(),
+              patientId: appointment.patientId?.toString(),
+              patientName,
+              tokenNumber: appointment.tokenNumber,
+              doctorId: appointment.doctorId?.toString(),
+              prescriptionCount: createdPrescriptionIds.length,
+              prescriptions: (prescriptions || []).map((p) => ({
+                name: p.name.trim(),
+                dosage: p.dosage || "As directed",
+                frequency: p.frequency || "1-0-1",
+                duration: p.duration || "5 days",
+                instructions: p.instructions || "Follow prescribed meal instructions",
+              })),
+              clinicId: appointment.clinicId.toString(),
+            },
+            timestamp: new Date().toISOString(),
+          });
+        } catch (wsErr) {
+          console.warn("Real-time pharmacy PRESCRIPTION_ISSUED broadcast warning:", wsErr);
+        }
+      }
+    }
+
     if (status === "cancelled") {
       sendBookingNotification(appointment._id, "cancelled").catch((err) => console.error("Cancellation notification dispatch failed:", err));
       await Invoice.updateMany({ appointmentId: appointment._id, status: "unpaid" }, { status: "cancelled" });
@@ -468,13 +581,97 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
       action: "APPOINTMENT_STATUS_UPDATE",
       targetId: appointment._id,
       targetModel: "Appointment",
-      details: { status, notes }
+      details: {
+        status,
+        notes,
+        symptoms: symptoms || undefined,
+        diagnosis: diagnosis || undefined,
+        prescriptionsCount: prescriptions?.length || 0,
+      }
     });
+
+    // Real-time queue broadcast
+    const clinicIdStr = appointment.clinicId?.toString();
+    if (clinicIdStr) {
+      const { broadcastQueueUpdate } = await import("../notifications/websocket.ts");
+      broadcastQueueUpdate(clinicIdStr, {
+        type: "QUEUE_UPDATED",
+        data: {
+          appointmentId: appointment._id.toString(),
+          status: appointment.status,
+          doctorId: appointment.doctorId?.toString(),
+          clinicId: clinicIdStr,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Autonomous Queue Pacing (P2): If consultation began, completed, or cancelled, advance pacing for waiting queue
+    if (["in-consultation", "completed", "cancelled", "no-show"].includes(status)) {
+      const { triggerTurnApproachingPacing } = await import("./queue.ts");
+      triggerTurnApproachingPacing(appointment.clinicId, appointment.doctorId).catch((err) =>
+        console.error("Background turn approaching pacing error on appointment status update:", err)
+      );
+    }
 
     return reply.code(200).send(successResponse(appointment, "Appointment status updated successfully"));
   } catch (err) {
     console.error("updateAppointmentStatus error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+// ─── Resend Digital Prescription via WhatsApp/SMS ────────────────
+export async function resendPrescriptionNotification(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id } = req.params as { id: string };
+    const { phone, channel = "whatsapp" } = (req.body || {}) as { phone?: string; channel?: "whatsapp" | "sms" };
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return reply.code(400).send(errorResponse("Invalid appointment ID"));
+    }
+
+    const appointment = await Appointment.findById(id);
+    if (!appointment) {
+      return reply.code(404).send(errorResponse("Appointment not found"));
+    }
+
+    if (!(await ensureAppointmentClinicAccess(req, reply, appointment.clinicId))) return;
+
+    const { sendConsultationCompletedNotification } = await import("../utilities/notifications.ts");
+    await sendConsultationCompletedNotification(appointment._id, {
+      phone: phone?.trim(),
+      channel,
+    });
+
+    (appointment as any).rxDispatchedAt = new Date();
+    if (phone) (appointment as any).rxDispatchPhone = phone.trim();
+    await appointment.save();
+
+    const { AuditLog } = await import("../models/AuditLog.ts");
+    await AuditLog.create({
+      organizationId: (appointment as any).organizationId,
+      userId: req.user!.id,
+      category: "CLINICAL_WRITE",
+      action: "PRESCRIPTION_NOTIFICATION_RESENT",
+      targetId: appointment._id,
+      targetModel: "Appointment",
+      details: {
+        tokenNumber: appointment.tokenNumber,
+        channel,
+        phone: phone || "patient_registered_phone",
+      },
+    });
+
+    return reply.code(200).send(
+      successResponse(
+        { appointmentId: appointment._id, channel, dispatchedAt: (appointment as any).rxDispatchedAt },
+        `Digital e-Prescription successfully dispatched via ${channel.toUpperCase()}`
+      )
+    );
+  } catch (err: any) {
+    console.error("resendPrescriptionNotification error:", err);
+    return reply.code(500).send(errorResponse(err.message || "Failed to resend prescription notification"));
   }
 }
 
@@ -775,5 +972,236 @@ export async function getSlotLockStatus(req: FastifyRequest, reply: FastifyReply
   } catch (err) {
     console.error("getSlotLockStatus error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+// ─── Follow-Up Care-Gap & Patient Recall Register ───────────────
+export async function getFollowUpRegister(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { clinicId, doctorId, timeframe, search } = (req.query || {}) as {
+      clinicId?: string;
+      doctorId?: string;
+      timeframe?: "all" | "today" | "upcoming" | "overdue";
+      search?: string;
+    };
+
+    const query: any = {
+      $or: [
+        { followUpRecommended: true },
+        { followUpForAppointmentId: { $exists: true, $ne: null } },
+      ],
+    };
+
+    if (clinicId) {
+      query.clinicId = clinicId;
+    } else if (req.user?.organization_id) {
+      const { getRequestClinicIds } = await import("../utilities/tenant.ts");
+      query.clinicId = { $in: await getRequestClinicIds(req) };
+    }
+
+    if (doctorId) {
+      query.doctorId = doctorId;
+    }
+
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    const in7Days = new Date(startOfToday.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+    const appointments = await Appointment.find(query)
+      .populate({
+        path: "patientId",
+        populate: { path: "userId", select: "name email phone" },
+      })
+      .populate("doctorId", "name specialization")
+      .populate("clinicId", "name city")
+      .sort({ appointmentTime: 1 })
+      .lean();
+
+    let dueTodayCount = 0;
+    let upcomingCount = 0;
+    let overdueCount = 0;
+
+    const mapped = appointments.map((appt: any) => {
+      const apptDate = new Date(appt.appointmentTime);
+      let statusCategory: "due_today" | "upcoming" | "overdue" | "attended" = "upcoming";
+
+      if (appt.status === "completed" || appt.status === "in-consultation") {
+        statusCategory = "attended";
+      } else if (apptDate >= startOfToday && apptDate <= endOfToday) {
+        statusCategory = "due_today";
+        dueTodayCount++;
+      } else if (apptDate > endOfToday && apptDate <= in7Days) {
+        statusCategory = "upcoming";
+        upcomingCount++;
+      } else if (apptDate < startOfToday && ["confirmed", "pending", "checked-in"].includes(appt.status)) {
+        statusCategory = "overdue";
+        overdueCount++;
+      }
+
+      const patientName = appt.patientId?.userId?.name || appt.patientId?.name || "Patient";
+      const patientPhone = (appt.patientId as any)?.phone || appt.patientId?.userId?.phone || "";
+
+      return {
+        id: appt._id.toString(),
+        appointmentTime: appt.appointmentTime,
+        status: appt.status,
+        statusCategory,
+        tokenNumber: appt.tokenNumber,
+        patient: {
+          id: appt.patientId?._id?.toString() || appt.patientId?.id,
+          name: patientName,
+          phone: patientPhone,
+          gender: appt.patientId?.gender,
+          age: appt.patientId?.age,
+        },
+        doctor: {
+          id: appt.doctorId?._id?.toString() || appt.doctorId?.id,
+          name: appt.doctorId?.name || "Doctor",
+          specialization: appt.doctorId?.specialization || "General Medicine",
+        },
+        clinic: {
+          id: appt.clinicId?._id?.toString() || appt.clinicId?.id,
+          name: appt.clinicId?.name || "Clinic",
+        },
+        diagnosis: appt.diagnosis || "",
+        symptoms: appt.symptoms || "",
+        notes: appt.notes || "",
+        lastRecallSentAt: appt.lastRecallSentAt || null,
+        recallCount: appt.recallCount || 0,
+      };
+    });
+
+    // Filter by timeframe if requested
+    let filtered = mapped;
+    if (timeframe === "today") {
+      filtered = mapped.filter((a: any) => a.statusCategory === "due_today");
+    } else if (timeframe === "upcoming") {
+      filtered = mapped.filter((a: any) => a.statusCategory === "upcoming");
+    } else if (timeframe === "overdue") {
+      filtered = mapped.filter((a: any) => a.statusCategory === "overdue");
+    }
+
+    if (search && search.trim()) {
+      const q = search.trim().toLowerCase();
+      filtered = filtered.filter(
+        (a: any) =>
+          a.patient.name.toLowerCase().includes(q) ||
+          a.patient.phone.includes(q) ||
+          a.diagnosis.toLowerCase().includes(q)
+      );
+    }
+
+    return reply.code(200).send(
+      successResponse(
+        {
+          items: filtered,
+          metrics: {
+            dueTodayCount,
+            upcomingCount,
+            overdueCount,
+            totalCount: mapped.length,
+          },
+        },
+        "Follow-up recall register retrieved"
+      )
+    );
+  } catch (err: any) {
+    req.log.error(err, "Failed to get follow-up register");
+    return reply.code(500).send(errorResponse(err.message || "Failed to retrieve follow-up register"));
+  }
+}
+
+// ─── Dispatch WhatsApp / SMS Follow-Up Reminder ─────────────────
+export async function sendFollowUpReminder(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id } = req.params as { id: string };
+    const { phone, channel = "whatsapp" } = (req.body || {}) as {
+      phone?: string;
+      channel?: "whatsapp" | "sms";
+    };
+
+    const appointment = await Appointment.findById(id)
+      .populate({
+        path: "patientId",
+        populate: { path: "userId", select: "name email phone" },
+      })
+      .populate("doctorId", "name specialization")
+      .populate("clinicId", "name city phone");
+
+    if (!appointment) {
+      return reply.code(404).send(errorResponse("Appointment not found"));
+    }
+
+    const patientName =
+      (appointment.patientId as any)?.userId?.name ||
+      (appointment.patientId as any)?.name ||
+      "Patient";
+    const targetPhone =
+      phone?.trim() ||
+      (appointment.patientId as any)?.phone ||
+      (appointment.patientId as any)?.userId?.phone;
+
+    if (!targetPhone) {
+      return reply.code(400).send(errorResponse("Patient mobile number not available"));
+    }
+
+    const doctorName =
+      (appointment.doctorId as any)?.name || "Attending Physician";
+    const clinicName = (appointment.clinicId as any)?.name || "Clinic";
+    const apptDateStr = new Date(appointment.appointmentTime).toLocaleDateString("en-IN", {
+      weekday: "short",
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    });
+
+    const trackingUrl = `https://jk.health/track?token=${appointment.tokenNumber}&clinic=${appointment.clinicId?._id || appointment.clinicId}`;
+
+    const message = `Namaste ${patientName}, your recommended medical review with Dr. ${doctorName.replace(/^Dr\.\s*/i, "")} at ${clinicName} is scheduled for ${apptDateStr}. To check your token (#${appointment.tokenNumber}) or view live wait status: ${trackingUrl}`;
+
+    try {
+      const { sendFollowUpRecallNotification } = await import("../utilities/notifications.ts");
+      await sendFollowUpRecallNotification({
+        appointmentId: appointment._id.toString(),
+        phone: targetPhone,
+        channel,
+      });
+    } catch (msgErr) {
+      console.warn("Follow-up reminder dispatch warning:", msgErr);
+    }
+
+    (appointment as any).lastRecallSentAt = new Date();
+    (appointment as any).recallCount = ((appointment as any).recallCount || 0) + 1;
+    await appointment.save();
+
+    await AuditLog.create({
+      userId: req.user!.id,
+      action: "FOLLOW_UP_RECALL_SENT",
+      targetId: appointment._id,
+      targetModel: "Appointment",
+      category: "CLINICAL_WRITE",
+      details: {
+        channel,
+        phone: targetPhone,
+        tokenNumber: appointment.tokenNumber,
+        recallCount: (appointment as any).recallCount,
+      },
+    });
+
+    return reply.code(200).send(
+      successResponse(
+        {
+          id: appointment._id.toString(),
+          lastRecallSentAt: (appointment as any).lastRecallSentAt,
+          recallCount: (appointment as any).recallCount,
+          channel,
+        },
+        `Follow-up review reminder dispatched to ${patientName} via ${channel.toUpperCase()}`
+      )
+    );
+  } catch (err: any) {
+    req.log.error(err, "Failed to send follow-up reminder");
+    return reply.code(500).send(errorResponse(err.message || "Failed to send follow-up reminder"));
   }
 }

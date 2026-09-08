@@ -19,6 +19,9 @@ const PrescriptionSchema = new Schema({
   createdAt: { type: Date, default: Date.now },
 }, { timestamps: true });
 
+PrescriptionSchema.index({ patientId: 1, createdAt: -1 });
+PrescriptionSchema.index({ clinicId: 1, status: 1 });
+
 PrescriptionSchema.virtual("id").get(function () {
   return this._id.toHexString();
 });

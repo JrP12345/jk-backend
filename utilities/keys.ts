@@ -2,31 +2,105 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-const KEYS_DIR = path.join(process.cwd(), "keys");
-const PRIVATE_KEY_PATH = path.join(KEYS_DIR, "private.pem");
-const PUBLIC_KEY_PATH = path.join(KEYS_DIR, "public.pem");
+export function getPrivateKeyPath(): string {
+  return process.env.JWT_PRIVATE_KEY_PATH || path.join(process.cwd(), "keys", "private.pem");
+}
+
+export function getPublicKeyPath(): string {
+  return process.env.JWT_PUBLIC_KEY_PATH || path.join(process.cwd(), "keys", "public.pem");
+}
 
 export const KEY_ID = "healthos-service-key-1";
 
-let privateKeyPem = "";
-let publicKeyPem = "";
+export let SERVICE_PRIVATE_KEY: string = "";
+export let SERVICE_PUBLIC_KEY: string = "";
 
-function initKeys() {
+export function getServicePrivateKey(): string {
+  return SERVICE_PRIVATE_KEY;
+}
+
+export function getServicePublicKey(): string {
+  return SERVICE_PUBLIC_KEY;
+}
+
+/**
+ * Check if keys are provided via environment variables or existing files without triggering generation.
+ */
+export function hasConfiguredKeys(): boolean {
+  if (process.env.JWT_PRIVATE_KEY_BASE64 && process.env.JWT_PUBLIC_KEY_BASE64) {
+    return true;
+  }
   if (process.env.JWT_PRIVATE_KEY && process.env.JWT_PUBLIC_KEY) {
-    privateKeyPem = process.env.JWT_PRIVATE_KEY.replace(/\\n/g, "\n");
-    publicKeyPem = process.env.JWT_PUBLIC_KEY.replace(/\\n/g, "\n");
-    return;
+    return true;
+  }
+  const privPath = getPrivateKeyPath();
+  const pubPath = getPublicKeyPath();
+  if (fs.existsSync(privPath) && fs.existsSync(pubPath)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Initialize RS256 service keys.
+ * In production, ephemeral key generation is strictly forbidden to prevent
+ * cross-pod verification failure and token invalidation on container restart.
+ */
+export function initKeys(forceReload = false): { privateKey: string; publicKey: string } {
+  if (!forceReload && SERVICE_PRIVATE_KEY && SERVICE_PUBLIC_KEY) {
+    return { privateKey: SERVICE_PRIVATE_KEY, publicKey: SERVICE_PUBLIC_KEY };
   }
 
-  if (fs.existsSync(PRIVATE_KEY_PATH) && fs.existsSync(PUBLIC_KEY_PATH)) {
-    privateKeyPem = fs.readFileSync(PRIVATE_KEY_PATH, "utf8");
-    publicKeyPem = fs.readFileSync(PUBLIC_KEY_PATH, "utf8");
-    return;
+  // 1. Check Base64 environment variables (ideal for K8s secrets / cloud secret managers / Docker)
+  if (process.env.JWT_PRIVATE_KEY_BASE64 && process.env.JWT_PUBLIC_KEY_BASE64) {
+    try {
+      SERVICE_PRIVATE_KEY = Buffer.from(process.env.JWT_PRIVATE_KEY_BASE64.trim(), "base64").toString("utf8");
+      SERVICE_PUBLIC_KEY = Buffer.from(process.env.JWT_PUBLIC_KEY_BASE64.trim(), "base64").toString("utf8");
+      return { privateKey: SERVICE_PRIVATE_KEY, publicKey: SERVICE_PUBLIC_KEY };
+    } catch (err: any) {
+      throw new Error(`Failed to decode JWT_*_BASE64 environment variables: ${err?.message || err}`);
+    }
   }
 
-  // Auto-generate service keypair for dev/test if files don't exist
-  if (!fs.existsSync(KEYS_DIR)) {
-    fs.mkdirSync(KEYS_DIR, { recursive: true });
+  // 2. Check raw PEM environment variables
+  if (process.env.JWT_PRIVATE_KEY && process.env.JWT_PUBLIC_KEY) {
+    SERVICE_PRIVATE_KEY = process.env.JWT_PRIVATE_KEY.replace(/\\n/g, "\n").trim();
+    SERVICE_PUBLIC_KEY = process.env.JWT_PUBLIC_KEY.replace(/\\n/g, "\n").trim();
+    return { privateKey: SERVICE_PRIVATE_KEY, publicKey: SERVICE_PUBLIC_KEY };
+  }
+
+  // 3. Check persistent or volume-mounted filesystem keys
+  const privPath = getPrivateKeyPath();
+  const pubPath = getPublicKeyPath();
+  if (fs.existsSync(privPath) && fs.existsSync(pubPath)) {
+    SERVICE_PRIVATE_KEY = fs.readFileSync(privPath, "utf8").trim();
+    SERVICE_PUBLIC_KEY = fs.readFileSync(pubPath, "utf8").trim();
+    return { privateKey: SERVICE_PRIVATE_KEY, publicKey: SERVICE_PUBLIC_KEY };
+  }
+
+  // 4. In production, fail immediately — NEVER generate ephemeral keys on boot!
+  const isProd = process.env.NODE_ENV === "production";
+  if (isProd) {
+    throw new Error(
+      "❌ [FATAL SECURITY CONFIGURATION ERROR]\n" +
+      "RS256 JWT keypair is not configured in production mode.\n" +
+      "Generating ephemeral keys on boot breaks horizontal scaling (Pod A cannot verify Pod B's tokens)\n" +
+      "and will log out all active users whenever a container restarts or rolls out.\n\n" +
+      "Fix: Generate a persistent keypair once using `npm run generate:keys` and inject into your cluster:\n" +
+      "  - JWT_PRIVATE_KEY_BASE64 & JWT_PUBLIC_KEY_BASE64 (recommended for K8s Secret / AWS Secrets Manager / Doppler)\n" +
+      "  - OR JWT_PRIVATE_KEY & JWT_PUBLIC_KEY\n" +
+      `  - OR mount keys at ${privPath} and ${pubPath}\n`
+    );
+  }
+
+  // 5. Development/Test fallback: auto-generate keypair if not present
+  const keysDir = path.dirname(privPath);
+  if (!fs.existsSync(keysDir)) {
+    try {
+      fs.mkdirSync(keysDir, { recursive: true });
+    } catch {
+      // Ignore if directory cannot be created
+    }
   }
 
   const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", {
@@ -35,17 +109,21 @@ function initKeys() {
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
   });
 
-  fs.writeFileSync(PRIVATE_KEY_PATH, privateKey, "utf8");
-  fs.writeFileSync(PUBLIC_KEY_PATH, publicKey, "utf8");
+  try {
+    fs.writeFileSync(privPath, privateKey, "utf8");
+    fs.writeFileSync(pubPath, publicKey, "utf8");
+  } catch {
+    // Read-only filesystem in some container tests; keep in-memory
+  }
 
-  privateKeyPem = privateKey;
-  publicKeyPem = publicKey;
+  SERVICE_PRIVATE_KEY = privateKey;
+  SERVICE_PUBLIC_KEY = publicKey;
+
+  return { privateKey: SERVICE_PRIVATE_KEY, publicKey: SERVICE_PUBLIC_KEY };
 }
 
+// Initial invocation
 initKeys();
-
-export const SERVICE_PRIVATE_KEY: string = privateKeyPem;
-export const SERVICE_PUBLIC_KEY: string = publicKeyPem;
 
 /**
  * Return the public key formatted as a JWK Set (JWKS).

@@ -373,7 +373,7 @@ export class SubscriptionService {
    * Process Razorpay Webhook Event Idempotently
    */
   async processRazorpayWebhook(rawBody: string, signature: string, eventData: any) {
-    const isValid = razorpayService.verifyWebhookSignature(rawBody, signature);
+    const isValid = await razorpayService.verifyWebhookSignature(rawBody, signature);
     if (!isValid) {
       throw new Error("Invalid webhook signature");
     }

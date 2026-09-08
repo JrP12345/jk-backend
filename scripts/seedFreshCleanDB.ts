@@ -41,6 +41,11 @@ import { SaaSPlan } from "../models/SaaSPlan.ts";
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/ananta_health";
 
 async function runPureRootOnlySeed() {
+  if (process.env.NODE_ENV === "production") {
+    console.error("FATAL: Destructive database seed scripts cannot be executed in production!");
+    process.exit(1);
+  }
+
   console.log("=======================================================================");
   console.log("🧹 [ANANTA HEALTHCARE SYSTEM] PURE ROOT-ONLY FRESH SETUP");
   console.log("=======================================================================");

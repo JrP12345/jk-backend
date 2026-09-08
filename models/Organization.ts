@@ -37,6 +37,29 @@ const OrganizationSchema = new Schema({
     fromEmail: { type: String, default: null },
     fromName: { type: String, default: null },
   },
+  // ─── Meta WhatsApp Business Gateway & Credits Configuration ────────────
+  whatsappConfig: {
+    mode: { type: String, enum: ["disabled", "shared", "dedicated"], default: "shared" },
+    wabaId: { type: String, default: null },
+    phoneNumberId: { type: String, default: null },
+    accessToken: { type: String, default: null },
+    monthlyQuota: { type: Number, default: 500 },
+    creditsBalance: { type: Number, default: 500 },
+    creditsUsedThisMonth: { type: Number, default: 0 },
+    prepaidCredits: { type: Number, default: 0 },
+    quotaResetMonth: { type: String, default: "" },
+    lowBalanceThreshold: { type: Number, default: 50 },
+    autoRechargeEnabled: { type: Boolean, default: false },
+    autoRechargePack: { type: String, enum: ["bronze", "silver", "gold"], default: "bronze" },
+    notifications: {
+      sendBookingConfirmation: { type: Boolean, default: true },
+      sendConsultationComplete: { type: Boolean, default: true },
+      sendAppointmentCancellation: { type: Boolean, default: true },
+      sendTurnApproaching: { type: Boolean, default: false },
+      sendQueueDelayAlert: { type: Boolean, default: true },
+      sendDisruptionAlert: { type: Boolean, default: true },
+    },
+  },
   createdAt: { type: Date, default: Date.now },
 });
 

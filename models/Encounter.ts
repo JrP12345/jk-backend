@@ -16,6 +16,8 @@ const EncounterSchema = new Schema({
 }, { timestamps: true });
 
 EncounterSchema.index({ organizationId: 1, appointmentId: 1, status: 1 });
+EncounterSchema.index({ clinicId: 1, status: 1 });
+EncounterSchema.index({ patientId: 1, createdAt: -1 });
 
 EncounterSchema.virtual("id").get(function () {
   return this._id.toHexString();

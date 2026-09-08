@@ -29,7 +29,9 @@ export async function withTransaction<T>(
 
     const result = await fn(session);
 
-    await session.commitTransaction();
+    if (session && session.inTransaction()) {
+      await session.commitTransaction();
+    }
     return result;
   } catch (err: any) {
     if (session && session.inTransaction()) {
@@ -43,8 +45,12 @@ export async function withTransaction<T>(
     const msg = err?.message || err?.errmsg || err?.errorResponse?.errmsg || "";
     const code = err?.code || err?.errorResponse?.code;
 
-    // Additional fallback check for standalone MongoDB code 20 errors
+    // Additional fallback check for standalone MongoDB code 20 errors in non-production
     if (code === 20 || msg.includes("replica set") || msg.includes("Transaction numbers")) {
+      if (process.env.NODE_ENV === "production") {
+        throw new Error(`Transaction failed: Multi-document ACID transactions require a MongoDB Replica Set in production (${msg})`);
+      }
+      console.warn("⚠️ [Transaction Notice] Local standalone MongoDB detected. Re-executing non-transactionally for development/test.");
       return await fn(null);
     }
 

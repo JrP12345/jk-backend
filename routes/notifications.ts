@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { authenticate, checkPermission } from "../middleware/auth.ts";
 import { notificationService } from "../notifications/services/NotificationService.ts";
-import { notificationStreamHandler } from "../notifications/websocket.ts";
+import { notificationStreamHandler, handleNotificationWebSocket } from "../notifications/websocket.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { User } from "../models/User.ts";
@@ -31,7 +31,15 @@ async function getOrganizationSmtp(organizationId?: string | null): Promise<Smtp
 export default async function notificationRoutes(app: FastifyInstance) {
   const adminNotifications = { preHandler: [authenticate, checkPermission("MANAGE_ORGANIZATION")] };
 
-  // ─── Realtime SSE Stream ─────────────────────────────────────────
+  // ─── Native WebSockets (Bidirectional Realtime Stream) ───────────
+  app.get("/api/ws", { websocket: true }, (socket, req) => {
+    handleNotificationWebSocket(socket as any, req);
+  });
+  app.get("/api/notifications/ws", { websocket: true }, (socket, req) => {
+    handleNotificationWebSocket(socket as any, req);
+  });
+
+  // ─── Realtime SSE Stream (Fallback) ──────────────────────────────
   app.get("/api/notifications/stream", { preHandler: [authenticate] }, notificationStreamHandler);
 
   // ─── Operational Metrics Monitoring ──────────────────────────────

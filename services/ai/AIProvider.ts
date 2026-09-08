@@ -29,6 +29,8 @@ export interface HealthQueryInput {
   query: string;
   patientRecordSummary: string;
   chatHistory?: ChatTurn[];
+  systemPrompt?: string;
+  compiledPromptText?: string;
 }
 
 export interface AISuggestedAction {
@@ -43,6 +45,10 @@ export interface HealthQueryResponse {
   citations: string[];
   disclaimer: string;
   suggestedActions?: AISuggestedAction[];
+  rawUsage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+  };
 }
 
 // ─── ENTERPRISE AI CONTRACTS ──────────────────────────────────────────
@@ -67,6 +73,7 @@ export interface AIRequest {
   temperature?: number;
   maxTokens?: number;
   systemDirective?: string;
+  chatHistory?: ChatTurn[];
 }
 
 export interface AIResponse {
@@ -92,5 +99,6 @@ export interface AIProvider {
   isHealthy(): Promise<boolean>;
   generateSOAPNote(input: SOAPGenerationInput): Promise<SOAPNoteDraft>;
   queryPatientHealthAssistant(input: HealthQueryInput): Promise<HealthQueryResponse>;
+  streamHealthAssistant?(input: HealthQueryInput, onToken: (chunk: string) => void): Promise<HealthQueryResponse>;
   executeRequest?(request: AIRequest): Promise<AIResponse>;
 }

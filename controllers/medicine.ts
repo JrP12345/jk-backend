@@ -10,6 +10,8 @@ import { Appointment } from "../models/Appointment.ts";
 import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds } from "../utilities/tenant.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
+import { dispenseMedicineFEFO } from "../services/PharmacyInventoryService.ts";
+import { generateClinicInvoiceNumber } from "../utilities/invoiceNumber.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));
@@ -181,7 +183,11 @@ export async function getPendingPrescriptionsController(req: FastifyRequest, rep
       status: "active",
       deletedAt: null,
     })
-      .populate("patientId", "name phone userId")
+      .populate({
+        path: "patientId",
+        select: "name phone userId",
+        populate: { path: "userId", select: "name phone email" },
+      })
       .populate("doctorId", "name email phone")
       .populate("encounterId", "appointmentId startedAt endedAt")
       .sort({ createdAt: -1 })
@@ -191,6 +197,7 @@ export async function getPendingPrescriptionsController(req: FastifyRequest, rep
       encounterId: string;
       appointmentId: string | null;
       appointmentTime: string | null;
+      tokenNumber?: number | null;
       patientId: { id: string; name: string; phone?: string };
       doctorId: { id: string; name: string };
       prescriptions: Array<{
@@ -204,6 +211,22 @@ export async function getPendingPrescriptionsController(req: FastifyRequest, rep
       }>;
     }>();
 
+    // Batch fetch appointments for all encounters to avoid N+1 queries
+    const apptIds = Array.from(new Set(
+      prescriptions
+        .map((rx: any) => rx.encounterId?.appointmentId)
+        .filter(Boolean)
+        .map((id: any) => String(id))
+    ));
+
+    const appointmentsMap = new Map<string, any>();
+    if (apptIds.length > 0) {
+      const appts = await Appointment.find({ _id: { $in: apptIds } }).select("appointmentTime tokenNumber status").lean();
+      for (const appt of appts) {
+        appointmentsMap.set(String(appt._id), appt);
+      }
+    }
+
     for (const rx of prescriptions) {
       const encounterId = String((rx as any).encounterId?._id || rx.encounterId);
       if (!grouped.has(encounterId)) {
@@ -213,10 +236,12 @@ export async function getPendingPrescriptionsController(req: FastifyRequest, rep
 
         let appointmentTime: string | null = null;
         let appointmentId: string | null = null;
+        let tokenNumber: number | null = null;
         if (encounterDoc?.appointmentId) {
           appointmentId = String(encounterDoc.appointmentId);
-          const appt = await Appointment.findById(encounterDoc.appointmentId).select("appointmentTime").lean();
+          const appt = appointmentsMap.get(appointmentId);
           appointmentTime = appt?.appointmentTime ? new Date(appt.appointmentTime).toISOString() : null;
+          tokenNumber = appt?.tokenNumber || null;
         } else if (encounterDoc?.startedAt) {
           appointmentTime = new Date(encounterDoc.startedAt).toISOString();
         }
@@ -225,10 +250,11 @@ export async function getPendingPrescriptionsController(req: FastifyRequest, rep
           encounterId,
           appointmentId,
           appointmentTime,
+          tokenNumber,
           patientId: {
             id: String(patientDoc?._id || rx.patientId),
-            name: patientDoc?.name || "Patient",
-            phone: patientDoc?.phone,
+            name: patientDoc?.name || patientDoc?.userId?.name || "Patient",
+            phone: patientDoc?.phone || patientDoc?.userId?.phone,
           },
           doctorId: {
             id: String(doctorDoc?._id || rx.doctorId),
@@ -262,12 +288,14 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
   try {
     const userId = req.user!.id;
 
-    const { patientId, clinicId, doctorId, items, prescriptionIds } = req.body as {
+    const { patientId, clinicId, doctorId, items, prescriptionIds, encounterId, appointmentId } = req.body as {
       patientId: string;
       clinicId: string;
       doctorId?: string;
       items: Array<{ medicineId: string; quantity: number }>;
       prescriptionIds?: string[];
+      encounterId?: string;
+      appointmentId?: string;
     };
 
     if (!patientId || !clinicId || !items || !Array.isArray(items) || items.length === 0) {
@@ -304,6 +332,7 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
     const medsToUpdate: any[] = [];
     const medicineIds = new Set<string>();
 
+    // Validate item structure and collect IDs
     for (const item of items) {
       if (!mongoose.Types.ObjectId.isValid(item.medicineId)) {
         return reply.code(400).send(errorResponse(`Invalid medicineId: ${item.medicineId}`));
@@ -318,8 +347,14 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
         return reply.code(400).send(errorResponse("Each medicine may appear only once per dispense request"));
       }
       medicineIds.add(item.medicineId);
+    }
 
-      const medicine = await Medicine.findById(item.medicineId);
+    // Batch query all requested medicines in a single database roundtrip
+    const medicineDocs = await Medicine.find({ _id: { $in: Array.from(medicineIds) } });
+    const medicineMap = new Map(medicineDocs.map((m) => [m._id.toString(), m]));
+
+    for (const item of items) {
+      const medicine = medicineMap.get(item.medicineId);
       if (!medicine) {
         return reply.code(404).send(errorResponse(`Medicine ID ${item.medicineId} not found`));
       }
@@ -336,7 +371,6 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
         originalStock: medicine.stockQuantity,
         deductAmount: item.quantity
       });
-
     }
 
     const invoice = await withTransaction(async (session) => {
@@ -344,7 +378,6 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
       const dispensedResults: Array<{ medicine: any; item: { quantity: number }; result: any }> = [];
       try {
         for (const m of medsToUpdate) {
-          const { dispenseMedicineFEFO } = await import("../services/PharmacyInventoryService.ts");
           const result = await dispenseMedicineFEFO(m.medicine._id.toString(), clinicId, m.deductAmount, session);
           dispensedResults.push({ medicine: m.medicine, item: { quantity: m.deductAmount }, result });
           updatedMedicines.push(m);
@@ -357,21 +390,65 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
         }));
         const subtotal = invoiceItems.reduce((total, item) => total + item.amount * item.quantity, 0);
 
-        const { generateClinicInvoiceNumber } = await import("../utilities/invoiceNumber.ts");
-        const invoiceNumber = await generateClinicInvoiceNumber(clinicId);
-        const createdInvoice = await createWithSession(Invoice, {
-          invoiceNumber,
-          patientId,
-          clinicId,
-          organizationId: clinicAccess.organizationId || undefined,
-          doctorId: invoiceDoctorId,
-          items: invoiceItems,
-          subtotal,
-          tax: 0,
-          discount: 0,
-          totalAmount: subtotal,
-          status: "unpaid"
-        }, session);
+        let resolvedAppointmentId = appointmentId;
+        let resolvedEncounterId = encounterId;
+
+        if (!resolvedEncounterId && prescriptionIds && prescriptionIds.length > 0) {
+          const sampleRx = await Prescription.findById(prescriptionIds[0]).select("encounterId").lean() as any;
+          if (sampleRx?.encounterId) resolvedEncounterId = String(sampleRx.encounterId);
+        }
+
+        if (resolvedEncounterId && !resolvedAppointmentId) {
+          const { Encounter } = await import("../models/Encounter.ts");
+          const enc = await Encounter.findById(resolvedEncounterId).select("appointmentId").lean() as any;
+          if (enc?.appointmentId) resolvedAppointmentId = String(enc.appointmentId);
+        }
+
+        // Check if an unpaid invoice already exists for this appointment / encounter to append charges
+        let existingInvoice = null;
+        if (resolvedAppointmentId || resolvedEncounterId) {
+          existingInvoice = await Invoice.findOne({
+            clinicId,
+            patientId,
+            status: "unpaid",
+            deletedAt: null,
+            $or: [
+              ...(resolvedAppointmentId ? [{ appointmentId: resolvedAppointmentId }] : []),
+              ...(resolvedEncounterId ? [{ encounterId: resolvedEncounterId }] : []),
+            ],
+          });
+        }
+
+        let createdInvoice: any;
+
+        if (existingInvoice) {
+          // Append pharmacy items to the existing bill
+          for (const item of invoiceItems) {
+            existingInvoice.items.push(item as any);
+          }
+          existingInvoice.subtotal = existingInvoice.items.reduce((tot: number, it: any) => tot + it.amount * it.quantity, 0);
+          existingInvoice.totalAmount = existingInvoice.subtotal + (existingInvoice.tax || 0) - (existingInvoice.discount || 0);
+          existingInvoice.balanceDue = Math.max(0, existingInvoice.totalAmount - (existingInvoice.amountPaid || 0));
+          await existingInvoice.save(session ? { session } : undefined);
+          createdInvoice = existingInvoice;
+        } else {
+          const invoiceNumber = await generateClinicInvoiceNumber(clinicId);
+          createdInvoice = await createWithSession(Invoice, {
+            invoiceNumber,
+            patientId,
+            clinicId,
+            organizationId: clinicAccess.organizationId || undefined,
+            doctorId: invoiceDoctorId,
+            appointmentId: resolvedAppointmentId || undefined,
+            encounterId: resolvedEncounterId || undefined,
+            items: invoiceItems,
+            subtotal,
+            tax: 0,
+            discount: 0,
+            totalAmount: subtotal,
+            status: "unpaid"
+          }, session);
+        }
 
         await createWithSession(AuditLog, {
           userId,
@@ -422,6 +499,29 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
         throw error;
       }
     });
+
+    // Real-time broadcast that medications have been dispensed
+    try {
+      const { broadcastQueueUpdate } = await import("../notifications/websocket.ts");
+      broadcastQueueUpdate(clinicId, {
+        type: "PRESCRIPTION_DISPENSED",
+        data: {
+          appointmentId: invoice?.appointmentId?.toString() || appointmentId,
+          encounterId: invoice?.encounterId?.toString() || encounterId,
+          patientId,
+          clinicId,
+          invoiceId: invoice?._id?.toString(),
+          invoiceNumber: invoice?.invoiceNumber,
+          totalAmount: invoice?.totalAmount,
+          balanceDue: invoice?.balanceDue,
+          dispensedCount: items.length,
+          status: "dispensed",
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (wsErr) {
+      console.warn("Real-time pharmacy PRESCRIPTION_DISPENSED broadcast warning:", wsErr);
+    }
 
     return reply.code(201).send(successResponse(invoice, "Medications dispensed and billed successfully"));
   } catch (err) {

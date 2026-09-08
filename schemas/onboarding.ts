@@ -55,6 +55,12 @@ export const addDoctorSchema = {
       timings: { type: "string" },
       working_days: { type: "string" },
       department: { type: "string" },
+      registrationNumber: { type: "string" },
+      digitalSignatureUrl: { type: "string" },
+      letterheadDefaultMode: { type: "string", enum: ["plain_a4", "preprinted_stationery"] },
+      clinicIds: { type: "array", items: { type: "string" } },
+      clinicId: { type: "string" },
+      consultationFee: { type: "number" },
       clinicAssignments: {
         type: "array",
         items: {
@@ -66,11 +72,11 @@ export const addDoctorSchema = {
             fees: { type: "number", minimum: 0 },
             sessionDuration: { type: "number", minimum: 1 }
           },
-          additionalProperties: false
+          additionalProperties: true
         }
       }
     },
-    additionalProperties: false
+    additionalProperties: true
   }
 };
 
@@ -108,7 +114,9 @@ export const createClinicSchema = {
       logo: { type: "string" },
       description: { type: "string" },
       latitude: { type: "number" },
-      longitude: { type: "number" }
+      longitude: { type: "number" },
+      upiVpa: { type: "string" },
+      merchantName: { type: "string" }
     },
     additionalProperties: true
   }
@@ -138,9 +146,11 @@ export const updateClinicSchema = {
       logo: { type: "string" },
       description: { type: "string" },
       latitude: { type: "number" },
-      longitude: { type: "number" }
+      longitude: { type: "number" },
+      upiVpa: { type: "string" },
+      merchantName: { type: "string" }
     },
-    additionalProperties: false
+    additionalProperties: true
   }
 };
 
@@ -153,7 +163,12 @@ export const assignDoctorSchema = {
       clinicId: { type: "string", pattern: objectIdPattern },
       workingHours: { type: "string", minLength: 1 },
       fees: { type: "number", minimum: 0 },
-      sessionDuration: { type: "number", minimum: 1 }
+      sessionDuration: { type: "number", minimum: 1 },
+      appointmentDuration: { type: "number", minimum: 1 },
+      bookingMode: { type: "string", enum: ["time_slot", "sequential_queue"] },
+      maxDailyTokens: { type: ["number", "null"], minimum: 1 },
+      paymentRequired: { type: "boolean" },
+      allowPayAtClinic: { type: "boolean" }
     },
     additionalProperties: false
   }

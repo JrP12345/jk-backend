@@ -1,7 +1,24 @@
 import mongoose from "mongoose";
 import { Medicine } from "../models/Medicine.ts";
 import { MedicineBatch } from "../models/MedicineBatch.ts";
+import { ScheduleH1Register } from "../models/ScheduleH1Register.ts";
 import { createWithSession, withTransaction } from "../utilities/transaction.ts";
+
+export interface DispenseAuditContext {
+  organizationId?: string | mongoose.Types.ObjectId;
+  patientId?: string | mongoose.Types.ObjectId;
+  patientName?: string;
+  patientAddress?: string;
+  patientPhone?: string;
+  doctorId?: string | mongoose.Types.ObjectId;
+  doctorName?: string;
+  doctorRegNumber?: string;
+  prescriptionId?: string | mongoose.Types.ObjectId;
+  encounterId?: string | mongoose.Types.ObjectId;
+  invoiceId?: string | mongoose.Types.ObjectId;
+  dispensedBy?: string | mongoose.Types.ObjectId;
+  dispensedByName?: string;
+}
 
 export interface BatchAddInput {
   medicineId: string;
@@ -63,8 +80,11 @@ export async function addBatchToMedicine(input: BatchAddInput): Promise<any> {
       session
     );
 
-    medicine.stockQuantity = (medicine.stockQuantity || 0) + input.quantity;
-    await medicine.save(queryOptions);
+    await Medicine.findOneAndUpdate(
+      { _id: input.medicineId, clinicId: input.clinicId },
+      { $inc: { stockQuantity: input.quantity } },
+      { returnDocument: "after", ...queryOptions }
+    );
 
     return batch;
   });
@@ -78,7 +98,8 @@ export async function dispenseMedicineFEFO(
   medicineId: string,
   clinicId: string,
   dispenseQuantity: number,
-  existingSession?: mongoose.ClientSession | null
+  existingSession?: mongoose.ClientSession | null,
+  auditContext?: DispenseAuditContext
 ): Promise<{ dispensedBatches: Array<{ batchId: string; batchNumber: string; quantity: number }>; totalCost: number }> {
   if (!Number.isInteger(dispenseQuantity) || dispenseQuantity <= 0) {
     throw new Error("Dispense quantity must be a positive integer");
@@ -120,8 +141,47 @@ export async function dispenseMedicineFEFO(
         if (medicine.expiryDate && new Date(medicine.expiryDate) <= now) {
           throw new Error(`Cannot dispense expired medicine ${medicine.name}`);
         }
-        medicine.stockQuantity -= dispenseQuantity;
-        await medicine.save(queryOptions);
+        const updated = await Medicine.findOneAndUpdate(
+          { _id: medicineId, clinicId, stockQuantity: { $gte: dispenseQuantity } },
+          { $inc: { stockQuantity: -dispenseQuantity } },
+          { returnDocument: "after", ...queryOptions }
+        );
+        if (!updated) {
+          throw new Error(`Insufficient stock or concurrent modification for medicine ${medicine.name}`);
+        }
+        if (
+          medicine.scheduleType &&
+          ["schedule_h", "schedule_h1", "schedule_x", "narcotic"].includes(medicine.scheduleType)
+        ) {
+          const orgId = auditContext?.organizationId || (medicine as any).organizationId;
+          await createWithSession(
+            ScheduleH1Register,
+            {
+              organizationId: orgId,
+              clinicId: medicine.clinicId,
+              medicineId: medicine._id,
+              medicineName: medicine.name,
+              genericName: medicine.genericName,
+              scheduleType: medicine.scheduleType,
+              batchNumber: medicine.batchNumber || "UNTRACKED-BATCH",
+              quantityDispensed: dispenseQuantity,
+              patientId: auditContext?.patientId || new mongoose.Types.ObjectId("000000000000000000000000"),
+              patientName: auditContext?.patientName || "Walk-In Patient",
+              patientAddress: auditContext?.patientAddress || "Local Walk-In",
+              patientPhone: auditContext?.patientPhone,
+              doctorId: auditContext?.doctorId,
+              doctorName: auditContext?.doctorName || "Prescribing Physician",
+              doctorRegNumber: auditContext?.doctorRegNumber || "NMC-UNSPECIFIED",
+              prescriptionId: auditContext?.prescriptionId,
+              encounterId: auditContext?.encounterId,
+              invoiceId: auditContext?.invoiceId,
+              dispensedBy: auditContext?.dispensedBy,
+              dispensedByName: auditContext?.dispensedByName || "Dispensing Pharmacist",
+              dispensedAt: new Date(),
+            },
+            session
+          );
+        }
         return { dispensedBatches: [], totalCost: dispenseQuantity * medicine.price };
       }
 
@@ -155,8 +215,50 @@ export async function dispenseMedicineFEFO(
         throw new Error("Unable to allocate the requested quantity from medicine batches");
       }
 
-      medicine.stockQuantity -= dispenseQuantity;
-      await medicine.save(queryOptions);
+      const updated = await Medicine.findOneAndUpdate(
+        { _id: medicineId, clinicId, stockQuantity: { $gte: dispenseQuantity } },
+        { $inc: { stockQuantity: -dispenseQuantity } },
+        { returnDocument: "after", ...queryOptions }
+      );
+      if (!updated) {
+        throw new Error(`Insufficient stock or concurrent modification for medicine ${medicine.name}`);
+      }
+
+      if (
+        medicine.scheduleType &&
+        ["schedule_h", "schedule_h1", "schedule_x", "narcotic"].includes(medicine.scheduleType)
+      ) {
+        const orgId = auditContext?.organizationId || (medicine as any).organizationId;
+        for (const b of dispensedBatches) {
+          await createWithSession(
+            ScheduleH1Register,
+            {
+              organizationId: orgId,
+              clinicId: medicine.clinicId,
+              medicineId: medicine._id,
+              medicineName: medicine.name,
+              genericName: medicine.genericName,
+              scheduleType: medicine.scheduleType,
+              batchNumber: b.batchNumber,
+              quantityDispensed: b.quantity,
+              patientId: auditContext?.patientId || new mongoose.Types.ObjectId("000000000000000000000000"),
+              patientName: auditContext?.patientName || "Walk-In Patient",
+              patientAddress: auditContext?.patientAddress || "Local Walk-In",
+              patientPhone: auditContext?.patientPhone,
+              doctorId: auditContext?.doctorId,
+              doctorName: auditContext?.doctorName || "Prescribing Physician",
+              doctorRegNumber: auditContext?.doctorRegNumber || "NMC-UNSPECIFIED",
+              prescriptionId: auditContext?.prescriptionId,
+              encounterId: auditContext?.encounterId,
+              invoiceId: auditContext?.invoiceId,
+              dispensedBy: auditContext?.dispensedBy,
+              dispensedByName: auditContext?.dispensedByName || "Dispensing Pharmacist",
+              dispensedAt: new Date(),
+            },
+            session
+          );
+        }
+      }
 
       return { dispensedBatches, totalCost };
     } catch (error) {
@@ -168,8 +270,7 @@ export async function dispenseMedicineFEFO(
           original.batch.status = original.status;
           await original.batch.save();
         }
-        medicine.stockQuantity = originalStock;
-        await medicine.save();
+        await Medicine.findByIdAndUpdate(medicineId, { $set: { stockQuantity: originalStock } });
       }
       throw error;
     }

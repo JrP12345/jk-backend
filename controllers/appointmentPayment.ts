@@ -9,6 +9,7 @@ import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import { checkClinicAccess } from "../utilities/tenant.ts";
 import { requestHasAnyPermission, BILLING_STAFF_PAYMENT_PERMISSIONS } from "../utilities/permissions.ts";
+import { broadcastQueueUpdate } from "../notifications/websocket.ts";
 
 async function authorizeAppointmentAccess(
   req: FastifyRequest,
@@ -197,6 +198,29 @@ export async function verifyAppointmentPayment(req: FastifyRequest, reply: Fasti
       }
     );
 
+    const clinicIdStr = appointment.clinicId?.toString();
+    if (clinicIdStr) {
+      broadcastQueueUpdate(clinicIdStr, {
+        type: "PAYMENT_RECEIVED",
+        data: {
+          clinicId: clinicIdStr,
+          appointmentId: appointment._id.toString(),
+          tokenNumber: appointment.tokenNumber,
+          amount: paymentRecord.amount || 0,
+          paymentMethod: "online",
+        },
+        message: `Online payment of ₹${paymentRecord.amount || 0} received for Token #${appointment.tokenNumber}`,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const { sendPaymentReceiptNotification } = await import("../utilities/notifications.ts");
+    sendPaymentReceiptNotification({
+      appointmentId: appointment._id.toString(),
+      amount: paymentRecord.amount || 0,
+      paymentMethod: "online",
+    }).catch((err) => console.error("verify payment receipt notification notice:", err));
+
     return reply.code(200).send(successResponse(null, "Appointment payment verified and confirmed successfully!"));
   } catch (err: any) {
     console.error("verifyAppointmentPayment error:", err);
@@ -247,3 +271,115 @@ export async function selectPayAtClinic(req: FastifyRequest, reply: FastifyReply
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
+
+// ─── POST /api/appointment-payments/collect-counter ──────────────────
+export async function collectCounterPayment(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { appointmentId, paymentMethod = "upi", amount } = req.body as {
+      appointmentId: string;
+      paymentMethod?: "upi" | "cash" | "card" | "net-banking";
+      amount?: number;
+    };
+
+    if (!mongoose.Types.ObjectId.isValid(appointmentId)) {
+      return reply.code(400).send(errorResponse("Invalid appointment ID"));
+    }
+
+    const appointment = await Appointment.findById(appointmentId);
+    if (!appointment) {
+      return reply.code(404).send(errorResponse("Appointment not found"));
+    }
+
+    const assignment = await DoctorAssignment.findOne({ doctorId: appointment.doctorId, clinicId: appointment.clinicId });
+    const feeAmount = amount || assignment?.fees || 500;
+
+    let invoice: any = await Invoice.findOne({ appointmentId: appointment._id });
+    if (!invoice) {
+      const { generateClinicInvoiceNumber } = await import("../utilities/invoiceNumber.ts");
+      const invoiceNumber = await generateClinicInvoiceNumber(appointment.clinicId.toString());
+      invoice = await Invoice.create({
+        invoiceNumber,
+        patientId: appointment.patientId,
+        appointmentId: appointment._id,
+        clinicId: appointment.clinicId,
+        doctorId: appointment.doctorId,
+        organizationId: appointment.organizationId,
+        items: [{ description: "OPD Consultation Fee", amount: feeAmount, quantity: 1 }],
+        subtotal: feeAmount,
+        totalAmount: feeAmount,
+        amountPaid: feeAmount,
+        balanceDue: 0,
+        status: "paid",
+        paymentMethod,
+        paymentDate: new Date(),
+        payments: [{
+          amount: feeAmount,
+          paymentMethod,
+          paidAt: new Date(),
+          notes: "Settled via front-desk countertop dynamic UPI QR modal",
+        }],
+      });
+    } else {
+      invoice.status = "paid";
+      invoice.amountPaid = (invoice.amountPaid || 0) + feeAmount;
+      invoice.balanceDue = 0;
+      invoice.paymentMethod = paymentMethod;
+      invoice.paymentDate = new Date();
+      if (!invoice.payments) invoice.payments = [];
+      invoice.payments.push({
+        amount: feeAmount,
+        paymentMethod,
+        paidAt: new Date(),
+        notes: "Settled via front-desk countertop dynamic UPI QR modal",
+      });
+      await invoice.save();
+    }
+
+    appointment.paymentStatus = "paid";
+    appointment.paymentAmount = feeAmount;
+    appointment.invoiceId = invoice._id;
+    await appointment.save();
+
+    await AppointmentPayment.create({
+      appointmentId: appointment._id,
+      patientId: appointment.patientId,
+      amount: feeAmount,
+      paymentMethod,
+      status: "captured",
+    });
+
+    const clinicIdStr = appointment.clinicId.toString();
+    broadcastQueueUpdate(clinicIdStr, {
+      type: "PAYMENT_RECEIVED",
+      data: {
+        clinicId: clinicIdStr,
+        appointmentId: appointment._id.toString(),
+        invoiceId: invoice._id?.toString(),
+        tokenNumber: appointment.tokenNumber,
+        amount: feeAmount,
+        paymentMethod,
+      },
+      message: `Payment of ₹${feeAmount} received via ${paymentMethod.toUpperCase()} for Token #${appointment.tokenNumber}`,
+      timestamp: new Date().toISOString(),
+    });
+
+    const { sendPaymentReceiptNotification } = await import("../utilities/notifications.ts");
+    sendPaymentReceiptNotification({
+      appointmentId: appointment._id.toString(),
+      invoiceId: invoice._id?.toString(),
+      amount: feeAmount,
+      paymentMethod,
+    }).catch((err) => console.error("counter payment receipt notification notice:", err));
+
+    return reply.code(200).send(
+      successResponse(
+        { invoice, appointment },
+        `Payment of ₹${feeAmount} collected successfully via ${paymentMethod.toUpperCase()}!`
+      )
+    );
+  } catch (err: any) {
+    console.error("collectCounterPayment error:", err);
+    return reply.code(500).send(errorResponse(err.message || "Failed to collect counter payment"));
+  }
+}
+

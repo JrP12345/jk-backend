@@ -39,12 +39,21 @@ import {
 } from "../controllers/aiAdmin.ts";
 
 export default async function aiRoutes(app: FastifyInstance) {
-  const auth = { preHandler: [authenticate] };
+  const isTest = process.env.NODE_ENV === "test";
+  const auth = {
+    preHandler: [authenticate],
+    config: {
+      rateLimit: {
+        max: isTest ? 1000 : 40,
+        timeWindow: "1 minute"
+      }
+    }
+  };
 
   // AI SOAP Note Draft Generation
   app.post("/api/ai/soap-notes/generate", auth, generateSOAPNoteController);
 
-  // Grounded Patient Health Query Assistant (Legacy single-call)
+  // Grounded Patient Health Query Assistant (Single-Turn EHR Query)
   app.post("/api/ai/health-assistant/query", auth, queryHealthAssistantController);
 
   // Enterprise DB-Backed Multi-Session Chat APIs

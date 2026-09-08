@@ -55,10 +55,6 @@ export async function resolveTargetOrganizationId(req: FastifyRequest): Promise<
       const clinic = await Clinic.findById(clinicId).select("organizationId").lean();
       if (clinic?.organizationId) return clinic.organizationId.toString();
     }
-
-    const { Organization } = await import("../models/Organization.ts");
-    const firstOrg = await Organization.findOne({}).sort({ createdAt: 1 }).select("_id").lean();
-    if (firstOrg) return (firstOrg as any)._id.toString();
   }
 
   return undefined;
@@ -104,8 +100,8 @@ export async function checkClinicAccess(
     return { allowed: true, organizationId: clinic.organizationId.toString() };
   }
 
-  // Patients are public consumers and can view or book across any clinic
-  if (req.user?.role === "patient") {
+  // Patients & family members are consumers and can view or book across any clinic
+  if (req.user?.role === "patient" || req.user?.role === "family_member") {
     return { allowed: true, organizationId: clinic.organizationId.toString() };
   }
 
@@ -144,6 +140,25 @@ export async function checkPatientAccess(
 
   if (isRootRequest(req)) {
     return { allowed: true, organizationId: getRequestOrganizationId(req) };
+  }
+
+  // Patients and family members can access their own or dependent records
+  if (req.user?.role === "patient" || req.user?.role === "family_member") {
+    const patient = await Patient.findById(patientId).select("userId organizationId").lean();
+    if (patient) {
+      if (patient.userId?.toString() === req.user.id) {
+        return { allowed: true, organizationId: patient.organizationId?.toString() };
+      }
+      const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
+      const isFamily = await FamilyRelationship.exists({
+        userId: req.user.id,
+        patientId,
+        status: "active",
+      });
+      if (isFamily) {
+        return { allowed: true, organizationId: patient.organizationId?.toString() };
+      }
+    }
   }
 
   const organizationId = getRequestOrganizationId(req);

@@ -8,6 +8,9 @@ const UsageRecordSchema = new Schema({
   patientsCount: { type: Number, default: 0 },
   appointmentsCount: { type: Number, default: 0 },
   storageUsedBytes: { type: Number, default: 0 },
+  whatsappSentCount: { type: Number, default: 0 },
+  whatsappDeliveredCount: { type: Number, default: 0 },
+  whatsappFailedCount: { type: Number, default: 0 },
   lastCalculatedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 

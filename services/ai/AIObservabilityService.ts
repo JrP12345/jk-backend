@@ -38,41 +38,65 @@ export class AIObservabilityService {
     }
 
     const filter = filterConditions.length > 0 ? { $or: filterConditions } : {};
-    const metrics = await AIObservabilityMetric.find(filter).lean();
 
-    let totalInputTokens = 0;
-    let totalOutputTokens = 0;
-    let totalEstimatedCostUSD = 0;
-    let totalLatency = 0;
-    let failoverCount = 0;
-    let errorCount = 0;
+    const [aggResult] = await AIObservabilityMetric.aggregate([
+      { $match: filter },
+      {
+        $facet: {
+          summary: [
+            {
+              $group: {
+                _id: null,
+                totalRequests: { $sum: 1 },
+                totalInputTokens: { $sum: "$inputTokens" },
+                totalOutputTokens: { $sum: "$outputTokens" },
+                totalEstimatedCostUSD: { $sum: "$estimatedCostUSD" },
+                avgLatencyMs: { $avg: "$latencyMs" },
+                failoverCount: {
+                  $sum: { $cond: [{ $eq: ["$status", "failover"] }, 1, 0] }
+                },
+                errorCount: {
+                  $sum: { $cond: [{ $eq: ["$status", "error"] }, 1, 0] }
+                }
+              }
+            }
+          ],
+          providers: [
+            {
+              $group: {
+                _id: "$provider",
+                count: { $sum: 1 }
+              }
+            }
+          ]
+        }
+      }
+    ]);
+
+    const summaryRow = aggResult?.summary?.[0] || {
+      totalRequests: 0,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalEstimatedCostUSD: 0,
+      avgLatencyMs: 0,
+      failoverCount: 0,
+      errorCount: 0
+    };
+
     const providerBreakdown: Record<string, number> = {};
-
-    metrics.forEach(m => {
-      totalInputTokens += m.inputTokens || 0;
-      totalOutputTokens += m.outputTokens || 0;
-      totalEstimatedCostUSD += m.estimatedCostUSD || 0;
-      totalLatency += m.latencyMs || 0;
-
-      if (m.status === "failover") failoverCount++;
-      if (m.status === "error") errorCount++;
-
-      const prov = m.provider || "Unknown";
-      providerBreakdown[prov] = (providerBreakdown[prov] || 0) + 1;
+    (aggResult?.providers || []).forEach((p: any) => {
+      providerBreakdown[p._id || "Unknown"] = p.count;
     });
-
-    const totalRequests = metrics.length;
-    const avgLatencyMs = totalRequests > 0 ? Math.round(totalLatency / totalRequests) : 0;
 
     return {
       organizationId,
-      totalRequests,
-      totalInputTokens,
-      totalOutputTokens,
-      totalEstimatedCostUSD: Number(totalEstimatedCostUSD.toFixed(6)),
-      avgLatencyMs,
-      failoverCount,
-      errorCount,
+      totalRequests: summaryRow.totalRequests,
+      totalInputTokens: summaryRow.totalInputTokens,
+      totalOutputTokens: summaryRow.totalOutputTokens,
+      totalEstimatedCostUSD: Number(Number(summaryRow.totalEstimatedCostUSD).toFixed(6)),
+      avgLatencyMs: Math.round(summaryRow.avgLatencyMs || 0),
+      failoverCount: summaryRow.failoverCount,
+      errorCount: summaryRow.errorCount,
       providerBreakdown
     };
   }

@@ -201,10 +201,17 @@ export async function seedModulesForOrg(organizationId: string, updatedBy?: stri
     return { inserted: 0, message: "All modules already exist" };
   }
 
-  if (session) {
-    await ModuleRegistry.insertMany(toInsert, { session });
-  } else {
-    await ModuleRegistry.insertMany(toInsert);
+  try {
+    if (session) {
+      await ModuleRegistry.insertMany(toInsert, { session, ordered: false });
+    } else {
+      await ModuleRegistry.insertMany(toInsert, { ordered: false });
+    }
+  } catch (err: any) {
+    // Gracefully ignore duplicate key collisions (E11000) from concurrent requests
+    if (!err.message?.includes("E11000") && err.code !== 11000) {
+      throw err;
+    }
   }
 
   return { inserted: toInsert.length, message: `${toInsert.length} modules seeded` };

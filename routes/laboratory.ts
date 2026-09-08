@@ -22,6 +22,7 @@ import {
   recordResultController,
   cancelOrderController,
   getLabTatMetrics,
+  getPatientLabComparison,
 } from "../controllers/laboratory.ts";
 
 export default async function laboratoryRoutes(app: FastifyInstance) {
@@ -29,6 +30,9 @@ export default async function laboratoryRoutes(app: FastifyInstance) {
   const adminOnly = { preHandler: [authenticate, authorize("admin")] };
   const manageOrders = { preHandler: [authenticate, checkPermission("MANAGE_ORDERS")] };
   const viewEhr = { preHandler: [authenticate, checkPermission("VIEW_EHR")] };
+
+  // In-Cabin Diagnostic Historical Comparison & Reports
+  app.get("/api/lab/patient/:patientId/comparison", auth, getPatientLabComparison);
 
   // Turnaround Time (TAT) Analytics
   app.get("/api/lab/tat-metrics", auth, getLabTatMetrics);

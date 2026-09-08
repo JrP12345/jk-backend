@@ -10,6 +10,7 @@ import { aiAdminService } from "./AIAdminService.ts";
 export interface InboundPipelineContext {
   request: AIRequest;
   anonymizedPrompt: string;
+  anonymizedContext: string;
   compiledPrompt: CompiledPrompt;
   sixDContext: Assembled6DContext;
   knowledgeRetrieval: RetrievalResult;
@@ -74,7 +75,7 @@ export class InboundPipeline {
     // 5. Model Mapping
     const mapping = modelRegistry.getModelMapping(request.modelAlias || "CLINICAL_FAST");
 
-    // 6. Prompt Governance Template Assembly with Agent Directive & Knowledge Evidence
+    // 6. Assemble clinical context distinctly without fusing into the user query
     const combinedContext = [
       `Assigned AI Specialist: ${agentResult.agentName} (${agentResult.agentRole})\n${agentResult.systemDirective}`,
       sixDContext.fullContextSummary,
@@ -87,8 +88,9 @@ export class InboundPipeline {
       query: request.prompt
     });
 
-    // 7. PHI Anonymization Proxy (respects enablePHIAnonymization flag)
-    let anonymizedText = compiledPrompt.userPrompt;
+    // 7. PHI Anonymization Proxy: Anonymize user prompt and clinical context cleanly
+    let anonymizedPrompt = request.prompt;
+    let anonymizedContext = combinedContext;
     let tokenMap = new Map<string, string>();
 
     if (flags?.enablePHIAnonymization) {
@@ -111,17 +113,26 @@ export class InboundPipeline {
         } catch {}
       }
 
-      const result = PHIAnonymizer.anonymizeText(
-        compiledPrompt.userPrompt,
-        phiList
-      );
-      anonymizedText = result.anonymizedText;
-      tokenMap = result.tokenMap;
+      // Anonymize the pure user query
+      const promptAnonymized = PHIAnonymizer.anonymizeText(request.prompt, phiList);
+      anonymizedPrompt = promptAnonymized.anonymizedText;
+      promptAnonymized.tokenMap.forEach((val, key) => tokenMap.set(key, val));
+
+      // Anonymize the clinical context
+      const contextAnonymized = PHIAnonymizer.anonymizeText(combinedContext, phiList);
+      anonymizedContext = contextAnonymized.anonymizedText;
+      contextAnonymized.tokenMap.forEach((val, key) => tokenMap.set(key, val));
+
+      // Anonymize compiled prompt user template
+      const compiledAnonymized = PHIAnonymizer.anonymizeText(compiledPrompt.userPrompt, phiList);
+      compiledPrompt.userPrompt = compiledAnonymized.anonymizedText;
+      compiledAnonymized.tokenMap.forEach((val, key) => tokenMap.set(key, val));
     }
 
     return {
       request,
-      anonymizedPrompt: anonymizedText,
+      anonymizedPrompt,
+      anonymizedContext,
       compiledPrompt,
       sixDContext,
       knowledgeRetrieval,

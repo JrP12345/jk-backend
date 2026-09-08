@@ -7,11 +7,11 @@ import { successResponse, errorResponse } from "../utilities/helpers.ts";
 export async function createClinic(req: FastifyRequest, reply: FastifyReply) {
   try {
     const {
-      organizationId: reqOrgId, name, logo, description, phone, email, address, city, latitude, longitude, timings, facilities
+      organizationId: reqOrgId, name, logo, description, phone, email, address, city, latitude, longitude, timings, facilities, upiVpa, merchantName
     } = (req.body || {}) as {
       organizationId?: string; name: string; city: string; logo?: string; description?: string;
       phone?: string; email?: string; address?: string; latitude?: number;
-      longitude?: number; timings?: string; facilities?: string[];
+      longitude?: number; timings?: string; facilities?: string[]; upiVpa?: string; merchantName?: string;
     };
 
     let orgId = reqOrgId || req.user!.organization_id;
@@ -50,6 +50,8 @@ export async function createClinic(req: FastifyRequest, reply: FastifyReply) {
       longitude: longitude !== undefined ? longitude : null,
       timings: timings || null,
       facilities: facilities || [],
+      upiVpa: upiVpa?.trim() || "",
+      merchantName: merchantName?.trim() || "",
     });
 
     return reply.code(201).send(successResponse(clinic, "Clinic created successfully"));
@@ -89,11 +91,11 @@ export async function updateClinic(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const {
-      name, logo, image_url, description, phone, email, address, city, latitude, longitude, timings, facilities
+      name, logo, image_url, description, phone, email, address, city, latitude, longitude, timings, facilities, upiVpa, merchantName
     } = req.body as {
       name: string; city: string; logo?: string; image_url?: string; description?: string;
       phone?: string; email?: string; address?: string; latitude?: number; longitude?: number;
-      timings?: string; facilities?: string[];
+      timings?: string; facilities?: string[]; upiVpa?: string; merchantName?: string;
     };
 
     if (!name || !city) {
@@ -124,6 +126,8 @@ export async function updateClinic(req: FastifyRequest, reply: FastifyReply) {
         longitude: longitude !== undefined ? longitude : null,
         timings: timings || null,
         facilities: facilities || [],
+        ...(upiVpa !== undefined && { upiVpa: upiVpa.trim() }),
+        ...(merchantName !== undefined && { merchantName: merchantName.trim() }),
       },
       { returnDocument: "after" }
     );

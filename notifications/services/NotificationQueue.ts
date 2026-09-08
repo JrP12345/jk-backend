@@ -24,6 +24,7 @@ class NotificationQueueManager {
     processedCount: 0,
     failureCount: 0,
   };
+  private readonly batchSize = 15;
 
   constructor() {
     // Process jobs every 500ms
@@ -66,33 +67,49 @@ class NotificationQueueManager {
   }
 
   /**
-   * Worker loop to process background queue jobs
+   * Worker loop to process background queue jobs in concurrent batches
    */
   private async processQueue() {
     if (this.stopped || this.isProcessing) return;
     this.isProcessing = true;
 
     try {
-      let job: DeliveryJob | null = null;
+      const batch: DeliveryJob[] = [];
 
       if (redisClient && redisClient.status === "ready") {
         try {
-          const rawJob = await redisClient.rpop("notification_delivery_queue");
-          if (rawJob) {
-            job = JSON.parse(rawJob);
+          const pipeline = redisClient.pipeline();
+          for (let i = 0; i < this.batchSize; i++) {
+            pipeline.rpop("notification_delivery_queue");
+          }
+          const results = await pipeline.exec();
+          if (results) {
+            for (const [err, rawJob] of results) {
+              if (!err && rawJob && typeof rawJob === "string") {
+                try {
+                  batch.push(JSON.parse(rawJob));
+                } catch (parseErr) {
+                  console.warn("[NotificationQueue Warning] Failed to parse job payload:", parseErr);
+                }
+              }
+            }
           }
         } catch (err) {
-          console.warn("[NotificationQueue Warning] Redis queue pop failed:", err);
+          console.warn("[NotificationQueue Warning] Redis queue batch pop failed:", err);
         }
       }
 
-      if (!job && this.inMemoryQueue.length > 0) {
-        job = this.inMemoryQueue.shift() || null;
+      const remainingCapacity = this.batchSize - batch.length;
+      if (remainingCapacity > 0 && this.inMemoryQueue.length > 0) {
+        const inMemJobs = this.inMemoryQueue.splice(0, remainingCapacity);
+        batch.push(...inMemJobs);
       }
 
-      if (job) {
-        await this.executeJob(job);
+      if (batch.length > 0) {
+        await Promise.allSettled(batch.map((job) => this.executeJob(job)));
       }
+    } catch (err) {
+      console.error("[NotificationQueue Error] Error during batch processing:", err);
     } finally {
       this.isProcessing = false;
     }

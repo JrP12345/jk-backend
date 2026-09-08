@@ -37,7 +37,8 @@ export const bookAppointmentSchema = {
         type: "string",
         enum: ["new_consultation", "follow_up", "routine_checkup", "second_opinion", "report_review"]
       },
-      payAtClinic: { type: "boolean" }
+      payAtClinic: { type: "boolean" },
+      forceBooking: { type: "boolean" }
     },
     additionalProperties: false
   }
@@ -64,6 +65,10 @@ export const updateAppointmentStatusSchema = {
       followUpNotes: { type: "string" },
       symptoms: { type: "string" },
       diagnosis: { type: "string" },
+      notes: { type: "string" },
+      dispatchWhatsAppRx: { type: "boolean" },
+      recipientPhone: { type: "string" },
+      cdsOverrideReason: { type: "string" },
       prescriptions: {
         type: "array",
         items: {
@@ -72,7 +77,9 @@ export const updateAppointmentStatusSchema = {
           properties: {
             name: { type: "string", minLength: 1 },
             dosage: { type: "string", minLength: 1 },
-            duration: { type: "string", minLength: 1 }
+            frequency: { type: "string" },
+            duration: { type: "string", minLength: 1 },
+            instructions: { type: "string" }
           },
           additionalProperties: false
         }

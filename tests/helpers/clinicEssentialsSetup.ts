@@ -85,7 +85,12 @@ export async function assignDoctorToClinic(
     method: "POST",
     url: "/api/onboarding/doctors/assignments",
     headers: cookieHeader(adminCookies),
-    payload: { doctorId, clinicId, fees, workingHours: "09:00 - 17:00" },
+    payload: {
+      doctorId,
+      clinicId,
+      fees,
+      workingHours: JSON.stringify({ all: { start: "00:00", end: "23:59" } }),
+    },
   });
 }
 
@@ -120,6 +125,7 @@ export async function bookWalkInAppointment(
     payload: {
       appointmentTime: payload.appointmentTime || new Date().toISOString(),
       appointmentType: "walk-in",
+      forceBooking: true,
       ...payload,
     },
   });

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { authenticate, checkPermission } from "../middleware/auth.ts";
 import { requireModule } from "../middleware/moduleGuard.ts";
+import { enforceSubscriptionActive } from "../middleware/subscriptionGuard.ts";
 import { addDoctorSchema, addReceptionistSchema } from "../schemas/onboarding.ts";
 import {
   addDoctor,
@@ -17,7 +18,7 @@ import {
 } from "../controllers/onboarding.ts";
 
 export default async function staffRoutes(app: FastifyInstance) {
-  const manageStaff = { preHandler: [authenticate, requireModule("staff"), checkPermission("MANAGE_STAFF")] };
+  const manageStaff = { preHandler: [authenticate, requireModule("staff"), checkPermission("MANAGE_STAFF"), enforceSubscriptionActive] };
   const viewStaff = { preHandler: [authenticate, requireModule("staff"), checkPermission("VIEW_STAFF")] };
 
   app.post("/api/onboarding/doctor", { ...manageStaff, schema: addDoctorSchema }, addDoctor);

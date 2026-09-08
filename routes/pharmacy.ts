@@ -29,6 +29,7 @@ export default async function pharmacyRoutes(app: FastifyInstance) {
   app.delete("/api/medicines/:id", managePharmacy, deleteMedicine);
   app.post("/api/pharmacy/dispense", { ...managePharmacy, schema: dispensePrescriptionSchema }, dispensePrescription);
   app.get("/api/pharmacy/pending-prescriptions", viewPharmacy, getPendingPrescriptionsController);
+  app.get("/api/pharmacy/prescriptions/pending", viewPharmacy, getPendingPrescriptionsController);
   app.post("/api/pharmacy/adjust-stock", managePharmacy, adjustStock);
 
   // Multi-Batch & Expiration Tracking

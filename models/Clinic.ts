@@ -13,6 +13,9 @@ const ClinicSchema = new Schema({
   longitude: { type: Number },
   timings: { type: String }, // JSON schedule string
   facilities: [{ type: String }],
+  onlineBookingSafetyBuffer: { type: Number, default: 30 }, // Default safety buffer in minutes for online bookings
+  upiVpa: { type: String, trim: true, default: "" }, // Direct NPCI/BharatPe UPI VPA for countertop QR
+  merchantName: { type: String, trim: true, default: "" }, // Official registered merchant business name
   isActive: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now }
 });

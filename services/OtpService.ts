@@ -27,7 +27,7 @@ export class OtpService {
     rawPhone: string,
     purpose: "authentication" | "phone_verification" | "record_claim" = "authentication"
   ): Promise<RequestOtpResult> {
-    const phone = this.normalizePhone(rawPhone);
+    const phone = normalizePhone(rawPhone);
     if (!phone || phone.length < 10) {
       throw new Error("Invalid phone number format");
     }
@@ -67,7 +67,7 @@ export class OtpService {
       windowStart: recentRequests[0]?.createdAt || now,
     });
 
-    const isDev = process.env.NODE_ENV !== "production";
+    const isDev = process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test";
 
     if (isDev) {
       console.log(`[DEV OTP GENERATED] Phone: ${phone} | Purpose: ${purpose} | OTP: ${otpCode}`);
@@ -101,7 +101,7 @@ export class OtpService {
     otp: string,
     purpose: "authentication" | "phone_verification" | "record_claim" = "authentication"
   ): Promise<VerifyOtpResult> {
-    const phone = this.normalizePhone(rawPhone);
+    const phone = normalizePhone(rawPhone);
     const cleanOtp = otp ? otp.trim() : "";
 
     if (!phone || !/^\d{6}$/.test(cleanOtp)) {
@@ -138,9 +138,6 @@ export class OtpService {
     return { success: true, message: "OTP verified successfully", phone, verified: true };
   }
 
-  normalizePhone(phone: string): string {
-    return normalizePhone(phone);
-  }
 }
 
 export const otpService = new OtpService();

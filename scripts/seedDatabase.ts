@@ -39,6 +39,11 @@ import { RefreshToken } from "../models/RefreshToken.ts";
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/ananta_health";
 
 async function runSeed() {
+  if (process.env.NODE_ENV === "production") {
+    console.error("FATAL: Destructive database seed scripts cannot be executed in production!");
+    process.exit(1);
+  }
+
   console.log("=======================================================================");
   console.log("🚀 [ANANTA HEALTHCARE SYSTEM] COMPLETE DATABASE PURGE & FRESH RESEED");
   console.log("=======================================================================");

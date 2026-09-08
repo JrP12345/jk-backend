@@ -14,11 +14,13 @@ const s3Client = new S3Client({
 
 export const generatePresignedUrl = async (
   originalFilename: string,
-  contentType: string
+  contentType: string,
+  organizationId?: string
 ) => {
-  // Generate a random, unique filename to prevent overwriting
+  // Generate a random, unique filename with tenant namespace to prevent collisions
   const fileExtension = originalFilename.split('.').pop() || 'bin';
-  const uniqueFilename = `${crypto.randomUUID()}.${fileExtension}`;
+  const prefix = organizationId ? `tenants/${organizationId}/` : "";
+  const uniqueFilename = `${prefix}${crypto.randomUUID()}.${fileExtension}`;
 
   const command = new PutObjectCommand({
     Bucket: process.env.R2_BUCKET_NAME,
@@ -42,10 +44,12 @@ export const generatePresignedUrl = async (
 export const uploadBase64ToR2 = async (
   base64Data: string,
   originalFilename: string,
-  contentType: string
+  contentType: string,
+  organizationId?: string
 ) => {
   const fileExtension = originalFilename.split('.').pop() || 'bin';
-  const uniqueFilename = `${crypto.randomUUID()}.${fileExtension}`;
+  const prefix = organizationId ? `tenants/${organizationId}/` : "";
+  const uniqueFilename = `${prefix}${crypto.randomUUID()}.${fileExtension}`;
 
   const base64String = base64Data.replace(/^data:image\/\w+;base64,/, '');
   const buffer = Buffer.from(base64String, 'base64');

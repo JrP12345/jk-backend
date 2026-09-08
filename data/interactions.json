@@ -1,5 +1,5 @@
 {
-  "datasetVersion": "2026.07.22",
+  "datasetVersion": "2026.09.08",
   "rules": [
     {
       "ingredientA": "warfarin",
@@ -9,6 +9,60 @@
       "description": "Concurrent use of anticoagulants and antiplatelet agents markedly increases gastrointestinal and intracranial bleeding risk.",
       "evidence": "FDA Black Box Warning & CHEST Guidelines for Antithrombotic Therapy.",
       "recommendation": "Avoid combination unless strictly indicated for mechanical valve. Monitor INR closely."
+    },
+    {
+      "ingredientA": "warfarin",
+      "ingredientB": "nsaid",
+      "severity": "critical",
+      "title": "Major Bleeding Hazard (Anticoagulant + NSAID)",
+      "description": "NSAIDs induce gastric mucosal ulceration while impairing platelet aggregation, multiplying severe GI hemorrhage risk.",
+      "evidence": "American College of Gastroenterology & ACC/AHA Antithrombotic Guidelines.",
+      "recommendation": "Avoid co-administration. Use paracetamol/acetaminophen for analgesia; prescribe PPI if co-prescription is unavoidable."
+    },
+    {
+      "ingredientA": "sildenafil",
+      "ingredientB": "nitrate",
+      "severity": "critical",
+      "title": "Fatal Hypotension & Cardiovascular Collapse (PDE5-Inhibitor + Nitrate)",
+      "description": "Co-administration of PDE-5 inhibitors with organic nitrates produces synergistic cGMP accumulation, causing catastrophic systemic vasodilation, profound hypotension, myocardial infarction, and death.",
+      "evidence": "ACC/AHA Clinical Expert Consensus & FDA Black Box Contraindication.",
+      "recommendation": "ABSOLUTELY CONTRAINDICATED. Do not prescribe nitrates within 24 hours of sildenafil (48 hours for tadalafil)."
+    },
+    {
+      "ingredientA": "methotrexate",
+      "ingredientB": "trimethoprim",
+      "severity": "critical",
+      "title": "Lethal Bone Marrow Aplasia & Pancytopenia (Methotrexate + Trimethoprim/Cotrimoxazole)",
+      "description": "Both agents are dihydrofolate reductase inhibitors. Trimethoprim also reduces renal clearance of methotrexate, inducing life-threatening myelosuppression, pancytopenia, and toxic epidermal necrolysis.",
+      "evidence": "British National Formulary (BNF) & Rheumatology Clinical Safety Warnings.",
+      "recommendation": "CONTRAINDICATED. Discontinue trimethoprim/cotrimoxazole immediately. Select non-antifolate antibacterial (e.g. Nitrofurantoin/Cephalosporin)."
+    },
+    {
+      "ingredientA": "serotonergic",
+      "ingredientB": "linezolid",
+      "severity": "critical",
+      "title": "Life-Threatening Serotonin Syndrome (Serotonergic Agent + Linezolid)",
+      "description": "Linezolid is a reversible, non-selective MAO inhibitor. Co-administration with SSRIs, SNRIs, or Tramadol leads to toxic serotonin accumulation causing hyperthermia, rigidity, autonomic instability, and seizures.",
+      "evidence": "FDA Drug Safety Communication & Hunter Serotonin Toxicity Criteria.",
+      "recommendation": "Avoid combination. Withhold serotonergic medications or choose an alternative antibiotic (e.g. Vancomycin, Daptomycin)."
+    },
+    {
+      "ingredientA": "statin",
+      "ingredientB": "cyp3a4_inhibitor",
+      "severity": "major",
+      "title": "Severe Rhabdomyolysis & Myopathy (Statin + CYP3A4 Inhibitor)",
+      "description": "Strong CYP3A4 inhibitors (Clarithromycin, Itraconazole, Ketoconazole) markedly elevate plasma concentrations of CYP3A4-metabolized statins, provoking acute rhabdomyolysis and renal failure.",
+      "evidence": "FDA Statin Safety Advisory & AHA Cholesterol Management Guidelines.",
+      "recommendation": "Temporarily withhold statin therapy during course of macrolide/azole antifungal, or switch to Rosuvastatin/Pravastatin."
+    },
+    {
+      "ingredientA": "qt_prolonging_antimicrobial",
+      "ingredientB": "qt_prolonging_antiemetic",
+      "severity": "major",
+      "title": "Torsades de Pointes & Fatal Ventricular Arrhythmia (Additive QTc Prolongation)",
+      "description": "Concurrent administration of QT-prolonging antimicrobials (Azithromycin, Fluconazole) with antiemetics (Ondansetron, Domperidone) produces additive cardiac repolarization delay.",
+      "evidence": "CredibleMeds QTdrugs Registry & American Heart Association Scientific Statement.",
+      "recommendation": "Monitor baseline ECG / QTc interval. Substitute alternative antiemetic (e.g. Cyclizine) or antimicrobial if QTc > 480ms."
     },
     {
       "ingredientA": "lisinopril",

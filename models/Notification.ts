@@ -74,6 +74,7 @@ NotificationSchema.index({ targetUser: 1, organizationId: 1, pinned: -1, archive
 NotificationSchema.index({ targetUser: 1, organizationId: 1, readAt: 1, archived: 1, deletedAt: 1 });
 NotificationSchema.index({ entityType: 1, entityId: 1 });
 NotificationSchema.index({ title: "text", message: "text" });
+NotificationSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0, sparse: true });
 
 NotificationSchema.virtual("id").get(function () {
   return this._id.toHexString();

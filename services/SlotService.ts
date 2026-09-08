@@ -1,5 +1,6 @@
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Appointment } from "../models/Appointment.ts";
+import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
 import { checkSlotLock } from "./SlotLockService.ts";
 
 export interface TimeSlot {
@@ -22,14 +23,93 @@ export interface GetDoctorSlotsResult {
   dayStartTime?: string;
   dayEndTime?: string;
   isWorkingDay?: boolean;
+  overrideActive?: boolean;
 }
 
-interface ParsedDaySchedule {
+export interface ParsedDaySchedule {
   isWorkingDay: boolean;
   intervals: { start: string; end: string }[];
   workingHoursLabel: string;
   dayStartTime: string;
   dayEndTime: string;
+}
+
+export interface EffectiveSchedule extends ParsedDaySchedule {
+  overrideActive: boolean;
+  overrideStatus?: "available" | "unavailable" | "delayed" | "extended";
+  overrideReason?: string;
+}
+
+export async function getEffectiveDoctorSchedule(
+  doctorId: string,
+  clinicId: string,
+  targetDate: Date | string,
+  assignmentWorkingHours?: any
+): Promise<EffectiveSchedule> {
+  const d = typeof targetDate === "string" ? new Date(targetDate) : targetDate;
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const dateStr = `${year}-${month}-${day}`;
+
+  const daysOfWeek = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const dayName = daysOfWeek[d.getDay()];
+
+  // 1. Check for day override
+  const override = await DoctorDayOverride.findOne({ clinicId, doctorId, date: dateStr });
+
+  if (override) {
+    if (override.status === "unavailable") {
+      return {
+        isWorkingDay: false,
+        intervals: [],
+        workingHoursLabel: override.reason ? `Unavailable: ${override.reason}` : "Doctor Unavailable (Override)",
+        dayStartTime: "00:00",
+        dayEndTime: "00:00",
+        overrideActive: true,
+        overrideStatus: "unavailable",
+        overrideReason: override.reason || undefined,
+      };
+    }
+
+    if (override.status === "delayed" || override.status === "extended" || override.status === "available") {
+      let baseSchedule: ParsedDaySchedule;
+      if (assignmentWorkingHours !== undefined) {
+        baseSchedule = parseDoctorWorkingHours(assignmentWorkingHours, dayName);
+      } else {
+        const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
+        baseSchedule = parseDoctorWorkingHours(assignment?.workingHours, dayName);
+      }
+
+      const start = override.effectiveStartTime || baseSchedule.dayStartTime || "09:00";
+      const end = override.effectiveEndTime || baseSchedule.dayEndTime || "17:00";
+
+      return {
+        isWorkingDay: true,
+        intervals: [{ start, end }],
+        workingHoursLabel: `${start} - ${end}${override.reason ? ` (${override.reason})` : ""}`,
+        dayStartTime: start,
+        dayEndTime: end,
+        overrideActive: true,
+        overrideStatus: override.status as any,
+        overrideReason: override.reason || undefined,
+      };
+    }
+  }
+
+  // 2. Default schedule from assignment
+  let baseSchedule: ParsedDaySchedule;
+  if (assignmentWorkingHours !== undefined) {
+    baseSchedule = parseDoctorWorkingHours(assignmentWorkingHours, dayName);
+  } else {
+    const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
+    baseSchedule = parseDoctorWorkingHours(assignment?.workingHours, dayName);
+  }
+
+  return {
+    ...baseSchedule,
+    overrideActive: false,
+  };
 }
 
 export function parseDoctorWorkingHours(workingHoursRaw: any, dayName: string): ParsedDaySchedule {
@@ -171,7 +251,7 @@ export async function getDoctorAvailableSlots(
   const daysOfWeek = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
   const dayName = daysOfWeek[targetDate.getDay()];
 
-  const daySchedule = parseDoctorWorkingHours(assignment?.workingHours, dayName);
+  const daySchedule = await getEffectiveDoctorSchedule(doctorId, clinicId, targetDate, assignment?.workingHours);
 
   if (bookingMode === "sequential_queue") {
     return {
@@ -186,6 +266,7 @@ export async function getDoctorAvailableSlots(
       dayStartTime: daySchedule.dayStartTime,
       dayEndTime: daySchedule.dayEndTime,
       isWorkingDay: daySchedule.isWorkingDay,
+      overrideActive: daySchedule.overrideActive,
     };
   }
 
@@ -202,6 +283,7 @@ export async function getDoctorAvailableSlots(
       dayStartTime: daySchedule.dayStartTime,
       dayEndTime: daySchedule.dayEndTime,
       isWorkingDay: false,
+      overrideActive: daySchedule.overrideActive,
     };
   }
 

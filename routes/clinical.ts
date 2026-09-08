@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate, checkPermission } from "../middleware/auth.ts";
+import { authenticate, checkPermission, checkAnyPermissionOrRoles } from "../middleware/auth.ts";
 import { requireModule } from "../middleware/moduleGuard.ts";
 import { getPatientTimelineController } from "../controllers/patient.ts";
 import {
@@ -21,7 +21,13 @@ import {
 } from "../controllers/observationAnalytics.ts";
 
 export default async function clinicalRoutes(app: FastifyInstance) {
-  const viewEhr = { preHandler: [authenticate, requireModule("consultations"), checkPermission("VIEW_EHR")] };
+  const viewEhr = {
+    preHandler: [
+      authenticate,
+      requireModule("consultations"),
+      checkAnyPermissionOrRoles(["patient", "family_member"], "VIEW_EHR"),
+    ],
+  };
   const manageNotes = { preHandler: [authenticate, requireModule("consultations"), checkPermission("MANAGE_CLINICAL_NOTES")] };
 
   // Longitudinal EHR Timeline
@@ -43,4 +49,10 @@ export default async function clinicalRoutes(app: FastifyInstance) {
   app.get("/api/encounters/:id/scores", viewEhr, getEncounterScoresController);
   app.post("/api/alerts/:id/acknowledge", manageNotes, acknowledgeAlertController);
   app.get("/api/patients/:id/vital-trends", viewEhr, getPatientVitalTrendsController);
+
+  // 1-Click OPD Clinical Presets & Custom Templates
+  const { getOpdTemplates, createOpdTemplate, deleteOpdTemplate } = await import("../controllers/opdTemplate.ts");
+  app.get("/api/clinical/opd-templates", { preHandler: [authenticate] }, getOpdTemplates);
+  app.post("/api/clinical/opd-templates", { preHandler: [authenticate] }, createOpdTemplate);
+  app.delete("/api/clinical/opd-templates/:id", { preHandler: [authenticate] }, deleteOpdTemplate);
 }

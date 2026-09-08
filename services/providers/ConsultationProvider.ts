@@ -22,13 +22,17 @@ export class ConsultationProvider implements TimelineProvider {
     const events: TimelineEvent[] = [];
 
     // 1. Fetch Versioned Signed Clinical Notes
-    const notes = await ClinicalNote.find({
+    const noteQuery: any = {
       patientId: query.patientId,
-      organizationId: query.organizationId,
       isLatest: true,
       status: { $in: ["signed", "amended"] },
-    })
+    };
+    if (query.organizationId && !query.isCrossOrgAllowed) {
+      noteQuery.organizationId = query.organizationId;
+    }
+    const notes = await ClinicalNote.find(noteQuery)
       .populate("doctorId", "name email")
+      .populate("clinicId", "name city")
       .populate("objective.observationIds")
       .populate("plan.prescriptionIds")
       .lean();
@@ -56,13 +60,14 @@ export class ConsultationProvider implements TimelineProvider {
         duration: p.duration || "",
       }));
 
+      const clinicName = (note.clinicId as any)?.name ? ` (${(note.clinicId as any).name})` : "";
       events.push({
         id: note._id.toString(),
         type: "consultation",
         occurredAt: note.signature?.signedAt || note.createdAt,
         patientId: query.patientId,
-        organizationId: query.organizationId,
-        title: diagnoses.length > 0 ? `SOAP Note: ${diagnoses[0]}` : `Clinical Note (v${note.version})`,
+        organizationId: note.organizationId?.toString() || query.organizationId,
+        title: diagnoses.length > 0 ? `SOAP Note: ${diagnoses[0]}${clinicName}` : `Clinical Note (v${note.version})${clinicName}`,
         summary: note.subjective?.chiefComplaint ? `Chief Complaint: ${note.subjective.chiefComplaint}` : "Signed SOAP consultation document",
         actor: {
           id: doctorId,

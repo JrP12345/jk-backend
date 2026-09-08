@@ -9,6 +9,7 @@ const RefreshTokenSchema = new Schema({
   ipAddress: { type: String, default: "" },
   userAgent: { type: String, default: "" },
   deviceName: { type: String, default: "Browser Session" },
+  isGuest: { type: Boolean, default: false },
   lastActiveAt: { type: Date, default: Date.now },
   createdAt: { type: Date, default: Date.now }
 }, { timestamps: true });

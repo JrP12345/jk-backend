@@ -59,7 +59,13 @@ export class ContextEngine {
     // 3. Organization Financial & Operational Metrics (Cached with 5m TTL)
     let orgName = "Healthcare System";
     const orgId = input.organizationId;
-    const cacheKey = orgId || "default_org";
+    const isOperationalQuery = !!(input.currentRoute && (
+      input.currentRoute.includes("analytics") ||
+      input.currentRoute.includes("billing") ||
+      input.currentRoute.includes("finance") ||
+      input.currentRoute.includes("admin")
+    ));
+    const cacheKey = `${orgId || "default_org"}_${isOperationalQuery ? "ops" : "clin"}`;
 
     let organizationContext = "";
     const cachedMetrics = this.metricsCache.get(cacheKey);
@@ -99,67 +105,82 @@ export class ContextEngine {
         }
 
         const clinicIds = clinics.map((c) => c._id);
-        const invoiceFilter = clinicIds.length > 0 ? { clinicId: { $in: clinicIds } } : {};
-        const invoices = await Invoice.find(invoiceFilter)
-          .select("totalAmount status paymentDate createdAt patientId")
-          .populate({ path: "patientId", populate: { path: "userId", select: "name email" } })
-          .lean();
-
-        let totalRevenue = 0;
-        let todayRevenue = 0;
-        let outstandingBilling = 0;
-        let paidInvoicesCount = 0;
-        let unpaidInvoicesCount = 0;
-
-        const patientPaidTotals: Record<string, { name: string; amount: number; count: number }> = {};
-        const startOfToday = new Date();
-        startOfToday.setHours(0, 0, 0, 0);
-
-        invoices.forEach((inv: any) => {
-          const amt = inv.totalAmount || 0;
-          const pUser = (inv.patientId as any)?.userId;
-          const pName = pUser?.name || "Patient / Client";
-          const pId = inv.patientId?._id ? inv.patientId._id.toString() : pName;
-
-          const pDate = inv.paymentDate || inv.createdAt;
-          const isToday = pDate && new Date(pDate) >= startOfToday;
-
-          if (inv.status === "paid") {
-            totalRevenue += amt;
-            paidInvoicesCount++;
-            if (isToday) todayRevenue += amt;
-
-            if (!patientPaidTotals[pId]) {
-              patientPaidTotals[pId] = { name: pName, amount: 0, count: 0 };
-            }
-            patientPaidTotals[pId].amount += amt;
-            patientPaidTotals[pId].count += 1;
-          } else if (inv.status === "unpaid") {
-            outstandingBilling += amt;
-            unpaidInvoicesCount++;
-          }
-        });
-
-        const effectiveTodayRevenue = todayRevenue > 0 ? todayRevenue : totalRevenue;
-        const sortedClients = Object.values(patientPaidTotals).sort((a, b) => b.amount - a.amount);
-        const topPayingClient = sortedClients[0]
-          ? `${sortedClients[0].name} (Total Paid: ₹${sortedClients[0].amount.toLocaleString()})`
-          : "None recorded yet";
-
-        const appointmentsCount = await Appointment.countDocuments(clinicIds.length > 0 ? { clinicId: { $in: clinicIds } } : {});
         const clinicNames = clinics.map(c => `${c.name} (${c.city})`).join(", ") || "Main Clinic";
+        let operationalDetails = "";
+
+        if (isOperationalQuery) {
+          const invoiceFilter = clinicIds.length > 0 ? { clinicId: { $in: clinicIds } } : {};
+          const startOfToday = new Date();
+          startOfToday.setHours(0, 0, 0, 0);
+
+          const [aggResults, appointmentsCount] = await Promise.all([
+            Invoice.aggregate([
+              { $match: invoiceFilter },
+              {
+                $facet: {
+                  statusTotals: [
+                    {
+                      $group: {
+                        _id: "$status",
+                        totalAmount: { $sum: "$totalAmount" },
+                        count: { $sum: 1 }
+                      }
+                    }
+                  ],
+                  todayPaid: [
+                    {
+                      $match: {
+                        status: "paid",
+                        $or: [
+                          { paymentDate: { $gte: startOfToday } },
+                          { createdAt: { $gte: startOfToday } }
+                        ]
+                      }
+                    },
+                    {
+                      $group: {
+                        _id: null,
+                        totalAmount: { $sum: "$totalAmount" },
+                        count: { $sum: 1 }
+                      }
+                    }
+                  ]
+                }
+              }
+            ]),
+            Appointment.countDocuments(clinicIds.length > 0 ? { clinicId: { $in: clinicIds } } : {})
+          ]);
+
+          const statusTotals = aggResults[0]?.statusTotals || [];
+          const todayPaidStats = aggResults[0]?.todayPaid?.[0];
+
+          const paidStats = statusTotals.find((s: any) => s._id === "paid");
+          const unpaidStats = statusTotals.find((s: any) => s._id === "unpaid");
+
+          const totalRevenue = paidStats ? paidStats.totalAmount : 0;
+          const paidInvoicesCount = paidStats ? paidStats.count : 0;
+          const outstandingBilling = unpaidStats ? unpaidStats.totalAmount : 0;
+          const unpaidInvoicesCount = unpaidStats ? unpaidStats.count : 0;
+          const effectiveTodayRevenue = todayPaidStats ? todayPaidStats.totalAmount : totalRevenue;
+
+          operationalDetails = [
+            `- Today's Revenue Collections: ₹${effectiveTodayRevenue.toLocaleString()} (${paidInvoicesCount} paid transactions)`,
+            `- Total Cumulative Revenue Collections: ₹${totalRevenue.toLocaleString()} (${paidInvoicesCount} total transactions)`,
+            `- Outstanding Billings (Unpaid): ₹${outstandingBilling.toLocaleString()} (${unpaidInvoicesCount} pending invoices)`,
+            `- Total Patient Visits / Appointments: ${appointmentsCount} recorded`,
+          ].join("\n");
+        } else {
+          // Standard Clinical Workflow: zero financial exposure, lean token footprint
+          operationalDetails = `- Clinical Care Context: Facility operational with active clinical encounters.`;
+        }
 
         organizationContext = [
           `Facility / Organization Context:`,
           `- Facility Name: ${orgName}`,
           `- Organization ID: ${orgId}`,
           `- Active Clinics (${clinics.length}): ${clinicNames}`,
-          `- Today's Revenue Collections: ₹${effectiveTodayRevenue.toLocaleString()} (${paidInvoicesCount} paid transactions)`,
-          `- Total Cumulative Revenue Collections: ₹${totalRevenue.toLocaleString()} (${paidInvoicesCount} total transactions)`,
-          `- Outstanding Billings (Unpaid): ₹${outstandingBilling.toLocaleString()} (${unpaidInvoicesCount} pending invoices)`,
-          `- Top / Highest Paying Client: ${topPayingClient}`,
-          `- Total Patient Visits / Appointments: ${appointmentsCount} recorded`,
-        ].join("\n");
+          operationalDetails,
+        ].filter(Boolean).join("\n");
 
         // Cache the formatted organizationContext
         this.metricsCache.set(cacheKey, {
@@ -167,7 +188,7 @@ export class ContextEngine {
           expiresAt: Date.now() + this.CACHE_TTL_MS
         });
       } catch (err: any) {
-        console.warn("[ContextEngine] Failed to build live financial context:", err.message);
+        console.warn("[ContextEngine] Failed to build live organization context:", err.message);
       }
     }
 

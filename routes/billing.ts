@@ -10,6 +10,8 @@ import {
   getEncounterChargesPreview,
   autoGenerateInvoiceForEncounter,
   recordPartialPayment,
+  getConsolidatedCheckoutPreview,
+  processConsolidatedCheckout,
 } from "../controllers/invoice.ts";
 import {
   createClaimController,
@@ -35,12 +37,17 @@ import {
   adminGetRazorpayConfig,
   adminSaveRazorpayConfig,
 } from "../controllers/billing.ts";
+import {
+  getTillSummary,
+  closeTill,
+  getTillHistory,
+} from "../controllers/cashierShift.ts";
 
 export default async function billingRoutes(app: FastifyInstance) {
   const auth = { preHandler: [authenticate] };
   const rootAdminAuth = { preHandler: [authenticate, authorize("root")] };
   const viewInvoices = {
-    preHandler: [authenticate, requireModule("billing"), checkAnyPermissionOrRoles(["patient"], "VIEW_BILLING", "MANAGE_BILLING")],
+    preHandler: [authenticate, requireModule("billing"), checkAnyPermissionOrRoles(["patient", "family_member"], "VIEW_BILLING", "MANAGE_BILLING")],
   };
   const manageInvoices = {
     preHandler: [authenticate, requireModule("billing"), checkAnyPermission("MANAGE_BILLING")],
@@ -99,4 +106,13 @@ export default async function billingRoutes(app: FastifyInstance) {
   app.post("/api/billing/claims", manageInvoices, createClaimController);
   app.get("/api/billing/claims", viewInvoices, getClaimsController);
   app.post("/api/billing/claims/:id/adjudicate", manageInvoices, adjudicateClaimController);
+
+  // ─── 1-Click Consolidated Outpatient Checkout ────────────────────
+  app.get("/api/billing/checkout/preview/:appointmentId", manageInvoices, getConsolidatedCheckoutPreview);
+  app.post("/api/billing/checkout/consolidate", manageInvoices, processConsolidatedCheckout);
+
+  // ─── Cashier Till Reconciliation & Shift Close (Z-Report) ────────
+  app.get("/api/billing/till/summary", manageInvoices, getTillSummary);
+  app.post("/api/billing/till/close", manageInvoices, closeTill);
+  app.get("/api/billing/till/history", manageInvoices, getTillHistory);
 }

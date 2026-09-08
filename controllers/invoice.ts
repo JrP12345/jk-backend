@@ -9,6 +9,7 @@ import { successResponse, errorResponse, getPaginationParams, setPaginationHeade
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { checkClinicAccess, checkOperationalRecordAccess, getRequestClinicIds } from "../utilities/tenant.ts";
+import { withTransaction, createWithSession } from "../utilities/transaction.ts";
 
 export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -197,15 +198,23 @@ export async function getInvoices(req: FastifyRequest, reply: FastifyReply) {
 
     const filter: any = {};
 
-    if (userRole === "patient") {
+    if (userRole === "patient" || userRole === "family_member") {
       const patient = await Patient.findOne({ userId });
-      if (!patient) return reply.code(404).send(errorResponse("Patient profile not found"));
-      filter.patientId = patient._id;
+      if (userRole === "patient") {
+        if (!patient) return reply.code(404).send(errorResponse("Patient profile not found"));
+        filter.patientId = patient._id;
+      } else {
+        const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
+        const rels = await FamilyRelationship.find({ userId, status: "active" }).select("patientId").lean();
+        const familyPatientIds: any[] = rels.map((r: any) => r.patientId).filter(Boolean);
+        if (patient) familyPatientIds.push(patient._id);
+        filter.patientId = { $in: familyPatientIds };
+      }
     } else if (userRole === "doctor") {
       filter.doctorId = userId;
     }
 
-    if (patientId && userRole !== "patient") filter.patientId = patientId;
+    if (patientId && userRole !== "patient" && userRole !== "family_member") filter.patientId = patientId;
 
     if (clinicId) {
       const clinicAccess = await checkClinicAccess(req, clinicId);
@@ -213,26 +222,30 @@ export async function getInvoices(req: FastifyRequest, reply: FastifyReply) {
         return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
       }
       filter.clinicId = clinicId;
-    } else if (orgId && userRole !== "patient") {
+    } else if (orgId && userRole !== "patient" && userRole !== "family_member") {
       const clinicIds = await getRequestClinicIds(req);
       filter.clinicId = { $in: clinicIds };
     }
 
     if (status) filter.status = status;
 
-    const totalCount = await Invoice.countDocuments(filter);
-    const totalPages = Math.ceil(totalCount / pageSize);
+    const [totalCount, rawInvoices] = await Promise.all([
+      Invoice.countDocuments(filter),
+      Invoice.find(filter)
+        .populate("clinicId", "name city address")
+        .populate("doctorId", "name specialization")
+        .populate({
+          path: "patientId",
+          populate: { path: "userId", select: "name email phone" }
+        })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(pageSize)
+        .lean(),
+    ]);
 
-    const invoices = await Invoice.find(filter)
-      .populate("clinicId", "name city address")
-      .populate("doctorId", "name specialization")
-      .populate({
-        path: "patientId",
-        populate: { path: "userId", select: "name email phone" }
-      })
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(pageSize);
+    const totalPages = Math.ceil(totalCount / pageSize);
+    const invoices = rawInvoices.map((inv: any) => ({ ...inv, id: inv._id.toString() }));
 
     setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
 
@@ -273,12 +286,23 @@ export async function getInvoiceDetails(req: FastifyRequest, reply: FastifyReply
     }
 
     // Role & Tenant authorization checks
-    if (userRole === "patient") {
+    if (userRole === "patient" || userRole === "family_member") {
+      const invoicePatientIdStr = invoice.patientId?._id?.toString() || invoice.patientId?.toString();
       const patient = await Patient.findOne({ userId });
-      if (!patient || invoice.patientId._id.toString() !== patient.id) {
+      let isAllowed = Boolean(patient && invoicePatientIdStr === patient._id.toString());
+      if (!isAllowed && userRole === "family_member") {
+        const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
+        const hasRel = await FamilyRelationship.exists({
+          userId,
+          patientId: invoicePatientIdStr,
+          status: "active",
+        });
+        isAllowed = Boolean(hasRel);
+      }
+      if (!isAllowed) {
         return reply.code(403).send(errorResponse("Access denied: This invoice does not belong to you"));
       }
-    } else if (userRole === "doctor" && invoice.doctorId._id.toString() !== userId) {
+    } else if (userRole === "doctor" && invoice.doctorId?._id?.toString() !== userId && invoice.doctorId?.toString() !== userId) {
       return reply.code(403).send(errorResponse("Access denied: You are not the practitioner for this invoice"));
     }
 
@@ -478,54 +502,300 @@ export async function recordPartialPayment(req: FastifyRequest, reply: FastifyRe
       return reply.code(400).send(errorResponse("Invalid or missing payment method"));
     }
 
-    if (invoice.status === "paid") {
-      return reply.code(400).send(errorResponse("Invoice has already been fully paid"));
-    }
+    const { updatedInvoice, newBalanceDue } = await withTransaction(async (session) => {
+      const option = session ? { session } : undefined;
+      const invoice: any = await Invoice.findById(id, null, option);
+      if (!invoice) {
+        throw new Error("NOT_FOUND:Invoice not found");
+      }
 
-    const currentPaid = invoice.amountPaid || 0;
-    const currentBalance = invoice.balanceDue !== undefined ? invoice.balanceDue : invoice.totalAmount - currentPaid;
+      const clinicAccess = await checkClinicAccess(req, (invoice.clinicId as any)?._id || invoice.clinicId);
+      if (!clinicAccess.allowed) {
+        throw new Error("NOT_FOUND:Invoice not found");
+      }
 
-    if (amount > currentBalance + 0.01) {
-      return reply.code(400).send(errorResponse(`Payment amount ₹${amount} exceeds current balance due ₹${currentBalance}`));
-    }
+      if (req.user!.role === "patient") {
+        const patient = await Patient.findOne({ userId: req.user!.id }, null, option);
+        if (!patient || invoice.patientId.toString() !== patient._id.toString()) {
+          throw new Error("FORBIDDEN:Forbidden: invoice does not belong to you");
+        }
+      }
 
-    const newAmountPaid = Number((currentPaid + amount).toFixed(2));
-    const newBalanceDue = Math.max(0, Number((invoice.totalAmount - newAmountPaid).toFixed(2)));
-    const newStatus = newBalanceDue <= 0 ? "paid" : "partially_paid";
+      if (invoice.status === "paid") {
+        throw new Error("ALREADY_PAID:Invoice has already been fully paid");
+      }
 
-    invoice.amountPaid = newAmountPaid;
-    invoice.balanceDue = newBalanceDue;
-    invoice.status = newStatus;
-    invoice.paymentMethod = paymentMethod || "cash";
-    invoice.paymentDate = new Date();
+      const currentPaid = invoice.amountPaid || 0;
+      const currentBalance = invoice.balanceDue !== undefined ? invoice.balanceDue : invoice.totalAmount - currentPaid;
 
-    if (!invoice.payments) invoice.payments = [];
-    invoice.payments.push({
-      amount,
-      paymentMethod: paymentMethod || "cash",
-      referenceNumber: referenceNumber?.trim(),
-      paidAt: new Date(),
-      notes: notes?.trim(),
+      if (amount > currentBalance + 0.01) {
+        throw new Error(`OVERPAYMENT:Payment amount ₹${amount} exceeds current balance due ₹${currentBalance}`);
+      }
+
+      const newAmountPaid = Number((currentPaid + amount).toFixed(2));
+      const calculatedBalance = Math.max(0, Number((invoice.totalAmount - newAmountPaid).toFixed(2)));
+      const newStatus = calculatedBalance <= 0 ? "paid" : "partially_paid";
+
+      invoice.amountPaid = newAmountPaid;
+      invoice.balanceDue = calculatedBalance;
+      invoice.status = newStatus;
+      invoice.paymentMethod = paymentMethod || "cash";
+      invoice.paymentDate = new Date();
+
+      if (!invoice.payments) invoice.payments = [];
+      invoice.payments.push({
+        amount,
+        paymentMethod: paymentMethod || "cash",
+        referenceNumber: referenceNumber?.trim(),
+        paidAt: new Date(),
+        notes: notes?.trim(),
+      });
+
+      await invoice.save(option);
+
+      await createWithSession(AuditLog, {
+        userId,
+        action: "INVOICE_PARTIAL_PAYMENT",
+        targetId: invoice._id,
+        targetModel: "Invoice",
+        details: { amount, newBalanceDue: calculatedBalance, status: newStatus, referenceNumber }
+      }, session);
+
+      return { updatedInvoice: invoice, newBalanceDue: calculatedBalance };
     });
 
-    await invoice.save();
+    return reply.code(200).send(
+      successResponse(
+        updatedInvoice,
+        `Payment of ₹${amount} recorded! Remaining balance due: ₹${newBalanceDue}`
+      )
+    );
+  } catch (err: any) {
+    const msg = err.message || "";
+    if (msg.startsWith("NOT_FOUND:")) {
+      return reply.code(404).send(errorResponse(msg.replace("NOT_FOUND:", "")));
+    }
+    if (msg.startsWith("FORBIDDEN:")) {
+      return reply.code(403).send(errorResponse(msg.replace("FORBIDDEN:", "")));
+    }
+    if (msg.startsWith("ALREADY_PAID:") || msg.startsWith("OVERPAYMENT:")) {
+      return reply.code(400).send(errorResponse(msg.split(":")[1]));
+    }
+    console.error("recordPartialPayment error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
 
+// ─── Consolidated OPD Checkout: Preview & Settlement ──────────
+export async function getConsolidatedCheckoutPreview(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { appointmentId } = req.params as { appointmentId: string };
+
+    if (!appointmentId || !mongoose.Types.ObjectId.isValid(appointmentId)) {
+      return reply.code(400).send(errorResponse("Invalid appointment ID"));
+    }
+
+    const { Appointment } = await import("../models/Appointment.ts");
+    const appointment = await Appointment.findById(appointmentId).lean();
+    if (!appointment) {
+      return reply.code(404).send(errorResponse("Appointment not found"));
+    }
+
+    const access = await checkOperationalRecordAccess(req, appointment);
+    if (!access.allowed) {
+      return reply.code(access.statusCode).send(errorResponse(access.message));
+    }
+
+    const { compileAppointmentCharges } = await import("../services/ChargeCaptureService.ts");
+    const compiled = await compileAppointmentCharges(appointmentId);
+
+    return reply.code(200).send(
+      successResponse(
+        {
+          appointment: compiled.appointment,
+          items: compiled.items,
+          subtotal: compiled.subtotal,
+          cgstTotal: compiled.cgstTotal,
+          sgstTotal: compiled.sgstTotal,
+          igstTotal: compiled.igstTotal,
+          totalAmount: compiled.totalAmount,
+          existingInvoice: compiled.existingInvoice,
+          isAlreadyPaid: (appointment as any).paymentStatus === "paid",
+        },
+        "Consolidated checkout preview compiled successfully"
+      )
+    );
+  } catch (err: any) {
+    console.error("getConsolidatedCheckoutPreview error:", err);
+    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+  }
+}
+
+export async function processConsolidatedCheckout(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const userId = req.user!.id;
+    const { appointmentId, paymentMethod, amountPaid, discount, referenceNumber, notes } =
+      (req.body as {
+        appointmentId: string;
+        paymentMethod: string;
+        amountPaid?: number;
+        discount?: number;
+        referenceNumber?: string;
+        notes?: string;
+      }) || {};
+
+    if (!appointmentId || !mongoose.Types.ObjectId.isValid(appointmentId)) {
+      return reply.code(400).send(errorResponse("Valid appointmentId is required"));
+    }
+
+    const { Appointment } = await import("../models/Appointment.ts");
+    const appointment = await Appointment.findById(appointmentId);
+    if (!appointment) {
+      return reply.code(404).send(errorResponse("Appointment not found"));
+    }
+
+    const access = await checkOperationalRecordAccess(req, appointment);
+    if (!access.allowed) {
+      return reply.code(access.statusCode).send(errorResponse(access.message));
+    }
+
+    const { compileAppointmentCharges } = await import("../services/ChargeCaptureService.ts");
+    const { generateClinicInvoiceNumber } = await import("../utilities/invoiceNumber.ts");
+    const { broadcastQueueUpdate } = await import("../notifications/websocket.ts");
+
+    const compiled = await compileAppointmentCharges(appointmentId);
+    const { items, subtotal, cgstTotal, sgstTotal, igstTotal } = compiled;
+
+    const discountAmount = Math.max(0, Number(discount) || 0);
+    const taxTotal = cgstTotal + sgstTotal + igstTotal;
+    const grandTotal = Math.max(0, Number((subtotal + taxTotal - discountAmount).toFixed(2)));
+    const paid = amountPaid !== undefined ? Number(amountPaid) : grandTotal;
+    const balanceDue = Math.max(0, Number((grandTotal - paid).toFixed(2)));
+    const finalStatus = balanceDue <= 0 ? "paid" : "partially_paid";
+
+    const formattedItems = items.map((i) => {
+      const lineBase = i.amount * i.quantity;
+      const cgstAmount = i.gstRate > 0 ? Number((lineBase * (i.gstRate / 200)).toFixed(2)) : 0;
+      const sgstAmount = i.gstRate > 0 ? Number((lineBase * (i.gstRate / 200)).toFixed(2)) : 0;
+      return {
+        serviceCatalogId: i.serviceCatalogId,
+        description: i.description,
+        amount: i.amount,
+        quantity: i.quantity,
+        hsnSacCode: i.hsnSacCode,
+        gstRate: i.gstRate,
+        cgstAmount,
+        sgstAmount,
+        igstAmount: 0,
+        totalItemAmount: Number((lineBase + cgstAmount + sgstAmount).toFixed(2)),
+      };
+    });
+
+    let invoice: any;
+
+    if (appointment.invoiceId) {
+      invoice = await Invoice.findById(appointment.invoiceId);
+    }
+
+    if (invoice) {
+      invoice.items = formattedItems;
+      invoice.subtotal = subtotal;
+      invoice.taxableAmount = subtotal;
+      invoice.tax = taxTotal;
+      invoice.discount = discountAmount;
+      invoice.totalAmount = grandTotal;
+      invoice.amountPaid = paid;
+      invoice.balanceDue = balanceDue;
+      invoice.status = finalStatus;
+      invoice.paymentMethod = (paymentMethod as any) || "cash";
+      invoice.paymentDate = new Date();
+      if (!invoice.payments) invoice.payments = [];
+      invoice.payments.push({
+        amount: paid,
+        paymentMethod: paymentMethod || "cash",
+        referenceNumber: referenceNumber?.trim(),
+        paidAt: new Date(),
+        notes: notes?.trim() || "Consolidated OPD Checkout settlement",
+      });
+      await invoice.save();
+    } else {
+      const invoiceNumber = await generateClinicInvoiceNumber(appointment.clinicId.toString());
+      invoice = await Invoice.create({
+        invoiceNumber,
+        organizationId: appointment.organizationId,
+        clinicId: appointment.clinicId,
+        doctorId: appointment.doctorId,
+        patientId: appointment.patientId,
+        appointmentId: appointment._id,
+        items: formattedItems,
+        subtotal,
+        taxableAmount: subtotal,
+        tax: taxTotal,
+        discount: discountAmount,
+        cgstTotal,
+        sgstTotal,
+        igstTotal,
+        totalAmount: grandTotal,
+        amountPaid: paid,
+        balanceDue,
+        status: finalStatus,
+        paymentMethod: (paymentMethod as any) || "cash",
+        paymentDate: new Date(),
+        payments: [
+          {
+            amount: paid,
+            paymentMethod: paymentMethod || "cash",
+            referenceNumber: referenceNumber?.trim(),
+            paidAt: new Date(),
+            notes: notes?.trim() || "Consolidated OPD Checkout settlement",
+          },
+        ],
+      });
+    }
+
+    // Update Appointment
+    appointment.paymentStatus = finalStatus === "paid" ? "paid" : "pending";
+    appointment.paymentAmount = grandTotal;
+    appointment.invoiceId = invoice._id;
+    await appointment.save();
+
+    // Audit Log
     await AuditLog.create({
+      organizationId: appointment.organizationId,
       userId,
-      action: "INVOICE_PARTIAL_PAYMENT",
+      category: "BILLING",
+      action: "CONSOLIDATED_OPD_CHECKOUT",
       targetId: invoice._id,
       targetModel: "Invoice",
-      details: { amount, newBalanceDue, status: newStatus, referenceNumber }
+      details: {
+        appointmentId: appointment._id,
+        invoiceNumber: invoice.invoiceNumber,
+        grandTotal,
+        amountPaid: paid,
+        paymentMethod,
+      },
+    });
+
+    // Broadcast WebSocket event
+    broadcastQueueUpdate(appointment.clinicId.toString(), {
+      type: "QUEUE_UPDATED",
+      data: {
+        appointmentId: appointment._id,
+        paymentStatus: appointment.paymentStatus,
+        invoiceId: invoice._id,
+      },
+      message: `Consolidated payment received for token #${appointment.tokenNumber}.`,
+      timestamp: new Date().toISOString(),
     });
 
     return reply.code(200).send(
       successResponse(
         invoice,
-        `Payment of ₹${amount} recorded! Remaining balance due: ₹${newBalanceDue}`
+        `Consolidated checkout settled successfully! Invoice #${invoice.invoiceNumber}`
       )
     );
-  } catch (err) {
-    console.error("recordPartialPayment error:", err);
-    return reply.code(500).send(errorResponse("Internal server error"));
+  } catch (err: any) {
+    console.error("processConsolidatedCheckout error:", err);
+    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
   }
 }

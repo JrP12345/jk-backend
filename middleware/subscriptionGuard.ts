@@ -7,8 +7,8 @@ import { errorResponse } from "../utilities/helpers.ts";
  * Blocks write/mutation operations if organization subscription is expired or payment failed.
  */
 export async function enforceSubscriptionActive(req: FastifyRequest, reply: FastifyReply) {
-  // Super-admin root bypasses subscription check
-  if (req.user?.role === "root") return;
+  // Super-admin root and consumer patients bypass subscription check
+  if (req.user?.role === "root" || req.user?.role === "patient" || req.user?.role === "family_member") return;
 
   const orgId = req.user?.organization_id;
   if (!orgId) return;

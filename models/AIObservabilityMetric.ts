@@ -17,4 +17,7 @@ const AIObservabilityMetricSchema = new Schema({
   timestamp: { type: Date, default: Date.now, index: true }
 }, { timestamps: true });
 
+AIObservabilityMetricSchema.index({ organizationId: 1, timestamp: -1 });
+AIObservabilityMetricSchema.index({ userId: 1, timestamp: -1 });
+
 export const AIObservabilityMetric = mongoose.model("AIObservabilityMetric", AIObservabilityMetricSchema);

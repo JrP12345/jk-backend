@@ -46,8 +46,8 @@ async function resolveModuleOrganizationId(req: FastifyRequest): Promise<string 
  */
 export function requireModule(moduleKey: string) {
   return async (req: FastifyRequest, reply: FastifyReply) => {
-    // Root users bypass module restrictions
-    if (req.user?.role === "root") {
+    // Root users, patients, and family members accessing self-service bypass organization-level module gating
+    if (req.user?.role === "root" || req.user?.role === "patient" || req.user?.role === "family_member") {
       return;
     }
 

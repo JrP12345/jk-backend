@@ -17,9 +17,13 @@ export class BillingProvider implements TimelineProvider {
   }
 
   async fetch(query: TimelineQueryOptions): Promise<TimelineEvent[]> {
-    const invoices = await Invoice.find({
+    const invQuery: any = {
       patientId: query.patientId,
-    }).lean();
+    };
+    if (query.organizationId) {
+      invQuery.organizationId = query.organizationId;
+    }
+    const invoices = await Invoice.find(invQuery).lean();
 
     const events: TimelineEvent[] = [];
 

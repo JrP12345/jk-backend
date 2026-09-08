@@ -95,6 +95,13 @@ export const EVENT_TYPES = {
   PATIENT_CALL_NEXT: "PATIENT_CALL_NEXT",
   PATIENT_LAB_RESULT_READY: "PATIENT_LAB_RESULT_READY",
   PATIENT_CRITICAL_ALERT: "PATIENT_CRITICAL_ALERT",
+  DOCTOR_DISRUPTION_OCCURRED: "doctor.disruption.occurred",
+  PATIENT_DISRUPTION_NOTIFIED: "patient.disruption.notified",
+  PATIENT_DISRUPTION_TRIAGED: "patient.disruption.triaged",
+  PATIENT_TRANSFERRED_DOCTOR: "patient.transferred.doctor",
+  PATIENT_DISRUPTION_CANCELLED: "patient.disruption.cancelled",
+  PATIENT_PRIORITY_RESCHEDULED: "patient.disruption.rescheduled",
+  PATIENT_DISRUPTION_REFUNDED: "patient.disruption.refunded",
 
   // Billing
   BILLING_TRIAL_ENDING: "BILLING_TRIAL_ENDING",

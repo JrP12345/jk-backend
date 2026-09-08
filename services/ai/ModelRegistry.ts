@@ -32,7 +32,7 @@ export class ModelRegistry {
 
     this.mappings.set("CLINICAL_ACCURATE", {
       alias: "CLINICAL_ACCURATE",
-      providerName: "OpenAICompatibleProvider",
+      providerName: "OpenAI",
       modelEndpoint: "gpt-4o",
       costPer1kTokensUSD: 0.0025
     });
@@ -40,8 +40,8 @@ export class ModelRegistry {
     this.mappings.set("CLINICAL_REASONING", {
       alias: "CLINICAL_REASONING",
       providerName: "GoogleGeminiAI",
-      modelEndpoint: "gemini-2.5-flash",
-      costPer1kTokensUSD: 0.00015
+      modelEndpoint: "gemini-1.5-pro",
+      costPer1kTokensUSD: 0.00125
     });
   }
 

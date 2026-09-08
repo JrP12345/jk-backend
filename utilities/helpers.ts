@@ -45,17 +45,12 @@ export function verifyTwoFactorChallenge(token: string): { userId: string; purpo
 
 /**
  * Create an opaque refresh token, store its SHA-256 hash in the DB.
- * Long-lived: 7 days.
- * Returns the raw token to send to the client.
- */
-/**
- * Create an opaque refresh token, store its SHA-256 hash in the DB.
  * Enforces a maximum of 5 concurrent active sessions per user by revoking oldest sessions.
  * Long-lived: 7 days.
  */
 export async function createRefreshToken(
   userId: string,
-  meta?: { ipAddress?: string; userAgent?: string; deviceName?: string; organizationId?: string }
+  meta?: { ipAddress?: string; userAgent?: string; deviceName?: string; organizationId?: string; isGuest?: boolean }
 ): Promise<string> {
   const rawToken = crypto.randomBytes(48).toString("hex");
   const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
@@ -80,6 +75,7 @@ export async function createRefreshToken(
     ipAddress: meta?.ipAddress || "",
     userAgent: meta?.userAgent || "",
     deviceName: meta?.deviceName || "Browser Session",
+    isGuest: meta?.isGuest ?? false,
     lastActiveAt: new Date(),
   });
 

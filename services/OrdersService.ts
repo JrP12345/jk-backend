@@ -89,7 +89,7 @@ export class OrdersService {
       patientId:       payload.patientId,
       testId:          testId,
       orderedBy:       payload.orderedBy,
-      doctorId:        payload.orderedBy, // legacy field sync
+      doctorId:        payload.orderedBy,
       priority:        payload.priority || "routine",
       clinicalReason:  payload.clinicalReason || "",
       status:          "ordered",
@@ -166,7 +166,7 @@ export class OrdersService {
     order.status = "result-uploaded";
     order.resultedBy = payload.resultedBy as any;
     order.resultedAt = new Date();
-    order.completedDate = new Date(); // legacy alias
+    order.completedDate = new Date();
     if (!order.sampleCollectedAt) order.sampleCollectedAt = new Date();
     if (!order.processingStartedAt) order.processingStartedAt = new Date();
 

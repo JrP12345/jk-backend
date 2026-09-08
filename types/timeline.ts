@@ -82,11 +82,13 @@ export interface TimelineEvent {
 export interface TimelineQueryOptions {
   patientId: string;
   organizationId: string;
+  userId?: string;
   category?: string;
   includeFinancial?: boolean;
   q?: string;
   limit?: number;
   cursor?: string;
+  isCrossOrgAllowed?: boolean;
 }
 
 export interface TimelineProvider {

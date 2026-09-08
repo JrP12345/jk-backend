@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { authenticate, checkPermission } from "../middleware/auth.ts";
 import { requireModule } from "../middleware/moduleGuard.ts";
+import { enforceSubscriptionActive } from "../middleware/subscriptionGuard.ts";
 import { createClinicSchema, updateClinicSchema, assignDoctorSchema, createDepartmentSchema } from "../schemas/onboarding.ts";
 import {
   createClinic,
@@ -20,7 +21,7 @@ import {
 } from "../controllers/onboarding.ts";
 
 export default async function clinicRoutes(app: FastifyInstance) {
-  const manageClinics = { preHandler: [authenticate, requireModule("clinics"), checkPermission("MANAGE_CLINICS")] };
+  const manageClinics = { preHandler: [authenticate, requireModule("clinics"), checkPermission("MANAGE_CLINICS"), enforceSubscriptionActive] };
   const viewClinics = { preHandler: [authenticate, requireModule("clinics"), checkPermission("VIEW_CLINICS")] };
 
   // Clinic CRUD

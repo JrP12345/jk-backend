@@ -12,7 +12,7 @@ import { Organization } from "../models/Organization.ts";
 import { Medicine } from "../models/Medicine.ts";
 import { AIChatSession } from "../models/AIChatSession.ts";
 import type { ChatTurn } from "../services/ai/AIProvider.ts";
-import { aiService } from "../services/ai/AIService.ts";
+import { aiService, AIServiceUnavailableError } from "../services/ai/AIService.ts";
 import { aiGateway } from "../services/ai/AIGateway.ts";
 import { timelineService } from "../services/TimelineService.ts";
 import { PHIAnonymizer } from "../utilities/phiAnonymizer.ts";
@@ -41,8 +41,11 @@ export async function generateSOAPNoteController(req: FastifyRequest, reply: Fas
     });
 
     return reply.code(200).send(successResponse(draft, "SOAP note draft generated successfully"));
-  } catch (err) {
+  } catch (err: any) {
     console.error("generateSOAPNoteController error:", err);
+    if (err instanceof AIServiceUnavailableError) {
+      return reply.code(503).send(errorResponse(err.message));
+    }
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -106,7 +109,7 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
     }
   }
 
-  if (requesterRole !== "patient") {
+  if (requesterRole !== "patient" && !targetPatientId) {
     const orgFilter = requesterRole === "root"
       ? {}
       : requesterOrgId
@@ -114,18 +117,10 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
         : { _id: null };
 
     const clinicsList = await Clinic.find({ ...orgFilter, isActive: true }).lean();
-    const clinicIds = clinicsList.map((c) => c._id);
-
-    const invoiceQuery = { clinicId: { $in: clinicIds } };
-
-    const [patientCount, apptCount, doctorsList, invoicesList, samplePatients, recentAppts] = await Promise.all([
+    const [patientCount, apptCount, doctorsList, samplePatients, recentAppts] = await Promise.all([
       Patient.countDocuments(orgFilter),
       Appointment.countDocuments(orgFilter),
       Doctor.find(orgFilter).select("name specialization").lean(),
-      Invoice.find(invoiceQuery)
-        .populate({ path: "patientId", populate: { path: "userId", select: "name email" } })
-        .populate("clinicId", "name")
-        .lean(),
       Patient.find(orgFilter)
         .populate("userId", "name email phone")
         .limit(20)
@@ -138,56 +133,6 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
         .limit(10)
         .lean(),
     ]);
-
-    let totalRevenue = 0;
-    let todayRevenue = 0;
-    let outstandingBilling = 0;
-    let paidInvoicesCount = 0;
-    let unpaidInvoicesCount = 0;
-
-    const patientPaidTotals: Record<string, { name: string; amount: number; count: number; lastMethod: string }> = {};
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
-
-    invoicesList.forEach((inv: any) => {
-      const amt = inv.totalAmount || 0;
-      const pUser = (inv.patientId as any)?.userId;
-      const pName = pUser?.name || "Patient / Client";
-      const pId = inv.patientId?._id ? inv.patientId._id.toString() : (inv.patientId?.id || pName);
-
-      const pDate = inv.paymentDate || inv.createdAt;
-      const isToday = pDate && new Date(pDate) >= startOfToday;
-
-      if (inv.status === "paid") {
-        totalRevenue += amt;
-        paidInvoicesCount++;
-        // If payment date is today or recent dataset, track today revenue
-        if (isToday) {
-          todayRevenue += amt;
-        }
-
-        if (!patientPaidTotals[pId]) {
-          patientPaidTotals[pId] = { name: pName, amount: 0, count: 0, lastMethod: inv.paymentMethod || "cash" };
-        }
-        patientPaidTotals[pId].amount += amt;
-        patientPaidTotals[pId].count += 1;
-      } else if (inv.status === "unpaid") {
-        outstandingBilling += amt;
-        unpaidInvoicesCount++;
-      }
-    });
-
-    const effectiveTodayRevenue = todayRevenue;
-
-    // Rank top paying clients
-    const sortedClients = Object.values(patientPaidTotals).sort((a, b) => b.amount - a.amount);
-    const topPayingClient = sortedClients[0]
-      ? `${sortedClients[0].name} (Total Paid: ₹${sortedClients[0].amount.toLocaleString()} across ${sortedClients[0].count} payments)`
-      : "None recorded yet";
-
-    const topClientsRoster = sortedClients.length > 0
-      ? sortedClients.map((c, i) => `${i + 1}. ${c.name} - Paid: ₹${c.amount.toLocaleString()} (${c.count} transactions, Method: ${c.lastMethod})`).join("\n")
-      : "No paid transactions recorded yet.";
 
     const clinicNames = clinicsList.map(c => `${c.name} (${c.city})`).join(", ") || "No clinic data available";
 
@@ -210,17 +155,12 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
     const orgObj = requesterOrgId ? await Organization.findById(requesterOrgId).lean() : null;
     const dynamicOrgName = orgObj?.name || "Organization name unavailable";
 
-    const systemStats = `\n\nClinic System Operational & Financial Ledger Metrics:\n` +
+    const systemStats = `\n\nClinic Facility & Patient Directory:\n` +
       `- Organization / Facility: ${dynamicOrgName}\n` +
       `- Active Clinics (${clinicsList.length}): ${clinicNames}\n` +
-      `- Today's Revenue Collections: ₹${effectiveTodayRevenue.toLocaleString()} (${paidInvoicesCount} paid transactions)\n` +
-      `- Total Cumulative Revenue Collections: ₹${totalRevenue.toLocaleString()} (${paidInvoicesCount} total transactions)\n` +
-      `- Outstanding Billing (Unpaid): ₹${outstandingBilling.toLocaleString()} (${unpaidInvoicesCount} pending invoices)\n` +
-      `- Single Highest Paying Client / Patient: ${topPayingClient}\n` +
       `- Total Registered Patients: ${patientCount}\n` +
       `- Total Appointments / Patient Visits Booked: ${apptCount}\n` +
       `- Active Doctors (${doctorsList.length}): ${doctorsList.map(d => (d as any).name || "Doctor").join(", ") || "Staff Medical Team"}\n\n` +
-      `Highest Paying Clients Breakdown:\n${topClientsRoster}\n\n` +
       `Registered Patients Roster:\n${patientNamesList || "No registered patients."}\n\n` +
       `Recent Appointments Summary:\n${recentApptsList || "No recent appointments."}`;
 
@@ -375,7 +315,16 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
       phone: (p.userId as any)?.phone
     }));
 
-    // 3. Execute request through Enterprise AI Gateway pipeline
+    // Extract previous conversation turns for multi-turn conversational memory (last 8 messages)
+    const historyTurns: ChatTurn[] = sessionBefore.messages
+      .slice(0, -1)
+      .slice(-8)
+      .map(m => ({
+        sender: m.sender as "user" | "ai",
+        text: m.text
+      }));
+
+    // 3. Execute request through Enterprise AI Gateway pipeline with multi-turn memory
     const aiResponse = await aiGateway.execute({
       requestId: `req_${Date.now()}`,
       userId: req.user?.id || "",
@@ -383,8 +332,9 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
       prompt: query.trim(),
       sessionId,
       organizationId: requesterOrgId,
-      correlationId: `corr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
-    }, patientMapList);
+      correlationId: `corr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      chatHistory: historyTurns
+    }, patientMapList, { currentRoute, activePatientId, userRole: req.user?.role });
 
     // 4. Formulate AI Message
     const aiMsg = {
@@ -450,7 +400,7 @@ export async function deleteChatSessionController(req: FastifyRequest, reply: Fa
   }
 }
 
-// Legacy Endpoint for Backward Compatibility
+// Direct Single-Turn Patient Health Assistant Query (Used by EHR Timeline)
 export async function queryHealthAssistantController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { patientId, query, patientRecordSummary, chatHistory } = req.body as {
@@ -474,8 +424,11 @@ export async function queryHealthAssistantController(req: FastifyRequest, reply:
     });
 
     return reply.code(200).send(successResponse(response));
-  } catch (err) {
+  } catch (err: any) {
     console.error("queryHealthAssistantController error:", err);
+    if (err instanceof AIServiceUnavailableError) {
+      return reply.code(503).send(errorResponse(err.message));
+    }
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

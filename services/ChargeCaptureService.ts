@@ -199,3 +199,139 @@ export async function autoGenerateEncounterInvoice(encounterId: string, createdB
 
   return invoice;
 }
+
+export async function compileAppointmentCharges(appointmentId: string): Promise<{
+  appointment: any;
+  items: CapturedChargeItem[];
+  subtotal: number;
+  cgstTotal: number;
+  sgstTotal: number;
+  igstTotal: number;
+  totalAmount: number;
+  existingInvoice: any;
+}> {
+  const { Appointment } = await import("../models/Appointment.ts");
+
+  const appointment = await Appointment.findById(appointmentId)
+    .populate({ path: "patientId", populate: { path: "userId", select: "name phone email" } })
+    .populate("doctorId", "name specialization")
+    .populate("clinicId", "name address phone gstin")
+    .populate("invoiceId");
+
+  if (!appointment) {
+    throw new Error("Appointment not found");
+  }
+
+  const items: CapturedChargeItem[] = [];
+  const existingInvoice = appointment.invoiceId as any;
+
+  // 1. Doctor Consultation Fee
+  const assignment = await DoctorAssignment.findOne({
+    doctorId: appointment.doctorId,
+    clinicId: appointment.clinicId,
+    isActive: true,
+  });
+  const consultFee = assignment?.fees || appointment.paymentAmount || 500;
+  const docName = (appointment.doctorId as any)?.name || "Consultant";
+
+  items.push({
+    description: `Physician Consultation - Dr. ${docName}`,
+    amount: consultFee,
+    quantity: 1,
+    hsnSacCode: "999312",
+    gstRate: 0,
+    category: "consultation",
+  });
+
+  // 2. Lab Orders
+  const encounter = await Encounter.findOne({ appointmentId: appointment._id });
+  const labQuery: any = {
+    $or: [
+      { appointmentId: appointment._id },
+      ...(encounter ? [{ encounterId: encounter._id }] : []),
+    ],
+  };
+
+  const labOrders = await LabOrder.find(labQuery).populate("testId");
+  for (const order of labOrders) {
+    const test = order.testId as any;
+    if (test) {
+      items.push({
+        description: `Lab Test: ${test.name || "Diagnostic Test"}`,
+        amount: test.price || 0,
+        quantity: 1,
+        hsnSacCode: "999316",
+        gstRate: 0,
+        category: "lab_test",
+      });
+    }
+  }
+
+  // 3. Pharmacy Prescriptions
+  const addedRxNames = new Set<string>();
+
+  if (encounter) {
+    const prescriptions = await Prescription.find({ encounterId: encounter._id }).populate("medicineId");
+    for (const rx of prescriptions) {
+      const med = rx.medicineId as any;
+      const name = med?.name || rx.medicineName;
+      addedRxNames.add(name.toLowerCase());
+      items.push({
+        description: `Pharmacy: ${name} (${rx.dosage})`,
+        amount: med?.price || 60,
+        quantity: 1,
+        hsnSacCode: med?.hsnCode || "3004",
+        gstRate: med?.gstRate || 5,
+        category: "pharmacy",
+      });
+    }
+  }
+
+  // Also include prescriptions stored directly on Appointment document
+  if (Array.isArray(appointment.prescriptions)) {
+    for (const p of appointment.prescriptions) {
+      if (p.name && !addedRxNames.has(p.name.toLowerCase())) {
+        addedRxNames.add(p.name.toLowerCase());
+        items.push({
+          description: `Pharmacy: ${p.name} (${p.dosage})`,
+          amount: 60,
+          quantity: 1,
+          hsnSacCode: "3004",
+          gstRate: 5,
+          category: "pharmacy",
+        });
+      }
+    }
+  }
+
+  // Calculate GST & Totals
+  let subtotal = 0;
+  let cgstTotal = 0;
+  let sgstTotal = 0;
+  let igstTotal = 0;
+
+  for (const item of items) {
+    const lineBase = item.amount * item.quantity;
+    subtotal += lineBase;
+    if (item.gstRate > 0) {
+      const cgst = Number((lineBase * (item.gstRate / 200)).toFixed(2));
+      const sgst = Number((lineBase * (item.gstRate / 200)).toFixed(2));
+      cgstTotal += cgst;
+      sgstTotal += sgst;
+    }
+  }
+
+  const taxTotal = cgstTotal + sgstTotal + igstTotal;
+  const totalAmount = Number((subtotal + taxTotal).toFixed(2));
+
+  return {
+    appointment,
+    items,
+    subtotal,
+    cgstTotal,
+    sgstTotal,
+    igstTotal,
+    totalAmount,
+    existingInvoice,
+  };
+}

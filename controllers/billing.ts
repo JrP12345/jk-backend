@@ -122,7 +122,7 @@ export async function verifyPaymentController(req: FastifyRequest, reply: Fastif
 export async function razorpayWebhookController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const signature = req.headers["x-razorpay-signature"] as string;
-    const rawBody = typeof req.body === "string" ? req.body : JSON.stringify(req.body);
+    const rawBody = (req as any).rawBody || (typeof req.body === "string" ? req.body : JSON.stringify(req.body));
 
     const result = await subscriptionService.processRazorpayWebhook(rawBody, signature || "", req.body);
     return reply.code(200).send(result);
@@ -209,30 +209,15 @@ export async function adminUpsertPlan(req: FastifyRequest, reply: FastifyReply) 
  */
 export async function adminGetSubscriptions(req: FastifyRequest, reply: FastifyReply) {
   try {
-    // 1. Fetch all active organizations
-    const orgs = await Organization.find({}).lean();
-    const validOrgIds = orgs.map((o: any) => o._id);
-
-    // 2. Ensure every existing organization has a valid Subscription record initialized
-    for (const org of orgs) {
-      await subscriptionService.getOrInitializeSubscription(org._id.toString());
-    }
-
-    // 3. Purge any orphan subscriptions belonging to deleted organizations
-    if (validOrgIds.length > 0) {
-      await Subscription.deleteMany({ organizationId: { $nin: validOrgIds } });
-    } else {
-      await Subscription.deleteMany({});
-    }
-
-    // 4. Return all valid subscriptions populated with organization & plan data
-    const subscriptions = await Subscription.find({ organizationId: { $in: validOrgIds } })
+    const subscriptions = await Subscription.find({})
       .populate("organizationId", "name city email plan")
       .populate("planId")
       .sort({ createdAt: -1 })
       .lean();
 
-    const formatted = subscriptions.map((s: any) => ({ ...s, id: s._id.toString() }));
+    // Only return subscriptions with an active/existing organization
+    const validSubscriptions = subscriptions.filter((s: any) => s.organizationId);
+    const formatted = validSubscriptions.map((s: any) => ({ ...s, id: s._id.toString() }));
     return reply.code(200).send(successResponse(formatted));
   } catch (err: any) {
     return reply.code(500).send(errorResponse("Failed to fetch admin subscriptions", err.message));

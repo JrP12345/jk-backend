@@ -5,6 +5,7 @@ import {
   createAppointmentPaymentOrder,
   verifyAppointmentPayment,
   selectPayAtClinic,
+  collectCounterPayment,
 } from "../controllers/appointmentPayment.ts";
 
 export default async function appointmentPaymentRoutes(app: FastifyInstance) {
@@ -13,10 +14,11 @@ export default async function appointmentPaymentRoutes(app: FastifyInstance) {
       authenticate,
       requireModule("appointments"),
       checkAnyPermissionOrRoles(
-        ["patient", "family_member"],
+        ["patient", "family_member", "admin", "staff", "receptionist", "doctor", "guest"],
         "MANAGE_BILLING",
         "MANAGE_APPOINTMENTS",
-        "VIEW_APPOINTMENTS"
+        "VIEW_APPOINTMENTS",
+        "MANAGE_QUEUE"
       ),
     ],
   };
@@ -24,4 +26,5 @@ export default async function appointmentPaymentRoutes(app: FastifyInstance) {
   app.post("/api/appointment-payments/create-order", paymentAccess, createAppointmentPaymentOrder);
   app.post("/api/appointment-payments/verify", paymentAccess, verifyAppointmentPayment);
   app.post("/api/appointment-payments/pay-at-clinic", paymentAccess, selectPayAtClinic);
+  app.post("/api/appointment-payments/collect-counter", paymentAccess, collectCounterPayment);
 }

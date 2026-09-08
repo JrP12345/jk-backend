@@ -161,45 +161,49 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
         { code: "RR", name: "Respiratory Rate", value: vitals.respiratoryRate, unit: "bpm", range: "12-20" },
       ];
 
-      for (const v of vitalCodes) {
-        if (v.value !== null && v.value !== undefined && v.value !== "") {
-          const obs = await Observation.create({
-            organizationId: orgId,
-            clinicId: effectiveClinicId,
-            encounterId,
-            patientId,
-            recordedBy: userId,
-            code: v.code,
-            name: v.name,
-            value: String(v.value),
-            unit: v.unit,
-            referenceRange: v.range,
-          });
-          observationIds.push(obs._id as mongoose.Types.ObjectId);
-        }
+      const obsToInsert = vitalCodes
+        .filter((v) => v.value !== null && v.value !== undefined && v.value !== "")
+        .map((v) => ({
+          organizationId: orgId,
+          clinicId: effectiveClinicId,
+          encounterId,
+          patientId,
+          recordedBy: userId,
+          code: v.code,
+          name: v.name,
+          value: String(v.value),
+          unit: v.unit,
+          referenceRange: v.range,
+        }));
+
+      if (obsToInsert.length > 0) {
+        const createdObs = await Observation.insertMany(obsToInsert);
+        observationIds.push(...createdObs.map((obs) => obs._id as mongoose.Types.ObjectId));
       }
     }
 
     // 2. Record Catalog Prescriptions
     const prescriptionIds: mongoose.Types.ObjectId[] = [];
     if (Array.isArray(prescriptions)) {
-      for (const rx of prescriptions) {
-        if (rx.name && rx.dosage && rx.duration) {
-          const rxDoc = await Prescription.create({
-            organizationId: orgId,
-            clinicId: effectiveClinicId,
-            encounterId,
-            patientId,
-            doctorId: userId,
-            medicineId: rx.medicineId || null,
-            medicineName: rx.name,
-            dosage: rx.dosage,
-            frequency: rx.frequency || "1-0-1",
-            duration: rx.duration,
-            instructions: rx.instructions || "",
-          });
-          prescriptionIds.push(rxDoc._id as mongoose.Types.ObjectId);
-        }
+      const rxToInsert = prescriptions
+        .filter((rx: any) => rx.name && rx.dosage && rx.duration)
+        .map((rx: any) => ({
+          organizationId: orgId,
+          clinicId: effectiveClinicId,
+          encounterId,
+          patientId,
+          doctorId: userId,
+          medicineId: rx.medicineId || null,
+          medicineName: rx.name,
+          dosage: rx.dosage,
+          frequency: rx.frequency || "1-0-1",
+          duration: rx.duration,
+          instructions: rx.instructions || "",
+        }));
+
+      if (rxToInsert.length > 0) {
+        const createdRx = await Prescription.insertMany(rxToInsert);
+        prescriptionIds.push(...createdRx.map((rx) => rx._id as mongoose.Types.ObjectId));
       }
     }
 
@@ -282,6 +286,24 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
     if (updatedEncounter?.appointmentId) {
       const { Appointment } = await import("../models/Appointment.ts");
       await Appointment.findByIdAndUpdate(updatedEncounter.appointmentId, { status: "completed" });
+      const { sendConsultationCompletedNotification } = await import("../utilities/notifications.ts");
+      sendConsultationCompletedNotification(updatedEncounter.appointmentId).catch((err) =>
+        console.error("sendConsultationCompletedNotification on note sign failed:", err)
+      );
+
+      const clinicIdStr = note.clinicId?.toString();
+      if (clinicIdStr) {
+        const { broadcastQueueUpdate } = await import("../notifications/websocket.ts");
+        broadcastQueueUpdate(clinicIdStr, {
+          type: "QUEUE_UPDATED",
+          data: {
+            appointmentId: updatedEncounter.appointmentId.toString(),
+            status: "completed",
+            clinicId: clinicIdStr,
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
     }
 
     if (updatedEncounter) {
@@ -413,21 +435,27 @@ export async function getClinicalNoteHistoryController(req: FastifyRequest, repl
     let orgId = await resolveTargetOrganizationId(req);
 
     if (!mongoose.Types.ObjectId.isValid(id)) return reply.code(400).send(errorResponse("Invalid patient ID"));
-    const patient = await Patient.findById(id).lean() as any;
+    const patient = (await Patient.findOne({
+      $or: [{ _id: id }, { userId: id }],
+    }).lean()) as any;
     if (!patient) return reply.code(404).send(errorResponse("Patient not found"));
-    if (req.user?.role === "patient" && patient.userId.toString() !== req.user.id) {
+    if (req.user?.role === "patient" && patient.userId?.toString() !== req.user.id) {
       return reply.code(404).send(errorResponse("Patient not found"));
     }
-    if (!orgId && patient.organizationId) {
-      orgId = patient.organizationId.toString();
+    if (req.user?.role !== "patient" && req.user?.role !== "family_member" && req.user?.role !== "root") {
+      if (!orgId && patient.organizationId) {
+        orgId = patient.organizationId.toString();
+      }
+      if (patient.organizationId && orgId && patient.organizationId.toString() !== orgId) {
+        return reply.code(404).send(errorResponse("Patient not found"));
+      }
+      if (!orgId) {
+        return reply.code(403).send(errorResponse("Organization context required"));
+      }
     }
-    if (patient.organizationId && orgId && patient.organizationId.toString() !== orgId && req.user?.role !== "root") {
-      return reply.code(404).send(errorResponse("Patient not found"));
-    }
-    if (!orgId) return reply.code(403).send(errorResponse("Organization context required"));
 
-    const query: any = { patientId: id };
-    if (orgId && req.user?.role !== "root") {
+    const query: any = { patientId: patient._id };
+    if (orgId && req.user?.role !== "root" && req.user?.role !== "patient" && req.user?.role !== "family_member") {
       query.organizationId = orgId;
     }
 

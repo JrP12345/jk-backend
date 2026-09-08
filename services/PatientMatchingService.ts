@@ -25,7 +25,7 @@ export class PatientMatchingService {
     const mediumConfidence: any[] = [];
     const lowConfidence: any[] = [];
 
-    const normPhone = this.normalizePhone(criteria.phone || "");
+    const normPhone = normalizePhone(criteria.phone || "");
     const normName = criteria.name ? criteria.name.trim().toLowerCase() : "";
     const normEmail = criteria.email ? criteria.email.trim().toLowerCase() : "";
     const dobStr = criteria.dob ? new Date(criteria.dob).toISOString().split("T")[0] : "";
@@ -56,7 +56,7 @@ export class PatientMatchingService {
       orConditions.push({ name: { $regex: escapeRegex(normName), $options: "i" } });
     }
 
-    // Also check linked User records for legacy matches
+    // Also resolve matches against linked User account records
     if (normPhone || normEmail || normName) {
       const userOrConditions: any[] = [];
       if (normPhone) userOrConditions.push({ phone: { $regex: normPhone } });
@@ -92,7 +92,7 @@ export class PatientMatchingService {
       seenIds.add(idStr);
 
       const user = (c as any).userId;
-      const cPhone = this.normalizePhone(c.phone || user?.phone || "");
+      const cPhone = normalizePhone(c.phone || user?.phone || "");
       const cName = (c.name || user?.name || "").trim().toLowerCase();
       const cEmail = (c.email || user?.email || "").trim().toLowerCase();
       const cDob = c.dob ? new Date(c.dob).toISOString().split("T")[0] : "";
@@ -135,9 +135,6 @@ export class PatientMatchingService {
     return { highConfidence, mediumConfidence, lowConfidence };
   }
 
-  normalizePhone(phone: string): string {
-    return normalizePhone(phone);
-  }
 }
 
 export const patientMatchingService = new PatientMatchingService();

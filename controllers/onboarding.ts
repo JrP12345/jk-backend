@@ -41,145 +41,32 @@ import { EVENT_TYPES } from "../events/types.ts";
 import { encrypt, decrypt } from "../utilities/encryption.ts";
 import { seedModulesForOrg } from "./moduleRegistry.ts";
 import { subscriptionService } from "../services/billing/SubscriptionService.ts";
+import { getFrontendBaseUrl } from "../utilities/config.ts";
+import {
+  ADMIN_PERMISSIONS,
+  DOCTOR_PERMISSIONS,
+  RECEPTIONIST_PERMISSIONS,
+  NURSE_PERMISSIONS,
+  LAB_TECH_PERMISSIONS,
+  PHARMACIST_PERMISSIONS,
+  CASHIER_PERMISSIONS,
+  CLINIC_MANAGER_PERMISSIONS,
+  PATIENT_PERMISSIONS,
+  FAMILY_MEMBER_PERMISSIONS,
+} from "../utilities/permissions.ts";
 
-/**
- * Full set of permission codes granted to the built-in "admin" system role.
- * This is the exhaustive list of all permission tokens currently checked by
- * checkPermission() across all route handlers.
- */
-export const ADMIN_PERMISSIONS = [
-  // Staff management
-  "MANAGE_STAFF",
-  "VIEW_STAFF",
-  // Clinic management
-  "MANAGE_CLINICS",
-  "VIEW_CLINICS",
-  // Organization settings
-  "MANAGE_ORGANIZATION",
-  // Beds & admissions
-  "MANAGE_BEDS",
-  "MANAGE_ADMISSIONS",
-  "VIEW_ADMISSIONS",
-  // Medicines & pharmacy
-  "MANAGE_MEDICINES",
-  // Laboratory & diagnostics
-  "MANAGE_LAB_TESTS",
-  // Billing
-  "MANAGE_BILLING",
-  "VIEW_BILLING",
-  // Appointments
-  "MANAGE_APPOINTMENTS",
-  "VIEW_APPOINTMENTS",
-  // Analytics
-  "VIEW_ANALYTICS",
-  // Queue
-  "MANAGE_QUEUE",
-  // EHR & Medical Records
-  "VIEW_EHR",
-  "MANAGE_EHR",
-  "MANAGE_CLINICAL_NOTES",
-  // Medication Administration (distinct from note authoring)
-  "ADMINISTER_MEDICATION",
-  // Diagnostic Orders & Results
-  "MANAGE_ORDERS",
-  // Discharge Summary & Encounter Closure
-  "MANAGE_DISCHARGE_SUMMARY",
-  // Clinical Search & Analytics
-  "VIEW_ANALYTICS",
-];
-
-export const DOCTOR_PERMISSIONS = [
-  "VIEW_CLINICS",
-  "VIEW_PATIENTS",
-  "VIEW_APPOINTMENTS",
-  "MANAGE_APPOINTMENTS",
-  "MANAGE_QUEUE",
-  "VIEW_EHR",
-  "MANAGE_EHR",
-  "MANAGE_CLINICAL_NOTES",
-  "ADMINISTER_MEDICATION",
-  "MANAGE_ORDERS",
-  "MANAGE_DISCHARGE_SUMMARY",
-  "VIEW_ADMISSIONS",
-  "MANAGE_ADMISSIONS",
-  "VIEW_ANALYTICS",
-];
-
-export const RECEPTIONIST_PERMISSIONS = [
-  "VIEW_STAFF",
-  "VIEW_CLINICS",
-  "VIEW_PATIENTS",
-  "MANAGE_PATIENTS",
-  "MANAGE_APPOINTMENTS",
-  "VIEW_APPOINTMENTS",
-  "MANAGE_QUEUE",
-  "VIEW_BILLING",
-  "MANAGE_BILLING",
-  "VIEW_ADMISSIONS",
-  "MANAGE_ADMISSIONS",
-  "MANAGE_BEDS",
-];
-
-export const NURSE_PERMISSIONS = [
-  "VIEW_STAFF",
-  "VIEW_CLINICS",
-  "VIEW_APPOINTMENTS",
-  "MANAGE_QUEUE",
-  "VIEW_EHR",
-  "MANAGE_EHR",
-  "ADMINISTER_MEDICATION",
-  "VIEW_ADMISSIONS",
-  "MANAGE_BEDS",
-];
-
-export const LAB_TECH_PERMISSIONS = [
-  "VIEW_STAFF",
-  "VIEW_CLINICS",
-  "VIEW_EHR",
-  "MANAGE_LAB_TESTS",
-  "MANAGE_ORDERS",
-];
-
-export const PHARMACIST_PERMISSIONS = [
-  "VIEW_STAFF",
-  "VIEW_CLINICS",
-  "VIEW_PATIENTS",
-  "VIEW_EHR",
-  "MANAGE_MEDICINES",
-];
-
-export const CASHIER_PERMISSIONS = [
-  "VIEW_STAFF",
-  "VIEW_CLINICS",
-  "VIEW_PATIENTS",
-  "VIEW_BILLING",
-  "MANAGE_BILLING",
-];
-
-export const CLINIC_MANAGER_PERMISSIONS = [
-  "VIEW_PATIENTS",
-  "MANAGE_PATIENTS",
-  "VIEW_APPOINTMENTS",
-  "MANAGE_APPOINTMENTS",
-  "MANAGE_QUEUE",
-  "VIEW_CLINICS",
-  "VIEW_BILLING",
-  "MANAGE_BILLING",
-  "MANAGE_MEDICINES",
-  "VIEW_EHR",
-];
-
-export const PATIENT_PERMISSIONS = [
-  "VIEW_APPOINTMENTS",
-  "VIEW_EHR",
-  "VIEW_BILLING",
-];
-
-export const FAMILY_MEMBER_PERMISSIONS = [
-  "VIEW_APPOINTMENTS",
-  "VIEW_EHR",
-  "VIEW_BILLING",
-];
+export {
+  ADMIN_PERMISSIONS,
+  DOCTOR_PERMISSIONS,
+  RECEPTIONIST_PERMISSIONS,
+  NURSE_PERMISSIONS,
+  LAB_TECH_PERMISSIONS,
+  PHARMACIST_PERMISSIONS,
+  CASHIER_PERMISSIONS,
+  CLINIC_MANAGER_PERMISSIONS,
+  PATIENT_PERMISSIONS,
+  FAMILY_MEMBER_PERMISSIONS,
+};
 
 /**
  * Upsert all built-in system role documents into the Role collection.
@@ -468,7 +355,7 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
       });
 
       if (sendWelcomeEmail !== false && admin_email && admin_password) {
-        const portalUrl = `${process.env.CORS_ALLOWED_ORIGINS || "http://localhost:3000"}/login`;
+        const portalUrl = `${getFrontendBaseUrl()}/login`;
         emailProvider.sendEmail({
           to: admin_email.trim().toLowerCase(),
           subject: `Welcome to ANANT - ${org_name} Workspace Provisioned`,
@@ -1000,7 +887,7 @@ export async function inviteStaff(req: FastifyRequest, reply: FastifyReply) {
       expiresAt,
     });
 
-    const inviteUrl = `${process.env.CORS_ALLOWED_ORIGINS || "http://localhost:3000"}/accept-invite?token=${rawToken}`;
+    const inviteUrl = `${getFrontendBaseUrl()}/accept-invite?token=${rawToken}`;
     const sent = await emailProvider.sendEmail({
       to: email,
       subject: "Invitation to join ANANT Healthcare Platform",
@@ -1490,7 +1377,7 @@ export async function setupOnboardingTOTP(req: FastifyRequest, reply: FastifyRep
         {
           secret: base32,
           expiresAt,
-          devOtp: process.env.NODE_ENV !== "production" ? "123456" : undefined,
+          devOtp: process.env.NODE_ENV === "development" ? "123456" : undefined,
         },
         "Google Authenticator 2FA setup initialized"
       )

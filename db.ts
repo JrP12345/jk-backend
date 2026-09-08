@@ -7,13 +7,15 @@ const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/jk_hea
 
 export const connectDB = async () => {
   try {
+    const maxPoolSize = Number(process.env.MONGODB_MAX_POOL_SIZE) || 50;
+    const minPoolSize = Number(process.env.MONGODB_MIN_POOL_SIZE) || 10;
     await mongoose.connect(MONGODB_URI, {
-      maxPoolSize: Number(process.env.MONGODB_MAX_POOL_SIZE) || 25,
-      minPoolSize: Number(process.env.MONGODB_MIN_POOL_SIZE) || 5,
+      maxPoolSize,
+      minPoolSize,
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
     });
-    console.log("Connected to MongoDB with connection pool (min: 5, max: 25)");
+    console.log(`Connected to MongoDB with connection pool (min: ${minPoolSize}, max: ${maxPoolSize})`);
   } catch (err) {
     console.error("MongoDB connection error:", err);
     throw err;

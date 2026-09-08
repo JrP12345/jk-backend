@@ -18,6 +18,7 @@ const SaaSPlanSchema = new Schema({
     maxPatients: { type: Number, default: 500 },
     maxAppointments: { type: Number, default: 1000 },
     maxStorageMB: { type: Number, default: 1024 },
+    maxMonthlyWhatsApp: { type: Number, default: 500 },
   },
   features: {
     analytics: { type: Boolean, default: false },
@@ -26,6 +27,7 @@ const SaaSPlanSchema = new Schema({
     dataExport: { type: Boolean, default: false },
     apiAccess: { type: Boolean, default: false },
     aiFeatures: { type: Boolean, default: false },
+    whatsappIntegration: { type: Boolean, default: true },
   },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }

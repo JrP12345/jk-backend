@@ -2,6 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { Role } from "../models/Role.ts";
 import { User } from "../models/User.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
+import { invalidateRoleCache } from "../utilities/permissions.ts";
 
 // Standard System Permissions Catalog with Human-Readable Labels & Categories
 export const SYSTEM_PERMISSIONS_CATALOG = [
@@ -12,7 +13,7 @@ export const SYSTEM_PERMISSIONS_CATALOG = [
   { code: "EVALUATE_NEWS2", name: "Record Vitals & NEWS2", category: "Clinical Care", description: "Record vitals signs and calculate early warning scores" },
   { code: "ORDER_LABS", name: "Order Laboratory Tests", category: "Diagnostics", description: "Order pathology and diagnostic laboratory panels" },
   { code: "RECORD_LAB_RESULTS", name: "Enter Lab Results", category: "Diagnostics", description: "Enter and verify laboratory test results" },
-  // Compatibility codes already used by the encounter-order and legacy route guards.
+  // Standard codes mapped to encounter orders and route guards.
   { code: "MANAGE_ORDERS", name: "Manage Diagnostic Orders", category: "Diagnostics", description: "Place, process, result, and cancel diagnostic orders" },
   { code: "MANAGE_LAB_TESTS", name: "Manage Laboratory Catalog", category: "Diagnostics", description: "Manage the laboratory test catalog" },
   { code: "ADMINISTER_MEDICATIONS", name: "Administer MAR Medications", category: "Inpatient & Nursing", description: "Record medication administration on MAR flowsheets" },
@@ -229,6 +230,7 @@ export async function updateRolePermissions(req: FastifyRequest, reply: FastifyR
       await role.save();
     }
 
+    invalidateRoleCache(name);
     return reply.code(200).send(successResponse(role, `Permissions updated for role '${name}'`));
   } catch (err) {
     console.error("updateRolePermissions error:", err);
@@ -255,6 +257,7 @@ export async function deleteRole(req: FastifyRequest, reply: FastifyReply) {
     }
 
     await Role.deleteOne({ _id: role._id });
+    invalidateRoleCache(name);
     return reply.code(200).send(successResponse(null, `Role '${name}' deleted successfully`));
   } catch (err) {
     console.error("deleteRole error:", err);

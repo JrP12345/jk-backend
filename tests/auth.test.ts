@@ -6,7 +6,7 @@ import { RefreshToken } from "../models/RefreshToken.ts";
 
 describe("Auth API Integration Tests", () => {
   const patientEmail = "testpatient@healthos.com";
-  const password = "Password123";
+  const password = "Password123!";
 
   it("should fail self-registration with missing fields", async () => {
     const response = await app.inject({

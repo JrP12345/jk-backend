@@ -16,6 +16,7 @@ import {
   resetPassword,
   getActiveSessions,
   revokeSession,
+  googleLoginController,
 } from "../controllers/auth.ts";
 import { loginSchema, registerPatientSchema } from "../schemas/auth.ts";
 import { getJwks } from "../utilities/keys.ts";
@@ -27,6 +28,16 @@ export default async function authRoutes(app: FastifyInstance) {
   app.get("/.well-known/jwks.json", async (req, reply) => {
     return reply.code(200).send(getJwks());
   });
+
+  // POST /api/auth/google — Direct Google Identity & OAuth2 Sign-In
+  app.post("/api/auth/google", {
+    config: {
+      rateLimit: {
+        max: isTest ? 1000 : 10,
+        timeWindow: "1 minute"
+      }
+    }
+  }, googleLoginController);
 
   // Direct Guest / Passwordless Login without OTP
   app.post("/api/auth/guest", {
@@ -119,6 +130,7 @@ export default async function authRoutes(app: FastifyInstance) {
 
   // POST /api/auth/refresh      — Exchange refreshToken for a new accessToken
   app.post("/api/auth/refresh", refreshAccessToken);
+  app.post("/api/auth/refresh-token", refreshAccessToken);
 
   // POST /api/auth/logout       — Revoke all refresh tokens (and unconditionally clear cookies)
   app.post("/api/auth/logout", logout);

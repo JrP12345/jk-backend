@@ -41,8 +41,6 @@ export class TwoFactorService {
       window: 6, // Allow 3 minutes time drift margin for phone clock mismatch
     });
 
-    if (isValidSpeakeasy) return true;
-
-    return false;
+    return isValidSpeakeasy;
   }
 }

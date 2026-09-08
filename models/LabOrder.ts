@@ -19,6 +19,7 @@ const LabOrderSchema = new Schema({
   // ─── Encounter Aggregate Root Linkage ──────────────────────────
   // Optional for backward compatibility with pre-v1.6 orders
   encounterId: { type: Schema.Types.ObjectId, ref: "Encounter", index: true, default: null },
+  appointmentId: { type: Schema.Types.ObjectId, ref: "Appointment", index: true, default: null },
 
   // ─── Clinical Context ──────────────────────────────────────────
   patientId:      { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
@@ -32,7 +33,7 @@ const LabOrderSchema = new Schema({
   resultedBy:  { type: Schema.Types.ObjectId, ref: "User", default: null },
   verifiedBy:  { type: Schema.Types.ObjectId, ref: "User", default: null }, // reserved for two-step verification
 
-  // Legacy field — kept for backward compatibility
+  // Primary Ordering Physician reference
   doctorId: { type: Schema.Types.ObjectId, ref: "User", index: true },
 
   // ─── Lifecycle Status ──────────────────────────────────────────
@@ -48,7 +49,7 @@ const LabOrderSchema = new Schema({
   sampleCollectedAt:  { type: Date, default: null },
   processingStartedAt:{ type: Date, default: null },
   resultedAt:         { type: Date, default: null },
-  completedDate:      { type: Date, default: null }, // legacy alias for resultedAt
+  completedDate:      { type: Date, default: null }, // alias for resultedAt
 
   // ─── Structured Result (replaces plain resultValue string) ─────
   // Prepared for future result versioning (corrected reports).
@@ -66,7 +67,7 @@ const LabOrderSchema = new Schema({
     attachmentUrl: { type: String, default: "" },
   },
 
-  // Legacy flat fields — preserved for backward compatibility
+  // Flat text result representations
   resultValue:   { type: String, default: "" },
   resultNotes:   { type: String, default: "" },
   attachmentUrl: { type: String, default: "" },
@@ -77,6 +78,8 @@ const LabOrderSchema = new Schema({
 
   createdAt: { type: Date, default: Date.now },
 }, { timestamps: true });
+
+LabOrderSchema.index({ appointmentId: 1, status: 1 });
 
 LabOrderSchema.virtual("id").get(function() {
   return this._id.toHexString();

@@ -42,4 +42,25 @@ describe("Work Package B: Enterprise AIGateway & Inbound/Outbound Pipelines", ()
     expect(response.text).toBeDefined();
     expect(response.provider).toBeDefined();
   });
+
+  it("should execute streaming request yielding incremental token chunks", async () => {
+    const req: AIRequest = {
+      correlationId: `corr_stream_${Date.now()}`,
+      organizationId: "org_stream_test",
+      sessionId: "sess_stream",
+      requestId: "req_stream",
+      userId: "usr_stream",
+      modelAlias: "CLINICAL_FAST",
+      prompt: "What is hypertension?"
+    };
+
+    const receivedChunks: string[] = [];
+    const response = await aiGateway.executeStream(req, (chunk) => {
+      receivedChunks.push(chunk);
+    });
+
+    expect(response.correlationId).toBe(req.correlationId);
+    expect(receivedChunks.length).toBeGreaterThan(0);
+    expect(response.text.length).toBeGreaterThan(0);
+  });
 });

@@ -1,5 +1,6 @@
 import { EventEmitter } from "events";
 import type { DomainEventPayload } from "./types.ts";
+import { domainEventBus } from "../platform/events/DomainEventBus.ts";
 
 class TypedEventBus extends EventEmitter {
   constructor() {
@@ -11,6 +12,13 @@ class TypedEventBus extends EventEmitter {
     setImmediate(() => {
       this.emit("notification_event", event);
       this.emit(event.eventType, event);
+
+      // Unified bridge: Propagate to platform DomainEventBus
+      try {
+        domainEventBus.publishEvent(event.eventType, event).catch(() => {});
+      } catch {
+        // Safe fallback
+      }
     });
   }
 

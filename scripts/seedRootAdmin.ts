@@ -10,6 +10,11 @@ import { OnboardingDraft } from "../models/OnboardingDraft.ts";
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/ananta_health";
 
 async function seedDatabase() {
+  if (process.env.NODE_ENV === "production") {
+    console.error("FATAL: Destructive database seed scripts cannot be executed in production!");
+    process.exit(1);
+  }
+
   console.log("==========================================================");
   console.log("[ANANTA DB SEED] Cleaning MongoDB and seeding Root Admin...");
   console.log("==========================================================");

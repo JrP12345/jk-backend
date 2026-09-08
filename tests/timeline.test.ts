@@ -35,7 +35,11 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
     orgId = JSON.parse(orgRes.body).data.organization.id;
 
     // Enable all modules for the test organization so Lab & Admission timeline providers run
-    await ModuleRegistry.updateMany({ organizationId: orgId }, { $set: { enabled: true } });
+    await ModuleRegistry.findOneAndUpdate(
+      { organizationId: orgId, moduleKey: "laboratory" },
+      { $set: { enabled: true } },
+      { upsert: true }
+    );
 
     // 2. Create Clinic
     const clinicRes = await app.inject({
@@ -104,6 +108,7 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
 
     // 5. Seed OPD Appointment with Diagnosis & Prescriptions
     await Appointment.create({
+      organizationId: orgId,
       clinicId,
       doctorId: doctorUserId,
       patientId,
@@ -118,6 +123,7 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
 
     // 6. Seed Lab Test & Lab Order
     const labTest = await LabTest.create({
+      organizationId: orgId,
       clinicId,
       name: "ECG Standard 12-Lead",
       code: "ECG12-TEST",
@@ -128,6 +134,7 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
     });
 
     await LabOrder.create({
+      organizationId: orgId,
       clinicId,
       patientId,
       doctorId: doctorUserId,
@@ -140,6 +147,7 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
 
     // 7. Seed Invoice
     await Invoice.create({
+      organizationId: orgId,
       invoiceNumber: "INV-EHR-001",
       clinicId,
       patientId,

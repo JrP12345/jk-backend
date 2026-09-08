@@ -279,6 +279,7 @@ describe("Clinic Essentials Cycle 2 — Encounter Billing Tenant Isolation", () 
         doctorId: docAId,
         appointmentTime: new Date().toISOString(),
         appointmentType: "walk-in",
+        forceBooking: true,
         patientDetails: {
           name: "Enc Patient A",
           dob: "1990-01-01",

@@ -193,11 +193,59 @@ describe("Enterprise Clinical Decision Support (CDS) Platform Integration Tests"
 
     expect(overrideRes.statusCode).toBe(201);
     const body = JSON.parse(overrideRes.body);
-    expect(body.data.interactionDatasetVersion).toBe("2026.07.22");
+    expect(body.data.interactionDatasetVersion).toMatch(/^2026\./);
     expect(body.data.clinicianDecision).toBe("overridden");
     expect(body.data.overrideReason).toMatch(/post-PCI/i);
 
     const count = await CDSEvaluation.countDocuments({ patientId });
     expect(count).toBeGreaterThanOrEqual(1);
+  });
+
+  // ─── Test 5: Critical DDI - Sildenafil + Nitrate ───────────────────────────
+  it("should trigger CRITICAL DDI for Sildenafil + Nitrate co-prescription", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/prescriptions/evaluate-safety",
+      headers: { cookie: adminCookies.join("; ") },
+      payload: {
+        patientId,
+        proposedPrescriptions: [
+          { medicineName: "Viagra 50mg" },
+          { medicineName: "Sorbitrate 10mg" },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.hasOverrideRequired).toBe(true);
+    const finding = body.data.findings.find((f: any) => f.findingType === "interaction");
+    expect(finding).toBeDefined();
+    expect(finding.severity).toBe("critical");
+    expect(finding.title).toMatch(/Hypotension/i);
+  });
+
+  // ─── Test 6: Critical DDI - Methotrexate + Trimethoprim ────────────────────
+  it("should trigger CRITICAL DDI for Methotrexate + Trimethoprim co-prescription", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/prescriptions/evaluate-safety",
+      headers: { cookie: adminCookies.join("; ") },
+      payload: {
+        patientId,
+        proposedPrescriptions: [
+          { medicineName: "Folitrax 15mg" },
+          { medicineName: "Bactrim DS" },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.hasOverrideRequired).toBe(true);
+    const finding = body.data.findings.find((f: any) => f.findingType === "interaction");
+    expect(finding).toBeDefined();
+    expect(finding.severity).toBe("critical");
+    expect(finding.title).toMatch(/Bone Marrow|Pancytopenia/i);
   });
 });

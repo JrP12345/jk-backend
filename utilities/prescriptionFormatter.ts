@@ -20,7 +20,17 @@ export interface PrintPrescriptionData {
     duration: string;
     instructions?: string;
   }>;
+  investigations?: Array<{
+    testName: string;
+    value: string;
+    unit?: string;
+    isAbnormal?: boolean;
+  }>;
+  doctorAdvice?: string;
+  followUpDate?: string;
+  followUpInstructions?: string;
   doctorSignatureUrl?: string;
+  autoPrint?: boolean;
 }
 
 export function generatePrintablePrescriptionHtml(data: PrintPrescriptionData): string {
@@ -100,15 +110,48 @@ export function generatePrintablePrescriptionHtml(data: PrintPrescriptionData): 
     </tbody>
   </table>
 
+  ${data.investigations && data.investigations.length > 0 ? `
+  <div style="margin-top: 16px; margin-bottom: 16px; padding: 12px; background: #faf5ff; border: 1px solid #e9d5ff; border-radius: 6px;">
+    <strong style="color: #6b21a8; font-size: 13px;">Diagnostic Investigations & Findings:</strong>
+    <div style="margin-top: 6px; font-size: 12px; display: flex; flex-direction: column; gap: 4px;">
+      ${data.investigations.map(inv => `
+        <div>
+          <strong>${inv.testName}:</strong> ${inv.value} ${inv.unit || ""}
+          ${inv.isAbnormal ? `<span style="color: #dc2626; font-weight: bold;"> (Abnormal)</span>` : ""}
+        </div>
+      `).join("")}
+    </div>
+  </div>` : ""}
+
+  ${data.doctorAdvice ? `
+  <div style="margin-top: 16px; padding: 12px; background: #f9fafb; border-left: 3px solid #2563eb; border-radius: 4px;">
+    <strong style="color: #1e40af; font-size: 13px;">Doctor's Advice & Treatment Plan:</strong>
+    <p style="margin: 6px 0 0 0; font-size: 13px; color: #374151; white-space: pre-line;">${data.doctorAdvice}</p>
+  </div>` : ""}
+
+  ${(data.followUpDate || data.followUpInstructions) ? `
+  <div style="margin-top: 12px; padding: 10px 12px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; font-size: 12px; color: #166534;">
+    <strong>Follow-up Recommendation:</strong> ${data.followUpDate ? `Follow up on <strong>${data.followUpDate}</strong>` : "Routine follow-up"}
+    ${data.followUpInstructions ? ` &bull; ${data.followUpInstructions}` : ""}
+  </div>` : ""}
+
   <div class="footer">
     <div style="font-size: 11px; color: #6b7280;">
-      ANANT Digital Health Record &bull; Generated on ${new Date().toLocaleString()}
+      ANANT Digital Health Record &bull; Official Digital Prescription Slip &bull; Generated on ${new Date().toLocaleString()}
     </div>
     <div class="signature-box">
       ${data.doctorSignatureUrl ? `<img src="${data.doctorSignatureUrl}" style="max-height: 40px; margin-bottom: 4px;">` : ""}
       <div class="signature-line">${data.doctorName}</div>
+      <div style="font-size: 10px; color: #6b7280; margin-top: 2px;">Digitally Verified Clinician</div>
     </div>
   </div>
+
+  ${data.autoPrint ? `
+  <script>
+    window.addEventListener('load', function() {
+      setTimeout(function() { window.print(); }, 500);
+    });
+  </script>` : ""}
 </body>
 </html>
   `;

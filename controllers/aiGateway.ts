@@ -45,7 +45,7 @@ export async function queryAIGatewayController(req: FastifyRequest, reply: Fasti
       modelAlias: modelAlias || "CLINICAL_FAST",
       prompt: query.trim(),
       systemDirective: currentRoute ? `Clinician viewing screen "${currentRoute}".` : "Enterprise Clinical Context"
-    }, patientMapList);
+    }, patientMapList, { currentRoute, activePatientId, userRole: req.user?.role });
 
     // Asynchronously record telemetry metric
     AIObservabilityMetric.create({
@@ -76,10 +76,11 @@ export async function streamAIGatewayController(req: FastifyRequest, reply: Fast
   StreamingService.initSSEResponse(reply);
 
   try {
-    const { query, modelAlias, currentRoute } = req.body as {
+    const { query, modelAlias, currentRoute, activePatientId } = req.body as {
       query: string;
       modelAlias?: any;
       currentRoute?: string;
+      activePatientId?: string;
     };
     const userId = req.user?.id;
     const orgId = req.user?.organization_id;
@@ -104,28 +105,45 @@ export async function streamAIGatewayController(req: FastifyRequest, reply: Fast
       return StreamingService.endStream(reply, correlationId);
     }
 
-    const response = await aiGateway.execute({
-      correlationId,
-      organizationId: orgId,
-      sessionId: "stream",
-      requestId: `req_${Date.now()}`,
-      userId,
-      modelAlias: modelAlias || "CLINICAL_FAST",
-      prompt: query.trim(),
-      systemDirective: currentRoute ? `Clinician viewing screen "${currentRoute}".` : "Enterprise Clinical Context"
-    });
-
-    // Emit the provider response incrementally over the SSE stream.
-    const words = response.text.split(" ");
-    for (let i = 0; i < words.length; i++) {
-      const wordChunk = (i === 0 ? "" : " ") + words[i];
-      StreamingService.sendChunk(reply, {
+    let chunkIndex = 0;
+    const response = await aiGateway.executeStream(
+      {
         correlationId,
-        chunkIndex: i + 1,
-        text: wordChunk,
-        isComplete: i === words.length - 1
-      });
-    }
+        organizationId: orgId,
+        sessionId: "stream",
+        requestId: `req_${Date.now()}`,
+        userId,
+        modelAlias: modelAlias || "CLINICAL_FAST",
+        prompt: query.trim(),
+        systemDirective: currentRoute ? `Clinician viewing screen "${currentRoute}".` : "Enterprise Clinical Context"
+      },
+      (tokenChunk: string) => {
+        StreamingService.sendChunk(reply, {
+          correlationId,
+          chunkIndex: ++chunkIndex,
+          text: tokenChunk,
+          isComplete: false
+        });
+      },
+      undefined,
+      { currentRoute, activePatientId, userRole: req.user?.role }
+    );
+
+    // Asynchronously record telemetry metric for stream
+    AIObservabilityMetric.create({
+      correlationId: response.correlationId,
+      organizationId: orgId,
+      userId,
+      sessionId: "stream",
+      provider: response.provider,
+      model: response.model,
+      modelAlias: modelAlias || "CLINICAL_FAST",
+      inputTokens: response.usage.inputTokens,
+      outputTokens: response.usage.outputTokens,
+      estimatedCostUSD: response.usage.estimatedCostUSD,
+      latencyMs: response.usage.latencyMs,
+      status: "success"
+    }).catch(err => console.error("Error writing AIObservabilityMetric (stream):", err));
 
     StreamingService.endStream(reply, correlationId);
   } catch (err: any) {

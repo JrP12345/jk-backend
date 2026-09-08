@@ -14,6 +14,9 @@ const DoctorSchema = new Schema({
   rating: { type: Number, default: 5 },
   reviewsCount: { type: Number, default: 0 },
   registrationNumber: { type: String, trim: true },
+  digitalSignatureUrl: { type: String, trim: true },
+  letterheadDefaultMode: { type: String, enum: ["plain_a4", "preprinted_stationery"], default: "plain_a4" },
+  cabinNumber: { type: String, default: "Cabin 1" },
   isActive: { type: Boolean, default: true, index: true },
   languages: [{ type: String, default: "English" }]
 });

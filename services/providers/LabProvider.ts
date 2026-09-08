@@ -33,7 +33,7 @@ export class LabProvider implements TimelineProvider {
     })
       .populate("testId", "name code department sampleType normalRange")
       .populate("orderedBy", "name")
-      .populate("doctorId", "name") // legacy field fallback
+      .populate("doctorId", "name")
       .lean();
 
     const events: TimelineEvent[] = [];
@@ -43,12 +43,12 @@ export class LabProvider implements TimelineProvider {
       const testCode  = order.testId?.code       || "";
       const dept      = order.testId?.department || "Laboratory";
 
-      // Resolve ordering doctor — prefer new orderedBy, fall back to doctorId
+      // Resolve ordering practitioner
       const actorDoc  = order.orderedBy || order.doctorId;
       const doctorName = actorDoc?.name || "Ordering Physician";
       const doctorId   = actorDoc?._id?.toString() || actorDoc?.toString() || "unknown";
 
-      // ─── Structured result (v1.6+) or legacy flat string ─────────
+      // ─── Structured result or flat string representation ─────────
       const hasStructuredResult = order.result?.value && order.result.value.length > 0;
       const resultValue     = hasStructuredResult ? order.result.value     : (order.resultValue || "");
       const resultUnit      = hasStructuredResult ? order.result.unit      : "";

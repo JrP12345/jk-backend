@@ -1,6 +1,14 @@
 import type { AIProvider, SOAPGenerationInput, SOAPNoteDraft, HealthQueryInput, HealthQueryResponse, AISuggestedAction } from "./AIProvider.ts";
 import { providerRegistry } from "./ProviderRegistry.ts";
 
+export class AIServiceUnavailableError extends Error {
+  public statusCode = 503;
+  constructor(message: string = "Clinical AI service is temporarily unavailable") {
+    super(message);
+    this.name = "AIServiceUnavailableError";
+  }
+}
+
 class FallbackAIProvider implements AIProvider {
   name = "FallbackSimulationAI";
 
@@ -35,6 +43,15 @@ class FallbackAIProvider implements AIProvider {
       suggestedActions: actions
     };
   }
+
+  async streamHealthAssistant(input: HealthQueryInput, onToken: (chunk: string) => void): Promise<HealthQueryResponse> {
+    const fullRes = await this.queryPatientHealthAssistant(input);
+    const words = fullRes.answer.split(" ");
+    for (let i = 0; i < words.length; i++) {
+      onToken((i === 0 ? "" : " ") + words[i]);
+    }
+    return fullRes;
+  }
 }
 
 class UnavailableAIProvider implements AIProvider {
@@ -53,6 +70,8 @@ class UnavailableAIProvider implements AIProvider {
   }
 }
 
+import { validateSOAPNoteDraft, validateHealthQueryResponse } from "./aiValidation.ts";
+
 class GeminiAIProvider implements AIProvider {
   name = "GoogleGeminiAI";
   private apiKey: string;
@@ -65,30 +84,29 @@ class GeminiAIProvider implements AIProvider {
     return !!this.apiKey && this.apiKey.length > 10;
   }
 
-  private async callGemini(prompt: string): Promise<any> {
-    const customModel = process.env.GEMINI_MODEL;
-    const fallbackModels = [
-      "gemini-2.5-flash",
-      "gemini-1.5-flash",
-      "gemini-1.5-flash-latest",
-      "gemini-1.5-pro",
-      "gemini-1.5-pro-latest",
-      "gemini-flash-latest",
-      "gemini-pro-latest"
-    ];
-    const models = customModel ? [customModel, ...fallbackModels] : fallbackModels;
-    let lastError = null;
+  private async callGemini(prompt: string, schemaConfig?: any): Promise<any> {
+    const primaryModel = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+    const modelsToTry = [primaryModel, "gemini-2.0-flash", "gemini-1.5-pro"];
+    let lastError: Error | null = null;
 
-    for (const model of models) {
+    for (let i = 0; i < modelsToTry.length; i++) {
+      const model = modelsToTry[i];
       try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${this.apiKey}`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
         const res = await fetch(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": this.apiKey
+          },
           body: JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { responseMimeType: "application/json" }
-          })
+            generationConfig: {
+              responseMimeType: "application/json",
+              ...(schemaConfig ? { responseSchema: schemaConfig } : {})
+            }
+          }),
+          signal: AbortSignal.timeout(15000)
         });
 
         if (res.ok) {
@@ -96,22 +114,38 @@ class GeminiAIProvider implements AIProvider {
           const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
           if (rawText) {
             const cleaned = rawText.replace(/^```json\s*/i, "").replace(/\s*```$/i, "").trim();
-            try {
-              return JSON.parse(cleaned);
-            } catch {
-              return { answer: cleaned, citations: [], suggestedActions: [] };
-            }
+            return {
+              data: JSON.parse(cleaned),
+              usage: {
+                inputTokens: data?.usageMetadata?.promptTokenCount,
+                outputTokens: data?.usageMetadata?.candidatesTokenCount
+              }
+            };
           }
-        } else {
-          const errText = await res.text();
-          lastError = new Error(`Gemini (${model}) ${res.status}: ${errText}`);
+          throw new Error("Empty candidate content returned from Gemini API");
+        }
+
+        const errText = await res.text();
+        // Do not retry on client-side authentication or invalid payload errors (400, 401, 403)
+        if (res.status === 400 || res.status === 401 || res.status === 403) {
+          throw new Error(`Gemini API authorization/client error ${res.status}: ${errText}`);
+        }
+
+        lastError = new Error(`Gemini (${model}) ${res.status}: ${errText}`);
+        // If rate limited (429) or transient 503, pause briefly before trying next model
+        if (res.status === 429 || res.status >= 500) {
+          await new Promise(resolve => setTimeout(resolve, 500));
         }
       } catch (err: any) {
         lastError = err;
+        // Fast-fail if this is an explicit auth/client error
+        if (err.message && (err.message.includes("401") || err.message.includes("403"))) {
+          break;
+        }
       }
     }
 
-    throw lastError || new Error("All Gemini model endpoints failed");
+    throw lastError || new Error("Gemini AI generation failed");
   }
 
   async generateSOAPNote(input: SOAPGenerationInput): Promise<SOAPNoteDraft> {
@@ -127,13 +161,29 @@ Clinical Encounter Inputs:
 Return ONLY a JSON object matching this schema:
 {
   "subjective": "Detailed History of Present Illness (HPI), chief complaint narrative, symptom onset, and review of systems",
-  "objective": "Systematic physical examination findings (Heent, Cardiac, Pulmonary, Abdomen, Neuro) integrated with objective vital signs",
+  "objective": "Systematic physical examination findings integrated with objective vital signs",
   "assessment": "Primary clinical diagnosis with clinical justification, differential diagnoses, and severity stratification",
   "plan": "Numbered actionable management plan: 1. Diagnostics/Labs 2. Pharmacotherapy & Dosage 3. Patient Education 4. Follow-up timeframe",
   "suggestedICD10": ["PRIMARY_ICD10_CODE", "SECONDARY_ICD10_CODE"]
 }`;
 
-    return await this.callGemini(prompt) as SOAPNoteDraft;
+    const schemaConfig = {
+      type: "OBJECT",
+      properties: {
+        subjective: { type: "STRING" },
+        objective: { type: "STRING" },
+        assessment: { type: "STRING" },
+        plan: { type: "STRING" },
+        suggestedICD10: {
+          type: "ARRAY",
+          items: { type: "STRING" }
+        }
+      },
+      required: ["subjective", "objective", "assessment", "plan"]
+    };
+
+    const raw = await this.callGemini(prompt, schemaConfig);
+    return validateSOAPNoteDraft(raw.data || raw);
   }
 
   async queryPatientHealthAssistant(input: HealthQueryInput): Promise<HealthQueryResponse> {
@@ -141,7 +191,9 @@ Return ONLY a JSON object matching this schema:
       ? `\n\nRecent Conversation History:\n` + input.chatHistory.map(t => `${t.sender.toUpperCase()}: ${t.text}`).join("\n")
       : "";
 
-    const prompt = `You are ANANT AI Healthcare Assistant, an enterprise-grade clinical physician and hospital management copilot for the ANANT Health Platform.
+    const systemDirective = input.systemPrompt
+      ? `${input.systemPrompt}\n\nStrict JSON formatting rules apply.`
+      : `You are ANANT AI Healthcare Assistant, an enterprise-grade clinical physician and hospital management copilot for the ANANT Health Platform.
 
 Role & Behavioral Rules:
 1. Provide concise, articulate, and medically sound responses focused strictly on what the user wants to know.
@@ -155,13 +207,13 @@ Role & Behavioral Rules:
    - Appointments & Scheduling: "/dashboard/appointments"
    - Inpatient Admissions & Bed Occupancy: "/dashboard/admissions"
    - Hospital Analytics & Financials: "/dashboard/analytics"
-   - Prescriptions & Pharmacy: "/dashboard/prescriptions"
+   - Prescriptions & Pharmacy: "/dashboard/prescriptions"`;
 
-Context:
-${input.patientRecordSummary}${historyText}
+    const contentBody = input.compiledPromptText || `Context:\n${input.patientRecordSummary}${historyText}\n\nUser Query:\n${input.query}`;
 
-User Query:
-${input.query}
+    const prompt = `${systemDirective}
+
+${contentBody}
 
 Return ONLY a JSON object matching this schema:
 {
@@ -177,7 +229,98 @@ Return ONLY a JSON object matching this schema:
   ]
 }`;
 
-    return await this.callGemini(prompt) as HealthQueryResponse;
+    const schemaConfig = {
+      type: "OBJECT",
+      properties: {
+        answer: { type: "STRING" },
+        citations: { type: "ARRAY", items: { type: "STRING" } },
+        disclaimer: { type: "STRING" },
+        suggestedActions: {
+          type: "ARRAY",
+          items: {
+            type: "OBJECT",
+            properties: {
+              type: { type: "STRING" },
+              label: { type: "STRING" },
+              targetUrl: { type: "STRING" }
+            },
+            required: ["type", "label"]
+          }
+        }
+      },
+      required: ["answer"]
+    };
+
+    const raw = await this.callGemini(prompt, schemaConfig);
+    const validated = validateHealthQueryResponse(raw.data || raw);
+    return {
+      ...validated,
+      rawUsage: raw.usage
+    };
+  }
+
+  async streamHealthAssistant(input: HealthQueryInput, onToken: (chunk: string) => void): Promise<HealthQueryResponse> {
+    const historyText = input.chatHistory && input.chatHistory.length > 0
+      ? `\n\nRecent Conversation History:\n` + input.chatHistory.map(t => `${t.sender.toUpperCase()}: ${t.text}`).join("\n")
+      : "";
+
+    const systemDirective = input.systemPrompt || "You are ANANT AI Healthcare Assistant, an enterprise-grade clinical physician and hospital management copilot for the ANANT Health Platform.";
+    const contentBody = input.compiledPromptText || `Context:\n${input.patientRecordSummary}${historyText}\n\nUser Query:\n${input.query}`;
+
+    const prompt = `${systemDirective}\n\n${contentBody}\n\nRespond in concise, articulate, and clear professional Markdown.`;
+
+    const model = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": this.apiKey
+      },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }]
+      }),
+      signal: AbortSignal.timeout(30000)
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Gemini Stream Error ${res.status}: ${errText}`);
+    }
+
+    if (!res.body) throw new Error("Empty response stream from Gemini");
+
+    let fullAnswer = "";
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    for await (const rawChunk of res.body as any) {
+      buffer += decoder.decode(rawChunk, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const jsonStr = line.slice(6).trim();
+          if (!jsonStr || jsonStr === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const token = parsed?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+            if (token) {
+              fullAnswer += token;
+              onToken(token);
+            }
+          } catch {}
+        }
+      }
+    }
+
+    return {
+      answer: fullAnswer || "Response generated.",
+      citations: ["ANANT Clinical Registry"],
+      disclaimer: "ANANTA AI Health Assistant provides grounded administrative & clinical copilot guidance.",
+      suggestedActions: []
+    };
   }
 }
 
@@ -216,18 +359,24 @@ JSON Keys: subjective, objective, assessment, plan, suggestedICD10 (array of cod
       body: JSON.stringify({
         model: this.model,
         messages: [
-          { role: "system", content: "You respond strictly in valid JSON format." },
+          { role: "system", content: "You respond strictly in valid JSON format conforming to SOAP clinical standards." },
           { role: "user", content: prompt }
         ],
         response_format: { type: "json_object" }
-      })
+      }),
+      signal: AbortSignal.timeout(15000)
     });
 
-    if (!res.ok) throw new Error(`${this.name} API error ${res.status}`);
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`${this.name} API error ${res.status}: ${errText}`);
+    }
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content;
+    if (!content) throw new Error(`${this.name} returned empty content`);
     const cleaned = content.replace(/^```json\s*/i, "").replace(/\s*```$/i, "").trim();
-    return JSON.parse(cleaned) as SOAPNoteDraft;
+    const raw = JSON.parse(cleaned);
+    return validateSOAPNoteDraft(raw);
   }
 
   async queryPatientHealthAssistant(input: HealthQueryInput): Promise<HealthQueryResponse> {
@@ -235,15 +384,8 @@ JSON Keys: subjective, objective, assessment, plan, suggestedICD10 (array of cod
       ? `\n\nRecent Conversation History:\n` + input.chatHistory.map(t => `${t.sender.toUpperCase()}: ${t.text}`).join("\n")
       : "";
 
-    const prompt = `You are ANANTA AI Healthcare Assistant. Answer the query based on context:
-
-Context:
-${input.patientRecordSummary}${historyText}
-
-User Query:
-${input.query}
-
-Return JSON matching schema: { "answer": "text", "citations": ["src"], "disclaimer": "text", "suggestedActions": [] }`;
+    const systemContent = input.systemPrompt || "You are ANANTA AI Healthcare Assistant. You respond strictly in valid JSON format conforming to the requested schema.";
+    const userPrompt = input.compiledPromptText || `Context:\n${input.patientRecordSummary}${historyText}\n\nUser Query:\n${input.query}\n\nReturn JSON matching schema: { "answer": "text", "citations": ["src"], "disclaimer": "text", "suggestedActions": [] }`;
 
     const res = await fetch(`${this.baseURL}/chat/completions`, {
       method: "POST",
@@ -254,54 +396,155 @@ Return JSON matching schema: { "answer": "text", "citations": ["src"], "disclaim
       body: JSON.stringify({
         model: this.model,
         messages: [
-          { role: "system", content: "You respond strictly in valid JSON format." },
-          { role: "user", content: prompt }
+          { role: "system", content: systemContent },
+          { role: "user", content: userPrompt }
         ],
         response_format: { type: "json_object" }
-      })
+      }),
+      signal: AbortSignal.timeout(15000)
     });
 
-    if (!res.ok) throw new Error(`${this.name} API error ${res.status}`);
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`${this.name} API error ${res.status}: ${errText}`);
+    }
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content;
+    if (!content) throw new Error(`${this.name} returned empty content`);
     const cleaned = content.replace(/^```json\s*/i, "").replace(/\s*```$/i, "").trim();
-    return JSON.parse(cleaned) as HealthQueryResponse;
+    const raw = JSON.parse(cleaned);
+    const validated = validateHealthQueryResponse(raw);
+    return {
+      ...validated,
+      rawUsage: {
+        inputTokens: data?.usage?.prompt_tokens,
+        outputTokens: data?.usage?.completion_tokens
+      }
+    };
+  }
+
+  async streamHealthAssistant(input: HealthQueryInput, onToken: (chunk: string) => void): Promise<HealthQueryResponse> {
+    const historyText = input.chatHistory && input.chatHistory.length > 0
+      ? `\n\nRecent Conversation History:\n` + input.chatHistory.map(t => `${t.sender.toUpperCase()}: ${t.text}`).join("\n")
+      : "";
+
+    const systemContent = input.systemPrompt || "You are an enterprise clinical AI assistant. Respond in clear Markdown.";
+    const userPrompt = input.compiledPromptText || `Context:\n${input.patientRecordSummary}${historyText}\n\nUser Query:\n${input.query}\n\nRespond in concise, articulate, and clear professional Markdown.`;
+
+    const res = await fetch(`${this.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${this.apiKey}`
+      },
+      body: JSON.stringify({
+        model: this.model,
+        messages: [
+          { role: "system", content: systemContent },
+          { role: "user", content: userPrompt }
+        ],
+        stream: true
+      }),
+      signal: AbortSignal.timeout(30000)
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`${this.name} stream error ${res.status}: ${errText}`);
+    }
+
+    if (!res.body) throw new Error(`${this.name} empty response body`);
+
+    let fullAnswer = "";
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    for await (const rawChunk of res.body as any) {
+      buffer += decoder.decode(rawChunk, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const jsonStr = line.slice(6).trim();
+          if (!jsonStr || jsonStr === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const token = parsed?.choices?.[0]?.delta?.content || "";
+            if (token) {
+              fullAnswer += token;
+              onToken(token);
+            }
+          } catch {}
+        }
+      }
+    }
+
+    return {
+      answer: fullAnswer || "Response generated.",
+      citations: ["ANANT Clinical Registry"],
+      disclaimer: "ANANTA AI Health Assistant provides grounded administrative & clinical copilot guidance.",
+      suggestedActions: []
+    };
   }
 }
 
 export class AIService {
-  private primaryProvider: AIProvider;
   private fallbackProvider = new FallbackAIProvider();
+  private primaryProvider: AIProvider = this.fallbackProvider;
 
   constructor() {
     providerRegistry.registerProvider(this.fallbackProvider);
 
+    let hasRealProvider = false;
+
     if (process.env.GEMINI_API_KEY) {
       console.log("[AIService] Initializing Google Gemini AI Provider");
       const gemini = new GeminiAIProvider(process.env.GEMINI_API_KEY);
-      this.primaryProvider = gemini;
       providerRegistry.registerProvider(gemini);
-      providerRegistry.setPrimaryProvider(gemini.name);
-    } else if (process.env.GROQ_API_KEY) {
+      if (!hasRealProvider) {
+        this.primaryProvider = gemini;
+        providerRegistry.setPrimaryProvider(gemini.name);
+        hasRealProvider = true;
+      }
+    }
+
+    if (process.env.OPENAI_API_KEY) {
+      console.log("[AIService] Initializing OpenAI GPT-4o Provider");
+      const openai = new OpenAICompatibleProvider("OpenAI", process.env.OPENAI_API_KEY, "https://api.openai.com/v1", process.env.OPENAI_MODEL || "gpt-4o-mini");
+      providerRegistry.registerProvider(openai);
+      if (!hasRealProvider) {
+        this.primaryProvider = openai;
+        providerRegistry.setPrimaryProvider(openai.name);
+        hasRealProvider = true;
+      }
+    }
+
+    if (process.env.GROQ_API_KEY) {
       console.log("[AIService] Initializing Groq Llama 3.3 Provider");
       const groq = new OpenAICompatibleProvider("GroqAI", process.env.GROQ_API_KEY, "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile");
-      this.primaryProvider = groq;
       providerRegistry.registerProvider(groq);
-      providerRegistry.setPrimaryProvider(groq.name);
-    } else if (process.env.OPENAI_API_KEY) {
-      console.log("[AIService] Initializing OpenAI GPT-4o Provider");
-      const openai = new OpenAICompatibleProvider("OpenAI", process.env.OPENAI_API_KEY, "https://api.openai.com/v1", "gpt-4o-mini");
-      this.primaryProvider = openai;
-      providerRegistry.registerProvider(openai);
-      providerRegistry.setPrimaryProvider(openai.name);
-    } else if (process.env.NODE_ENV === "test") {
-      console.log("[AIService] No API Key detected in test environment; using test-only fallback provider");
-      this.primaryProvider = this.fallbackProvider;
-      providerRegistry.setPrimaryProvider(this.fallbackProvider.name);
-    } else {
-      console.error("[AIService] No AI provider credentials configured; clinical AI operations are using local fallback copilot");
-      this.primaryProvider = this.fallbackProvider;
-      providerRegistry.setPrimaryProvider(this.primaryProvider.name);
+      if (!hasRealProvider) {
+        this.primaryProvider = groq;
+        providerRegistry.setPrimaryProvider(groq.name);
+        hasRealProvider = true;
+      }
+    }
+
+    if (!hasRealProvider) {
+      if (process.env.NODE_ENV === "test") {
+        console.log("[AIService] No API Key detected in test environment; using test-only fallback provider");
+        this.primaryProvider = this.fallbackProvider;
+        providerRegistry.setPrimaryProvider(this.fallbackProvider.name);
+      } else if (process.env.NODE_ENV === "production") {
+        console.error("[AIService] No AI provider credentials configured in production; clinical AI provider set to unavailable");
+        this.primaryProvider = new UnavailableAIProvider();
+        providerRegistry.setPrimaryProvider(this.primaryProvider.name);
+      } else {
+        console.warn("[AIService] No AI provider credentials configured; non-production environment using local fallback copilot");
+        this.primaryProvider = this.fallbackProvider;
+        providerRegistry.setPrimaryProvider(this.primaryProvider.name);
+      }
     }
   }
 
@@ -317,6 +560,25 @@ export class AIService {
     try {
       return await this.primaryProvider.generateSOAPNote(input);
     } catch (err: any) {
+      // Attempt real failover to other registered production providers first
+      const allProviders = providerRegistry.listProviders().filter(
+        name => name !== this.primaryProvider.name && name !== "FallbackSimulationAI" && name !== "AIProviderUnavailable"
+      );
+      for (const backupName of allProviders) {
+        const backup = providerRegistry.getProvider(backupName);
+        if (backup) {
+          try {
+            console.log(`[AIService] Failing over generateSOAPNote to ${backupName}`);
+            return await backup.generateSOAPNote(input);
+          } catch (backupErr: any) {
+            console.warn(`[AIService] Backup provider ${backupName} failed:`, backupErr.message);
+          }
+        }
+      }
+
+      if (process.env.NODE_ENV === "production") {
+        throw new AIServiceUnavailableError(`AI documentation service temporarily unavailable: ${err?.message || "Generation error"}`);
+      }
       console.warn(`[AIService] ${this.primaryProvider.name} failed (${err.message}); falling back to local clinical copilot engine.`);
       return await this.fallbackProvider.generateSOAPNote(input);
     }
@@ -326,6 +588,25 @@ export class AIService {
     try {
       return await this.primaryProvider.queryPatientHealthAssistant(input);
     } catch (err: any) {
+      // Attempt real failover to other registered production providers first
+      const allProviders = providerRegistry.listProviders().filter(
+        name => name !== this.primaryProvider.name && name !== "FallbackSimulationAI" && name !== "AIProviderUnavailable"
+      );
+      for (const backupName of allProviders) {
+        const backup = providerRegistry.getProvider(backupName);
+        if (backup) {
+          try {
+            console.log(`[AIService] Failing over queryPatientHealthAssistant to ${backupName}`);
+            return await backup.queryPatientHealthAssistant(input);
+          } catch (backupErr: any) {
+            console.warn(`[AIService] Backup provider ${backupName} failed:`, backupErr.message);
+          }
+        }
+      }
+
+      if (process.env.NODE_ENV === "production") {
+        throw new AIServiceUnavailableError(`AI health assistant query temporarily unavailable: ${err?.message || "Gateway error"}`);
+      }
       console.warn(`[AIService] ${this.primaryProvider.name} failed (${err.message}); falling back to local clinical copilot engine.`);
       return await this.fallbackProvider.queryPatientHealthAssistant(input);
     }

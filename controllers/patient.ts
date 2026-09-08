@@ -76,15 +76,20 @@ export async function searchPatients(req: FastifyRequest, reply: FastifyReply) {
       patientFilter.$and = andConditions;
     }
 
-    const totalCount = await Patient.countDocuments(patientFilter);
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
-    const totalPages = Math.ceil(totalCount / pageSize);
 
-    const patients = await Patient.find(patientFilter)
-      .populate("userId", "name email phone")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(pageSize);
+    const [totalCount, rawPatients] = await Promise.all([
+      Patient.countDocuments(patientFilter),
+      Patient.find(patientFilter)
+        .populate("userId", "name email phone")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(pageSize)
+        .lean(),
+    ]);
+
+    const totalPages = Math.ceil(totalCount / pageSize);
+    const patients = rawPatients.map((p: any) => ({ ...p, id: p._id.toString() }));
 
     setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
     return reply.code(200).send(successResponse(patients));
@@ -220,21 +225,40 @@ export async function submitDoctorReview(req: FastifyRequest, reply: FastifyRepl
 export async function getPatientTimelineController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id } = req.params as { id: string };
-    let orgId = req.user?.organization_id;
+    let orgId: string = req.user?.organization_id || "";
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return reply.code(400).send(errorResponse("Invalid patient ID"));
     }
 
-    if (!orgId) {
-      const patientDoc = await Patient.findById(id).lean();
-      if (patientDoc?.organizationId) {
-        orgId = patientDoc.organizationId.toString();
-      }
+    const isPatientSelf = req.user?.role === "patient" || req.user?.role === "family_member";
+
+    const patientDoc = await Patient.findById(id).lean() as any;
+    if (!patientDoc) {
+      return reply.code(404).send(errorResponse("Patient not found"));
     }
 
-    if (!orgId) {
-      return reply.code(403).send(errorResponse("Forbidden: organization context required"));
+    if (isPatientSelf) {
+      const patientUserId = patientDoc.userId?.toString();
+      if (patientUserId !== req.user?.id) {
+        const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
+        const hasRel = await FamilyRelationship.exists({
+          userId: req.user?.id,
+          patientId: id,
+          status: "active",
+        });
+        if (!hasRel) {
+          return reply.code(403).send(errorResponse("Access denied"));
+        }
+      }
+      orgId = patientDoc.organizationId ? patientDoc.organizationId.toString() : "";
+    } else {
+      if (!orgId && patientDoc.organizationId) {
+        orgId = patientDoc.organizationId.toString();
+      }
+      if (!orgId) {
+        return reply.code(403).send(errorResponse("Forbidden: organization context required"));
+      }
     }
 
     const { category, includeFinancial, q, limit, cursor } = req.query as {
@@ -252,6 +276,7 @@ export async function getPatientTimelineController(req: FastifyRequest, reply: F
     const timelineData = await timelineService.getPatientTimeline({
       patientId: id,
       organizationId: orgId,
+      userId: req.user?.id,
       category,
       includeFinancial: isFinancialRequested,
       q,

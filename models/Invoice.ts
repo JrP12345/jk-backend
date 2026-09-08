@@ -68,9 +68,10 @@ const InvoiceSchema = new Schema({
   dueDate: { type: Date, index: true },
   paymentMethod: { 
     type: String, 
-    enum: ["cash", "card", "upi", "net-banking", "insurance", "online"] 
+    enum: ["cash", "card", "upi", "net-banking", "insurance", "online", "courtesy_waiver", "other"] 
   },
   paymentDate: { type: Date },
+  notes: { type: String, trim: true },
   deletedAt: { type: Date, default: null, index: true },
   createdAt: { type: Date, default: Date.now }
 }, { timestamps: true });
