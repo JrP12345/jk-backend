@@ -90,7 +90,7 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
       if (orgId) {
         try {
           const timelineData = await timelineService.getPatientTimeline({
-            patientId: targetPatientId,
+            patientId: targetPatientId!,
             organizationId: orgId,
             includeFinancial: false,
             limit: 10,

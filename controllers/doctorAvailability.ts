@@ -40,90 +40,114 @@ export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyRe
       return reply.code(400).send(errorResponse("Invalid status value"));
     }
 
-    // Authorization check
-    const clinicCheck = await checkClinicAccess(req, clinicId);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
-    }
-
     // Only the doctor themselves, or staff (receptionist/admin/root) can set overrides
     if (userRole === "doctor" && userId !== doctorId) {
       return reply.code(403).send(errorResponse("Doctors can only modify their own availability"));
     }
 
-    const orgId = clinicCheck.organizationId || req.user?.organization_id;
-
-    // Upsert DoctorDayOverride
-    const override = await DoctorDayOverride.findOneAndUpdate(
-      { clinicId, doctorId, date },
-      {
-        clinicId,
-        doctorId,
-        organizationId: orgId || null,
-        date,
-        status,
-        effectiveStartTime: effectiveStartTime || null,
-        effectiveEndTime: effectiveEndTime || null,
-        reason: reason || null,
-        createdBy: userId,
-      },
-      { new: true, upsert: true, setDefaultsOnInsert: true }
-    );
-
-    // Process Disruption and Patient Triage via disruptionService
-    let disruptionSummary: any = null;
-    if (status === "unavailable" || effectiveEndTime) {
-      disruptionSummary = await disruptionService.processDoctorDisruption({
-        clinicId,
-        doctorId,
-        date,
-        status,
-        effectiveStartTime,
-        effectiveEndTime,
-        reason,
-        userId,
-        organizationId: orgId || null,
-        disruptionId: override._id,
+    const { DoctorAssignment } = await import("../models/DoctorAssignment.ts");
+    let targetClinics: string[] = [];
+    if (clinicId === "all") {
+      const assignments = await DoctorAssignment.find({
+        $or: [{ doctorId }, { doctorId: mongoose.Types.ObjectId.isValid(doctorId) ? new mongoose.Types.ObjectId(doctorId) : doctorId }],
+        isActive: true,
       });
+      targetClinics = Array.from(new Set(assignments.map((a) => a.clinicId.toString())));
+      if (targetClinics.length === 0) {
+        return reply.code(400).send(errorResponse("No active clinic assignments found for this doctor"));
+      }
+    } else {
+      const clinicCheck = await checkClinicAccess(req, clinicId);
+      if (!clinicCheck.allowed) {
+        return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+      }
+      targetClinics = [clinicId];
     }
 
-    // Audit Log
-    await AuditLog.create({
-      userId,
-      action: "DOCTOR_DAY_OVERRIDE_SET",
-      targetId: override._id,
-      targetModel: "DoctorDayOverride",
-      details: {
-        clinicId,
-        doctorId,
-        date,
-        status,
-        effectiveStartTime,
-        effectiveEndTime,
-        disruptionSummary,
-      },
-    });
+    const createdOverrides = [];
+    let lastDisruptionSummary: any = null;
 
-    // Real-time queue broadcast
-    broadcastQueueUpdate(clinicId, {
-      type: "QUEUE_UPDATED",
-      data: {
-        clinicId,
-        doctorId,
-        date,
-        overrideStatus: status,
-        effectiveStartTime,
-        effectiveEndTime,
-      },
-      message: `Doctor availability changed: ${status}`,
-      timestamp: new Date().toISOString(),
-    });
+    for (const cId of targetClinics) {
+      const clinicCheck = await checkClinicAccess(req, cId);
+      if (!clinicCheck.allowed) continue;
+
+      const orgId = clinicCheck.organizationId || req.user?.organization_id;
+
+      const override = await DoctorDayOverride.findOneAndUpdate(
+        { clinicId: cId, doctorId, date },
+        {
+          clinicId: cId,
+          doctorId,
+          organizationId: orgId || null,
+          date,
+          status,
+          effectiveStartTime: effectiveStartTime || null,
+          effectiveEndTime: effectiveEndTime || null,
+          reason: reason || null,
+          createdBy: userId,
+        },
+        { new: true, upsert: true, setDefaultsOnInsert: true }
+      );
+
+      createdOverrides.push(override);
+
+      // Process Disruption and Patient Triage via disruptionService
+      let disruptionSummary: any = null;
+      if (status === "unavailable" || effectiveEndTime) {
+        disruptionSummary = await disruptionService.processDoctorDisruption({
+          clinicId: cId,
+          doctorId,
+          date,
+          status,
+          effectiveStartTime,
+          effectiveEndTime,
+          reason,
+          userId,
+          organizationId: orgId || null,
+          disruptionId: override._id,
+        });
+        lastDisruptionSummary = disruptionSummary;
+      }
+
+      // Audit Log
+      await AuditLog.create({
+        userId,
+        action: "DOCTOR_DAY_OVERRIDE_SET",
+        targetId: override._id,
+        targetModel: "DoctorDayOverride",
+        details: {
+          clinicId: cId,
+          doctorId,
+          date,
+          status,
+          effectiveStartTime,
+          effectiveEndTime,
+          disruptionSummary,
+        },
+      });
+
+      // Real-time queue broadcast
+      broadcastQueueUpdate(cId, {
+        type: "QUEUE_UPDATED",
+        data: {
+          clinicId: cId,
+          doctorId,
+          date,
+          overrideStatus: status,
+          effectiveStartTime,
+          effectiveEndTime,
+        },
+        message: `Doctor availability changed: ${status}`,
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     return reply.code(200).send(
       successResponse(
         {
-          override,
-          affectedSummary: disruptionSummary || {
+          override: createdOverrides[0],
+          overrides: createdOverrides,
+          affectedSummary: lastDisruptionSummary || {
             inConsultationPreservedCount: 0,
             checkedInTriageCount: 0,
             remoteNotifiedCount: 0,
@@ -131,7 +155,7 @@ export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyRe
             autoCancelled: 0,
           },
         },
-        "Doctor availability override set successfully"
+        `Doctor availability override set successfully for ${createdOverrides.length} clinic branch(es)`
       )
     );
   } catch (err) {
@@ -150,7 +174,7 @@ export async function getDoctorDayOverrides(req: FastifyRequest, reply: FastifyR
       endDate?: string;
     };
 
-    if (clinicId) {
+    if (clinicId && clinicId !== "all") {
       const clinicCheck = await checkClinicAccess(req, clinicId);
       if (!clinicCheck.allowed) {
         return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
@@ -158,7 +182,7 @@ export async function getDoctorDayOverrides(req: FastifyRequest, reply: FastifyR
     }
 
     const filter: any = {};
-    if (clinicId) filter.clinicId = clinicId;
+    if (clinicId && clinicId !== "all") filter.clinicId = clinicId;
     if (doctorId) filter.doctorId = doctorId;
 
     if (date) {
@@ -171,6 +195,7 @@ export async function getDoctorDayOverrides(req: FastifyRequest, reply: FastifyR
 
     const overrides = await DoctorDayOverride.find(filter)
       .populate("doctorId", "name email phone specialization")
+      .populate("clinicId", "name city")
       .sort({ date: 1 });
 
     return reply.code(200).send(successResponse(overrides));

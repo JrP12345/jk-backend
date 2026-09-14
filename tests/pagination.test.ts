@@ -12,14 +12,16 @@ describe("List Pagination API Integration Tests", () => {
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
-        org_name: "Surat Pagination Hub",
+        org_name: `Surat Pagination Hub ${Date.now()}`,
         city: "Surat",
         admin_name: "Karan Johar",
-        admin_email: "karan.pagination@test.com",
+        admin_email: `karan.pagination_${Date.now()}@test.com`,
         admin_password: "Password123",
+        plan: "enterprise",
       },
     });
-    adminCookies = bootstrapRes.headers["set-cookie"] as string[];
+    expect(bootstrapRes.statusCode).toBe(201);
+    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
 
     // 2. Create clinic
     const clinicRes = await app.inject({

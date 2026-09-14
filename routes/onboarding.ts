@@ -14,6 +14,9 @@ import {
   updateOrganizationSettings,
   getOrganizationSmtp,
   updateOrganizationSmtp,
+  getOrganizationMembers,
+  getGlobalUsers,
+  getPlatformHierarchy,
 } from "../controllers/onboarding.ts";
 
 export default async function onboardingRoutes(app: FastifyInstance) {
@@ -30,6 +33,9 @@ export default async function onboardingRoutes(app: FastifyInstance) {
 
   // Platform Organization Admin Management
   app.get("/api/organizations", { preHandler: [authenticate] }, getAllOrganizations);
+  app.get("/api/onboarding/organizations/:id/members", { preHandler: [authenticate] }, getOrganizationMembers);
+  app.get("/api/admin/users", { preHandler: [authenticate] }, getGlobalUsers);
+  app.get("/api/admin/hierarchy", { preHandler: [authenticate] }, getPlatformHierarchy);
   app.put("/api/organizations/:id", { preHandler: [authenticate] }, updateOrganizationById);
   app.delete("/api/organizations/:id", { preHandler: [authenticate] }, deleteOrganizationById);
 

@@ -24,6 +24,7 @@ import laboratoryRoutes from "./routes/laboratory.ts";
 import pharmacyRoutes from "./routes/pharmacy.ts";
 import billingRoutes from "./routes/billing.ts";
 import analyticsRoutes from "./routes/analytics.ts";
+import trafficAnalyticsRoutes from "./routes/trafficAnalytics.ts";
 import searchRoutes from "./routes/search.ts";
 import publicRoutes from "./routes/public.ts";
 import uploadRoutes from "./routes/upload.ts";
@@ -59,7 +60,7 @@ import abdmRoutes from "./routes/abdm.ts";
 import syntheticHealthRoutes from "./routes/syntheticHealth.ts";
 import dpdpRoutes from "./routes/dpdp.ts";
 import scheduleH1Routes from "./routes/scheduleH1.ts";
-import { seedDefaultRoles } from "./controllers/onboarding.ts";
+import { seedDefaultRoles, syncOrganizationPlanQuotas } from "./controllers/onboarding.ts";
 
 import fastifySwagger from "@fastify/swagger";
 import fastifySwaggerUi from "@fastify/swagger-ui";
@@ -208,10 +209,26 @@ app.register(websocket, {
 
 const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS
   ? process.env.CORS_ALLOWED_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
-  : ["http://localhost:3000"];
+  : ["http://localhost:3000", "http://localhost:3001"];
+
+const isDev = process.env.NODE_ENV === "development" || !process.env.NODE_ENV;
 
 app.register(cors, {
-  origin: allowedOrigins.length === 1 ? allowedOrigins[0] : allowedOrigins,
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
+
+    // In development mode, allow localhost, 127.0.0.1, and private LAN/hotspot IPs (10.x, 192.168.x, 172.x)
+    if (isDev) {
+      if (/^https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/.test(origin)) {
+        return cb(null, true);
+      }
+    }
+
+    if (allowedOrigins.includes(origin)) {
+      return cb(null, true);
+    }
+    return cb(null, false);
+  },
   credentials: true,                 // allow cookies cross-origin
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
   allowedHeaders: [
@@ -245,6 +262,7 @@ app.register(laboratoryRoutes);
 app.register(pharmacyRoutes);
 app.register(billingRoutes);
 app.register(analyticsRoutes);
+app.register(trafficAnalyticsRoutes);
 app.register(searchRoutes);
 app.register(publicRoutes);
 app.register(uploadRoutes, { prefix: '/api' });
@@ -333,6 +351,9 @@ async function startServer() {
     // custom permission edits made through the Role admin UI.
     await seedDefaultRoles();
     app.log.info("✓ Default system roles verified / seeded.");
+
+    await syncOrganizationPlanQuotas();
+    app.log.info("✓ Tenant plan resource quotas verified / synchronized.");
 
     startDisruptionTimeoutJob();
   } catch (err) {

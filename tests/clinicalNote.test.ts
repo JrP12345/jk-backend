@@ -24,6 +24,7 @@ describe("Outpatient Consultation & Clinical Note Integration Tests", () => {
         admin_name: "Clinical Admin",
         admin_email: `opd_admin_${Date.now()}@stjude.internal`,
         admin_password: "Password123",
+        plan: "enterprise",
       },
     });
     expect(orgRes.statusCode).toBe(201);

@@ -51,7 +51,7 @@ export const uploadBase64ToR2 = async (
   const prefix = organizationId ? `tenants/${organizationId}/` : "";
   const uniqueFilename = `${prefix}${crypto.randomUUID()}.${fileExtension}`;
 
-  const base64String = base64Data.replace(/^data:image\/\w+;base64,/, '');
+  const base64String = base64Data.replace(/^data:[^;]+;base64,/, '');
   const buffer = Buffer.from(base64String, 'base64');
 
   const command = new PutObjectCommand({

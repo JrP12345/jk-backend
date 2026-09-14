@@ -8,6 +8,8 @@ const OrganizationSchema = new Schema({
   email: { type: String },
   description: { type: String },
   image_url: { type: String },
+  logo_url: { type: String },
+  images: [{ type: String }],
   timings: { type: String }, // JSON string of schedule
   working_days: { type: String }, // JSON string
   plan: { type: String, enum: ["starter", "pro", "enterprise"], default: "starter" },

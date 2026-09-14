@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { AuditLog } from "../models/AuditLog.ts";
+import { AuditCheckpoint } from "../models/AuditCheckpoint.ts";
 import { computeAuditHash, GENESIS_HASH } from "../utilities/auditCrypto.ts";
 import { reportCriticalError } from "../utilities/telemetry.ts";
 
@@ -37,31 +38,8 @@ export interface AuditVerificationFailure {
 
 export type AuditChainVerificationResult = AuditVerificationSuccess | AuditVerificationFailure;
 
-// Per-organization in-memory async lock queue to guarantee serial execution of hash calculation
-const chainLocks = new Map<string, Promise<any>>();
-
-async function withChainLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
-  while (chainLocks.has(key)) {
-    try {
-      await chainLocks.get(key);
-    } catch {
-      // Ignore errors from previous task
-    }
-  }
-
-  let release: () => void;
-  const lockPromise = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  chainLocks.set(key, lockPromise);
-
-  try {
-    return await operation();
-  } finally {
-    chainLocks.delete(key);
-    release!();
-  }
-}
+import { withChainLock } from "../utilities/auditLock.ts";
+export { withChainLock };
 
 /**
  * Appends a tamper-evident, cryptographically chained audit log entry.
@@ -145,8 +123,23 @@ export async function verifyAuditChainIntegrity(
     };
   }
 
-  let expectedSeq = logs[0].sequence ?? 1;
-  let expectedPrevHash = logs[0].prevHash ?? GENESIS_HASH;
+  let expectedSeq = 1;
+  let expectedPrevHash = GENESIS_HASH;
+
+  if (logs[0].sequence && logs[0].sequence > 1) {
+    const checkpointOrgFilter = organizationId
+      ? { organizationId: new mongoose.Types.ObjectId(organizationId) }
+      : { organizationId: null };
+
+    const checkpoint: any = await AuditCheckpoint.findOne(checkpointOrgFilter)
+      .sort({ archivedUpToSequence: -1 })
+      .lean();
+
+    if (checkpoint) {
+      expectedSeq = checkpoint.archivedUpToSequence + 1;
+      expectedPrevHash = checkpoint.archivedUpToHash;
+    }
+  }
 
   for (let i = 0; i < logs.length; i++) {
     const log = logs[i];

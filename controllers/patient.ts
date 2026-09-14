@@ -233,7 +233,7 @@ export async function getPatientTimelineController(req: FastifyRequest, reply: F
 
     const isPatientSelf = req.user?.role === "patient" || req.user?.role === "family_member";
 
-    const patientDoc = await Patient.findById(id).lean() as any;
+    const patientDoc = await Patient.findById(id).setOptions({ bypassTenantFilter: true }).lean() as any;
     if (!patientDoc) {
       return reply.code(404).send(errorResponse("Patient not found"));
     }

@@ -4,6 +4,7 @@ const ClinicSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
   name: { type: String, required: true },
   logo: { type: String },
+  images: [{ type: String }],
   description: { type: String },
   phone: { type: String },
   email: { type: String },

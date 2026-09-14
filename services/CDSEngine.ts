@@ -71,18 +71,19 @@ export class AllergyRule implements SafetyRule {
 export class DrugInteractionRule implements SafetyRule {
   ruleId = "DRUG-INTERACTION-001";
   name = "Drug-Drug Interaction Rule Engine";
-  version = "2026.07.22";
+  version = "2026.09.08";
   category = "DRUG_INTERACTION" as const;
   enabled = true;
 
   private interactionRules: any[] = [];
-  public datasetVersion = "2026.07.22";
+  public datasetVersion = "2026.09.08";
 
   constructor() {
     try {
       if (fs.existsSync(DATASET_PATH)) {
         const raw = JSON.parse(fs.readFileSync(DATASET_PATH, "utf8"));
-        this.datasetVersion = raw.datasetVersion || "2026.07.22";
+        this.datasetVersion = raw.datasetVersion || "2026.09.08";
+        this.version = this.datasetVersion;
         this.interactionRules = raw.rules || [];
       }
     } catch (err) {

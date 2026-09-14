@@ -222,11 +222,11 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
         const { CDSEvaluation } = await import("../models/CDSEvaluation.ts");
         const { Prescription } = await import("../models/Prescription.ts");
 
-        const patientDoc = await Patient.findById(appointment.patientId).lean();
+        const patientDoc = await Patient.findById(appointment.patientId).setOptions({ bypassTenantFilter: true }).lean();
         const activeRxs = await Prescription.find({
           patientId: appointment.patientId,
           status: "active",
-        }).select("medicineName").lean();
+        }).setOptions({ bypassTenantFilter: true }).select("medicineName").lean();
 
         const evaluation = await cdsEngine.evaluate({
           patient: {

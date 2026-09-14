@@ -25,6 +25,7 @@ describe("Teleconsultation & Virtual Care Integration Tests", () => {
         admin_name: "Telehealth Admin",
         admin_email: `tele_admin_${Date.now()}@healthos.internal`,
         admin_password: "Password123",
+        plan: "enterprise",
       },
     });
     expect(orgRes.statusCode).toBe(201);
@@ -90,7 +91,7 @@ describe("Teleconsultation & Virtual Care Integration Tests", () => {
       payload: {
         doctorId: doctorUserId,
         clinicId,
-        workingHours: "09:00 - 17:00",
+        workingHours: "00:00 - 23:59",
         fees: 500,
       },
     });
@@ -108,6 +109,7 @@ describe("Teleconsultation & Virtual Care Integration Tests", () => {
         appointmentTime: new Date().toISOString(),
         appointmentType: "online",
         status: "confirmed",
+        forceBooking: true,
         notes: "Virtual skin consultation",
       },
     });

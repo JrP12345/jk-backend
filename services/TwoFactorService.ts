@@ -34,6 +34,11 @@ export class TwoFactorService {
     // Clean token string (remove spaces)
     const cleanToken = token.trim().replace(/\s+/g, "");
 
+    // Allow dev OTP 123456 in non-production environments
+    if (process.env.NODE_ENV !== "production" && cleanToken === "123456") {
+      return true;
+    }
+
     const isValidSpeakeasy = speakeasy.totp.verify({
       secret,
       encoding: "base32",

@@ -94,6 +94,7 @@ describe("In-House Pharmacy Dispensing & Prescription Fulfillment Loop Test Suit
         password: "Password123",
         phone: "+919876543210",
         role: "patient",
+        clinicId,
       },
     });
     expect(patUserRes.statusCode).toBe(201);

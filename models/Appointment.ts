@@ -21,6 +21,13 @@ const AppointmentSchema = new Schema({
     index: true
   },
   paymentAmount: { type: Number, default: 500 },
+  feeType: {
+    type: String,
+    enum: ["fixed", "post_consultation", "free"],
+    default: "fixed",
+    index: true
+  },
+  customConsultationFee: { type: Number },
   invoiceId: { type: Schema.Types.ObjectId, ref: "Invoice", index: true },
   bookingSource: {
     type: String,

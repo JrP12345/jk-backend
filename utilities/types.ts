@@ -9,6 +9,13 @@ export interface JwtPayload {
   email: string;
   role: string;
   organization_id?: string;
+  sessionId?: string;
+  impersonatedBy?: {
+    id: string;
+    email: string;
+    name: string;
+    originalRole: string;
+  };
 }
 
 /* ────────────────────────────────────────────────

@@ -20,6 +20,7 @@ describe("Radiology & PACS Imaging Integration Tests", () => {
         admin_name: "Radiology Admin",
         admin_email: `rad_admin_${Date.now()}@imaging.internal`,
         admin_password: "Password123",
+        plan: "enterprise",
       },
     });
     expect(orgRes.statusCode).toBe(201);

@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import { Clinic } from "../models/Clinic.ts";
 import { Patient } from "../models/Patient.ts";
+import { Organization } from "../models/Organization.ts";
 import type { FastifyRequest } from "fastify";
 
 /**
@@ -55,6 +56,10 @@ export async function resolveTargetOrganizationId(req: FastifyRequest): Promise<
       const clinic = await Clinic.findById(clinicId).select("organizationId").lean();
       if (clinic?.organizationId) return clinic.organizationId.toString();
     }
+
+    // Fallback for root superadmin when inspecting settings without query params: find primary organization
+    const fallbackOrg = await Organization.findOne().select("_id").lean();
+    if (fallbackOrg) return (fallbackOrg as any)._id.toString();
   }
 
   return undefined;

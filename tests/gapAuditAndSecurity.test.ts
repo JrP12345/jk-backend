@@ -38,6 +38,7 @@ beforeAll(async () => {
     name: "User Alice",
     phone: "9876543210",
     accountType: "self",
+    organizationId: orgId,
   });
   patientAId = patientA.id;
 
@@ -63,6 +64,7 @@ beforeAll(async () => {
     name: "User Bob",
     phone: "9876543211",
     accountType: "self",
+    organizationId: orgId,
   });
   patientBId = patientB.id;
 
@@ -145,6 +147,7 @@ describe("Comprehensive Gap Audit & Security Test Suite", () => {
       name: "Walkin Charlie",
       phone: "9111122222",
       accountType: "walkin",
+      organizationId: orgId,
     });
 
     const claimRes = await app.inject({

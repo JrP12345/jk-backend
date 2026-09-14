@@ -8,6 +8,7 @@ import {
   getClinics,
   updateClinic,
   deleteClinic,
+  reactivateClinic,
 } from "../controllers/clinic.ts";
 import {
   assignDoctor,
@@ -29,6 +30,8 @@ export default async function clinicRoutes(app: FastifyInstance) {
   app.get("/api/onboarding/clinics", viewClinics, getClinics);
   app.put("/api/onboarding/clinics/:id", { ...manageClinics, schema: updateClinicSchema }, updateClinic);
   app.delete("/api/onboarding/clinics/:id", manageClinics, deleteClinic);
+  app.post("/api/onboarding/clinics/:id/reactivate", manageClinics, reactivateClinic);
+  app.put("/api/onboarding/clinics/:id/reactivate", manageClinics, reactivateClinic);
 
   // Departments
   app.post("/api/departments", { ...manageClinics, schema: createDepartmentSchema }, createDepartment);

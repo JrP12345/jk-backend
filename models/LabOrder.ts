@@ -1,4 +1,5 @@
 import mongoose, { Schema } from "mongoose";
+import { tenantPlugin } from "../utilities/tenantPlugin.ts";
 
 /**
  * LabOrder — diagnostic order document, extended for the Encounter domain.
@@ -81,6 +82,9 @@ const LabOrderSchema = new Schema({
 
 LabOrderSchema.index({ appointmentId: 1, status: 1 });
 
+// Apply automatic multi-tenant scoping
+LabOrderSchema.plugin(tenantPlugin);
+
 LabOrderSchema.virtual("id").get(function() {
   return this._id.toHexString();
 });
@@ -95,5 +99,5 @@ LabOrderSchema.set("toJSON", {
   },
 });
 
-export const LabOrder = mongoose.model("LabOrder", LabOrderSchema);
+export const LabOrder = mongoose.models.LabOrder || mongoose.model("LabOrder", LabOrderSchema);
 

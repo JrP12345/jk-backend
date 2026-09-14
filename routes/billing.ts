@@ -24,6 +24,8 @@ import {
   getSubscriptionDetails,
   getOrganizationUsageMetrics,
   createCheckoutOrderController,
+  validatePlanDowngradeController,
+  directSwitchPlanController,
   verifyPaymentController,
   razorpayWebhookController,
   cancelSubscriptionController,
@@ -72,6 +74,8 @@ export default async function billingRoutes(app: FastifyInstance) {
 
   // Razorpay Checkout, Verification & Cancellation
   app.post("/api/billing/checkout", auth, createCheckoutOrderController);
+  app.post("/api/billing/validate-downgrade", auth, validatePlanDowngradeController);
+  app.post("/api/billing/switch-plan", auth, directSwitchPlanController);
   app.post("/api/billing/verify-payment", auth, verifyPaymentController);
   app.post("/api/billing/cancel", auth, cancelSubscriptionController);
 

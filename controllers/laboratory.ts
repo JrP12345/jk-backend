@@ -468,6 +468,7 @@ export async function collectSample(req: FastifyRequest, reply: FastifyReply) {
     // Create Audit Log
     await AuditLog.create({
       userId,
+      organizationId: order.organizationId || (order.clinicId as any)?.organizationId || (req as any).user?.organizationId,
       action: "LAB_SAMPLE_COLLECT",
       targetId: order._id,
       targetModel: "LabOrder",
@@ -533,6 +534,7 @@ export async function uploadLabResult(req: FastifyRequest, reply: FastifyReply) 
     // Create Audit Log
     await AuditLog.create({
       userId,
+      organizationId: order.organizationId || (order.clinicId as any)?.organizationId || (req as any).user?.organizationId,
       action: "LAB_RESULT_UPLOAD",
       targetId: order._id,
       targetModel: "LabOrder",
@@ -757,6 +759,7 @@ export async function updateLabOrderStatus(req: FastifyRequest, reply: FastifyRe
 
     await AuditLog.create({
       userId: req.user!.id,
+      organizationId: order.organizationId || (orderAccess as any).organizationId,
       action: "LAB_ORDER_STATUS_UPDATE",
       targetId: order._id,
       targetModel: "LabOrder",
@@ -823,6 +826,7 @@ export async function placeOrderController(req: FastifyRequest, reply: FastifyRe
 
     await AuditLog.create({
       userId,
+      organizationId: order.organizationId || orgId,
       action: "LAB_ORDER_PLACE",
       targetId: order._id,
       targetModel: "LabOrder",
@@ -947,6 +951,7 @@ export async function recordResultController(req: FastifyRequest, reply: Fastify
     if (interpretation === "critical" || (abnormalSignal && abnormalSignal.interpretation === "critical")) {
       await AuditLog.create({
         userId,
+        organizationId: order.organizationId || req.user?.organization_id,
         action: "LAB_CRITICAL_VALUE_ALERT",
         targetId: order._id,
         targetModel: "LabOrder",

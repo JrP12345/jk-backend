@@ -7,6 +7,8 @@ import { Prescription } from "../models/Prescription.ts";
 import { Medicine } from "../models/Medicine.ts";
 import { ServiceCatalog } from "../models/ServiceCatalog.ts";
 import { Invoice } from "../models/Invoice.ts";
+import { User } from "../models/User.ts";
+import { Appointment } from "../models/Appointment.ts";
 import { generateClinicInvoiceNumber } from "../utilities/invoiceNumber.ts";
 import { isModuleEnabledForOrganization } from "../utilities/moduleAccess.ts";
 
@@ -20,7 +22,10 @@ export interface CapturedChargeItem {
   category: string;
 }
 
-export async function compileEncounterCharges(encounterId: string): Promise<{
+export async function compileEncounterCharges(
+  encounterId: string,
+  customConsultFee?: number
+): Promise<{
   encounter: any;
   items: CapturedChargeItem[];
   subtotal: number;
@@ -28,6 +33,9 @@ export async function compileEncounterCharges(encounterId: string): Promise<{
   sgstTotal: number;
   igstTotal: number;
   totalAmount: number;
+  feeType: string;
+  consultationFee: number;
+  isFeeEditable: boolean;
 }> {
   const encounter = await Encounter.findById(encounterId);
   if (!encounter) {
@@ -37,17 +45,37 @@ export async function compileEncounterCharges(encounterId: string): Promise<{
   const { patientId, doctorId, clinicId, organizationId, appointmentId } = encounter;
   const items: CapturedChargeItem[] = [];
 
+  const appointment = appointmentId ? await Appointment.findById(appointmentId) : null;
+
   // 1. Doctor Consultation Fee (skip if already invoiced at booking)
   let skipConsultFee = false;
   if (appointmentId) {
     const existingApptInvoice = await Invoice.findOne({ appointmentId });
-    if (existingApptInvoice) skipConsultFee = true;
+    if (existingApptInvoice && existingApptInvoice.status === "paid") {
+      skipConsultFee = true;
+    }
   }
 
-  if (!skipConsultFee) {
-    const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
-    const consultFee = assignment?.fees || 500;
+  const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
+  const feeType = (appointment as any)?.feeType || (assignment as any)?.feeType || "fixed";
 
+  let consultFee = 0;
+  if (customConsultFee !== undefined && customConsultFee !== null) {
+    consultFee = Number(customConsultFee);
+  } else if ((appointment as any)?.customConsultationFee !== undefined && (appointment as any)?.customConsultationFee !== null) {
+    consultFee = Number((appointment as any).customConsultationFee);
+  } else if (feeType === "post_consultation") {
+    consultFee = (assignment as any)?.fees || 0;
+  } else if (feeType === "free") {
+    consultFee = 0;
+  } else {
+    consultFee = (assignment as any)?.fees ?? (appointment as any)?.paymentAmount ?? 500;
+  }
+
+  const doctorUser = await User.findById(doctorId).select("name").lean();
+  const docName = doctorUser?.name ? doctorUser.name.replace(/^dr\.?\s+/i, "") : String(encounter.doctorId);
+
+  if (!skipConsultFee) {
     const catalogBase = {
       organizationId: encounter.organizationId,
       category: "consultation" as const,
@@ -63,7 +91,9 @@ export async function compileEncounterCharges(encounterId: string): Promise<{
 
     items.push({
       serviceCatalogId: opdCatalogItem ? opdCatalogItem._id.toString() : undefined,
-      description: `Physician Consultation - Dr. ${encounter.doctorId}`,
+      description: feeType === "free"
+        ? `Physician Consultation (Pro Bono) - Dr. ${docName}`
+        : `Physician Consultation - Dr. ${docName}`,
       amount: consultFee,
       quantity: 1,
       hsnSacCode: opdCatalogItem?.hsnSacCode || "999312",
@@ -137,18 +167,35 @@ export async function compileEncounterCharges(encounterId: string): Promise<{
     sgstTotal,
     igstTotal,
     totalAmount,
+    feeType,
+    consultationFee: consultFee,
+    isFeeEditable: feeType === "post_consultation" || !skipConsultFee,
   };
 }
 
-export async function autoGenerateEncounterInvoice(encounterId: string, createdByUserId?: string): Promise<any> {
+export async function autoGenerateEncounterInvoice(
+  encounterId: string,
+  createdByUserId?: string,
+  customConsultFee?: number
+): Promise<any> {
   // Check if invoice already exists for this encounter
   const existing = await Invoice.findOne({ encounterId });
   if (existing) {
     return existing;
   }
 
-  const compiled = await compileEncounterCharges(encounterId);
-  const { encounter, items, subtotal, cgstTotal, sgstTotal, igstTotal, totalAmount } = compiled;
+  const encounter = await Encounter.findById(encounterId);
+  if (!encounter) throw new Error("Encounter not found");
+
+  if (customConsultFee !== undefined && customConsultFee !== null && encounter.appointmentId) {
+    await Appointment.findByIdAndUpdate(encounter.appointmentId, {
+      customConsultationFee: Number(customConsultFee),
+      paymentAmount: Number(customConsultFee),
+    });
+  }
+
+  const compiled = await compileEncounterCharges(encounterId, customConsultFee);
+  const { items, subtotal, cgstTotal, sgstTotal, igstTotal, totalAmount } = compiled;
 
   if (items.length === 0) {
     if (encounter.appointmentId) {
@@ -200,7 +247,10 @@ export async function autoGenerateEncounterInvoice(encounterId: string, createdB
   return invoice;
 }
 
-export async function compileAppointmentCharges(appointmentId: string): Promise<{
+export async function compileAppointmentCharges(
+  appointmentId: string,
+  customConsultFee?: number
+): Promise<{
   appointment: any;
   items: CapturedChargeItem[];
   subtotal: number;
@@ -209,6 +259,9 @@ export async function compileAppointmentCharges(appointmentId: string): Promise<
   igstTotal: number;
   totalAmount: number;
   existingInvoice: any;
+  feeType: string;
+  consultationFee: number;
+  isFeeEditable: boolean;
 }> {
   const { Appointment } = await import("../models/Appointment.ts");
 
@@ -231,11 +284,27 @@ export async function compileAppointmentCharges(appointmentId: string): Promise<
     clinicId: appointment.clinicId,
     isActive: true,
   });
-  const consultFee = assignment?.fees || appointment.paymentAmount || 500;
-  const docName = (appointment.doctorId as any)?.name || "Consultant";
+  const feeType = (appointment as any)?.feeType || (assignment as any)?.feeType || "fixed";
+  let consultFee = 0;
+  if (customConsultFee !== undefined && customConsultFee !== null) {
+    consultFee = Number(customConsultFee);
+  } else if ((appointment as any)?.customConsultationFee !== undefined && (appointment as any)?.customConsultationFee !== null) {
+    consultFee = Number((appointment as any).customConsultationFee);
+  } else if (feeType === "post_consultation") {
+    consultFee = (assignment as any)?.fees || 0;
+  } else if (feeType === "free") {
+    consultFee = 0;
+  } else {
+    consultFee = (assignment as any)?.fees ?? (appointment as any)?.paymentAmount ?? 500;
+  }
+
+  const rawDocName = (appointment.doctorId as any)?.name || "Consultant";
+  const docName = String(rawDocName).replace(/^dr\.?\s+/i, "");
 
   items.push({
-    description: `Physician Consultation - Dr. ${docName}`,
+    description: feeType === "free"
+      ? `Physician Consultation (Pro Bono) - Dr. ${docName}`
+      : `Physician Consultation - Dr. ${docName}`,
     amount: consultFee,
     quantity: 1,
     hsnSacCode: "999312",
@@ -333,5 +402,8 @@ export async function compileAppointmentCharges(appointmentId: string): Promise<
     igstTotal,
     totalAmount,
     existingInvoice,
+    feeType,
+    consultationFee: consultFee,
+    isFeeEditable: feeType === "post_consultation" || (appointment as any)?.paymentStatus !== "paid",
   };
 }

@@ -10,6 +10,7 @@ import { Appointment } from "../models/Appointment.ts";
 import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { AuditLog } from "../models/AuditLog.ts";
+import { SiteVisit } from "../models/SiteVisit.ts";
 import { getAdaptiveConsultationDuration, autoDetectNoShows } from "./queue.ts";
 import { broadcastQueueUpdate } from "../notifications/websocket.ts";
 import { eventBus } from "../events/eventBus.ts";
@@ -173,8 +174,19 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
       clinicAssignmentsMap.get(cid)!.push(a);
     }
 
+    const orgIds = [...new Set(clinics.map((c) => (c.organizationId ? String(c.organizationId) : null)).filter(Boolean))];
+    const orgs = orgIds.length > 0
+      ? await Organization.find({ _id: { $in: orgIds } }).select("_id name logo_url image_url images").lean()
+      : [];
+    const orgMap = new Map<string, any>(orgs.map((o) => [String(o._id), o]));
+
     const formattedClinics = clinics.map((c) => {
       const json = c.toJSON();
+      const org = orgMap.get(String(c.organizationId));
+      const effectiveLogo = c.logo || org?.logo_url || org?.image_url || null;
+      const effectiveImages = (Array.isArray(c.images) && c.images.length > 0) ? c.images : (org?.images || []);
+      const effectiveCover = c.images?.[0] || org?.image_url || effectiveLogo || null;
+
       const assignments = clinicAssignmentsMap.get(String(c._id)) || [];
       const doctorsSummary = assignments.map((a: any) => {
         const profile = profileMap.get(String(a.doctorId._id));
@@ -192,7 +204,10 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
 
       return {
         ...json,
-        image_url: json.logo || null,
+        logo_url: effectiveLogo,
+        image_url: effectiveCover,
+        images: effectiveImages,
+        organizationName: org?.name || null,
         doctorCount: doctorsSummary.length,
         minFee,
         specialties,
@@ -337,6 +352,24 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
           }
         }
 
+        // Query upcoming doctor holidays/leaves for the next 30 days
+        const futureDate = new Date();
+        futureDate.setDate(futureDate.getDate() + 30);
+        const maxFutureDateStr = futureDate.toISOString().slice(0, 10);
+
+        const upcomingOverrides = await DoctorDayOverride.find({
+          clinicId: id,
+          doctorId: assign.doctorId._id,
+          date: { $gte: todayDateStr, $lte: maxFutureDateStr },
+          status: "unavailable",
+        }).select("date reason status").lean();
+
+        const upcomingHolidays = upcomingOverrides.map((o: any) => ({
+          date: o.date,
+          reason: o.reason || "Doctor Holiday / Leave",
+          status: o.status,
+        }));
+
         return {
           id: assign.doctorId._id.toString(),
           doctorId: assign.doctorId._id.toString(),
@@ -347,6 +380,7 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
           qualification: docProfile?.qualification || "MBBS",
           experience_years: docProfile?.experience_years || 1,
           fees: assign.fees,
+          feeType: (assign as any).feeType || (docProfile as any)?.feeType || "fixed",
           timings: assign.workingHours,
           working_days: workingDays,
           description: docProfile?.description || "",
@@ -360,6 +394,7 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
           overrideStatus,
           availabilityOverrideStatus: overrideStatus,
           overrideReason,
+          upcomingHolidays,
           consultationDuration: assign.appointmentDuration || 15,
           waitingPatientsCount,
           estimatedWaitMinutes,
@@ -371,10 +406,24 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
 
     const cleanDoctors = formattedDoctors.filter(d => d !== null);
 
+    const org = clinic.organizationId ? await Organization.findById(clinic.organizationId).lean() : null;
+    const effectiveLogo = clinic.logo || org?.logo_url || org?.image_url || null;
+    const effectiveImages = (Array.isArray(clinic.images) && clinic.images.length > 0) ? clinic.images : (org?.images || []);
+    const effectiveCover = org?.image_url || clinic.images?.[0] || effectiveLogo || null;
+
     const clinicJson = clinic.toJSON();
     return reply.code(200).send(successResponse({
       ...clinicJson,
-      image_url: clinicJson.logo || null,
+      logo_url: effectiveLogo,
+      image_url: effectiveCover,
+      images: effectiveImages,
+      organization: org ? {
+        id: (org as any)._id.toString(),
+        name: org.name,
+        logo_url: org.logo_url,
+        image_url: org.image_url,
+        images: org.images || [],
+      } : null,
       doctors: cleanDoctors
     }));
   } catch (err) {
@@ -682,15 +731,23 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
     let billing: any = null;
 
     if (appointment.status === "completed" || appointment.status === "in-consultation") {
-      const encounter = await Encounter.findOne({ appointmentId: appointment._id });
+      const encounter = await Encounter.findOne({ appointmentId: appointment._id }).sort({ createdAt: -1 });
       if (encounter) {
         const { ClinicalNote } = await import("../models/ClinicalNote.ts");
         const { Prescription } = await import("../models/Prescription.ts");
+        const { decryptField } = await import("../utilities/cryptoEnvelope.ts");
 
         const note = (await ClinicalNote.findOne({ encounterId: encounter._id, isLatest: true }).lean()) as any;
-        const prescriptions = (await Prescription.find({ encounterId: encounter._id, deletedAt: null }).lean()) as any[];
+        let prescriptions = (await Prescription.find({ encounterId: encounter._id, deletedAt: null }).lean()) as any[];
+
+        if (prescriptions.length === 0 && note?.plan?.prescriptionIds?.length > 0) {
+          prescriptions = (await Prescription.find({ _id: { $in: note.plan.prescriptionIds }, deletedAt: null }).lean()) as any[];
+        }
 
         if (note || prescriptions.length > 0) {
+          const rawDoctorAdvice = note?.plan?.treatmentPlan || note?.subjective?.historyOfPresentIllness;
+          const doctorAdvice = (rawDoctorAdvice ? decryptField(rawDoctorAdvice) : null) || "Follow all prescribed medicines and maintain adequate hydration.";
+
           consultationSummary = {
             completedAt: encounter.endedAt || (appointment as any).updatedAt || new Date().toISOString(),
             chiefComplaint: note?.subjective?.chiefComplaint || null,
@@ -699,8 +756,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
                 code: d.code,
                 description: d.description,
               })) || [],
-            doctorAdvice:
-              note?.plan?.treatmentPlan || note?.subjective?.historyOfPresentIllness || "Follow all prescribed medicines and maintain adequate hydration.",
+            doctorAdvice,
             followUp: note?.plan?.followUpDate
               ? {
                   date: note.plan.followUpDate,
@@ -1264,17 +1320,22 @@ export async function printPublicTrackerPrescription(req: FastifyRequest, reply:
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const encounter = await Encounter.findOne({ appointmentId: appointment._id });
+    const encounter = await Encounter.findOne({ appointmentId: appointment._id }).sort({ createdAt: -1 });
     const { ClinicalNote } = await import("../models/ClinicalNote.ts");
     const { Prescription } = await import("../models/Prescription.ts");
     const { Doctor } = await import("../models/Doctor.ts");
+    const { decryptField } = await import("../utilities/cryptoEnvelope.ts");
 
     const note = encounter
       ? (((await ClinicalNote.findOne({ encounterId: encounter._id, isLatest: true }).lean()) as any) || null)
       : null;
-    const prescriptions = encounter
+    let prescriptions = encounter
       ? (((await Prescription.find({ encounterId: encounter._id, deletedAt: null }).lean()) as any[]) || [])
       : [];
+
+    if (prescriptions.length === 0 && note?.plan?.prescriptionIds?.length > 0) {
+      prescriptions = (await Prescription.find({ _id: { $in: note.plan.prescriptionIds }, deletedAt: null }).lean()) as any[];
+    }
 
     const doctorUserId = (appointment.doctorId as any)?._id || appointment.doctorId;
     const doctorProfile = (await Doctor.findOne({ userId: doctorUserId }).lean()) as any;
@@ -1323,7 +1384,8 @@ export async function printPublicTrackerPrescription(req: FastifyRequest, reply:
     const diagnoses = (note?.assessment?.diagnoses?.map((d: any) => d.description || d.code) || [])
       .concat(appointment.diagnosis ? [appointment.diagnosis] : []);
 
-    const doctorAdvice = note?.plan?.treatmentPlan || note?.subjective?.historyOfPresentIllness || appointment.notes;
+    const rawDoctorAdvice = note?.plan?.treatmentPlan || note?.subjective?.historyOfPresentIllness || appointment.notes;
+    const doctorAdvice = rawDoctorAdvice ? decryptField(rawDoctorAdvice) : undefined;
 
     const html = generatePrintablePrescriptionHtml({
       clinicName: clinicDoc?.name || "Healthcare Clinic",
@@ -1370,7 +1432,7 @@ export async function processPublicTrackerPayment(req: FastifyRequest, reply: Fa
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const encounter = await Encounter.findOne({ appointmentId: appointment._id });
+    const encounter = await Encounter.findOne({ appointmentId: appointment._id }).sort({ createdAt: -1 });
     const { Invoice } = await import("../models/Invoice.ts");
 
     const invoice = await Invoice.findOne({
@@ -1493,4 +1555,64 @@ export async function processPublicTrackerPayment(req: FastifyRequest, reply: Fa
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
+
+// ─── Public Site Traffic & Visitor Tracking ────────────────────────
+export async function trackSiteVisitController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { path, clinicId, organizationId, visitorId, referrer } = (req.body || {}) as {
+      path?: string;
+      clinicId?: string;
+      organizationId?: string;
+      visitorId?: string;
+      referrer?: string;
+    };
+
+    if (!path) {
+      return reply.code(400).send(errorResponse("Path is required"));
+    }
+
+    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
+    const cleanIp = Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(",")[0].trim();
+    const userAgent = (req.headers["user-agent"] as string) || "";
+
+    let device: "Desktop" | "Mobile" | "Tablet" | "Other" = "Desktop";
+    if (/tablet|ipad/i.test(userAgent)) device = "Tablet";
+    else if (/mobile|iphone|android/i.test(userAgent)) device = "Mobile";
+
+    let browser = "Other";
+    if (/edg/i.test(userAgent)) browser = "Edge";
+    else if (/chrome/i.test(userAgent)) browser = "Chrome";
+    else if (/safari/i.test(userAgent)) browser = "Safari";
+    else if (/firefox/i.test(userAgent)) browser = "Firefox";
+
+    let os = "Other";
+    if (/windows/i.test(userAgent)) os = "Windows";
+    else if (/macintosh|mac os/i.test(userAgent)) os = "macOS";
+    else if (/iphone|ipad|ios/i.test(userAgent)) os = "iOS";
+    else if (/android/i.test(userAgent)) os = "Android";
+    else if (/linux/i.test(userAgent)) os = "Linux";
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+
+    await SiteVisit.create({
+      date: todayStr,
+      path: path.slice(0, 200),
+      clinicId: clinicId && mongoose.Types.ObjectId.isValid(clinicId) ? clinicId : undefined,
+      organizationId: organizationId && mongoose.Types.ObjectId.isValid(organizationId) ? organizationId : undefined,
+      visitorId: visitorId ? String(visitorId).slice(0, 100) : undefined,
+      ipAddress: cleanIp,
+      userAgent: userAgent.slice(0, 300),
+      device,
+      browser,
+      os,
+      referrer: referrer ? String(referrer).slice(0, 300) : "",
+    });
+
+    return reply.code(200).send(successResponse({ recorded: true }));
+  } catch (err: any) {
+    console.error("trackSiteVisitController error:", err);
+    return reply.code(200).send(successResponse({ recorded: false }));
+  }
+}
+
 

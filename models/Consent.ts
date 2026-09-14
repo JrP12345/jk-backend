@@ -38,7 +38,7 @@ const ConsentSchema = new Schema({
     grantedAt: { type: Date, default: Date.now },
     grantedVia: {
       type: String,
-      enum: ["PATIENT_MOBILE_APP", "CLINIC_KIOSK_OTP", "EMERGENCY_BREAK_GLASS", "DEFAULT_INITIAL_REGISTRATION"],
+      enum: ["PATIENT_MOBILE_APP", "CLINIC_KIOSK_OTP", "DEFAULT_INITIAL_REGISTRATION"],
       default: "DEFAULT_INITIAL_REGISTRATION",
     },
     ipAddress: { type: String },

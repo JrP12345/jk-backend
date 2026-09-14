@@ -17,15 +17,16 @@ describe("Enterprise Clinical Decision Support (CDS) Platform Integration Tests"
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
-        org_name: "CDS Platform Hospital",
+        org_name: `CDS Platform Hospital ${Date.now()}`,
         city: "Bangalore",
         admin_name: "CDS Admin",
-        admin_email: "cds-admin@test.com",
+        admin_email: `cds-admin-${Date.now()}@test.com`,
         admin_password: "Password123",
+        plan: "enterprise",
       },
     });
     expect(orgRes.statusCode).toBe(201);
-    adminCookies = orgRes.headers["set-cookie"] as string[];
+    adminCookies = (orgRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
 
     // 2. Create Clinic
     const clinicRes = await app.inject({
@@ -44,20 +45,22 @@ describe("Enterprise Clinical Decision Support (CDS) Platform Integration Tests"
     clinicId = JSON.parse(clinicRes.body).data.id;
 
     // 3. Create Doctor
+    const docEmail = `ananya.sharma-${Date.now()}@cdstest.com`;
     const doctorRes = await app.inject({
       method: "POST",
       url: "/api/onboarding/doctor",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Dr. Ananya Sharma",
-        email: "ananya.sharma@cdstest.com",
+        email: docEmail,
         password: "Password123",
         specialization: "Clinical Pharmacology",
+        clinicId,
       },
     });
     expect(doctorRes.statusCode).toBe(201);
 
-    const docUser = await User.findOne({ email: "ananya.sharma@cdstest.com" });
+    const docUser = await User.findOne({ email: docEmail });
     expect(docUser).not.toBeNull();
     doctorUserId = docUser!._id.toString();
 
@@ -67,9 +70,10 @@ describe("Enterprise Clinical Decision Support (CDS) Platform Integration Tests"
       url: "/api/auth/register",
       payload: {
         name: "Bob Patient CDS",
-        email: "bob.cds@patient.com",
+        email: `bob.cds-${Date.now()}@patient.com`,
         password: "Password123",
-        phone: "9776655443",
+        phone: `97${Math.floor(10000000 + Math.random() * 90000000)}`,
+        clinicId,
       },
     });
     expect(patientReg.statusCode).toBe(201);

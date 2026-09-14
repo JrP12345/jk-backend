@@ -1,5 +1,6 @@
 import mongoose, { Schema } from "mongoose";
 import { auditPlugin } from "../utilities/auditPlugin.ts";
+import { tenantPlugin } from "../utilities/tenantPlugin.ts";
 
 const InvoiceItemSchema = new Schema({
   serviceCatalogId: { type: Schema.Types.ObjectId, ref: "ServiceCatalog" },
@@ -94,5 +95,6 @@ InvoiceSchema.set("toJSON", {
 });
 
 InvoiceSchema.plugin(auditPlugin);
+InvoiceSchema.plugin(tenantPlugin);
 
-export const Invoice = mongoose.model("Invoice", InvoiceSchema);
+export const Invoice = mongoose.models.Invoice || mongoose.model("Invoice", InvoiceSchema);

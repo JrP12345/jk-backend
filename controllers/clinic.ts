@@ -26,11 +26,13 @@ export async function createClinic(req: FastifyRequest, reply: FastifyReply) {
     const org = await Organization.findById(orgId);
     if (!org) return reply.code(404).send(errorResponse("Target organization not found"));
 
-    if (org.maxClinics) {
-      const existingCount = await Clinic.countDocuments({ organizationId: orgId, isActive: true });
-      if (existingCount >= org.maxClinics && req.user?.role !== "root") {
-        return reply.code(403).send(errorResponse(`Clinic branch quota limit of ${org.maxClinics} reached for ${org.name}'s ${org.plan?.toUpperCase() || "current"} plan. Upgrade subscription to add more clinic branches.`));
-      }
+    // Calculate effective quota based on plan tier to safeguard against stale database records
+    const planQuota = org.plan === "enterprise" ? 99 : org.plan === "pro" ? 5 : 1;
+    const allowedClinics = Math.max(org.maxClinics || 1, planQuota);
+
+    const existingCount = await Clinic.countDocuments({ organizationId: orgId, isActive: true });
+    if (existingCount >= allowedClinics && req.user?.role !== "root") {
+      return reply.code(403).send(errorResponse(`Clinic branch quota limit of ${allowedClinics} reached for ${org.name}'s ${org.plan?.toUpperCase() || "current"} plan. Upgrade subscription to add more clinic branches.`));
     }
 
     if (!name || !city) {
@@ -63,18 +65,31 @@ export async function createClinic(req: FastifyRequest, reply: FastifyReply) {
 
 export async function getClinics(req: FastifyRequest, reply: FastifyReply) {
   try {
+    const { includeInactive, status } = (req.query || {}) as { includeInactive?: string; status?: string };
     const orgId = req.user!.organization_id;
+
+    const filter: any = {};
+    if (status === "inactive") {
+      filter.isActive = false;
+    } else if (status === "all" || includeInactive === "true") {
+      // Do not filter by isActive, return both active and inactive
+    } else {
+      filter.isActive = { $ne: false };
+    }
+
     if (!orgId) {
       if (req.user?.role === "root") {
         const activeOrgs = await Organization.find().select("_id").lean();
         const activeOrgIds = activeOrgs.map((o) => o._id);
-        const clinics = await Clinic.find({ organizationId: { $in: activeOrgIds }, isActive: true }).limit(20).sort({ name: 1 });
+        filter.organizationId = { $in: activeOrgIds };
+        const clinics = await Clinic.find(filter).limit(50).sort({ name: 1 });
         return reply.code(200).send(successResponse(clinics));
       }
       return reply.code(200).send(successResponse([]));
     }
 
-    const clinics = await Clinic.find({ organizationId: orgId, isActive: true }).sort({ name: 1 });
+    filter.organizationId = orgId;
+    const clinics = await Clinic.find(filter).sort({ name: 1 });
     return reply.code(200).send(successResponse(clinics));
   } catch (err) {
     console.error("getClinics error:", err);
@@ -175,6 +190,76 @@ export async function deleteClinic(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(200).send(successResponse(null, "Clinic branch deactivated successfully"));
   } catch (err) {
     console.error("deleteClinic error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+export async function reactivateClinic(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id } = req.params as { id: string };
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return reply.code(400).send(errorResponse("Invalid clinic ID"));
+    }
+
+    const filter: any = { _id: id };
+    if (req.user?.role !== "root") {
+      filter.organizationId = req.user!.organization_id;
+    }
+
+    const clinic = await Clinic.findOne(filter);
+    if (!clinic) {
+      return reply.code(404).send(errorResponse("Clinic not found in your organization"));
+    }
+
+    if (clinic.isActive) {
+      return reply.code(200).send(successResponse(clinic, "Clinic branch is already active"));
+    }
+
+    // Check SaaS Clinic Quota Limit
+    const org = await Organization.findById(clinic.organizationId);
+    if (!org) {
+      return reply.code(404).send(errorResponse("Target organization not found"));
+    }
+
+    const planQuota = org.plan === "enterprise" ? 99 : org.plan === "pro" ? 5 : 1;
+    const allowedClinics = Math.max(org.maxClinics || 1, planQuota);
+
+    const existingCount = await Clinic.countDocuments({
+      organizationId: clinic.organizationId,
+      isActive: { $ne: false },
+    });
+
+    if (existingCount >= allowedClinics && req.user?.role !== "root") {
+      return reply.code(403).send(
+        errorResponse(
+          `Clinic branch quota limit of ${allowedClinics} reached for ${org.name}'s ${org.plan?.toUpperCase() || "current"} plan. Upgrade your subscription plan or deactivate another branch before reactivating this clinic.`
+        )
+      );
+    }
+
+    clinic.isActive = true;
+    await clinic.save();
+
+    // Re-enable doctor assignments for active doctors in the organization
+    const { DoctorAssignment } = await import("../models/DoctorAssignment.ts");
+    const { User } = await import("../models/User.ts");
+    const activeDoctorIds = await User.find({
+      organization_id: clinic.organizationId,
+      role: "doctor",
+      status: { $ne: "inactive" },
+    }).distinct("_id");
+
+    if (activeDoctorIds.length > 0) {
+      await DoctorAssignment.updateMany(
+        { clinicId: clinic._id, doctorId: { $in: activeDoctorIds } },
+        { isActive: true }
+      );
+    }
+
+    return reply.code(200).send(successResponse(clinic, "Clinic branch reactivated successfully"));
+  } catch (err) {
+    console.error("reactivateClinic error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

@@ -23,6 +23,7 @@ import { PendingTwoFactorSetup } from "../models/PendingTwoFactorSetup.ts";
 import { OnboardingDraft } from "../models/OnboardingDraft.ts";
 import { Subscription } from "../models/Subscription.ts";
 import { SubscriptionPayment } from "../models/SubscriptionPayment.ts";
+import { SaaSPlan } from "../models/SaaSPlan.ts";
 import { TwoFactorService } from "../services/TwoFactorService.ts";
 import { emailProvider } from "../notifications/providers/emailProvider.ts";
 import { validatePasswordStrength } from "../middleware/auth.ts";
@@ -196,12 +197,13 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
     const isRootUser = userRole === "root";
     const providedSecret = (req.headers["x-onboarding-secret"] as string) || "";
     const expectedSecret = process.env.ONBOARDING_SECRET?.trim();
+    const isNewOrgMode = (req.headers["x-onboarding-mode"] === "new_org") || ((req.query as any)?.mode === "new_org");
 
-    if (!isRootUser && process.env.NODE_ENV === "production") {
+    if (!isRootUser && process.env.NODE_ENV === "production" && !expectedSecret && !isNewOrgMode) {
       return reply.code(403).send(errorResponse("Forbidden: public self-service onboarding is disabled in production"));
     }
 
-    if (!isRootUser && expectedSecret && providedSecret !== expectedSecret && process.env.NODE_ENV !== "test") {
+    if (!isRootUser && expectedSecret && providedSecret !== expectedSecret && !isNewOrgMode && process.env.NODE_ENV !== "test" && process.env.NODE_ENV !== "development") {
       return reply.code(403).send(errorResponse("Forbidden: invalid onboarding key"));
     }
 
@@ -222,6 +224,10 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
       return reply.code(400).send(errorResponse("org_name, city, admin_name, and admin_email are required"));
     }
 
+    if (/^[0-9+\s-]{6,}$/.test(city.trim())) {
+      return reply.code(400).send(errorResponse("City appears to be a phone number. Please enter a valid city name (e.g. Mumbai, San Francisco)."));
+    }
+
     const existingOrg = await Organization.findOne({
       name: new RegExp(`^${org_name.trim()}$`, "i"),
       city: new RegExp(`^${city.trim()}$`, "i"),
@@ -232,18 +238,25 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
 
     return await withTransaction(async (session) => {
       const selectedPlan = (req.body as any).plan || "starter";
-      let maxClinics = (req.body as any).maxClinics || 10;
-      let maxDoctors = (req.body as any).maxDoctors || 50;
-      let maxStaff = (req.body as any).maxStaff || 50;
+      let maxClinics = (req.body as any).maxClinics;
+      let maxDoctors = (req.body as any).maxDoctors;
+      let maxStaff = (req.body as any).maxStaff;
 
-      if (selectedPlan === "pro") {
-        maxClinics = (req.body as any).maxClinics || 25;
-        maxDoctors = (req.body as any).maxDoctors || 100;
-        maxStaff = (req.body as any).maxStaff || 100;
-      } else if (selectedPlan === "enterprise") {
-        maxClinics = (req.body as any).maxClinics || 999;
-        maxDoctors = (req.body as any).maxDoctors || 999;
-        maxStaff = (req.body as any).maxStaff || 999;
+      if (!maxClinics || !maxDoctors || !maxStaff) {
+        if (selectedPlan === "pro") {
+          maxClinics = maxClinics || 5;
+          maxDoctors = maxDoctors || 15;
+          maxStaff = maxStaff || 25;
+        } else if (selectedPlan === "enterprise") {
+          maxClinics = maxClinics || 99;
+          maxDoctors = maxDoctors || 999;
+          maxStaff = maxStaff || 999;
+        } else {
+          // Starter Plan Defaults: 1 Clinic, 2 Doctors, 5 Staff
+          maxClinics = maxClinics || 1;
+          maxDoctors = maxDoctors || 2;
+          maxStaff = maxStaff || 5;
+        }
       }
 
       const org = await createWithSession(Organization, {
@@ -314,11 +327,11 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
       // Automatically create Primary Clinic branch for the Organization
       await createWithSession(Clinic, {
         organizationId: org._id,
-        name: clinic_name?.trim() || `${org_name} (Main Clinic)`,
+        name: clinic_name?.trim() || org_name.trim(),
         city: clinic_city?.trim() || city,
         address: clinic_address || address || null,
-        phone: clinic_phone || org_phone || null,
-        email: clinic_email || org_email || null,
+        phone: clinic_phone || org_phone || admin_phone || null,
+        email: clinic_email || org_email || admin_email || null,
         timings: timings || null,
       }, session);
 
@@ -411,10 +424,17 @@ export async function getAllOrganizations(req: FastifyRequest, reply: FastifyRep
 export async function updateOrganizationById(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id } = req.params as { id: string };
-    const { name, city, address, phone, email, plan, maxClinics, maxDoctors, maxStaff, status } = req.body as any;
+    const {
+      name, city, address, phone, email, plan, maxClinics, maxDoctors, maxStaff, status,
+      taxId, licenseNumber, currency, timezone, image_url, logo_url, images, description, timings, working_days
+    } = req.body as any;
 
     if (req.user?.role !== "root" && req.user?.organization_id !== id) {
       return reply.code(403).send(errorResponse("Unauthorized to modify this organization"));
+    }
+
+    if (city && /^[0-9+\s-]{6,}$/.test(city.trim())) {
+      return reply.code(400).send(errorResponse("City appears to be a phone number. Please enter a valid city name."));
     }
 
     const updateData: any = {};
@@ -423,18 +443,67 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
     if (address !== undefined) updateData.address = address;
     if (phone !== undefined) updateData.phone = phone;
     if (email !== undefined) updateData.email = email;
-    if (plan) updateData.plan = plan;
-    if (maxClinics) updateData.maxClinics = maxClinics;
-    if (maxDoctors) updateData.maxDoctors = maxDoctors;
-    if (maxStaff) updateData.maxStaff = maxStaff;
+    if (taxId !== undefined) updateData.taxId = taxId;
+    if (licenseNumber !== undefined) updateData.licenseNumber = licenseNumber;
+    if (currency) updateData.currency = currency;
+    if (timezone) updateData.timezone = timezone;
+    if (image_url !== undefined) updateData.image_url = image_url;
+    if (logo_url !== undefined) updateData.logo_url = logo_url;
+    if (images !== undefined) updateData.images = images;
+    if (description !== undefined) updateData.description = description;
+    if (timings !== undefined) updateData.timings = timings;
+    if (working_days !== undefined) updateData.working_days = working_days;
     if (status) {
       updateData.status = status;
       updateData.isActive = status === "active";
     }
 
+    // Synchronize subscription tier quotas and linked Subscription
+    if (plan) {
+      updateData.plan = plan;
+
+      const planSlugs = [plan.toLowerCase()];
+      if (plan.toLowerCase() === "pro") planSlugs.push("professional");
+      if (plan.toLowerCase() === "professional") planSlugs.push("pro");
+
+      const saasPlan = await SaaSPlan.findOne({ slug: { $in: planSlugs } }).lean();
+
+      const defaultMaxClinics = plan === "enterprise" ? 99 : plan === "pro" ? 5 : 1;
+      const defaultMaxDoctors = plan === "enterprise" ? 999 : plan === "pro" ? 15 : 2;
+      const defaultMaxStaff = plan === "enterprise" ? 999 : plan === "pro" ? 25 : 5;
+
+      updateData.maxClinics = maxClinics !== undefined ? maxClinics : (saasPlan?.limits?.maxClinics ?? defaultMaxClinics);
+      updateData.maxDoctors = maxDoctors !== undefined ? maxDoctors : (saasPlan?.limits?.maxDoctors ?? defaultMaxDoctors);
+      updateData.maxStaff = maxStaff !== undefined ? maxStaff : (saasPlan?.limits?.maxStaff ?? defaultMaxStaff);
+
+      if (saasPlan) {
+        await Subscription.findOneAndUpdate(
+          { organizationId: id },
+          {
+            planId: saasPlan._id,
+            status: "active",
+          }
+        );
+      }
+    } else {
+      if (maxClinics !== undefined) updateData.maxClinics = maxClinics;
+      if (maxDoctors !== undefined) updateData.maxDoctors = maxDoctors;
+      if (maxStaff !== undefined) updateData.maxStaff = maxStaff;
+    }
+
     const updatedOrg = await Organization.findByIdAndUpdate(id, updateData, { returnDocument: "after" }).lean();
     if (!updatedOrg) {
       return reply.code(404).send(errorResponse("Organization not found"));
+    }
+
+    // Synchronize primary clinic details if city, address, phone, or email changed
+    const clinicUpdates: any = {};
+    if (city) clinicUpdates.city = city;
+    if (address !== undefined) clinicUpdates.address = address;
+    if (phone !== undefined) clinicUpdates.phone = phone;
+    if (email !== undefined) clinicUpdates.email = email;
+    if (Object.keys(clinicUpdates).length > 0) {
+      await Clinic.findOneAndUpdate({ organizationId: id }, clinicUpdates);
     }
 
     return reply.send(successResponse({ ...updatedOrg, id: (updatedOrg as any)._id.toString() }, "Organization updated successfully"));
@@ -501,13 +570,22 @@ export async function deleteOrganizationById(req: FastifyRequest, reply: Fastify
       Clinic.deleteMany({ $or: [{ organizationId: id }, { organization_id: id }] }),
     ]);
 
-    // 4. Delete linked User accounts (Safely preserve Root Admin users)
+    // 4. Delete linked User accounts (Safely preserve Root Admin users and users who belong to other organizations)
     if (memberUserIds.length > 0) {
-      await User.deleteMany({
-        _id: { $in: memberUserIds },
-        role: { $ne: "root" } // Safely preserve Root Super-Admin!
-      });
-      await RefreshToken.deleteMany({ userId: { $in: memberUserIds } });
+      const usersInOtherOrgs = await OrgMember.find({
+        userId: { $in: memberUserIds },
+        organizationId: { $ne: id },
+      }).distinct("userId");
+      const usersInOtherOrgsSet = new Set(usersInOtherOrgs.map(u => u.toString()));
+
+      const usersToDelete = memberUserIds.filter(uid => !usersInOtherOrgsSet.has(uid.toString()));
+      if (usersToDelete.length > 0) {
+        await User.deleteMany({
+          _id: { $in: usersToDelete },
+          role: { $ne: "root" } // Safely preserve Root Super-Admin!
+        });
+        await RefreshToken.deleteMany({ userId: { $in: usersToDelete } });
+      }
     }
 
     // 5. Delete the Organization record itself
@@ -551,7 +629,8 @@ export async function addDoctor(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse(strength.reason || "Password does not meet complexity requirements"));
     }
 
-    const emailCheck = await User.findOne({ email });
+    const cleanEmail = email.trim().toLowerCase();
+    const emailCheck = await User.findOne({ email: cleanEmail });
     if (emailCheck) return reply.code(409).send(errorResponse("Email already registered"));
 
     // Check SaaS Doctor Quota Limit
@@ -568,7 +647,7 @@ export async function addDoctor(req: FastifyRequest, reply: FastifyReply) {
 
       const newDoctorUser = await createWithSession(User, {
         name,
-        email,
+        email: cleanEmail,
         password: hashedPassword,
         phone: phone || null,
         role: "doctor",
@@ -632,13 +711,14 @@ export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) 
       return reply.code(400).send(errorResponse(strength.reason || "Password does not meet complexity requirements"));
     }
 
-    const emailCheck = await User.findOne({ email });
+    const cleanEmail = email.trim().toLowerCase();
+    const emailCheck = await User.findOne({ email: cleanEmail });
     if (emailCheck) return reply.code(409).send(errorResponse("Email already registered"));
 
-    // Check SaaS Staff Quota Limit
+    // Check SaaS Staff Quota Limit (Counts all non-doctor staff in organization)
     const org = await Organization.findById(orgId);
     if (org && org.maxStaff) {
-      const existingStaffCount = await Receptionist.countDocuments({ organizationId: orgId });
+      const existingStaffCount = await OrgMember.countDocuments({ organizationId: orgId, role: { $nin: ["doctor", "patient", "root"] } });
       if (existingStaffCount >= org.maxStaff && req.user?.role !== "root") {
         return reply.code(403).send(errorResponse(`Staff quota limit of ${org.maxStaff} reached for your ${org.plan?.toUpperCase() || "current"} plan. Upgrade subscription to add more staff.`));
       }
@@ -649,7 +729,7 @@ export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) 
 
       const newRecUser = await createWithSession(User, {
         name,
-        email,
+        email: cleanEmail,
         password: hashedPassword,
         phone: phone || null,
         role: "receptionist",
@@ -822,6 +902,15 @@ export async function addStaff(req: FastifyRequest, reply: FastifyReply) {
     const strength = validatePasswordStrength(password);
     if (!strength.valid) {
       return reply.code(400).send(errorResponse(strength.reason || "Password does not meet complexity requirements"));
+    }
+
+    // Check SaaS Staff Quota Limit (Counts all non-doctor staff in organization)
+    const org = await Organization.findById(orgId);
+    if (org && org.maxStaff) {
+      const existingStaffCount = await OrgMember.countDocuments({ organizationId: orgId, role: { $nin: ["doctor", "patient", "root"] } });
+      if (existingStaffCount >= org.maxStaff && req.user?.role !== "root") {
+        return reply.code(403).send(errorResponse(`Staff quota limit of ${org.maxStaff} reached for your ${org.plan?.toUpperCase() || "current"} plan. Upgrade subscription to add more staff.`));
+      }
     }
 
     return await withTransaction(async (session) => {
@@ -1205,7 +1294,7 @@ export async function updateOrganizationSettings(req: FastifyRequest, reply: Fas
   try {
     const orgId = await resolveTargetOrganizationId(req);
     const {
-      name, city, address, phone, email, description, image_url, timings, working_days
+      name, city, address, phone, email, description, image_url, logo_url, images, timings, working_days
     } = req.body as any;
 
     if (!name || !city) {
@@ -1216,19 +1305,23 @@ export async function updateOrganizationSettings(req: FastifyRequest, reply: Fas
       return reply.code(403).send(errorResponse("Organization context is required"));
     }
 
+    const updatePayload: any = {
+      name,
+      city,
+      address: address || null,
+      phone: phone || null,
+      email: email || null,
+      description: description || null,
+      image_url: image_url || null,
+      timings: timings || null,
+      working_days: working_days || null,
+    };
+    if (logo_url !== undefined) updatePayload.logo_url = logo_url;
+    if (images !== undefined) updatePayload.images = images;
+
     const result = await Organization.findByIdAndUpdate(
       orgId,
-      {
-        name,
-        city,
-        address: address || null,
-        phone: phone || null,
-        email: email || null,
-        description: description || null,
-        image_url: image_url || null,
-        timings: timings || null,
-        working_days: working_days || null,
-      },
+      updatePayload,
       { returnDocument: "after" }
     );
 
@@ -1356,6 +1449,7 @@ export async function setupOnboardingTOTP(req: FastifyRequest, reply: FastifyRep
 
     // Generate fresh TOTP secret for Google Authenticator using TwoFactorService
     const { base32, otpauthUrl } = TwoFactorService.generateSecret(user.email || user.name || "user", "ANANTA");
+    const qrCodeDataUrl = otpauthUrl ? await TwoFactorService.generateQRCodeDataURI(otpauthUrl) : "";
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes TTL
 
     await PendingTwoFactorSetup.deleteMany({ userId: user._id }); // Clear previous pending
@@ -1376,6 +1470,7 @@ export async function setupOnboardingTOTP(req: FastifyRequest, reply: FastifyRep
       successResponse(
         {
           secret: base32,
+          qrCodeDataUrl,
           expiresAt,
           devOtp: process.env.NODE_ENV === "development" ? "123456" : undefined,
         },
@@ -1513,3 +1608,612 @@ export async function getDepartments(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(500).send(errorResponse("Failed to fetch departments"));
   }
 }
+
+/**
+ * Synchronize organization quotas and linked subscriptions to ensure all tenants
+ * have quotas that match their current plan tier (e.g. Pro = 5 clinics, Enterprise = 99 clinics).
+ */
+export async function syncOrganizationPlanQuotas() {
+  try {
+    const plans = await SaaSPlan.find().lean();
+    const planMap = new Map<string, any>();
+    for (const p of plans) {
+      planMap.set(p.slug.toLowerCase(), p);
+    }
+
+    const orgs = await Organization.find({}).lean();
+    let updatedCount = 0;
+
+    for (const org of orgs) {
+      const plan = (org.plan || "starter").toLowerCase();
+      const planSlugs = [plan];
+      if (plan === "pro") planSlugs.push("professional");
+      if (plan === "professional") planSlugs.push("pro");
+
+      let matchedPlan: any = null;
+      for (const slug of planSlugs) {
+        if (planMap.has(slug)) {
+          matchedPlan = planMap.get(slug);
+          break;
+        }
+      }
+
+      const expectedMaxClinics = matchedPlan?.limits?.maxClinics ?? (plan === "enterprise" ? 99 : plan === "pro" ? 5 : 1);
+      const expectedMaxDoctors = matchedPlan?.limits?.maxDoctors ?? (plan === "enterprise" ? 999 : plan === "pro" ? 15 : 2);
+      const expectedMaxStaff = matchedPlan?.limits?.maxStaff ?? (plan === "enterprise" ? 999 : plan === "pro" ? 25 : 5);
+
+      const needsQuotaSync =
+        (org.maxClinics === undefined || org.maxClinics < expectedMaxClinics) ||
+        (org.maxDoctors === undefined || org.maxDoctors < expectedMaxDoctors) ||
+        (org.maxStaff === undefined || org.maxStaff < expectedMaxStaff);
+
+      if (needsQuotaSync) {
+        await Organization.findByIdAndUpdate(org._id, {
+          maxClinics: Math.max(org.maxClinics || 1, expectedMaxClinics),
+          maxDoctors: Math.max(org.maxDoctors || 2, expectedMaxDoctors),
+          maxStaff: Math.max(org.maxStaff || 5, expectedMaxStaff),
+        });
+        updatedCount++;
+      }
+
+      // Ensure subscription is synced with matchedPlan if plan is upgraded
+      if (matchedPlan && (plan === "pro" || plan === "enterprise")) {
+        await Subscription.findOneAndUpdate(
+          { organizationId: org._id },
+          {
+            planId: matchedPlan._id,
+            status: "active",
+          }
+        );
+      }
+    }
+
+    if (updatedCount > 0) {
+      console.log(`[QuotaSync] ✓ Synchronized quotas for ${updatedCount} organizations.`);
+    }
+  } catch (err) {
+    console.error("[QuotaSync] Error synchronizing organization quotas:", err);
+  }
+}
+
+/**
+ * Get all members and personnel of a specific organization for Root / Org Admin
+ * (Enables 1-click impersonation and member directory inspection)
+ */
+export async function getOrganizationMembers(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id } = req.params as { id: string };
+
+    if (!mongoose.isValidObjectId(id)) {
+      return reply.code(400).send(errorResponse("Invalid organization ID"));
+    }
+
+    if (req.user?.role !== "root" && req.user?.organization_id !== id) {
+      return reply.code(403).send(errorResponse("Unauthorized to view members of this organization"));
+    }
+
+    const org = await Organization.findById(id).select("name plan city").lean();
+    if (!org) {
+      return reply.code(404).send(errorResponse("Organization not found"));
+    }
+
+    const userMap = new Map<string, any>();
+
+    // 1. Fetch OrgMembers (Admins, staff)
+    const orgMembers = await OrgMember.find({ organizationId: id })
+      .populate("userId", "name email phone role isActive createdAt")
+      .lean();
+
+    for (const m of orgMembers) {
+      const u = m.userId as any;
+      if (u && u._id) {
+        const uId = u._id.toString();
+        userMap.set(uId, {
+          id: uId,
+          name: u.name,
+          email: u.email,
+          phone: u.phone || null,
+          role: m.role || u.role,
+          isActive: u.isActive !== false,
+          createdAt: u.createdAt,
+          source: "org_member",
+        });
+      }
+    }
+
+    // 2. Fetch Doctors
+    const doctors = await Doctor.find({ organizationId: id })
+      .populate("userId", "name email phone role isActive createdAt")
+      .lean();
+
+    for (const d of doctors) {
+      const u = d.userId as any;
+      if (u && u._id) {
+        const uId = u._id.toString();
+        userMap.set(uId, {
+          id: uId,
+          name: u.name,
+          email: u.email,
+          phone: u.phone || null,
+          role: "doctor",
+          specialization: d.specialization || "General Physician",
+          isActive: u.isActive !== false,
+          createdAt: u.createdAt,
+          source: "doctor",
+        });
+      }
+    }
+
+    // 3. Fetch Receptionists
+    const receptionists = await Receptionist.find({ organizationId: id })
+      .populate("userId", "name email phone role isActive createdAt")
+      .lean();
+
+    for (const r of receptionists) {
+      const u = r.userId as any;
+      if (u && u._id) {
+        const uId = u._id.toString();
+        userMap.set(uId, {
+          id: uId,
+          name: u.name,
+          email: u.email,
+          phone: u.phone || null,
+          role: "receptionist",
+          isActive: u.isActive !== false,
+          createdAt: u.createdAt,
+          source: "receptionist",
+        });
+      }
+    }
+
+    // 4. Fetch any users with organization_id explicitly set to this org
+    const directUsers = await User.find({ organization_id: id })
+      .select("name email phone role isActive createdAt")
+      .lean();
+
+    for (const u of directUsers) {
+      const uId = u._id.toString();
+      if (!userMap.has(uId)) {
+        userMap.set(uId, {
+          id: uId,
+          name: u.name,
+          email: u.email,
+          phone: u.phone || null,
+          role: u.role,
+          isActive: u.isActive !== false,
+          createdAt: u.createdAt,
+          source: "user",
+        });
+      }
+    }
+
+    const members = Array.from(userMap.values()).sort((a, b) => {
+      // Prioritize admin, then doctor, then receptionist, then others
+      const priority: Record<string, number> = { admin: 1, doctor: 2, receptionist: 3, nurse: 4, lab_tech: 5, pharmacist: 6, patient: 7 };
+      const pA = priority[a.role] || 99;
+      const pB = priority[b.role] || 99;
+      return pA - pB;
+    });
+
+    return reply.send(successResponse({
+      organization: org,
+      members,
+      count: members.length,
+    }));
+  } catch (err: any) {
+    console.error("getOrganizationMembers error:", err);
+    return reply.code(500).send(errorResponse("Failed to fetch organization members"));
+  }
+}
+
+/**
+ * Global Platform Users Directory for Root Superadmin
+ * Supports full-text search, role filters, and accurate organization & branch correlation
+ */
+export async function getGlobalUsers(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    if (req.user?.role !== "root" && req.user?.impersonatedBy?.originalRole !== "root") {
+      return reply.code(403).send(errorResponse("Only platform Root Superadmin can access global users"));
+    }
+
+    const { q, role, organizationId, clinicId, page = "1", limit = "50" } = (req.query as any) || {};
+
+    const filter: any = {};
+    if (role && role !== "all") {
+      filter.role = role;
+    }
+
+    // Correlate organization filter with OrgMember, Doctor, Receptionist, and User
+    if (organizationId && organizationId !== "all") {
+      if (mongoose.isValidObjectId(organizationId)) {
+        const orgObjId = new mongoose.Types.ObjectId(organizationId);
+        const [orgMemberUsers, doctorUsers, recUsers, directUsers] = await Promise.all([
+          OrgMember.find({ organizationId: orgObjId }).distinct("userId"),
+          Doctor.find({ organizationId: orgObjId }).distinct("userId"),
+          Receptionist.find({ organizationId: orgObjId }).distinct("userId"),
+          User.find({ organization_id: orgObjId }).distinct("_id"),
+        ]);
+        const matchedUserIds = Array.from(
+          new Set([
+            ...orgMemberUsers.map((id) => id.toString()),
+            ...doctorUsers.map((id) => id.toString()),
+            ...recUsers.map((id) => id.toString()),
+            ...directUsers.map((id) => id.toString()),
+          ])
+        );
+        filter._id = { $in: matchedUserIds.map((id: string) => new mongoose.Types.ObjectId(id)) };
+      }
+    }
+
+    // Correlate clinic/branch filter
+    if (clinicId && clinicId !== "all") {
+      if (mongoose.isValidObjectId(clinicId)) {
+        const clinicObjId = new mongoose.Types.ObjectId(clinicId);
+        const [docAssignments, recs] = await Promise.all([
+          DoctorAssignment.find({ clinicId: clinicObjId }).distinct("doctorId"),
+          Receptionist.find({ clinicId: clinicObjId }).distinct("userId"),
+        ]);
+        const doctors = await Doctor.find({ _id: { $in: docAssignments } }).distinct("userId");
+        const clinicUserIds = Array.from(
+          new Set([...doctors.map((id: any) => id.toString()), ...recs.map((id: any) => id.toString())])
+        );
+        if (filter._id) {
+          const currentIds: string[] = (filter._id.$in || []).map((id: any) => id.toString());
+          const intersection: string[] = currentIds.filter((id: string) => clinicUserIds.includes(id));
+          filter._id = { $in: intersection.map((id: string) => new mongoose.Types.ObjectId(id)) };
+        } else {
+          filter._id = { $in: clinicUserIds.map((id: string) => new mongoose.Types.ObjectId(id)) };
+        }
+      }
+    }
+
+    if (q && q.trim()) {
+      const searchRegex = new RegExp(q.trim(), "i");
+      filter.$or = [
+        { name: searchRegex },
+        { email: searchRegex },
+        { phone: searchRegex },
+      ];
+    }
+
+    const pageNum = Math.max(1, parseInt(page, 10));
+    const pageSize = Math.min(100, Math.max(1, parseInt(limit, 10)));
+    const skip = (pageNum - 1) * pageSize;
+
+    const [users, total] = await Promise.all([
+      User.find(filter)
+        .select("name email phone role isActive organization_id createdAt lastLoginAt")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(pageSize)
+        .lean(),
+      User.countDocuments(filter),
+    ]);
+
+    const userIds = users.map((u) => u._id);
+
+    // 1. Resolve memberships from OrgMember, Doctor, Receptionist
+    const [orgMembers, doctors, receptionists] = await Promise.all([
+      OrgMember.find({ userId: { $in: userIds } }).lean(),
+      Doctor.find({ userId: { $in: userIds } }).lean(),
+      Receptionist.find({ userId: { $in: userIds } }).lean(),
+    ]);
+
+    const userOrgMap = new Map<string, string>();
+    const userClinicMap = new Map<string, string>();
+
+    // Map OrgMember
+    for (const om of orgMembers) {
+      if (om.organizationId) {
+        userOrgMap.set(om.userId.toString(), om.organizationId.toString());
+      }
+    }
+
+    // Map Receptionist
+    for (const rec of receptionists) {
+      if (rec.organizationId && !userOrgMap.has(rec.userId.toString())) {
+        userOrgMap.set(rec.userId.toString(), rec.organizationId.toString());
+      }
+      if (rec.clinicId) {
+        userClinicMap.set(rec.userId.toString(), rec.clinicId.toString());
+      }
+    }
+
+    // Map Doctor & DoctorAssignment
+    const doctorIds = doctors.map((d) => d._id);
+    const docAssignments = await DoctorAssignment.find({ doctorId: { $in: doctorIds } }).lean();
+    const docToClinicMap = new Map<string, string>();
+    for (const da of docAssignments) {
+      if (da.clinicId) {
+        docToClinicMap.set(da.doctorId.toString(), da.clinicId.toString());
+      }
+    }
+
+    for (const doc of doctors) {
+      if (doc.organizationId && !userOrgMap.has(doc.userId.toString())) {
+        userOrgMap.set(doc.userId.toString(), doc.organizationId.toString());
+      }
+      const cId = docToClinicMap.get(doc._id.toString());
+      if (cId) {
+        userClinicMap.set(doc.userId.toString(), cId);
+      }
+    }
+
+    // Fallback to User.organization_id if present
+    for (const u of users) {
+      const uIdStr = u._id.toString();
+      if (!userOrgMap.has(uIdStr) && (u as any).organization_id) {
+        userOrgMap.set(uIdStr, (u as any).organization_id.toString());
+      }
+    }
+
+    // 2. Fetch Organizations & Clinics
+    const allOrgIds = Array.from(new Set(Array.from(userOrgMap.values()))).filter((id) =>
+      mongoose.isValidObjectId(id)
+    );
+    const allClinicIds = Array.from(new Set(Array.from(userClinicMap.values()))).filter((id) =>
+      mongoose.isValidObjectId(id)
+    );
+
+    const [orgs, clinics] = await Promise.all([
+      Organization.find({ _id: { $in: allOrgIds } }).select("name plan city status").lean(),
+      Clinic.find({ _id: { $in: allClinicIds } }).select("name city organizationId").lean(),
+    ]);
+
+    const orgMap = new Map(orgs.map((o) => [o._id.toString(), o]));
+    const clinicMap = new Map(clinics.map((c) => [c._id.toString(), c]));
+
+    const formattedUsers = users.map((u: any) => {
+      const uId = u._id.toString();
+      const orgId = userOrgMap.get(uId) || null;
+      const clinicId = userClinicMap.get(uId) || null;
+      const org = orgId ? orgMap.get(orgId) : null;
+      const clinic = clinicId ? clinicMap.get(clinicId) : null;
+
+      let orgName = "Unassigned";
+      if (u.role === "root") {
+        orgName = "Platform Superadmin / Global";
+      } else if (org) {
+        orgName = (org as any).name;
+      }
+
+      return {
+        id: uId,
+        name: u.name,
+        email: u.email,
+        phone: u.phone,
+        role: u.role,
+        isActive: u.isActive !== false,
+        organizationId: orgId,
+        organizationName: orgName,
+        organizationPlan: org ? (org as any).plan : null,
+        organizationCity: org ? (org as any).city : null,
+        clinicId: clinicId,
+        clinicName: clinic ? (clinic as any).name : null,
+        clinicCity: clinic ? (clinic as any).city : null,
+        createdAt: u.createdAt,
+      };
+    });
+
+    return reply.send(
+      successResponse({
+        users: formattedUsers,
+        total,
+        page: pageNum,
+        limit: pageSize,
+        totalPages: Math.ceil(total / pageSize),
+      })
+    );
+  } catch (err: any) {
+    console.error("getGlobalUsers error:", err);
+    return reply.code(500).send(errorResponse("Failed to fetch global users"));
+  }
+}
+
+/**
+ * Aggregated Multi-Tenant Organization & Branch Hierarchy for Scalable Root Management
+ * GET /api/admin/hierarchy
+ */
+export async function getPlatformHierarchy(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    if (req.user?.role !== "root" && req.user?.impersonatedBy?.originalRole !== "root") {
+      return reply.code(403).send(errorResponse("Only platform Root Superadmin can access platform hierarchy"));
+    }
+
+    // 1. Fetch all Organizations & Clinics
+    const [organizations, clinics, rootUsers] = await Promise.all([
+      Organization.find().sort({ name: 1 }).lean(),
+      Clinic.find({ isActive: true }).sort({ name: 1 }).lean(),
+      User.find({ role: "root" }).select("name email phone role isActive createdAt").lean(),
+    ]);
+
+    const orgIds = organizations.map((o) => o._id);
+
+    // 2. Fetch all members across organizations
+    const [orgMembers, doctors, receptionists] = await Promise.all([
+      OrgMember.find({ organizationId: { $in: orgIds } })
+        .populate("userId", "name email phone role isActive createdAt")
+        .lean(),
+      Doctor.find({ organizationId: { $in: orgIds } })
+        .populate("userId", "name email phone role isActive createdAt")
+        .lean(),
+      Receptionist.find({ organizationId: { $in: orgIds } })
+        .populate("userId", "name email phone role isActive createdAt")
+        .lean(),
+    ]);
+
+    // 3. Fetch Doctor Assignments for branch correlation
+    const docIds = doctors.map((d) => d._id);
+    const doctorAssignments = await DoctorAssignment.find({ doctorId: { $in: docIds } }).lean();
+    const docToClinicMap = new Map<string, string>();
+    for (const da of doctorAssignments) {
+      if (da.clinicId) {
+        docToClinicMap.set(da.doctorId.toString(), da.clinicId.toString());
+      }
+    }
+
+    // Group clinics by organization
+    const orgClinicsMap = new Map<string, any[]>();
+    for (const c of clinics) {
+      if (c.organizationId) {
+        const orgKey = c.organizationId.toString();
+        if (!orgClinicsMap.has(orgKey)) orgClinicsMap.set(orgKey, []);
+        orgClinicsMap.get(orgKey)!.push({
+          id: c._id.toString(),
+          name: c.name,
+          city: c.city,
+          address: c.address,
+          phone: c.phone,
+          members: [],
+        });
+      }
+    }
+
+    // Map organization members
+    const orgHierarchies = organizations.map((org: any) => {
+      const orgIdStr = org._id.toString();
+      const branches = orgClinicsMap.get(orgIdStr) || [];
+      const branchMap = new Map<string, any>(branches.map((b) => [b.id, b]));
+
+      const admins: any[] = [];
+      const unassignedMembers: any[] = [];
+      const seenUserIds = new Set<string>();
+
+      // A) Org Members (Admins & Owners)
+      const currentOrgMembers = orgMembers.filter(
+        (m: any) => m.organizationId?.toString() === orgIdStr
+      );
+      for (const m of currentOrgMembers) {
+        const u = m.userId as any;
+        if (!u || seenUserIds.has(u._id.toString())) continue;
+        seenUserIds.add(u._id.toString());
+
+        const memberData = {
+          id: u._id.toString(),
+          name: u.name,
+          email: u.email,
+          phone: u.phone,
+          role: m.role || u.role,
+          isActive: u.isActive !== false,
+          joinedAt: m.joinedAt || u.createdAt,
+        };
+
+        if (memberData.role === "admin" || memberData.role === "root") {
+          admins.push(memberData);
+        } else {
+          unassignedMembers.push(memberData);
+        }
+      }
+
+      // B) Receptionists (branch linked)
+      const currentRecs = receptionists.filter(
+        (r: any) => r.organizationId?.toString() === orgIdStr
+      );
+      for (const rec of currentRecs) {
+        const u = rec.userId as any;
+        if (!u || seenUserIds.has(u._id.toString())) continue;
+        seenUserIds.add(u._id.toString());
+
+        const memberData = {
+          id: u._id.toString(),
+          name: u.name,
+          email: u.email,
+          phone: u.phone,
+          role: "receptionist",
+          shift: rec.shift,
+          isActive: u.isActive !== false,
+        };
+
+        const branchId = rec.clinicId ? rec.clinicId.toString() : null;
+        if (branchId && branchMap.has(branchId)) {
+          branchMap.get(branchId).members.push(memberData);
+        } else {
+          unassignedMembers.push(memberData);
+        }
+      }
+
+      // C) Doctors (branch linked via assignments)
+      const currentDocs = doctors.filter(
+        (d: any) => d.organizationId?.toString() === orgIdStr
+      );
+      for (const doc of currentDocs) {
+        const u = doc.userId as any;
+        if (!u || seenUserIds.has(u._id.toString())) continue;
+        seenUserIds.add(u._id.toString());
+
+        const memberData = {
+          id: u._id.toString(),
+          name: u.name,
+          email: u.email,
+          phone: u.phone,
+          role: "doctor",
+          specialization: doc.specialization,
+          qualification: doc.qualification,
+          isActive: u.isActive !== false,
+        };
+
+        const branchId = docToClinicMap.get(doc._id.toString());
+        if (branchId && branchMap.has(branchId)) {
+          branchMap.get(branchId).members.push(memberData);
+        } else if (branches.length === 1) {
+          // If org only has 1 branch, associate doctor with it
+          branches[0].members.push(memberData);
+        } else {
+          unassignedMembers.push(memberData);
+        }
+      }
+
+      const totalBranchMembers = branches.reduce((sum, b) => sum + b.members.length, 0);
+
+      return {
+        id: orgIdStr,
+        name: org.name,
+        email: org.email,
+        phone: org.phone,
+        city: org.city,
+        address: org.address,
+        plan: org.plan || "starter",
+        status: org.status || (org.isActive === false ? "inactive" : "active"),
+        maxClinics: org.maxClinics ?? 1,
+        maxDoctors: org.maxDoctors ?? 2,
+        maxStaff: org.maxStaff ?? 5,
+        branches,
+        admins,
+        unassignedMembers,
+        counts: {
+          branches: branches.length,
+          admins: admins.length,
+          totalMembers: admins.length + totalBranchMembers + unassignedMembers.length,
+        },
+      };
+    });
+
+    const totalMembers = orgHierarchies.reduce((sum, o) => sum + o.counts.totalMembers, 0);
+
+    return reply.send(
+      successResponse({
+        summary: {
+          totalOrganizations: organizations.length,
+          totalBranches: clinics.length,
+          totalMembers,
+          totalPlatformAdmins: rootUsers.length,
+        },
+        platformAdmins: rootUsers.map((r: any) => ({
+          id: r._id.toString(),
+          name: r.name,
+          email: r.email,
+          phone: r.phone,
+          role: "root",
+          isActive: r.isActive !== false,
+        })),
+        organizations: orgHierarchies,
+      })
+    );
+  } catch (err: any) {
+    console.error("getPlatformHierarchy error:", err);
+    return reply.code(500).send(errorResponse("Failed to fetch platform hierarchy"));
+  }
+}
+
+
+

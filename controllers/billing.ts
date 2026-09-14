@@ -4,7 +4,7 @@ import { Subscription } from "../models/Subscription.ts";
 import { SubscriptionPayment } from "../models/SubscriptionPayment.ts";
 import { SaaSInvoice } from "../models/SaaSInvoice.ts";
 import { Organization } from "../models/Organization.ts";
-import { subscriptionService } from "../services/billing/SubscriptionService.ts";
+import { subscriptionService, PlanDowngradeViolationError } from "../services/billing/SubscriptionService.ts";
 import { razorpayService } from "../services/billing/RazorpayService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { resolveTargetOrganizationId } from "../utilities/tenant.ts";
@@ -79,7 +79,69 @@ export async function createCheckoutOrderController(req: FastifyRequest, reply: 
 
     return reply.code(200).send(successResponse(checkoutData, "Checkout order created successfully"));
   } catch (err: any) {
+    if (err.name === "PlanDowngradeViolationError" || err.statusCode === 409) {
+      return reply.code(409).send(errorResponse(err.message, {
+        code: "PLAN_DOWNGRADE_LIMIT_EXCEEDED",
+        violations: err.violations,
+        currentUsage: err.currentUsage,
+        targetPlan: err.targetPlan,
+        activeClinics: err.activeClinics,
+      }));
+    }
     return reply.code(400).send(errorResponse(err.message || "Failed to create checkout order"));
+  }
+}
+
+/**
+ * Validate Plan Downgrade Feasibility
+ */
+export async function validatePlanDowngradeController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const orgId = await resolveTargetOrganizationId(req);
+    if (!orgId) {
+      return reply.code(400).send(errorResponse("No organization linked to account"));
+    }
+
+    const { planId } = ((req.body as any) || (req.query as any) || {}) as { planId: string };
+    if (!planId) {
+      return reply.code(400).send(errorResponse("planId is required"));
+    }
+
+    const validation = await subscriptionService.validatePlanDowngrade(orgId, planId);
+    return reply.code(200).send(successResponse(validation, "Downgrade feasibility validated"));
+  } catch (err: any) {
+    return reply.code(400).send(errorResponse(err.message || "Failed to validate plan downgrade"));
+  }
+}
+
+/**
+ * Direct Switch Plan (for free plans or immediate switches without gateway order)
+ */
+export async function directSwitchPlanController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const orgId = await resolveTargetOrganizationId(req);
+    if (!orgId) {
+      return reply.code(400).send(errorResponse("No organization linked to account"));
+    }
+
+    const { planId, billingCycle } = req.body as { planId: string; billingCycle?: "monthly" | "annual" };
+    if (!planId) {
+      return reply.code(400).send(errorResponse("planId is required"));
+    }
+
+    const result = await subscriptionService.directSwitchPlan(orgId, planId, billingCycle || "monthly");
+    return reply.code(200).send(successResponse(result, "Plan switched successfully"));
+  } catch (err: any) {
+    if (err.name === "PlanDowngradeViolationError" || err.statusCode === 409) {
+      return reply.code(409).send(errorResponse(err.message, {
+        code: "PLAN_DOWNGRADE_LIMIT_EXCEEDED",
+        violations: err.violations,
+        currentUsage: err.currentUsage,
+        targetPlan: err.targetPlan,
+        activeClinics: err.activeClinics,
+      }));
+    }
+    return reply.code(400).send(errorResponse(err.message || "Failed to switch plan"));
   }
 }
 

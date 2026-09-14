@@ -147,7 +147,13 @@ export class AppointmentService {
       (assignment as any)?.workingHours
     );
 
-    if (!effectiveSchedule.isWorkingDay || effectiveSchedule.intervals.length === 0) {
+    const isHoliday = effectiveSchedule.overrideActive && effectiveSchedule.overrideStatus === "unavailable";
+    if (isHoliday) {
+      if (!input.forceBooking) {
+        const reason = effectiveSchedule.overrideReason ? `: ${effectiveSchedule.overrideReason}` : "";
+        throw new AppointmentDomainError(`Doctor is on holiday / leave on the selected date${reason}`, 400);
+      }
+    } else if (!effectiveSchedule.isWorkingDay || effectiveSchedule.intervals.length === 0) {
       if (!input.forceBooking && !isStaffRole && !isWalkIn && process.env.NODE_ENV !== "test") {
         const reason = effectiveSchedule.overrideReason ? `: ${effectiveSchedule.overrideReason}` : "";
         throw new AppointmentDomainError(`Doctor is not available on the selected date${reason}`, 400);
@@ -268,7 +274,7 @@ export class AppointmentService {
             option
           );
           if (!isAuthorized) {
-            const selfPatient = await Patient.findById(targetPatientId, null, option);
+            const selfPatient = await Patient.findById(targetPatientId, null, option).setOptions({ bypassTenantFilter: true });
             if (
               selfPatient &&
               (String(selfPatient.userId || "") === String(actor.id) ||
@@ -284,7 +290,9 @@ export class AppointmentService {
         } else {
           // Default to self patient profile
           let selfRel = await FamilyRelationship.findOne({ userId: actor.id, relationship: "self", status: "active" }, null, option);
-          let patient = selfRel ? await Patient.findById(selfRel.patientId, null, option) : await Patient.findOne({ userId: actor.id }, null, option);
+          let patient = selfRel
+            ? await Patient.findById(selfRel.patientId, null, option).setOptions({ bypassTenantFilter: true })
+            : await Patient.findOne({ userId: actor.id }, null, option).setOptions({ bypassTenantFilter: true });
 
           if (!patient) {
             const loggedUser = await User.findById(actor.id, null, option);
@@ -322,8 +330,11 @@ export class AppointmentService {
       } else {
         // Staff / Receptionist / Doctor booking
         if (patientId) {
-          const patient = await Patient.findById(patientId, null, option);
+          const patient = await Patient.findById(patientId, null, option).setOptions({ bypassTenantFilter: true });
           if (!patient) throw new AppointmentDomainError("Patient profile not found", 404);
+          if (patient.organizationId && orgId && patient.organizationId.toString() !== orgId.toString()) {
+            throw new AppointmentDomainError("Patient profile not found", 404);
+          }
           if (!patient.organizationId && orgId) {
             patient.organizationId = orgId as any;
             await patient.save(option);
@@ -407,8 +418,20 @@ export class AppointmentService {
       const slotDuration = duration || (assignment as any)?.appointmentDuration || 15;
       const visitReason = reasonForVisit || (followUpForAppointmentId ? "follow_up" : "new_consultation");
 
-      const isPaymentRequired = (assignment as any)?.paymentRequired === true;
-      const initialPaymentStatus = isPaymentRequired ? "pending" : (payAtClinic ? "pay_at_clinic" : "not_required");
+      const assignmentFeeType = (assignment as any)?.feeType || "fixed";
+      let isPaymentRequired = (assignment as any)?.paymentRequired === true;
+      let initialPaymentStatus = isPaymentRequired ? "pending" : (payAtClinic ? "pay_at_clinic" : "not_required");
+      let apptPaymentAmount = (assignment as any)?.fees ?? 500;
+
+      if (assignmentFeeType === "post_consultation") {
+        isPaymentRequired = false;
+        initialPaymentStatus = "pay_at_clinic";
+        apptPaymentAmount = 0;
+      } else if (assignmentFeeType === "free") {
+        isPaymentRequired = false;
+        initialPaymentStatus = "not_required";
+        apptPaymentAmount = 0;
+      }
 
       const appointment = await createWithSession(Appointment, {
         organizationId: orgId || null,
@@ -420,6 +443,8 @@ export class AppointmentService {
         appointmentType,
         status: isPaymentRequired ? "pending_payment" : initialStatus,
         paymentStatus: initialPaymentStatus,
+        feeType: assignmentFeeType,
+        paymentAmount: apptPaymentAmount,
         bookingSource: actor.role === "patient" ? "patient_portal" : "staff",
         tokenNumber,
         queuePosition,
@@ -445,7 +470,8 @@ export class AppointmentService {
       }
 
       // 8. Auto Invoice for consultation fees (with 7-Day Courtesy Follow-Up Rule)
-      if ((assignment as any)?.fees && (assignment as any).fees > 0) {
+      // Only auto-invoice fixed fee doctors at booking time. Post-consultation billing happens post-encounter.
+      if (assignmentFeeType === "fixed" && (assignment as any)?.fees && (assignment as any).fees > 0) {
         const doctorUser = await User.findById(doctorId, null, option);
         const doctorName = doctorUser?.name ? `Dr. ${doctorUser.name}` : `Dr. ${doctorId}`;
         const invoiceNumber = await generateClinicInvoiceNumber(clinicId, requestedDate.getFullYear());

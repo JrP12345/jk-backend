@@ -63,6 +63,7 @@ describe("Security & Safety Hardening Verification Suite", () => {
     });
 
     testPatient = await Patient.create({
+      organizationId: orgId,
       userId: testPatientUser._id,
       name: "Alice Original",
       phone: "9876500001",

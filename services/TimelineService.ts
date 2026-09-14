@@ -67,7 +67,7 @@ export class TimelineService {
     const startTime = Date.now();
 
     // 1. Verify Patient exists and check Multi-Tenant isolation
-    const patient = await Patient.findById(query.patientId).lean() as any;
+    const patient = await Patient.findById(query.patientId).setOptions({ bypassTenantFilter: true }).lean() as any;
     if (!patient) {
       return null; // Controller will return 404
     }

@@ -324,7 +324,7 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
     expect(adaptiveStatusRes.statusCode).toBe(200);
     const adaptiveData = JSON.parse(adaptiveStatusRes.body).data;
     expect(adaptiveData.isAdaptiveDuration).toBe(true);
-    expect(adaptiveData.averageDuration).toBe(9); // (8 + 10) / 2 = 9 minutes
+    expect(adaptiveData.averageDuration).toBe(13); // Damped hybrid: 0.6 * 15 + 0.4 * 9 = 12.6 -> 13 mins
     expect(adaptiveData.adaptiveSampleCount).toBe(2);
   });
 });

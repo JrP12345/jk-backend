@@ -24,6 +24,10 @@ export interface GetDoctorSlotsResult {
   dayEndTime?: string;
   isWorkingDay?: boolean;
   overrideActive?: boolean;
+  isHoliday?: boolean;
+  holidayReason?: string | null;
+  overrideStatus?: string | null;
+  overrideReason?: string | null;
 }
 
 export interface ParsedDaySchedule {
@@ -252,6 +256,8 @@ export async function getDoctorAvailableSlots(
   const dayName = daysOfWeek[targetDate.getDay()];
 
   const daySchedule = await getEffectiveDoctorSchedule(doctorId, clinicId, targetDate, assignment?.workingHours);
+  const isHoliday = daySchedule.overrideActive && daySchedule.overrideStatus === "unavailable";
+  const holidayReason = isHoliday ? (daySchedule.overrideReason || "Doctor Holiday / Leave") : null;
 
   if (bookingMode === "sequential_queue") {
     return {
@@ -260,13 +266,17 @@ export async function getDoctorAvailableSlots(
       bookingMode: "sequential_queue",
       maxDailyTokens,
       tokensToday,
-      nextToken,
+      nextToken: daySchedule.isWorkingDay ? nextToken : (null as any),
       slots: [],
       workingHours: daySchedule.workingHoursLabel,
       dayStartTime: daySchedule.dayStartTime,
       dayEndTime: daySchedule.dayEndTime,
       isWorkingDay: daySchedule.isWorkingDay,
       overrideActive: daySchedule.overrideActive,
+      isHoliday,
+      holidayReason,
+      overrideStatus: daySchedule.overrideStatus || null,
+      overrideReason: daySchedule.overrideReason || null,
     };
   }
 
@@ -277,13 +287,17 @@ export async function getDoctorAvailableSlots(
       bookingMode: "time_slot",
       maxDailyTokens,
       tokensToday,
-      nextToken,
+      nextToken: null as any,
       slots: [],
       workingHours: daySchedule.workingHoursLabel,
       dayStartTime: daySchedule.dayStartTime,
       dayEndTime: daySchedule.dayEndTime,
       isWorkingDay: false,
       overrideActive: daySchedule.overrideActive,
+      isHoliday,
+      holidayReason,
+      overrideStatus: daySchedule.overrideStatus || null,
+      overrideReason: daySchedule.overrideReason || null,
     };
   }
 
@@ -356,5 +370,10 @@ export async function getDoctorAvailableSlots(
     dayStartTime: daySchedule.dayStartTime,
     dayEndTime: daySchedule.dayEndTime,
     isWorkingDay: daySchedule.isWorkingDay,
+    overrideActive: daySchedule.overrideActive,
+    isHoliday: false,
+    holidayReason: null,
+    overrideStatus: daySchedule.overrideStatus || null,
+    overrideReason: daySchedule.overrideReason || null,
   };
 }

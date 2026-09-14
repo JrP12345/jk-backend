@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate } from "../middleware/auth.ts";
+import { authenticate, authorize } from "../middleware/auth.ts";
 import {
   requestOtpController,
   verifyOtpController,
@@ -11,11 +11,16 @@ import {
   logout,
   me,
   switchOrganization,
+  impersonateUser,
+  stopImpersonation,
   verifyEmail,
   forgotPassword,
   resetPassword,
   getActiveSessions,
   revokeSession,
+  getAdminAllSessions,
+  adminRevokeSession,
+  adminRevokeUserSessions,
   googleLoginController,
 } from "../controllers/auth.ts";
 import { loginSchema, registerPatientSchema } from "../schemas/auth.ts";
@@ -124,9 +129,14 @@ export default async function authRoutes(app: FastifyInstance) {
   app.post("/api/auth/forgot-password", { config: { rateLimit: { max: isTest ? 1000 : 3, timeWindow: "1 minute" } } }, forgotPassword);
   app.post("/api/auth/reset-password", { config: { rateLimit: { max: isTest ? 1000 : 3, timeWindow: "1 minute" } } }, resetPassword);
 
-  // Session Device Management
+  // Session Device Management (Self)
   app.get("/api/auth/sessions", { preHandler: [authenticate] }, getActiveSessions);
   app.delete("/api/auth/sessions/:sessionId", { preHandler: [authenticate] }, revokeSession);
+
+  // Root Superadmin Session Supervision & Forced Logout
+  app.get("/api/auth/admin/sessions", { preHandler: [authenticate, authorize("root")] }, getAdminAllSessions);
+  app.delete("/api/auth/admin/sessions/:sessionId", { preHandler: [authenticate, authorize("root")] }, adminRevokeSession);
+  app.post("/api/auth/admin/sessions/revoke-user/:userId", { preHandler: [authenticate, authorize("root")] }, adminRevokeUserSessions);
 
   // POST /api/auth/refresh      — Exchange refreshToken for a new accessToken
   app.post("/api/auth/refresh", refreshAccessToken);
@@ -140,4 +150,10 @@ export default async function authRoutes(app: FastifyInstance) {
 
   // POST /api/auth/switch-org   — Switch active organization context (Root Admin only)
   app.post("/api/auth/switch-org", { preHandler: [authenticate] }, switchOrganization);
+
+  // POST /api/auth/impersonate  — Zero-password user impersonation ("Login As") (Root Admin only)
+  app.post("/api/auth/impersonate", { preHandler: [authenticate] }, impersonateUser);
+
+  // POST /api/auth/stop-impersonation — Restore original Root Superadmin session
+  app.post("/api/auth/stop-impersonation", { preHandler: [authenticate] }, stopImpersonation);
 }

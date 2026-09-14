@@ -66,7 +66,7 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
     }
     if (!orgId) return reply.code(403).send(errorResponse("Organization context required"));
 
-    const patient = await Patient.findById(finalPatientId);
+    const patient = await Patient.findById(finalPatientId).setOptions({ bypassTenantFilter: true });
     if (!patient) return reply.code(404).send(errorResponse("Patient profile not found"));
     if (patient.organizationId && clinicAccess.organizationId && patient.organizationId.toString() !== clinicAccess.organizationId) {
       return reply.code(404).send(errorResponse("Patient profile not found"));

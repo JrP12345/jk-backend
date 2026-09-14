@@ -14,6 +14,30 @@ import { razorpayService } from "./RazorpayService.ts";
 import { eventBus } from "../../events/eventBus.ts";
 import { EVENT_TYPES } from "../../events/types.ts";
 
+export class PlanDowngradeViolationError extends Error {
+  statusCode: number;
+  violations: Array<{
+    resource: "clinics" | "doctors" | "staff";
+    current: number;
+    allowed: number;
+    excess: number;
+    message: string;
+  }>;
+  currentUsage: any;
+  targetPlan: any;
+  activeClinics: any[];
+
+  constructor(validation: any) {
+    super(validation.violations[0]?.message || "Active resources exceed target plan limits");
+    this.name = "PlanDowngradeViolationError";
+    this.statusCode = 409;
+    this.violations = validation.violations;
+    this.currentUsage = validation.currentUsage;
+    this.targetPlan = validation.targetPlan;
+    this.activeClinics = validation.activeClinics || [];
+  }
+}
+
 export class SubscriptionService {
   /**
    * Get or initialize subscription for an organization (defaults to 15-day trial on Starter plan)
@@ -22,61 +46,71 @@ export class SubscriptionService {
     let sub: any = await Subscription.findOne({ organizationId }).populate("planId");
     
     if (!sub) {
-      // Find default starter plan or create fallback starter plan
-      let starterPlan = await SaaSPlan.findOne({ slug: "starter" });
-      if (!starterPlan) {
-        starterPlan = await SaaSPlan.create({
+      const existingOrg = await Organization.findById(organizationId);
+      const targetSlug = existingOrg?.plan || "starter";
+      let chosenPlan = await SaaSPlan.findOne({ slug: targetSlug });
+      if (!chosenPlan) {
+        chosenPlan = await SaaSPlan.findOne({ slug: "starter" });
+      }
+      if (!chosenPlan) {
+        chosenPlan = await SaaSPlan.create({
           name: "Starter",
           slug: "starter",
-          description: "Ideal for small clinics and independent practices.",
-          monthlyPrice: 1999,
-          annualPrice: 19990,
-          trialDays: 15,
+          description: "Essential tools for individual practitioners & single clinics",
+          monthlyPrice: 0,
+          annualPrice: 0,
+          currency: "INR",
+          trialDays: customTrialDays || 15,
           limits: {
-            maxClinics: 10,
-            maxDoctors: 10,
-            maxStaff: 20,
+            maxClinics: 1,
+            maxDoctors: 2,
+            maxStaff: 5,
             maxPatients: 500,
             maxAppointments: 1000,
             maxStorageMB: 1024,
+            maxMonthlyWhatsApp: 100,
           },
           features: {
-            analytics: true,
+            analytics: false,
             auditLogs: false,
             multiBranch: false,
             dataExport: false,
             apiAccess: false,
             aiFeatures: false,
+            whatsappIntegration: true,
           },
         });
       }
 
-      const trialStart = new Date();
-      const numDays = customTrialDays || starterPlan.trialDays || 15;
-      const trialEnds = new Date(Date.now() + numDays * 24 * 60 * 60 * 1000);
+      const now = new Date();
+      const trialDays = customTrialDays || chosenPlan.trialDays || 15;
+      const trialEndsAt = new Date(now.getTime() + trialDays * 24 * 60 * 60 * 1000);
 
       sub = await Subscription.create({
         organizationId,
-        planId: starterPlan._id,
-        status: "trialing",
+        planId: chosenPlan._id,
+        status: existingOrg?.plan === "enterprise" ? "active" : "trialing",
         billingCycle: "monthly",
-        trialStartedAt: trialStart,
-        trialEndsAt: trialEnds,
-        currentPeriodStart: trialStart,
-        currentPeriodEnd: trialEnds,
+        trialStartedAt: now,
+        trialEndsAt,
+        currentPeriodStart: now,
+        currentPeriodEnd: trialEndsAt,
       });
 
-      sub = await Subscription.findById(sub._id).populate("planId");
-
-      // Update organization limits if lower than plan limits
-      const existingOrg = await Organization.findById(organizationId);
       if (existingOrg) {
-        const newMaxClinics = Math.max(existingOrg.maxClinics || 1, starterPlan.limits?.maxClinics ?? 10);
+        const newMaxClinics = Math.max(existingOrg.maxClinics ?? 1, chosenPlan.limits?.maxClinics ?? 1);
+        const newMaxDoctors = Math.max(existingOrg.maxDoctors ?? 2, chosenPlan.limits?.maxDoctors ?? 2);
+        const newMaxStaff = Math.max(existingOrg.maxStaff ?? 5, chosenPlan.limits?.maxStaff ?? 5);
         await Organization.findByIdAndUpdate(organizationId, {
-          plan: existingOrg.plan || starterPlan.slug,
+          plan: existingOrg.plan || chosenPlan.slug,
           maxClinics: newMaxClinics,
+          maxDoctors: newMaxDoctors,
+          maxStaff: newMaxStaff,
         });
       }
+
+      // Populate planId
+      sub = await Subscription.findById(sub._id).populate("planId");
     }
 
     // Auto-expire trial if trial date passed
@@ -94,15 +128,15 @@ export class SubscriptionService {
   async getOrganizationUsage(organizationId: string) {
     const orgObjId = new mongoose.Types.ObjectId(organizationId);
 
-    // Fetch clinics count
-    const clinicsCount = await Clinic.countDocuments({ organizationId: orgObjId });
-    // Fetch doctors count
-    const doctorsCount = await Doctor.countDocuments({ organizationId: orgObjId });
-    // Fetch staff count (receptionists + other staff)
-    const staffCount = await Receptionist.countDocuments({ organizationId: orgObjId });
+    // Fetch active clinics count (only operating, non-deactivated branches)
+    const clinicsCount = await Clinic.countDocuments({ organizationId: orgObjId, isActive: { $ne: false } });
+    // Fetch active doctors count
+    const doctorsCount = await Doctor.countDocuments({ organizationId: orgObjId, status: { $ne: "inactive" } });
+    // Fetch active staff count (receptionists)
+    const staffCount = await Receptionist.countDocuments({ organizationId: orgObjId, status: { $ne: "inactive" } });
 
     // Fetch patients count linked to org clinics
-    const orgClinics = await Clinic.find({ organizationId: orgObjId }).select("_id");
+    const orgClinics = await Clinic.find({ organizationId: orgObjId, isActive: { $ne: false } }).select("_id");
     const clinicIds = orgClinics.map(c => c._id);
     const patientsCount = await Patient.countDocuments({ organizationId: orgObjId });
     const appointmentsCount = await Appointment.countDocuments({ clinicId: { $in: clinicIds } });
@@ -138,12 +172,158 @@ export class SubscriptionService {
   }
 
   /**
+   * Validate if organization's active resource footprint fits within a target plan's quota limits.
+   * Prevents downgrade to a tier where active clinics, doctors, or staff exceed the tier quota.
+   */
+  async validatePlanDowngrade(organizationId: string, targetPlanId: string) {
+    const orgObjId = new mongoose.Types.ObjectId(organizationId);
+    const targetPlan = await SaaSPlan.findById(targetPlanId);
+    if (!targetPlan || targetPlan.status !== "active") {
+      throw new Error("Target plan not found or not active");
+    }
+
+    const activeClinicsCount = await Clinic.countDocuments({ organizationId: orgObjId, isActive: { $ne: false } });
+    const activeDoctorsCount = await Doctor.countDocuments({ organizationId: orgObjId, status: { $ne: "inactive" } });
+    const activeStaffCount = await Receptionist.countDocuments({ organizationId: orgObjId, status: { $ne: "inactive" } });
+
+    const activeClinics = await Clinic.find({ organizationId: orgObjId, isActive: { $ne: false } })
+      .select("_id name city address phone")
+      .lean();
+
+    const maxClinics = targetPlan.limits?.maxClinics ?? 1;
+    const maxDoctors = targetPlan.limits?.maxDoctors ?? 2;
+    const maxStaff = targetPlan.limits?.maxStaff ?? 5;
+
+    const violations: Array<{
+      resource: "clinics" | "doctors" | "staff";
+      current: number;
+      allowed: number;
+      excess: number;
+      message: string;
+    }> = [];
+
+    if (activeClinicsCount > maxClinics) {
+      violations.push({
+        resource: "clinics",
+        current: activeClinicsCount,
+        allowed: maxClinics,
+        excess: activeClinicsCount - maxClinics,
+        message: `You currently have ${activeClinicsCount} active clinic branches, but the ${targetPlan.name} plan allows a maximum of ${maxClinics}. Please deactivate ${activeClinicsCount - maxClinics} branch(es) before downgrading.`,
+      });
+    }
+
+    if (activeDoctorsCount > maxDoctors) {
+      violations.push({
+        resource: "doctors",
+        current: activeDoctorsCount,
+        allowed: maxDoctors,
+        excess: activeDoctorsCount - maxDoctors,
+        message: `You currently have ${activeDoctorsCount} active doctors, but the ${targetPlan.name} plan allows a maximum of ${maxDoctors}. Please deactivate ${activeDoctorsCount - maxDoctors} doctor(s) before downgrading.`,
+      });
+    }
+
+    if (activeStaffCount > maxStaff) {
+      violations.push({
+        resource: "staff",
+        current: activeStaffCount,
+        allowed: maxStaff,
+        excess: activeStaffCount - maxStaff,
+        message: `You currently have ${activeStaffCount} active staff members, but the ${targetPlan.name} plan allows a maximum of ${maxStaff}. Please deactivate ${activeStaffCount - maxStaff} staff member(s) before downgrading.`,
+      });
+    }
+
+    return {
+      canDowngrade: violations.length === 0,
+      targetPlan: {
+        id: targetPlan._id.toString(),
+        name: targetPlan.name,
+        slug: targetPlan.slug,
+        monthlyPrice: targetPlan.monthlyPrice,
+        limits: targetPlan.limits,
+      },
+      currentUsage: {
+        clinics: activeClinicsCount,
+        doctors: activeDoctorsCount,
+        staff: activeStaffCount,
+      },
+      activeClinics: activeClinics.map((c: any) => ({
+        id: c._id.toString(),
+        name: c.name,
+        city: c.city,
+        address: c.address,
+      })),
+      violations,
+    };
+  }
+
+  /**
+   * Direct Switch Plan (for free tiers or direct plan adjustments without Razorpay gateway order)
+   */
+  async directSwitchPlan(organizationId: string, planId: string, billingCycle: "monthly" | "annual" = "monthly") {
+    const plan = await SaaSPlan.findById(planId);
+    if (!plan || plan.status !== "active") {
+      throw new Error("Selected plan is not available");
+    }
+
+    const validation = await this.validatePlanDowngrade(organizationId, planId);
+    if (!validation.canDowngrade) {
+      throw new PlanDowngradeViolationError(validation);
+    }
+
+    const subscription = await this.getOrInitializeSubscription(organizationId);
+
+    const now = new Date();
+    const periodEnd = new Date(now);
+    if (billingCycle === "annual") {
+      periodEnd.setFullYear(periodEnd.getFullYear() + 1);
+    } else {
+      periodEnd.setMonth(periodEnd.getMonth() + 1);
+    }
+
+    subscription.planId = plan._id;
+    subscription.status = "active";
+    subscription.billingCycle = billingCycle;
+    subscription.currentPeriodStart = now;
+    subscription.currentPeriodEnd = periodEnd;
+    await subscription.save();
+
+    await Organization.findByIdAndUpdate(organizationId, {
+      plan: plan.slug,
+      maxClinics: plan.limits?.maxClinics ?? 1,
+      maxDoctors: plan.limits?.maxDoctors ?? 2,
+      maxStaff: plan.limits?.maxStaff ?? 5,
+    });
+
+    eventBus.publish({
+      eventType: EVENT_TYPES.BILLING_INVOICE_GENERATED,
+      category: "billing",
+      organizationId,
+      title: "Plan Changed",
+      message: `Your subscription has been switched to ${plan.name} (${billingCycle}).`,
+      severity: "info",
+      actionUrl: "/dashboard/settings/billing",
+    });
+
+    return {
+      subscription,
+      planName: plan.name,
+      planSlug: plan.slug,
+    };
+  }
+
+  /**
    * Create Razorpay Checkout Order for upgrade or renewal
    */
   async createCheckoutOrder(organizationId: string, planId: string, billingCycle: "monthly" | "annual") {
     const plan = await SaaSPlan.findById(planId);
     if (!plan || plan.status !== "active") {
       throw new Error("Selected plan is not available");
+    }
+
+    // Pre-flight check: Ensure active resource footprint fits within plan limits
+    const validation = await this.validatePlanDowngrade(organizationId, planId);
+    if (!validation.canDowngrade) {
+      throw new PlanDowngradeViolationError(validation);
     }
 
     const subscription = await this.getOrInitializeSubscription(organizationId);

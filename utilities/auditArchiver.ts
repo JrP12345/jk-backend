@@ -1,8 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import mongoose from "mongoose";
 import { AuditLog } from "../models/AuditLog.ts";
+import { AuditCheckpoint } from "../models/AuditCheckpoint.ts";
 
 export interface ArchiveOptions {
+  organizationId?: string;
   olderThanDays?: number;
   batchSize?: number;
   exportDir?: string;
@@ -20,6 +23,7 @@ export interface ArchiveResult {
  * Archives AuditLog records older than a specified retention period (default: 90 days).
  * Formats the records as NDJSON (newline-delimited JSON) for cold storage compression and compliance retention.
  * Deletes archived records from MongoDB in manageable batches to maintain index efficiency and prevent memory spikes.
+ * Records an AuditCheckpoint to anchor cryptographic hash verification for remaining records.
  */
 export async function archiveAuditLogs(options: ArchiveOptions = {}): Promise<ArchiveResult> {
   const olderThanDays = options.olderThanDays ?? 90;
@@ -31,6 +35,10 @@ export async function archiveAuditLogs(options: ArchiveOptions = {}): Promise<Ar
   cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
 
   const baseFilter: Record<string, any> = { createdAt: { $lt: cutoffDate } };
+  if (options.organizationId) {
+    baseFilter.organizationId = new mongoose.Types.ObjectId(options.organizationId);
+  }
+
   const totalEligible = await AuditLog.countDocuments(baseFilter);
 
   if (totalEligible === 0) {
@@ -51,6 +59,11 @@ export async function archiveAuditLogs(options: ArchiveOptions = {}): Promise<Ar
   let lastSeenId: any = null;
   let hasMore = true;
 
+  // Track the highest sequence and hash for checkpointing
+  let maxArchivedSequence = 0;
+  let maxArchivedHash = "";
+  let maxArchivedOrgId: any = null;
+
   while (hasMore) {
     const queryFilter: Record<string, any> = { ...baseFilter };
     if (!deleteArchived && lastSeenId) {
@@ -65,6 +78,14 @@ export async function archiveAuditLogs(options: ArchiveOptions = {}): Promise<Ar
     if (docs.length === 0) {
       hasMore = false;
       break;
+    }
+
+    for (const doc of docs) {
+      if (doc.sequence && doc.sequence > maxArchivedSequence) {
+        maxArchivedSequence = doc.sequence;
+        maxArchivedHash = doc.hash || "";
+        maxArchivedOrgId = doc.organizationId || null;
+      }
     }
 
     const ndjsonChunk = docs.map((doc) => JSON.stringify(doc)).join("\n") + "\n";
@@ -82,6 +103,18 @@ export async function archiveAuditLogs(options: ArchiveOptions = {}): Promise<Ar
     if (docs.length < batchSize) {
       hasMore = false;
     }
+  }
+
+  // Create cryptographic anchor checkpoint if records were deleted and had valid sequences
+  if (deleteArchived && deletedCount > 0 && maxArchivedSequence > 0 && maxArchivedHash) {
+    await AuditCheckpoint.create({
+      organizationId: options.organizationId ? new mongoose.Types.ObjectId(options.organizationId) : maxArchivedOrgId,
+      archivedUpToSequence: maxArchivedSequence,
+      archivedUpToHash: maxArchivedHash,
+      archivedCount: deletedCount,
+      archiveFilePath: filePath,
+      cutoffDate,
+    });
   }
 
   return {

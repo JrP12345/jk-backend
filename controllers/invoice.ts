@@ -417,8 +417,10 @@ export async function getEncounterChargesPreview(req: FastifyRequest, reply: Fas
       return reply.code(access.statusCode).send(errorResponse(access.message));
     }
 
+    const { customConsultFee, customConsultationFee } = (req.query as any) || {};
+    const parsedFee = customConsultFee !== undefined ? Number(customConsultFee) : (customConsultationFee !== undefined ? Number(customConsultationFee) : undefined);
     const { compileEncounterCharges } = await import("../services/ChargeCaptureService.ts");
-    const preview = await compileEncounterCharges(encounterId);
+    const preview = await compileEncounterCharges(encounterId, parsedFee);
 
     return reply.code(200).send(successResponse(preview, "Encounter charges compiled successfully"));
   } catch (err: any) {
@@ -431,6 +433,8 @@ export async function autoGenerateInvoiceForEncounter(req: FastifyRequest, reply
   try {
     const userId = req.user!.id;
     const { encounterId } = req.params as { encounterId: string };
+    const { customConsultFee, customConsultationFee } = (req.body as any) || {};
+    const parsedFee = customConsultFee !== undefined ? Number(customConsultFee) : (customConsultationFee !== undefined ? Number(customConsultationFee) : undefined);
 
     if (!mongoose.Types.ObjectId.isValid(encounterId)) {
       return reply.code(400).send(errorResponse("Invalid encounter ID"));
@@ -447,7 +451,7 @@ export async function autoGenerateInvoiceForEncounter(req: FastifyRequest, reply
     }
 
     const { autoGenerateEncounterInvoice } = await import("../services/ChargeCaptureService.ts");
-    const invoice = await autoGenerateEncounterInvoice(encounterId, userId);
+    const invoice = await autoGenerateEncounterInvoice(encounterId, userId, parsedFee);
 
     if (!invoice) {
       return reply.code(200).send(successResponse(null, "No additional billable charges for this encounter"));
@@ -606,8 +610,10 @@ export async function getConsolidatedCheckoutPreview(req: FastifyRequest, reply:
       return reply.code(access.statusCode).send(errorResponse(access.message));
     }
 
+    const { customConsultFee, customConsultationFee } = (req.query as any) || {};
+    const parsedFee = customConsultFee !== undefined ? Number(customConsultFee) : (customConsultationFee !== undefined ? Number(customConsultationFee) : undefined);
     const { compileAppointmentCharges } = await import("../services/ChargeCaptureService.ts");
-    const compiled = await compileAppointmentCharges(appointmentId);
+    const compiled = await compileAppointmentCharges(appointmentId, parsedFee);
 
     return reply.code(200).send(
       successResponse(
@@ -620,6 +626,9 @@ export async function getConsolidatedCheckoutPreview(req: FastifyRequest, reply:
           igstTotal: compiled.igstTotal,
           totalAmount: compiled.totalAmount,
           existingInvoice: compiled.existingInvoice,
+          feeType: compiled.feeType,
+          consultationFee: compiled.consultationFee,
+          isFeeEditable: compiled.isFeeEditable,
           isAlreadyPaid: (appointment as any).paymentStatus === "paid",
         },
         "Consolidated checkout preview compiled successfully"
@@ -634,7 +643,7 @@ export async function getConsolidatedCheckoutPreview(req: FastifyRequest, reply:
 export async function processConsolidatedCheckout(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userId = req.user!.id;
-    const { appointmentId, paymentMethod, amountPaid, discount, referenceNumber, notes } =
+    const { appointmentId, paymentMethod, amountPaid, discount, referenceNumber, notes, customConsultFee, customConsultationFee } =
       (req.body as {
         appointmentId: string;
         paymentMethod: string;
@@ -642,6 +651,8 @@ export async function processConsolidatedCheckout(req: FastifyRequest, reply: Fa
         discount?: number;
         referenceNumber?: string;
         notes?: string;
+        customConsultFee?: number;
+        customConsultationFee?: number;
       }) || {};
 
     if (!appointmentId || !mongoose.Types.ObjectId.isValid(appointmentId)) {
@@ -659,11 +670,18 @@ export async function processConsolidatedCheckout(req: FastifyRequest, reply: Fa
       return reply.code(access.statusCode).send(errorResponse(access.message));
     }
 
+    const parsedFee = customConsultFee !== undefined ? Number(customConsultFee) : (customConsultationFee !== undefined ? Number(customConsultationFee) : undefined);
+    if (parsedFee !== undefined) {
+      appointment.customConsultationFee = parsedFee;
+      appointment.paymentAmount = parsedFee;
+      await appointment.save();
+    }
+
     const { compileAppointmentCharges } = await import("../services/ChargeCaptureService.ts");
     const { generateClinicInvoiceNumber } = await import("../utilities/invoiceNumber.ts");
     const { broadcastQueueUpdate } = await import("../notifications/websocket.ts");
 
-    const compiled = await compileAppointmentCharges(appointmentId);
+    const compiled = await compileAppointmentCharges(appointmentId, parsedFee);
     const { items, subtotal, cgstTotal, sgstTotal, igstTotal } = compiled;
 
     const discountAmount = Math.max(0, Number(discount) || 0);

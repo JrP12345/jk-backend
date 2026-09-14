@@ -11,6 +11,7 @@ import {
   joinPublicQueue,
   processPublicTrackerReturn,
   getPublicQueueTv,
+  trackSiteVisitController,
 } from "../controllers/public.ts";
 
 import { getDoctorSlots } from "../controllers/appointment.ts";
@@ -54,5 +55,8 @@ export default async function publicRoutes(app: FastifyInstance) {
   // GET /api/public/queue-tv/:clinicId — Public Waiting Room TV display feed (kiosk/monitors)
   app.get("/api/public/queue-tv/:clinicId", getPublicQueueTv);
   app.get("/api/public/queue/tv", getPublicQueueTv);
+
+  // POST /api/public/track-visit — Anonymous site traffic and clinic attribution tracking
+  app.post("/api/public/track-visit", trackSiteVisitController);
 }
 

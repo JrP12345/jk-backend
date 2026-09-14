@@ -30,7 +30,11 @@ export class ConsultationProvider implements TimelineProvider {
     if (query.organizationId && !query.isCrossOrgAllowed) {
       noteQuery.organizationId = query.organizationId;
     }
-    const notes = await ClinicalNote.find(noteQuery)
+    const noteFind = ClinicalNote.find(noteQuery);
+    if (query.isCrossOrgAllowed) {
+      noteFind.setOptions({ bypassTenantFilter: true });
+    }
+    const notes = await noteFind
       .populate("doctorId", "name email")
       .populate("clinicId", "name city")
       .populate("objective.observationIds")

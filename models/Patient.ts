@@ -1,5 +1,7 @@
 import mongoose, { Schema } from "mongoose";
 import { getNextAtomicSequence } from "./Counter.ts";
+import { tenantPlugin } from "../utilities/tenantPlugin.ts";
+import { encryptField, decryptField } from "../utilities/cryptoEnvelope.ts";
 
 const PatientSchema = new Schema({
   userId: { type: Schema.Types.ObjectId, ref: "User", unique: true, sparse: true, index: true },
@@ -26,7 +28,11 @@ const PatientSchema = new Schema({
   nationality: { type: String, trim: true, default: "Indian" },
   allergies: [{ type: String }],
   conditions: [{ type: String }],
-  medicalNotes: { type: String },
+  medicalNotes: {
+    type: String,
+    get: decryptField,
+    set: encryptField,
+  },
 
   emergencyContacts: [
     {
@@ -104,12 +110,16 @@ PatientSchema.pre("save", async function () {
   }
 });
 
+// Apply automatic multi-tenant scoping
+PatientSchema.plugin(tenantPlugin);
+
 PatientSchema.virtual("id").get(function() {
   return this._id.toHexString();
 });
 
 PatientSchema.set("toJSON", {
   virtuals: true,
+  getters: true,
   transform: (doc, ret: any) => {
     ret.id = ret._id.toString();
     delete ret._id;
@@ -118,4 +128,9 @@ PatientSchema.set("toJSON", {
   }
 });
 
-export const Patient = mongoose.model("Patient", PatientSchema);
+PatientSchema.set("toObject", {
+  virtuals: true,
+  getters: true,
+});
+
+export const Patient = mongoose.models.Patient || mongoose.model("Patient", PatientSchema);

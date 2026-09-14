@@ -6,7 +6,8 @@ const DoctorSchema = new Schema({
   specialization: { type: String },
   qualification: { type: String },
   experience_years: { type: Number },
-  fees: { type: Number },
+  fees: { type: Number, default: 0 },
+  feeType: { type: String, enum: ["fixed", "post_consultation", "free"], default: "fixed" },
   timings: { type: String }, // JSON string of schedule
   working_days: { type: String }, // JSON string
   description: { type: String },

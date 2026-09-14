@@ -41,33 +41,79 @@ export function verifyTwoFactorChallenge(token: string): { userId: string; purpo
 }
 
 
+import { User } from "../models/User.ts";
+
+// ─── Fast in-memory cache of revoked session IDs ─────────────────
+export const revokedSessionIds = new Set<string>();
+
+export function revokeSessionCache(sessionId: string): void {
+  if (!sessionId) return;
+  revokedSessionIds.add(sessionId);
+  if (revokedSessionIds.size > 10000) {
+    const first = revokedSessionIds.values().next().value;
+    if (first) revokedSessionIds.delete(first);
+  }
+}
+
 // ─── Refresh Token (opaque random + SHA-256 hash in DB) ─────────
 
 /**
  * Create an opaque refresh token, store its SHA-256 hash in the DB.
- * Enforces a maximum of 5 concurrent active sessions per user by revoking oldest sessions.
+ * For root users: strictly enforces 1 single active session by revoking all other sessions.
+ * For other users: enforces maximum of 5 concurrent active sessions.
  * Long-lived: 7 days.
  */
-export async function createRefreshToken(
+export async function createRefreshTokenDetails(
   userId: string,
-  meta?: { ipAddress?: string; userAgent?: string; deviceName?: string; organizationId?: string; isGuest?: boolean }
-): Promise<string> {
+  meta?: {
+    ipAddress?: string;
+    userAgent?: string;
+    deviceName?: string;
+    organizationId?: string;
+    isGuest?: boolean;
+    isRoot?: boolean;
+    impersonatedBy?: { id: string; email: string; name: string; originalRole: string };
+  }
+): Promise<{ rawToken: string; sessionId: string }> {
   const rawToken = crypto.randomBytes(48).toString("hex");
   const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
-  // Evict oldest session if active sessions count >= 5
-  const activeSessions = await RefreshToken.find({ userId, revoked: false, expiresAt: { $gt: new Date() } })
-    .sort({ createdAt: 1 })
-    .lean();
-
-  if (activeSessions.length >= 5) {
-    const oldestToEvictCount = activeSessions.length - 4; // leave room for 1 new session
-    const idsToRevoke = activeSessions.slice(0, oldestToEvictCount).map((s) => s._id);
-    await RefreshToken.updateMany({ _id: { $in: idsToRevoke } }, { revoked: true });
+  let isRoot = meta?.isRoot;
+  if (isRoot === undefined) {
+    try {
+      const user = await User.findById(userId).select("role").lean();
+      isRoot = user?.role === "root";
+    } catch {
+      isRoot = false;
+    }
   }
 
-  await RefreshToken.create({
+  // ROOT SINGLE-SESSION ENFORCEMENT:
+  // Root can only have 1 active session at any given time. If another login occurs,
+  // immediately revoke all previous active sessions.
+  if (isRoot) {
+    const existingRootSessions = await RefreshToken.find({ userId, revoked: false }).select("_id").lean();
+    if (existingRootSessions.length > 0) {
+      const ids = existingRootSessions.map((s) => s._id.toString());
+      await RefreshToken.updateMany({ userId, revoked: false }, { revoked: true, revocationReason: "displaced" });
+      ids.forEach((id) => revokeSessionCache(id));
+    }
+  } else {
+    // Standard user: Evict oldest session if active sessions count >= 5
+    const activeSessions = await RefreshToken.find({ userId, revoked: false, expiresAt: { $gt: new Date() } })
+      .sort({ createdAt: 1 })
+      .lean();
+
+    if (activeSessions.length >= 5) {
+      const oldestToEvictCount = activeSessions.length - 4; // leave room for 1 new session
+      const idsToRevoke = activeSessions.slice(0, oldestToEvictCount).map((s) => s._id);
+      await RefreshToken.updateMany({ _id: { $in: idsToRevoke } }, { revoked: true, revocationReason: "displaced" });
+      idsToRevoke.forEach((id) => revokeSessionCache(id.toString()));
+    }
+  }
+
+  const sessionRecord = await RefreshToken.create({
     userId,
     organizationId: meta?.organizationId || undefined,
     tokenHash,
@@ -76,9 +122,26 @@ export async function createRefreshToken(
     userAgent: meta?.userAgent || "",
     deviceName: meta?.deviceName || "Browser Session",
     isGuest: meta?.isGuest ?? false,
+    impersonatedBy: meta?.impersonatedBy || undefined,
     lastActiveAt: new Date(),
   });
 
+  return { rawToken, sessionId: sessionRecord._id.toString() };
+}
+
+export async function createRefreshToken(
+  userId: string,
+  meta?: {
+    ipAddress?: string;
+    userAgent?: string;
+    deviceName?: string;
+    organizationId?: string;
+    isGuest?: boolean;
+    isRoot?: boolean;
+    impersonatedBy?: { id: string; email: string; name: string; originalRole: string };
+  }
+): Promise<string> {
+  const { rawToken } = await createRefreshTokenDetails(userId, meta);
   return rawToken;
 }
 
@@ -102,7 +165,9 @@ export async function validateRefreshToken(rawToken: string): Promise<string | n
  * Revoke all refresh tokens for a user (e.g. on logout or password change).
  */
 export async function revokeAllRefreshTokens(userId: string): Promise<void> {
-  await RefreshToken.updateMany({ userId }, { revoked: true });
+  const activeSessions = await RefreshToken.find({ userId, revoked: false }).select("_id").lean();
+  await RefreshToken.updateMany({ userId }, { revoked: true, revocationReason: "logout" });
+  activeSessions.forEach((s) => revokeSessionCache(s._id.toString()));
 }
 
 

@@ -32,7 +32,7 @@ export async function createImagingStudy(req: FastifyRequest, reply: FastifyRepl
     const clinicAccess = await checkClinicAccess(req, clinicId);
     if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
 
-    const patient = await Patient.findById(patientId);
+    const patient = await Patient.findById(patientId).setOptions({ bypassTenantFilter: true });
     if (!patient) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
     }

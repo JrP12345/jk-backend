@@ -32,7 +32,8 @@ describe("Multi-Tenancy Data Isolation Integration Tests", () => {
         city: "Mumbai",
         admin_name: "Admin A",
         admin_email: "adminA@orgA.com",
-        admin_password: "Password123!"
+        admin_password: "Password123!",
+        plan: "enterprise"
       }
     });
     expect(resOrgA.statusCode).toBe(201);
@@ -57,7 +58,8 @@ describe("Multi-Tenancy Data Isolation Integration Tests", () => {
         city: "Delhi",
         admin_name: "Admin B",
         admin_email: "adminB@orgB.com",
-        admin_password: "Password123!"
+        admin_password: "Password123!",
+        plan: "enterprise"
       }
     });
     expect(resOrgB.statusCode).toBe(201);
@@ -83,7 +85,7 @@ describe("Multi-Tenancy Data Isolation Integration Tests", () => {
       method: "POST",
       url: "/api/onboarding/doctors/assignments",
       headers: { cookie: orgACookies.join("; ") },
-      payload: { doctorId: docAUserId, clinicId: clinicAId, fees: 500, workingHours: "09:00 - 17:00" }
+      payload: { doctorId: docAUserId, clinicId: clinicAId, fees: 500, workingHours: "00:00 - 23:59" }
     });
     expect(resAssign.statusCode).toBe(201);
 
@@ -97,6 +99,7 @@ describe("Multi-Tenancy Data Isolation Integration Tests", () => {
         doctorId: docAUserId,
         appointmentTime: new Date().toISOString(),
         appointmentType: "walk-in",
+        forceBooking: true,
         patientDetails: {
           name: "John Doe Patient A",
           dob: "1990-01-01",

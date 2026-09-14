@@ -22,15 +22,16 @@ describe("Orders & Results Management Integration Tests", () => {
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
-        org_name: "Orders Diagnostic Hospital",
+        org_name: `Orders Diagnostic Hospital ${Date.now()}`,
         city: "Chennai",
         admin_name: "Orders Admin",
         admin_email: `orders-admin-${Date.now()}@test.com`,
         admin_password: "Password123",
+        plan: "enterprise",
       },
     });
     expect(orgRes.statusCode).toBe(201);
-    adminCookies = orgRes.headers["set-cookie"] as string[];
+    adminCookies = (orgRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
     const orgData = JSON.parse(orgRes.body).data;
     orgId = orgData.organization.id;
     adminUserId = orgData.user.id || orgData.user._id;
@@ -69,9 +70,10 @@ describe("Orders & Results Management Integration Tests", () => {
       url: "/api/auth/register",
       payload: {
         name: "Lab Patient Alice",
-        email: "lab.alice@patient.com",
+        email: `lab.alice-${Date.now()}@patient.com`,
         password: "Password123",
-        phone: "9007654321",
+        phone: `90${Math.floor(10000000 + Math.random() * 90000000)}`,
+        clinicId,
       },
     });
     expect(patientReg.statusCode).toBe(201);

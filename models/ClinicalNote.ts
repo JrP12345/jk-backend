@@ -1,4 +1,6 @@
 import mongoose, { Schema } from "mongoose";
+import { tenantPlugin } from "../utilities/tenantPlugin.ts";
+import { encryptField, decryptField } from "../utilities/cryptoEnvelope.ts";
 
 const StructuredDiagnosisSchema = new Schema({
   code: { type: String, required: true },
@@ -20,7 +22,12 @@ const ClinicalNoteSchema = new Schema({
 
   subjective: {
     chiefComplaint: { type: String, required: true },
-    historyOfPresentIllness: { type: String, default: "" },
+    historyOfPresentIllness: {
+      type: String,
+      default: "",
+      get: decryptField,
+      set: encryptField,
+    },
     symptoms: [{ type: String }],
   },
   objective: {
@@ -32,7 +39,12 @@ const ClinicalNoteSchema = new Schema({
     severity: { type: String, enum: ["mild", "moderate", "acute", "severe"], default: "moderate" },
   },
   plan: {
-    treatmentPlan: { type: String, default: "" },
+    treatmentPlan: {
+      type: String,
+      default: "",
+      get: decryptField,
+      set: encryptField,
+    },
     prescriptionIds: [{ type: Schema.Types.ObjectId, ref: "Prescription" }],
     labOrderIds: [{ type: Schema.Types.ObjectId, ref: "LabOrder" }],
     followUpDate: { type: Date },
@@ -60,12 +72,16 @@ const ClinicalNoteSchema = new Schema({
 
 ClinicalNoteSchema.index({ organizationId: 1, patientId: 1, isLatest: 1 });
 
+// Apply automatic multi-tenant scoping
+ClinicalNoteSchema.plugin(tenantPlugin);
+
 ClinicalNoteSchema.virtual("id").get(function () {
   return this._id.toHexString();
 });
 
 ClinicalNoteSchema.set("toJSON", {
   virtuals: true,
+  getters: true,
   transform: (doc, ret: any) => {
     ret.id = ret._id.toString();
     delete ret._id;
@@ -74,4 +90,10 @@ ClinicalNoteSchema.set("toJSON", {
   },
 });
 
-export const ClinicalNote = mongoose.model("ClinicalNote", ClinicalNoteSchema);
+ClinicalNoteSchema.set("toObject", {
+  virtuals: true,
+  getters: true,
+});
+
+export const ClinicalNote =
+  mongoose.models.ClinicalNote || mongoose.model("ClinicalNote", ClinicalNoteSchema);

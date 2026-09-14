@@ -10,20 +10,25 @@ describe("Invoice & Payment API Integration Tests", () => {
   let patientId: string;
   let invoiceId: string;
 
+  let adminEmail = `yash_${Date.now()}@test.com`;
+  let patientEmail = `raj_${Date.now()}@test.com`;
+
   it("should setup basic requirements", async () => {
     // 1. Create org + admin
     const bootstrapRes = await app.inject({
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
-        org_name: "Surat Medical Invoicing",
+        org_name: `Surat Medical Invoicing ${Date.now()}`,
         city: "Surat",
         admin_name: "Yash Chopra",
-        admin_email: "yash@test.com",
+        admin_email: adminEmail,
         admin_password: "Password123",
+        plan: "enterprise",
       },
     });
-    adminCookies = bootstrapRes.headers["set-cookie"] as string[];
+    expect(bootstrapRes.statusCode).toBe(201);
+    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
 
     // 2. Create clinic
     const clinicRes = await app.inject({
@@ -32,21 +37,23 @@ describe("Invoice & Payment API Integration Tests", () => {
       headers: { cookie: adminCookies.join("; ") },
       payload: { name: "Billing Hub", city: "Surat" },
     });
+    expect(clinicRes.statusCode).toBe(201);
     clinicId = JSON.parse(clinicRes.body).data.id;
 
     // 3. Register patient
     const patRes = await app.inject({
       method: "POST",
       url: "/api/auth/register",
-      payload: { name: "Raj Kapoor", email: "raj@test.com", password: "Password123" },
+      payload: { name: "Raj Kapoor", email: patientEmail, password: "Password123", clinicId },
     });
-    const patUser = await User.findOne({ email: "raj@test.com" });
+    expect(patRes.statusCode).toBe(201);
+    const patUser = await User.findOne({ email: patientEmail });
     const patProfile = await Patient.findOne({ userId: patUser!._id });
     patientId = patProfile!._id.toString();
   });
 
   it("should successfully create a manual invoice with custom itemizations", async () => {
-    const docUser = await User.findOne({ email: "yash@test.com" });
+    const docUser = await User.findOne({ email: adminEmail });
     
     const response = await app.inject({
       method: "POST",

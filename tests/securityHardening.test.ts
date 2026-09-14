@@ -41,6 +41,35 @@ describe("Production Security Hardening Tests", () => {
     expect(body.error).toContain("CSRF");
   });
 
+  it("allows cookie-authenticated POST endpoints from mobile devices on local network / LAN", async () => {
+    // Mobile device connecting via LAN IP on port 3000
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/logout",
+      headers: {
+        origin: "http://10.109.193.146:3000",
+        cookie: "access_token=dummy_access_token; refresh_token=dummy_refresh_token",
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("allows cookie-authenticated requests proxied with X-Forwarded-Host", async () => {
+    // Mobile request proxied through Next.js rewrite with X-Forwarded-Host
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/logout",
+      headers: {
+        origin: "http://192.168.1.150:3000",
+        "x-forwarded-host": "192.168.1.150:3000",
+        cookie: "access_token=dummy_access_token; refresh_token=dummy_refresh_token",
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+  });
+
   it("allows safe read-only GET requests regardless of origin", async () => {
     const res = await app.inject({
       method: "GET",

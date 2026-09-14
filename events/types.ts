@@ -60,7 +60,6 @@ export const EVENT_TYPES = {
   PATIENT_REGISTERED: "ananta.patient.registered",
   CONSENT_GRANTED: "ananta.consent.granted",
   CONSENT_REVOKED: "ananta.consent.revoked",
-  CONSENT_BREAK_GLASS: "ananta.consent.break_glass",
   CLINICAL_ENCOUNTER_STARTED: "ananta.clinical.encounter.started",
   CLINICAL_ENCOUNTER_COMPLETED: "ananta.clinical.encounter.completed",
   CLINICAL_NOTE_SIGNED: "ananta.clinical.note.signed",

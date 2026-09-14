@@ -9,15 +9,17 @@ import { Role } from "../models/Role.ts";
 import {
   generateAccessToken,
   createRefreshToken,
+  createRefreshTokenDetails,
   validateRefreshToken,
   revokeAllRefreshTokens,
+  revokeSessionCache,
   successResponse,
   errorResponse,
   generateTwoFactorChallenge,
   verifyTwoFactorChallenge,
   normalizePhone,
 } from "../utilities/helpers.ts";
-import { setAuthCookies, clearAuthCookies } from "../utilities/types.ts";
+import { setAuthCookies, clearAuthCookies, type JwtPayload } from "../utilities/types.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 
@@ -473,15 +475,21 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
       );
     }
 
-    const payload = { id: user.id, email: user.email || "", role: user.role, organization_id };
-    const accessToken = generateAccessToken(payload);
-
     // Extract device metadata for session tracking
     const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
     const userAgent = (req.headers["user-agent"] as string) || "";
     const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
 
-    const refreshToken = await createRefreshToken(user.id, { ipAddress, userAgent, deviceName, organizationId: organization_id });
+    const { rawToken: refreshToken, sessionId } = await createRefreshTokenDetails(user.id, {
+      ipAddress,
+      userAgent,
+      deviceName,
+      organizationId: organization_id,
+      isRoot: user.role === "root",
+    });
+
+    const payload = { id: user.id, email: user.email || "", role: user.role, organization_id, sessionId };
+    const accessToken = generateAccessToken(payload);
 
     // Set httpOnly cookies
     setAuthCookies(reply, accessToken, refreshToken);
@@ -553,12 +561,19 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
 
     const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
     const permissions = roleConfig?.permissions || [];
-    const payload = { id: user.id, email: user.email || "", role: user.role, organization_id };
-    const accessToken = generateAccessToken(payload);
     const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
     const userAgent = (req.headers["user-agent"] as string) || "";
     const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
-    const refreshToken = await createRefreshToken(user.id, { ipAddress, userAgent, deviceName, organizationId: organization_id });
+    const { rawToken: refreshToken, sessionId } = await createRefreshTokenDetails(user.id, {
+      ipAddress,
+      userAgent,
+      deviceName,
+      organizationId: organization_id,
+      isRoot: user.role === "root",
+    });
+
+    const payload = { id: user.id, email: user.email || "", role: user.role, organization_id, sessionId };
+    const accessToken = generateAccessToken(payload);
 
     setAuthCookies(reply, accessToken, refreshToken);
     eventBus.publish({
@@ -710,10 +725,138 @@ export async function revokeSession(req: FastifyRequest, reply: FastifyReply) {
 
     record.set("revoked", true);
     await record.save();
+    revokeSessionCache(sessionId);
 
     return reply.send(successResponse(null, "Session revoked successfully"));
   } catch (err: any) {
     return reply.code(500).send(errorResponse("Failed to revoke session"));
+  }
+}
+
+// ─── Root Superadmin: Get All Active System Sessions ─────────────
+export async function getAdminAllSessions(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { search, role } = req.query as { search?: string; role?: string };
+
+    const query: any = {
+      revoked: false,
+      expiresAt: { $gt: new Date() },
+    };
+
+    const sessions = await RefreshToken.find(query)
+      .populate("userId", "name email role phone")
+      .populate("organizationId", "name city")
+      .sort({ lastActiveAt: -1 })
+      .lean();
+
+    let filtered = sessions.filter((s: any) => s.userId);
+    if (role && role !== "all") {
+      filtered = filtered.filter((s: any) => s.userId.role === role);
+    }
+    if (search && search.trim()) {
+      const q = search.toLowerCase().trim();
+      filtered = filtered.filter((s: any) => {
+        const u = s.userId;
+        const org = s.organizationId;
+        return (
+          u.name?.toLowerCase().includes(q) ||
+          u.email?.toLowerCase().includes(q) ||
+          u.role?.toLowerCase().includes(q) ||
+          org?.name?.toLowerCase().includes(q) ||
+          s.ipAddress?.includes(q) ||
+          s.deviceName?.toLowerCase().includes(q)
+        );
+      });
+    }
+
+    const currentSessionId = (req.user as any)?.sessionId;
+
+    const formatted = filtered.map((s: any) => {
+      const user = s.userId;
+      const org = s.organizationId;
+      const ua = s.userAgent || "";
+
+      let deviceType: "Desktop" | "Mobile" | "Tablet" = "Desktop";
+      if (/tablet|ipad/i.test(ua)) deviceType = "Tablet";
+      else if (/mobile|iphone|android/i.test(ua)) deviceType = "Mobile";
+
+      let browser = "Other";
+      if (/edg/i.test(ua)) browser = "Edge";
+      else if (/chrome/i.test(ua)) browser = "Chrome";
+      else if (/safari/i.test(ua)) browser = "Safari";
+      else if (/firefox/i.test(ua)) browser = "Firefox";
+
+      let os = "Other";
+      if (/windows/i.test(ua)) os = "Windows";
+      else if (/macintosh|mac os/i.test(ua)) os = "macOS";
+      else if (/iphone|ipad|ios/i.test(ua)) os = "iOS";
+      else if (/android/i.test(ua)) os = "Android";
+      else if (/linux/i.test(ua)) os = "Linux";
+
+      return {
+        id: s._id.toString(),
+        userId: user._id.toString(),
+        userName: user.name,
+        userEmail: user.email,
+        userRole: user.role,
+        organizationId: org ? org._id?.toString() : null,
+        organizationName: org ? org.name : "Platform / Global",
+        organizationCity: org ? org.city : null,
+        ipAddress: s.ipAddress || "Unknown",
+        userAgent: s.userAgent || "",
+        deviceName: s.deviceName || "Browser Session",
+        deviceType,
+        browser,
+        os,
+        createdAt: s.createdAt,
+        lastActiveAt: s.lastActiveAt,
+        isCurrent: currentSessionId ? s._id.toString() === currentSessionId : false,
+        isGuest: s.isGuest ?? false,
+        impersonatedBy: (s.impersonatedBy && s.impersonatedBy.id) ? s.impersonatedBy : null,
+      };
+    });
+
+    return reply.send(successResponse(formatted, "Active platform sessions retrieved"));
+  } catch (err: any) {
+    console.error("getAdminAllSessions error:", err);
+    return reply.code(500).send(errorResponse("Failed to fetch active platform sessions"));
+  }
+}
+
+// ─── Root Superadmin: Terminate a Specific Session ───────────────
+export async function adminRevokeSession(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { sessionId } = req.params as { sessionId: string };
+    const session = await RefreshToken.findById(sessionId);
+    if (!session) {
+      return reply.code(404).send(errorResponse("Session not found"));
+    }
+
+    session.revoked = true;
+    await session.save();
+    revokeSessionCache(sessionId);
+
+    return reply.send(successResponse(null, "Session terminated successfully"));
+  } catch (err: any) {
+    console.error("adminRevokeSession error:", err);
+    return reply.code(500).send(errorResponse("Failed to terminate session"));
+  }
+}
+
+// ─── Root Superadmin: Terminate All Sessions for a Target User ────
+export async function adminRevokeUserSessions(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { userId } = req.params as { userId: string };
+    const sessions = await RefreshToken.find({ userId, revoked: false }).select("_id").lean();
+    if (sessions.length > 0) {
+      await RefreshToken.updateMany({ userId, revoked: false }, { revoked: true });
+      sessions.forEach((s) => revokeSessionCache(s._id.toString()));
+    }
+
+    return reply.send(successResponse(null, `Terminated ${sessions.length} active session(s) for user`));
+  } catch (err: any) {
+    console.error("adminRevokeUserSessions error:", err);
+    return reply.code(500).send(errorResponse("Failed to terminate user sessions"));
   }
 }
 
@@ -733,6 +876,12 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
     // Check if token was already revoked (potential token reuse / theft detection)
     const revokedCheck = await RefreshToken.findOne({ tokenHash, revoked: true });
     if (revokedCheck) {
+      const reason = (revokedCheck as any).revocationReason;
+      if (reason === "displaced" || reason === "terminated" || reason === "logout") {
+        clearAuthCookies(reply);
+        return reply.code(401).send(errorResponse("Session has expired or was terminated. Please log in again."));
+      }
+
       // Automatic breach response: revoke all sessions for this compromised account
       await revokeAllRefreshTokens(revokedCheck.userId.toString());
       clearAuthCookies(reply);
@@ -776,17 +925,31 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
     const targetRole = isGuestToken ? "guest" : user.role;
     const targetPermissions = isGuestToken ? ["CREATE_APPOINTMENTS"] : undefined;
 
-    const newRefreshToken = await createRefreshToken(user.id, {
+    const rawImpersonatedBy = (refreshRecord as any).impersonatedBy;
+    const hasValidImpersonation = Boolean(rawImpersonatedBy && rawImpersonatedBy.id);
+    const validImpersonatedBy = hasValidImpersonation ? {
+      id: rawImpersonatedBy.id.toString(),
+      email: rawImpersonatedBy.email || "",
+      name: rawImpersonatedBy.name || "Root Superadmin",
+      originalRole: rawImpersonatedBy.originalRole || "root",
+    } : undefined;
+
+    const { rawToken: newRefreshToken, sessionId } = await createRefreshTokenDetails(user.id, {
       ipAddress,
       userAgent,
       deviceName,
       organizationId: organization_id,
       isGuest: isGuestToken,
+      isRoot: user.role === "root",
+      impersonatedBy: validImpersonatedBy,
     });
 
-    const payload: any = { id: user.id, email: user.email || "", role: targetRole, organization_id };
+    const payload: any = { id: user.id, email: user.email || "", role: targetRole, organization_id, sessionId };
     if (targetPermissions) {
       payload.permissions = targetPermissions;
+    }
+    if (validImpersonatedBy) {
+      payload.impersonatedBy = validImpersonatedBy;
     }
     const accessToken = generateAccessToken(payload);
 
@@ -876,7 +1039,13 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
     });
 
     try {
-      await Patient.create({ userId: newUser._id, organizationId: selectedClinic?.organizationId });
+      await Patient.create({
+        userId: newUser._id,
+        name: name.trim(),
+        phone: phone || null,
+        email: normalizedEmail,
+        organizationId: selectedClinic?.organizationId,
+      });
       if (selectedClinic?.organizationId) {
         await OrgMember.findOneAndUpdate(
           { userId: newUser._id, organizationId: selectedClinic.organizationId },
@@ -946,6 +1115,14 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
     const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
     const permissions = roleConfig ? roleConfig.permissions : [];
 
+    const rawImpersonatedBy = req.user?.impersonatedBy;
+    const impersonatedBy = (rawImpersonatedBy && rawImpersonatedBy.id) ? {
+      id: rawImpersonatedBy.id,
+      email: rawImpersonatedBy.email,
+      name: rawImpersonatedBy.name,
+      originalRole: rawImpersonatedBy.originalRole || "root",
+    } : null;
+
     return reply.code(200).send(successResponse({
       user: {
         id: user.id,
@@ -954,7 +1131,8 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
         isActive: user.isActive,
         role: user.role,
         organization_id,
-        permissions
+        permissions,
+        impersonatedBy,
       }
     }, "User fetched successfully"));
   } catch (err) {
@@ -1011,6 +1189,249 @@ export async function switchOrganization(req: FastifyRequest, reply: FastifyRepl
   } catch (err) {
     console.error("switchOrganization error:", err);
     return reply.code(500).send(errorResponse("Failed to switch organization context"));
+  }
+}
+
+// ─── Impersonate User ("Login As") (Platform Root Admin Only) ───────
+export async function impersonateUser(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const callerId = req.user!.id;
+    const isRoot = req.user!.role === "root" || req.user!.impersonatedBy?.originalRole === "root";
+
+    if (!isRoot) {
+      return reply.code(403).send(errorResponse("Only platform Root Superadmin can impersonate users"));
+    }
+
+    const { userId, organizationId, role } = (req.body as any) || {};
+
+    let targetUser: any = null;
+
+    if (userId) {
+      if (!mongoose.isValidObjectId(userId)) {
+        return reply.code(400).send(errorResponse("Invalid user ID"));
+      }
+      targetUser = await User.findById(userId);
+    } else if (organizationId) {
+      if (!mongoose.isValidObjectId(organizationId)) {
+        return reply.code(400).send(errorResponse("Invalid organization ID"));
+      }
+      if (role) {
+        const member = await OrgMember.findOne({ organizationId, role }).populate("userId");
+        if (member && member.userId) {
+          targetUser = member.userId;
+        } else {
+          targetUser = await User.findOne({ organization_id: organizationId, role });
+        }
+      } else {
+        const member = await OrgMember.findOne({ organizationId, role: "admin" }).populate("userId");
+        if (member && member.userId) {
+          targetUser = member.userId;
+        } else {
+          targetUser = await User.findOne({ organization_id: organizationId });
+        }
+      }
+    }
+
+    if (!targetUser) {
+      return reply.code(404).send(errorResponse("Target user to impersonate was not found"));
+    }
+
+    if (targetUser.isActive === false) {
+      return reply.code(400).send(errorResponse("Cannot impersonate an inactive user account"));
+    }
+
+    // Determine the original root identity
+    const rootAdminId = req.user!.impersonatedBy?.id || callerId;
+    const rootAdmin = await User.findById(rootAdminId).select("name email role").lean();
+    if (!rootAdmin) {
+      return reply.code(403).send(errorResponse("Original root admin record not found"));
+    }
+
+    // Determine target user's organization context
+    const orgMember = await OrgMember.findOne({ userId: targetUser._id });
+    const targetOrgId = targetUser.organization_id?.toString() || orgMember?.organizationId?.toString();
+
+    const roleConfig = await Role.findOne({ name: targetUser.role }).lean() as any;
+    const permissions = roleConfig ? roleConfig.permissions : [];
+
+    const impersonationData = {
+      id: rootAdmin._id.toString(),
+      email: rootAdmin.email || "",
+      name: rootAdmin.name || "Root Superadmin",
+      originalRole: "root",
+    };
+
+    const payload: JwtPayload = {
+      id: targetUser._id.toString(),
+      email: targetUser.email || "",
+      role: targetUser.role,
+      organization_id: targetOrgId,
+      impersonatedBy: impersonationData,
+    };
+
+    const accessToken = generateAccessToken(payload);
+    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
+    const userAgent = (req.headers["user-agent"] as string) || "";
+    const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser (Impersonation)" : "Desktop Browser (Impersonation)";
+
+    const refreshToken = await createRefreshToken(targetUser._id.toString(), {
+      ipAddress,
+      userAgent,
+      deviceName,
+      organizationId: targetOrgId,
+      impersonatedBy: impersonationData,
+    });
+
+    setAuthCookies(reply, accessToken, refreshToken);
+
+    eventBus.publish({
+      eventType: EVENT_TYPES.AUTH_LOGIN_NEW_DEVICE,
+      category: "auth",
+      targetUserId: targetUser._id.toString(),
+      title: "Root Impersonation Session Started",
+      message: `Root Superadmin ${rootAdmin.name} (${rootAdmin.email}) entered session as ${targetUser.name} (${targetUser.role}).`,
+      severity: "warning",
+      organizationId: targetOrgId,
+    });
+
+    return reply.code(200).send(
+      successResponse(
+        {
+          user: {
+            id: targetUser._id.toString(),
+            name: targetUser.name,
+            email: targetUser.email,
+            role: targetUser.role,
+            organization_id: targetOrgId,
+            permissions,
+            impersonatedBy: impersonationData,
+          },
+        },
+        `Impersonation active: now signed in as ${targetUser.name} (${targetUser.role})`
+      )
+    );
+  } catch (err: any) {
+    console.error("impersonateUser error:", err);
+    return reply.code(500).send(errorResponse(err.message || "Failed to start impersonation session"));
+  }
+}
+
+// ─── Stop Impersonation & Restore Root Session ─────────────────────
+export async function stopImpersonation(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    let rootAdminId = req.user?.impersonatedBy?.id;
+
+    // Fallback 1: If access token lacks impersonatedBy, check the active RefreshToken in DB
+    if (!rootAdminId && req.cookies?.refresh_token) {
+      const tokenHash = crypto.createHash("sha256").update(req.cookies.refresh_token).digest("hex");
+      const refreshRecord = await RefreshToken.findOne({ tokenHash, revoked: false });
+      if (refreshRecord?.impersonatedBy?.id) {
+        rootAdminId = refreshRecord.impersonatedBy.id.toString();
+      }
+    }
+
+    // Fallback 2: If caller is already a root user (e.g. stale banner clicked or already restored)
+    if (!rootAdminId && req.user?.role === "root") {
+      const rootUser = await User.findById(req.user.id);
+      if (rootUser && rootUser.isActive) {
+        const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
+        const userAgent = (req.headers["user-agent"] as string) || "";
+        const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
+
+        const { rawToken: newRefreshToken, sessionId } = await createRefreshTokenDetails(rootUser._id.toString(), {
+          ipAddress,
+          userAgent,
+          deviceName,
+          isRoot: true,
+        });
+
+        const payload: JwtPayload = {
+          id: rootUser._id.toString(),
+          email: rootUser.email || "",
+          role: "root",
+          organization_id: undefined,
+          sessionId,
+        };
+
+        const accessToken = generateAccessToken(payload);
+        setAuthCookies(reply, accessToken, newRefreshToken);
+
+        return reply.code(200).send(
+          successResponse(
+            {
+              user: {
+                id: rootUser._id.toString(),
+                name: rootUser.name,
+                email: rootUser.email,
+                role: "root",
+                organization_id: undefined,
+                permissions: ["*"],
+                impersonatedBy: null,
+              },
+            },
+            "Returned to Root Superadmin session"
+          )
+        );
+      }
+    }
+
+    if (!rootAdminId) {
+      return reply.code(400).send(errorResponse("No active impersonation session found"));
+    }
+
+    const rootUser = await User.findById(rootAdminId);
+    if (!rootUser || rootUser.role !== "root" || !rootUser.isActive) {
+      clearAuthCookies(reply);
+      return reply.code(403).send(errorResponse("Unable to restore Root session. Please log in again."));
+    }
+
+    // Revoke the impersonation refresh token if present
+    if (req.cookies?.refresh_token) {
+      const oldHash = crypto.createHash("sha256").update(req.cookies.refresh_token).digest("hex");
+      await RefreshToken.updateOne({ tokenHash: oldHash }, { revoked: true, revocationReason: "logout" });
+    }
+
+    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
+    const userAgent = (req.headers["user-agent"] as string) || "";
+    const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
+
+    const { rawToken: newRefreshToken, sessionId } = await createRefreshTokenDetails(rootUser._id.toString(), {
+      ipAddress,
+      userAgent,
+      deviceName,
+      isRoot: true,
+    });
+
+    const payload: JwtPayload = {
+      id: rootUser._id.toString(),
+      email: rootUser.email || "",
+      role: "root",
+      organization_id: undefined,
+      sessionId,
+    };
+
+    const accessToken = generateAccessToken(payload);
+    setAuthCookies(reply, accessToken, newRefreshToken);
+
+    return reply.code(200).send(
+      successResponse(
+        {
+          user: {
+            id: rootUser._id.toString(),
+            name: rootUser.name,
+            email: rootUser.email,
+            role: "root",
+            organization_id: undefined,
+            permissions: ["*"],
+            impersonatedBy: null,
+          },
+        },
+        "Returned to Root Superadmin session"
+      )
+    );
+  } catch (err: any) {
+    console.error("stopImpersonation error:", err);
+    return reply.code(500).send(errorResponse("Failed to restore Root session"));
   }
 }
 
