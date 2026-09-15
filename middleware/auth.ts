@@ -89,6 +89,27 @@ export function authorize(...allowedRoles: string[]) {
 }
 
 /**
+ * Restrict a route to the platform root operator.
+ *
+ * Some platform flows intentionally continue to work while root is
+ * impersonating a tenant user. That session carries the original root identity
+ * in `impersonatedBy`, so the route layer should make that contract explicit.
+ */
+export function requirePlatformRoot() {
+  return async (req: FastifyRequest, reply: FastifyReply) => {
+    if (!req.user) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+
+    if (req.user.role === "root" || req.user.impersonatedBy?.originalRole === "root") {
+      return;
+    }
+
+    return reply.code(403).send({ error: "Forbidden: platform root access required" });
+  };
+}
+
+/**
  * Factory: restrict access to specific permissions.
  *
  * Evaluates the required permission against the caller's Role document in the

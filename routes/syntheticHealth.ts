@@ -1,8 +1,9 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { redisClient } from "../utilities/redis.ts";
-import { broadcastQueueUpdate, registerClinicQueueWebSocket } from "../notifications/websocket.ts";
+import { broadcastClinicalRealtime, registerClinicClinicalWebSocket } from "../notifications/websocket.ts";
 import { reportCriticalError } from "../utilities/telemetry.ts";
+import crypto from "node:crypto";
 
 const CANARY_CLINIC_ID = "00000000000000000000canary";
 
@@ -24,7 +25,17 @@ function evaluatePanicThresholds(analyte: string, value: number | string): "crit
 }
 
 export default async function syntheticHealthRoutes(app: FastifyInstance) {
-  app.get("/api/health/synthetic", async (req: FastifyRequest, reply: FastifyReply) => {
+  app.get("/api/health/synthetic", {
+    config: { rateLimit: { max: 2, timeWindow: "1 minute" } },
+    preHandler: async (req: FastifyRequest, reply: FastifyReply) => {
+      const configuredSecret = process.env.SYNTHETIC_HEALTH_SECRET;
+      const suppliedSecret = req.headers["x-synthetic-health-secret"];
+      const candidate = Array.isArray(suppliedSecret) ? suppliedSecret[0] : suppliedSecret;
+      if (!configuredSecret || !candidate || candidate.length !== configuredSecret.length || !crypto.timingSafeEqual(Buffer.from(candidate), Buffer.from(configuredSecret))) {
+        return reply.code(404).send({ success: false, message: "Not found" });
+      }
+    },
+  }, async (req: FastifyRequest, reply: FastifyReply) => {
     const startOverall = Date.now();
     const failures: string[] = [];
 
@@ -105,10 +116,10 @@ export default async function syntheticHealthRoutes(app: FastifyInstance) {
           on: () => {},
         };
 
-        registerClinicQueueWebSocket(CANARY_CLINIC_ID, mockCanarySocket);
+        registerClinicClinicalWebSocket(CANARY_CLINIC_ID, mockCanarySocket);
 
-        // Dispatch synthetic alert through the genuine broadcast pipeline
-        broadcastQueueUpdate(CANARY_CLINIC_ID, {
+        // Dispatch synthetic alert through the authenticated clinical pipeline.
+        broadcastClinicalRealtime(CANARY_CLINIC_ID, {
           type: "CLINICAL_PANIC_ALERT",
           message: "[SYNTHETIC CANARY] Test alert — please ignore",
           data: { isCanary: true, canaryToken: testToken },
@@ -120,7 +131,7 @@ export default async function syntheticHealthRoutes(app: FastifyInstance) {
 
       // Clean up canary alert buffer entry from Redis
       if (redisClient) {
-        redisClient.del(`healthos:alert_buffer:clinic:${CANARY_CLINIC_ID}`).catch(() => {});
+        redisClient.del(`healthos:alert_buffer:clinic_clinical:${CANARY_CLINIC_ID}`).catch(() => {});
       }
     } catch (err: any) {
       failures.push(`PubSub Fan-Out Failed: ${err?.message || err}`);

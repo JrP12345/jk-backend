@@ -142,7 +142,8 @@ export default async function appointmentRoutes(app: FastifyInstance) {
 
   // Real-time Clinical WebSocket for Authenticated Clinical Staff (Doctor/Nurse/Admin)
   app.get("/api/clinical/ws", { websocket: true }, (socket, req) => {
-    handleClinicalWebSocket(socket as any, req);
+    void handleClinicalWebSocket(socket as any, req).catch(() => {
+      (socket as any).close(1011, "Clinical channel initialization failed");
+    });
   });
 }
-

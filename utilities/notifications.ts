@@ -2,11 +2,12 @@ import { Appointment } from "../models/Appointment.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { emailProvider } from "../notifications/providers/emailProvider.ts";
+import { createTrackerCapability } from "./publicTracker.ts";
 
 /**
  * Dispatches existing booking notifications through the configured notification channels.
  */
-export async function sendBookingNotification(appointmentId: any, actionType: "booked" | "cancelled" | "rescheduled") {
+export async function sendBookingNotification(appointmentId: any, actionType: "booked" | "cancelled" | "rescheduled", trackerToken?: string) {
   try {
     const appt: any = await Appointment.findById(appointmentId)
       .populate("clinicId", "name email phone city organizationId")
@@ -49,7 +50,15 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
       timeStyle: "short"
     });
 
-    const trackingUrl = `/track/${appt._id}`;
+    let capability = trackerToken;
+    if (!capability && actionType !== "cancelled") {
+      const created = createTrackerCapability();
+      appt.trackerTokenHash = created.hash;
+      appt.trackerTokenExpiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
+      await appt.save();
+      capability = created.token;
+    }
+    const trackingUrl = `/track/${appt._id}${capability ? `?t=${encodeURIComponent(capability)}` : ""}`;
 
     if (targetUserId) {
       eventBus.publish({
@@ -520,5 +529,3 @@ export async function sendDoorwaySummonNotification(params: {
     console.error("sendDoorwaySummonNotification error:", err);
   }
 }
-
-

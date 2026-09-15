@@ -1,6 +1,9 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { abdmService } from "../services/AbdmService.ts";
 import { Clinic } from "../models/Clinic.ts";
+import { Appointment } from "../models/Appointment.ts";
+import { Patient } from "../models/Patient.ts";
+import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess } from "../utilities/tenant.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 
 export async function generateAadhaarOtpController(req: FastifyRequest, reply: FastifyReply) {
@@ -75,6 +78,8 @@ export async function scanAndShareCheckInController(req: FastifyRequest, reply: 
     if (!clinicId || !abhaProfile || !abhaProfile.abhaNumber || !doctorId) {
       return reply.code(400).send(errorResponse("clinicId, doctorId, and abhaProfile with abhaNumber are required"));
     }
+    const clinicAccess = await checkClinicAccess(req, clinicId);
+    if (!clinicAccess.allowed) return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
 
     const organizationId = req.user?.organization_id;
 
@@ -96,6 +101,8 @@ export async function scanAndShareCheckInController(req: FastifyRequest, reply: 
 export async function getClinicQrStandeeController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { clinicId } = req.params as { clinicId: string };
+    const clinicAccess = await checkClinicAccess(req, clinicId);
+    if (!clinicAccess.allowed) return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
 
     const clinic = await Clinic.findById(clinicId).select("name city address phone").lean();
     if (!clinic) {
@@ -137,6 +144,15 @@ export async function linkCareContextController(req: FastifyRequest, reply: Fast
     if (!patientId || !appointmentId || !clinicId) {
       return reply.code(400).send(errorResponse("patientId, appointmentId, and clinicId are required"));
     }
+    const [patientAccess, clinicAccess] = await Promise.all([checkPatientAccess(req, patientId), checkClinicAccess(req, clinicId)]);
+    if (!patientAccess.allowed) return reply.code(patientAccess.statusCode).send(errorResponse(patientAccess.message));
+    if (!clinicAccess.allowed) return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
+    const appointment = await Appointment.findById(appointmentId).select("patientId clinicId organizationId").lean();
+    if (!appointment) return reply.code(404).send(errorResponse("Appointment not found"));
+    const appointmentAccess = await checkOperationalRecordAccess(req, appointment);
+    if (!appointmentAccess.allowed || String(appointment.patientId) !== String(patientId) || String(appointment.clinicId) !== String(clinicId)) {
+      return reply.code(404).send(errorResponse("Appointment not found"));
+    }
 
     const organizationId = req.user?.organization_id;
     const result = await abdmService.linkCareContext({
@@ -160,6 +176,8 @@ export async function getPatientCareContextsController(req: FastifyRequest, repl
     if (!patientId) {
       return reply.code(400).send(errorResponse("patientId parameter is required"));
     }
+    const patientAccess = await checkPatientAccess(req, patientId);
+    if (!patientAccess.allowed) return reply.code(patientAccess.statusCode).send(errorResponse(patientAccess.message));
 
     const result = await abdmService.getPatientCareContexts(patientId);
     return reply.code(200).send(successResponse(result, "Patient care contexts retrieved successfully"));
@@ -176,6 +194,10 @@ export async function getFhirBundleController(req: FastifyRequest, reply: Fastif
     if (!appointmentId) {
       return reply.code(400).send(errorResponse("appointmentId parameter is required"));
     }
+    const appointment = await Appointment.findById(appointmentId).select("clinicId organizationId").lean();
+    if (!appointment) return reply.code(404).send(errorResponse("Appointment not found"));
+    const appointmentAccess = await checkOperationalRecordAccess(req, appointment);
+    if (!appointmentAccess.allowed) return reply.code(appointmentAccess.statusCode).send(errorResponse(appointmentAccess.message));
 
     const bundle = type === "diagnostic"
       ? await abdmService.generateFhirDiagnosticReportBundle(appointmentId)
@@ -194,6 +216,8 @@ export async function createConsentRequestController(req: FastifyRequest, reply:
     if (!patientId) {
       return reply.code(400).send(errorResponse("patientId is required"));
     }
+    const patientAccess = await checkPatientAccess(req, patientId);
+    if (!patientAccess.allowed) return reply.code(patientAccess.statusCode).send(errorResponse(patientAccess.message));
 
     const result = await abdmService.createConsentRequest({
       patientId,
@@ -217,6 +241,10 @@ export async function getConsentStatusController(req: FastifyRequest, reply: Fas
     if (!consentRequestId) {
       return reply.code(400).send(errorResponse("consentRequestId parameter is required"));
     }
+    const patient = await Patient.findOne({ "abdmConsentRequests.consentRequestId": consentRequestId }).select("_id").lean();
+    if (!patient) return reply.code(404).send(errorResponse("Consent request not found"));
+    const patientAccess = await checkPatientAccess(req, patient._id.toString());
+    if (!patientAccess.allowed) return reply.code(patientAccess.statusCode).send(errorResponse(patientAccess.message));
 
     const result = await abdmService.getConsentStatus(consentRequestId);
     return reply.code(200).send(successResponse(result, result.message));
@@ -232,6 +260,10 @@ export async function getExternalHealthDataController(req: FastifyRequest, reply
     if (!consentRequestId) {
       return reply.code(400).send(errorResponse("consentRequestId parameter is required"));
     }
+    const patient = await Patient.findOne({ "abdmConsentRequests.consentRequestId": consentRequestId }).select("_id").lean();
+    if (!patient) return reply.code(404).send(errorResponse("Consent request not found"));
+    const patientAccess = await checkPatientAccess(req, patient._id.toString());
+    if (!patientAccess.allowed) return reply.code(patientAccess.statusCode).send(errorResponse(patientAccess.message));
 
     const result = await abdmService.fetchExternalHealthData(consentRequestId);
     return reply.code(200).send(successResponse(result, "External health records fetched successfully via ABDM HIU"));
@@ -239,4 +271,3 @@ export async function getExternalHealthDataController(req: FastifyRequest, reply
     return reply.code(400).send(errorResponse(err.message || "Failed to fetch external health data"));
   }
 }
-

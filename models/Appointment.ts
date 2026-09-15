@@ -6,6 +6,8 @@ const AppointmentSchema = new Schema({
   doctorId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
   patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
   bookedByUserId: { type: Schema.Types.ObjectId, ref: "User", index: true },
+  trackerTokenHash: { type: String, select: false, index: true },
+  trackerTokenExpiresAt: { type: Date, index: true },
   appointmentTime: { type: Date, required: true, index: true },
   appointmentType: { type: String, enum: ["walk-in", "online", "reception", "qr"], required: true },
   status: { 

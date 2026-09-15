@@ -46,7 +46,7 @@ export default async function publicRoutes(app: FastifyInstance) {
   // GET /api/public/track/:appointmentId/prescription/print — Printable official prescription HTML
   app.get("/api/public/track/:appointmentId/prescription/print", printPublicTrackerPrescription);
 
-  // POST /api/public/track/:appointmentId/pay — Public live tracker invoice payment settlement
+  // Retired public settlement endpoint. Payments must use the authenticated verified payment flow.
   app.post("/api/public/track/:appointmentId/pay", processPublicTrackerPayment);
 
   // POST /api/public/join-queue — Fast walk-in queue join via Clinic QR Poster
@@ -59,4 +59,3 @@ export default async function publicRoutes(app: FastifyInstance) {
   // POST /api/public/track-visit — Anonymous site traffic and clinic attribution tracking
   app.post("/api/public/track-visit", trackSiteVisitController);
 }
-

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate, authorize } from "../middleware/auth.ts";
+import { authenticate, requirePlatformRoot } from "../middleware/auth.ts";
 import {
   requestOtpController,
   verifyOtpController,
@@ -28,6 +28,8 @@ import { getJwks } from "../utilities/keys.ts";
 
 export default async function authRoutes(app: FastifyInstance) {
   const isTest = process.env.NODE_ENV === "test";
+  const platformRoot = { preHandler: [authenticate, requirePlatformRoot()] };
+  const objectIdPattern = "^[0-9a-fA-F]{24}$";
 
   // GET /.well-known/jwks.json — Public JWKS endpoint
   app.get("/.well-known/jwks.json", async (req, reply) => {
@@ -134,9 +136,9 @@ export default async function authRoutes(app: FastifyInstance) {
   app.delete("/api/auth/sessions/:sessionId", { preHandler: [authenticate] }, revokeSession);
 
   // Root Superadmin Session Supervision & Forced Logout
-  app.get("/api/auth/admin/sessions", { preHandler: [authenticate, authorize("root")] }, getAdminAllSessions);
-  app.delete("/api/auth/admin/sessions/:sessionId", { preHandler: [authenticate, authorize("root")] }, adminRevokeSession);
-  app.post("/api/auth/admin/sessions/revoke-user/:userId", { preHandler: [authenticate, authorize("root")] }, adminRevokeUserSessions);
+  app.get("/api/auth/admin/sessions", platformRoot, getAdminAllSessions);
+  app.delete("/api/auth/admin/sessions/:sessionId", platformRoot, adminRevokeSession);
+  app.post("/api/auth/admin/sessions/revoke-user/:userId", platformRoot, adminRevokeUserSessions);
 
   // POST /api/auth/refresh      — Exchange refreshToken for a new accessToken
   app.post("/api/auth/refresh", refreshAccessToken);
@@ -149,10 +151,46 @@ export default async function authRoutes(app: FastifyInstance) {
   app.get("/api/auth/me", { preHandler: [authenticate] }, me);
 
   // POST /api/auth/switch-org   — Switch active organization context (Root Admin only)
-  app.post("/api/auth/switch-org", { preHandler: [authenticate] }, switchOrganization);
+  app.post(
+    "/api/auth/switch-org",
+    {
+      ...platformRoot,
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            organizationId: { type: "string", pattern: objectIdPattern },
+          },
+          additionalProperties: false,
+        },
+      },
+    },
+    switchOrganization
+  );
 
   // POST /api/auth/impersonate  — Zero-password user impersonation ("Login As") (Root Admin only)
-  app.post("/api/auth/impersonate", { preHandler: [authenticate] }, impersonateUser);
+  app.post(
+    "/api/auth/impersonate",
+    {
+      ...platformRoot,
+      schema: {
+        body: {
+          type: "object",
+          properties: {
+            userId: { type: "string", pattern: objectIdPattern },
+            organizationId: { type: "string", pattern: objectIdPattern },
+            role: { type: "string", maxLength: 50 },
+          },
+          additionalProperties: false,
+          anyOf: [
+            { required: ["userId"] },
+            { required: ["organizationId"] },
+          ],
+        },
+      },
+    },
+    impersonateUser
+  );
 
   // POST /api/auth/stop-impersonation — Restore original Root Superadmin session
   app.post("/api/auth/stop-impersonation", { preHandler: [authenticate] }, stopImpersonation);

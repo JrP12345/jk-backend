@@ -71,7 +71,8 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
           status: appointment.status,
           tokenNumber: appointment.tokenNumber,
           queuePosition: appointment.queuePosition,
-          notes: appointment.notes
+          notes: appointment.notes,
+          trackerToken: appointment.trackerToken
         },
         "Appointment booked successfully"
       )

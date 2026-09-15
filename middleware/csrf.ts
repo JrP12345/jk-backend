@@ -12,11 +12,13 @@ function isOriginAllowed(candidateOrigin: string, req: FastifyRequest): boolean 
   if (!candidateOrigin) return false;
 
   const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS
-    ? process.env.CORS_ALLOWED_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
+    ? process.env.CORS_ALLOWED_ORIGINS.split(",").map((o) => o.trim().replace(/\/+$/, "")).filter(Boolean)
     : ["http://localhost:3000", "http://localhost:3001"];
 
+  const cleanCandidate = candidateOrigin.trim().replace(/\/+$/, "");
+
   // 1. Explicitly configured allowed origins
-  if (allowedOrigins.includes(candidateOrigin)) {
+  if (allowedOrigins.includes(cleanCandidate)) {
     return true;
   }
 
@@ -25,7 +27,7 @@ function isOriginAllowed(candidateOrigin: string, req: FastifyRequest): boolean 
   const host = forwardedHost || (req.headers.host as string | undefined);
   if (host) {
     const cleanHost = host.trim().toLowerCase();
-    const candidateLower = candidateOrigin.trim().toLowerCase();
+    const candidateLower = cleanCandidate.toLowerCase();
     if (
       candidateLower === `http://${cleanHost}` ||
       candidateLower === `https://${cleanHost}`
@@ -39,7 +41,7 @@ function isOriginAllowed(candidateOrigin: string, req: FastifyRequest): boolean 
   if (isDev) {
     if (
       /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/.test(
-        candidateOrigin
+        cleanCandidate
       )
     ) {
       return true;

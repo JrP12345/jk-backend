@@ -508,7 +508,7 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(200).send(
       successResponse(
         {
-          user: { id: user.id, name: user.name, email: user.email || null, role: user.role, organization_id, permissions },
+          user: { id: user.id, name: user.name, email: user.email || null, role: user.role, image_url: user.image_url || null, organization_id, permissions },
         },
         "Login successful"
       )
@@ -1130,6 +1130,7 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
         email: user.email,
         isActive: user.isActive,
         role: user.role,
+        image_url: user.image_url || null,
         organization_id,
         permissions,
         impersonatedBy,

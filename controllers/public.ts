@@ -1,5 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
+import crypto from "node:crypto";
 import { Organization } from "../models/Organization.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { Patient } from "../models/Patient.ts";
@@ -16,6 +17,7 @@ import { broadcastQueueUpdate } from "../notifications/websocket.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { successResponse, errorResponse, escapeRegex } from "../utilities/helpers.ts";
+import { createTrackerCapability, getTrackerCapability, hashTrackerCapability, isTrackerCapabilityEnforced } from "../utilities/publicTracker.ts";
 
 export async function getOrganizations(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -208,6 +210,7 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
         image_url: effectiveCover,
         images: effectiveImages,
         organizationName: org?.name || null,
+        currency: org?.currency || "INR",
         doctorCount: doctorsSummary.length,
         minFee,
         specialties,
@@ -417,12 +420,19 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
       logo_url: effectiveLogo,
       image_url: effectiveCover,
       images: effectiveImages,
+      currency: org?.currency || (clinicJson as any).currency || "INR",
       organization: org ? {
         id: (org as any)._id.toString(),
         name: org.name,
         logo_url: org.logo_url,
         image_url: org.image_url,
         images: org.images || [],
+        description: org.description,
+        currency: org.currency || "INR",
+        phone: org.phone,
+        email: org.email,
+        address: org.address,
+        city: org.city,
       } : null,
       doctors: cleanDoctors
     }));
@@ -519,12 +529,18 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
       });
 
       if (activeAppt) {
+        const trackerCapability = createTrackerCapability();
+        activeAppt.trackerTokenHash = trackerCapability.hash;
+        activeAppt.trackerTokenExpiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
+        await activeAppt.save();
+
         return reply.code(200).send(successResponse({
           appointmentId: activeAppt._id.toString(),
           tokenNumber: activeAppt.tokenNumber,
           queuePosition: activeAppt.queuePosition || activeAppt.tokenNumber,
           isExisting: true,
-          trackingUrl: `/track/${activeAppt._id}`,
+          trackingUrl: `/track/${activeAppt._id}?t=${encodeURIComponent(trackerCapability.token)}`,
+          trackerToken: trackerCapability.token,
         }, `You already hold active Token #${activeAppt.tokenNumber} for today! Opening your live tracker.`));
       }
     } else {
@@ -562,6 +578,7 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
     const estCallTime = new Date(Date.now() + estWaitMinutes * 60000);
 
     // 7. Create Appointment with checked-in status for physical arrival
+    const trackerCapability = createTrackerCapability();
     const appointment = await Appointment.create({
       organizationId: org._id,
       clinicId,
@@ -571,6 +588,8 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
       appointmentType: "walk-in",
       status: "checked-in",
       tokenNumber,
+      trackerTokenHash: trackerCapability.hash,
+      trackerTokenExpiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
       queuePosition: tokenNumber,
       duration: adaptiveDuration || 15,
       notes: notes?.trim() || "Walk-In self-registered via Clinic QR Poster",
@@ -595,7 +614,7 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
 
     // Send WhatsApp confirmation (with tracking URL) asynchronously
     const { sendBookingNotification } = await import("../utilities/notifications.ts");
-    sendBookingNotification(appointment._id, "booked").catch((err) =>
+    sendBookingNotification(appointment._id, "booked", trackerCapability.token).catch((err) =>
       console.warn("[WhatsApp Notice] Walk-in notification dispatch skipped:", err?.message || err)
     );
 
@@ -606,12 +625,21 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
       estimatedWaitMinutes: estWaitMinutes,
       estimatedCallTime: estCallTime.toISOString(),
       isExisting: false,
-      trackingUrl: `/track/${appointment._id}`,
+      trackingUrl: `/track/${appointment._id}?t=${encodeURIComponent(trackerCapability.token)}`,
+      trackerToken: trackerCapability.token,
     }, `Token #${appointment.tokenNumber} confirmed! Proceed to waiting lounge.`));
   } catch (err) {
     console.error("joinPublicQueue error:", err);
     return reply.code(500).send(errorResponse("Failed to join queue. Please speak with reception desk."));
   }
+}
+
+function publicTrackerAccessAllowed(req: FastifyRequest, appointment: { trackerTokenHash?: string | null; trackerTokenExpiresAt?: Date | null }): boolean {
+  if (!isTrackerCapabilityEnforced()) return true;
+  const token = getTrackerCapability(req);
+  if (!token || !appointment.trackerTokenHash || !appointment.trackerTokenExpiresAt || appointment.trackerTokenExpiresAt.getTime() <= Date.now()) return false;
+  const suppliedHash = hashTrackerCapability(token);
+  return suppliedHash.length === appointment.trackerTokenHash.length && crypto.timingSafeEqual(Buffer.from(suppliedHash), Buffer.from(appointment.trackerTokenHash));
 }
 
 export async function getPublicAppointmentTracker(req: FastifyRequest, reply: FastifyReply) {
@@ -622,6 +650,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
     }
 
     const appointment = await Appointment.findById(appointmentId)
+      .select("+trackerTokenHash trackerTokenExpiresAt")
       .populate("clinicId", "name city address phone upiVpa merchantName")
       .populate("doctorId", "name specialization")
       .populate({
@@ -631,6 +660,9 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
 
     if (!appointment) {
       return reply.code(404).send(errorResponse("Appointment not found or tracking link has expired"));
+    }
+    if (!publicTrackerAccessAllowed(req, appointment)) {
+      return reply.code(401).send(errorResponse("A valid appointment tracker link is required"));
     }
 
     const clinicId = (appointment.clinicId as any)?._id || appointment.clinicId;
@@ -903,6 +935,7 @@ export async function processPublicTrackerCheckIn(req: FastifyRequest, reply: Fa
     }
 
     const appointment = await Appointment.findById(appointmentId)
+      .select("+trackerTokenHash trackerTokenExpiresAt")
       .populate("clinicId", "name city")
       .populate("doctorId", "name specialization")
       .populate({
@@ -912,6 +945,9 @@ export async function processPublicTrackerCheckIn(req: FastifyRequest, reply: Fa
 
     if (!appointment) {
       return reply.code(404).send(errorResponse("Appointment not found"));
+    }
+    if (!publicTrackerAccessAllowed(req, appointment)) {
+      return reply.code(401).send(errorResponse("A valid appointment tracker link is required"));
     }
 
     if (appointment.status === "checked-in" || appointment.status === "in-consultation") {
@@ -1011,6 +1047,7 @@ export async function processPublicTrackerReturn(req: FastifyRequest, reply: Fas
     }
 
     const appointment = await Appointment.findById(appointmentId)
+      .select("+trackerTokenHash trackerTokenExpiresAt")
       .populate("clinicId", "name")
       .populate("doctorId", "name")
       .populate({
@@ -1020,6 +1057,9 @@ export async function processPublicTrackerReturn(req: FastifyRequest, reply: Fas
 
     if (!appointment) {
       return reply.code(404).send(errorResponse("Appointment not found"));
+    }
+    if (!publicTrackerAccessAllowed(req, appointment)) {
+      return reply.code(401).send(errorResponse("A valid appointment tracker link is required"));
     }
 
     if (appointment.status !== "standby") {
@@ -1309,6 +1349,7 @@ export async function printPublicTrackerPrescription(req: FastifyRequest, reply:
     }
 
     const appointment = await Appointment.findById(appointmentId)
+      .select("+trackerTokenHash trackerTokenExpiresAt")
       .populate("clinicId", "name address phone city")
       .populate("doctorId", "name")
       .populate({
@@ -1318,6 +1359,9 @@ export async function printPublicTrackerPrescription(req: FastifyRequest, reply:
 
     if (!appointment) {
       return reply.code(404).send(errorResponse("Appointment not found"));
+    }
+    if (!publicTrackerAccessAllowed(req, appointment)) {
+      return reply.code(401).send(errorResponse("A valid appointment tracker link is required"));
     }
 
     const encounter = await Encounter.findOne({ appointmentId: appointment._id }).sort({ createdAt: -1 });
@@ -1415,145 +1459,10 @@ export async function printPublicTrackerPrescription(req: FastifyRequest, reply:
   }
 }
 
-export async function processPublicTrackerPayment(req: FastifyRequest, reply: FastifyReply) {
-  try {
-    const { appointmentId } = req.params as { appointmentId: string };
-    const { paymentMethod = "online" } = (req.body || {}) as { paymentMethod?: "upi" | "card" | "online" };
-
-    if (!mongoose.Types.ObjectId.isValid(appointmentId)) {
-      return reply.code(400).send(errorResponse("Invalid appointment tracking ID"));
-    }
-
-    const appointment = await Appointment.findById(appointmentId)
-      .populate("clinicId", "name city")
-      .populate("doctorId", "name");
-
-    if (!appointment) {
-      return reply.code(404).send(errorResponse("Appointment not found"));
-    }
-
-    const encounter = await Encounter.findOne({ appointmentId: appointment._id }).sort({ createdAt: -1 });
-    const { Invoice } = await import("../models/Invoice.ts");
-
-    const invoice = await Invoice.findOne({
-      deletedAt: null,
-      $or: [
-        { appointmentId: appointment._id },
-        ...(encounter ? [{ encounterId: encounter._id }] : []),
-      ],
-    }).sort({ createdAt: -1 });
-
-    if (!invoice) {
-      return reply.code(404).send(errorResponse("No bill or invoice generated for this appointment yet"));
-    }
-
-    if (invoice.status === "paid") {
-      return reply.code(200).send(
-        successResponse(
-          {
-            invoiceId: invoice._id,
-            invoiceNumber: invoice.invoiceNumber,
-            totalAmount: invoice.totalAmount,
-            amountPaid: invoice.amountPaid,
-            balanceDue: 0,
-            status: "paid",
-            alreadyPaid: true,
-          },
-          "Invoice is already paid in full"
-        )
-      );
-    }
-
-    const remainingToPay = Number((invoice.totalAmount - (invoice.amountPaid || 0)).toFixed(2));
-
-    invoice.status = "paid";
-    invoice.amountPaid = invoice.totalAmount;
-    invoice.balanceDue = 0;
-    invoice.paymentMethod = paymentMethod as any;
-    invoice.paymentDate = new Date();
-
-    if (!invoice.payments) invoice.payments = [] as any;
-    if (remainingToPay > 0) {
-      invoice.payments.push({
-        amount: remainingToPay,
-        paymentMethod,
-        paidAt: new Date(),
-        notes: "Settled via Mobile Patient Live Tracker",
-      });
-    }
-
-    await invoice.save();
-
-    // Mark appointment paymentStatus as paid
-    appointment.paymentStatus = "paid";
-    await appointment.save();
-
-    const clinicIdStr = ((appointment.clinicId as any)?._id || appointment.clinicId).toString();
-    broadcastQueueUpdate(clinicIdStr, {
-      type: "QUEUE_UPDATED",
-      data: {
-        appointmentId: appointment._id.toString(),
-        tokenNumber: appointment.tokenNumber,
-        status: appointment.status,
-        paymentStatus: "paid",
-        clinicId: clinicIdStr,
-      },
-      timestamp: new Date().toISOString(),
-    });
-
-    broadcastQueueUpdate(clinicIdStr, {
-      type: "PAYMENT_RECEIVED",
-      data: {
-        clinicId: clinicIdStr,
-        appointmentId: appointment._id.toString(),
-        invoiceId: invoice._id.toString(),
-        tokenNumber: appointment.tokenNumber,
-        amount: remainingToPay,
-        paymentMethod,
-      },
-      message: `Patient self-paid ₹${remainingToPay.toFixed(2)} via ${paymentMethod.toUpperCase()} on Mobile Tracker for Token #${appointment.tokenNumber}`,
-      timestamp: new Date().toISOString(),
-    });
-
-    const { sendPaymentReceiptNotification } = await import("../utilities/notifications.ts");
-    sendPaymentReceiptNotification({
-      appointmentId: appointment._id.toString(),
-      invoiceId: invoice._id.toString(),
-      amount: remainingToPay,
-      paymentMethod,
-    }).catch((err) => console.error("Self payment receipt notification notice:", err));
-
-    await AuditLog.create({
-      userId: (appointment.patientId as any)?.userId || new mongoose.Types.ObjectId(),
-      action: "PATIENT_PUBLIC_PAYMENT_TRACKER",
-      targetId: invoice._id,
-      targetModel: "Invoice",
-      details: {
-        appointmentId: appointment._id,
-        invoiceNumber: invoice.invoiceNumber,
-        amount: remainingToPay,
-        paymentMethod,
-      },
-    });
-
-    return reply.code(200).send(
-      successResponse(
-        {
-          invoiceId: invoice._id,
-          invoiceNumber: invoice.invoiceNumber,
-          totalAmount: invoice.totalAmount,
-          amountPaid: invoice.amountPaid,
-          balanceDue: 0,
-          status: "paid",
-          alreadyPaid: false,
-        },
-        `Payment of ₹${remainingToPay.toFixed(2)} received successfully! Receipt #${invoice.invoiceNumber}`
-      )
-    );
-  } catch (err) {
-    console.error("processPublicTrackerPayment error:", err);
-    return reply.code(500).send(errorResponse("Internal server error"));
-  }
+export async function processPublicTrackerPayment(_req: FastifyRequest, reply: FastifyReply) {
+  return reply.code(410).send(
+    errorResponse("Direct public payment settlement has been retired. Create a verified payment order or pay at the clinic.")
+  );
 }
 
 // ─── Public Site Traffic & Visitor Tracking ────────────────────────
@@ -1614,5 +1523,3 @@ export async function trackSiteVisitController(req: FastifyRequest, reply: Fasti
     return reply.code(200).send(successResponse({ recorded: false }));
   }
 }
-
-

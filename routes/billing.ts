@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate, authorize, checkAnyPermission, checkAnyPermissionOrRoles } from "../middleware/auth.ts";
+import { authenticate, checkAnyPermission, checkAnyPermissionOrRoles, requirePlatformRoot } from "../middleware/auth.ts";
 import { requireModule } from "../middleware/moduleGuard.ts";
 import { createInvoiceSchema, collectPaymentSchema } from "../schemas/billing.ts";
 import {
@@ -47,7 +47,7 @@ import {
 
 export default async function billingRoutes(app: FastifyInstance) {
   const auth = { preHandler: [authenticate] };
-  const rootAdminAuth = { preHandler: [authenticate, authorize("root")] };
+  const rootAdminAuth = { preHandler: [authenticate, requirePlatformRoot()] };
   const viewInvoices = {
     preHandler: [authenticate, requireModule("billing"), checkAnyPermissionOrRoles(["patient", "family_member"], "VIEW_BILLING", "MANAGE_BILLING")],
   };

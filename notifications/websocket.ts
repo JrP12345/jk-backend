@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { redisClient } from "../utilities/redis.ts";
 import { Redis } from "ioredis";
 import { verifyAccessToken } from "../utilities/helpers.ts";
+import { Clinic } from "../models/Clinic.ts";
 
 export interface RealtimeMessage {
   type: "NOTIFICATION_RECEIVED" | "UNREAD_COUNT_UPDATED" | "QUEUE_UPDATED" | "QUEUE_CALL_NEXT" | "DISRUPTION_TRIAGE_REQUIRED" | "QUEUE_EMERGENCY_STAT" | "PATIENT_RETURNED" | "LAB_RESULTS_READY" | "LAB_ORDER_PLACED" | "PAYMENT_RECEIVED" | "PRESCRIPTION_ISSUED" | "PRESCRIPTION_DISPENSED" | "CLINICAL_PANIC_ALERT" | "PATIENT_RECALLED_TO_CABIN" | "HEARTBEAT" | "CONNECTED" | "ERROR" | "PONG";
@@ -212,10 +213,29 @@ export function sendToUserLocally(userId: string, payload: RealtimeMessage) {
   }
 }
 
+function sanitizePublicQueueMessage(payload: RealtimeMessage): RealtimeMessage | null {
+  const allowedTypes = new Set(["QUEUE_UPDATED", "QUEUE_CALL_NEXT", "PATIENT_RECALLED_TO_CABIN"]);
+  if (!allowedTypes.has(payload.type)) return null;
+
+  const data = payload.data || {};
+  return {
+    type: payload.type,
+    timestamp: payload.timestamp,
+    data: {
+      tokenNumber: data.tokenNumber,
+      status: data.status,
+      queuePosition: data.queuePosition,
+      estimatedWaitTime: data.estimatedWaitTime,
+    },
+  };
+}
+
 export function sendToClinicQueueLocally(clinicId: string, payload: RealtimeMessage) {
+  const publicPayload = sanitizePublicQueueMessage(payload);
+  if (!publicPayload) return;
   const webSockets = clinicQueueWebSocketsMap.get(clinicId);
   if (webSockets && webSockets.size > 0) {
-    const wsString = JSON.stringify(payload);
+    const wsString = JSON.stringify(publicPayload);
     webSockets.forEach((socket) => {
       try {
         if (socket.readyState === 1 /* OPEN */) {
@@ -423,10 +443,10 @@ export function broadcastClinicRealtime(clinicId: string, payload: RealtimeMessa
 // ─── Native WebSocket Connection Handlers ─────────────────────────────
 
 /**
- * Extract auth user from WebSocket request (cookies, headers, or ?token= query parameter)
+ * Extract auth user from WebSocket request cookies or Authorization header.
  */
 export function resolveWebSocketAuth(req: FastifyRequest): { id: string; role?: string; organization_id?: string } | null {
-  let token = (req.query as any)?.token || req.cookies?.access_token || (req.headers.authorization?.replace(/^Bearer\s+/i, ""));
+  let token = req.cookies?.access_token || (req.headers.authorization?.replace(/^Bearer\s+/i, ""));
 
   if (!token && req.headers.cookie) {
     const match = req.headers.cookie.match(/(?:^|;\s*)access_token=([^;]+)/);
@@ -531,18 +551,8 @@ export function handleQueueWebSocket(socket: WebSocket, req: FastifyRequest) {
     timestamp: new Date().toISOString()
   }));
 
-  // Replay unacknowledged recent critical alerts for this clinic queue/display
-  getBufferedCriticalAlerts(`clinic:${clinicId}`).then((buffered) => {
-    buffered.forEach((alert) => {
-      try {
-        if (socket.readyState === 1) {
-          socket.send(JSON.stringify(alert));
-        }
-      } catch {
-        // Safe ignore
-      }
-    });
-  });
+  // Queue TV is intentionally public. Never replay buffered panic/clinical
+  // messages to an unauthenticated display channel.
 
   const pingInterval = setInterval(() => {
     if (socket.readyState === 1) {
@@ -573,6 +583,7 @@ const CLINICAL_STAFF_ROLES = new Set([
   "nurse",
   "receptionist",
   "pharmacist",
+  "lab_tech",
   "lab_technician",
   "admin",
   "org_admin",
@@ -582,7 +593,7 @@ const CLINICAL_STAFF_ROLES = new Set([
 /**
  * Fastify WebSocket handler for Authenticated Clinical Staff Displays (/api/clinical/ws)
  */
-export function handleClinicalWebSocket(socket: WebSocket, req: FastifyRequest) {
+export async function handleClinicalWebSocket(socket: WebSocket, req: FastifyRequest) {
   const user = resolveWebSocketAuth(req);
   if (!user) {
     socket.send(JSON.stringify({ type: "ERROR", message: "Unauthorized: Valid authentication token required" }));
@@ -600,6 +611,20 @@ export function handleClinicalWebSocket(socket: WebSocket, req: FastifyRequest) 
   if (!clinicId || typeof clinicId !== "string" || clinicId.length !== 24) {
     socket.send(JSON.stringify({ type: "ERROR", message: "Valid 24-character clinicId query parameter required" }));
     socket.close(1008, "Invalid clinicId");
+    return;
+  }
+
+  let clinic: any;
+  try {
+    clinic = await Clinic.findById(clinicId).select("organizationId isActive").lean();
+  } catch {
+    socket.send(JSON.stringify({ type: "ERROR", message: "Unable to validate clinic access" }));
+    socket.close(1011, "Clinic lookup failed");
+    return;
+  }
+  if (!clinic || clinic.isActive === false || (user.role !== "root" && (!user.organization_id || clinic.organizationId.toString() !== user.organization_id))) {
+    socket.send(JSON.stringify({ type: "ERROR", message: "Forbidden: clinic access denied" }));
+    socket.close(1008, "Forbidden");
     return;
   }
 

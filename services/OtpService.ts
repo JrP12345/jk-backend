@@ -1,4 +1,5 @@
 import bcrypt from "bcryptjs";
+import crypto from "node:crypto";
 import { OtpVerification } from "../models/OtpVerification.ts";
 import { sendSmsWhatsAppNotification } from "./SmsWhatsAppService.ts";
 import { normalizePhone } from "../utilities/helpers.ts";
@@ -46,7 +47,7 @@ export class OtpService {
     }
 
     // Generate 6-digit OTP
-    const otpCode = process.env.NODE_ENV === "test" ? "123456" : String(Math.floor(100000 + Math.random() * 900000));
+    const otpCode = process.env.NODE_ENV === "test" ? "123456" : String(crypto.randomInt(100000, 1_000_000));
     const otpHash = await bcrypt.hash(otpCode, 10);
     const expiresAt = new Date(now.getTime() + 5 * 60 * 1000); // 5 minute validity
 

@@ -812,7 +812,7 @@ export async function getOrgStaff(req: FastifyRequest, reply: FastifyReply) {
         timings: d.timings,
         working_days: d.working_days,
         description: d.description,
-        image_url: d.image_url
+        image_url: d.image_url || d.userId?.image_url || null,
       }));
 
     const formattedReceptionists = receptionists
@@ -824,7 +824,8 @@ export async function getOrgStaff(req: FastifyRequest, reply: FastifyReply) {
         phone: r.userId.phone,
         shift: r.shift,
         clinicId: r.clinicId?.id || r.clinicId?._id?.toString() || r.clinicId || null,
-        clinicName: r.clinicId?.name || null
+        clinicName: r.clinicId?.name || null,
+        image_url: r.userId?.image_url || null,
       }));
 
     // Fetch all staff members from OrgMember for Nurse, Lab Tech, Pharmacist, Cashier & Custom Roles
@@ -845,7 +846,8 @@ export async function getOrgStaff(req: FastifyRequest, reply: FastifyReply) {
         email: m.userId.email,
         phone: m.userId.phone,
         role: m.role,
-        organizationName: m.organizationId?.name || null
+        organizationName: m.organizationId?.name || null,
+        image_url: m.userId?.image_url || null,
       }));
 
     const nurses = otherStaff.filter((s: any) => s.role === "nurse");
@@ -922,6 +924,7 @@ export async function addStaff(req: FastifyRequest, reply: FastifyReply) {
         password: hashedPassword,
         phone: phone || null,
         role,
+        image_url: (req.body as any).image_url || null,
       }, session);
 
       await createWithSession(OrgMember, {
@@ -1172,16 +1175,18 @@ export async function updateStaff(req: FastifyRequest, reply: FastifyReply) {
     const orgMember = await OrgMember.findOne({ userId: id, organizationId: orgId });
     if (!orgMember) return reply.code(404).send(errorResponse("Staff member not found in your organization"));
 
+    const userUpdates: any = { name, phone: phone || null };
+    if (image_url !== undefined) userUpdates.image_url = image_url;
+
     if (email && email.trim()) {
       const cleanEmail = email.trim().toLowerCase();
       const existingWithEmail = await User.findOne({ email: cleanEmail, _id: { $ne: id } });
       if (existingWithEmail) {
         return reply.code(409).send(errorResponse("Email address is already in use by another user account."));
       }
-      await User.updateOne({ _id: id }, { name, email: cleanEmail, phone: phone || null });
-    } else {
-      await User.updateOne({ _id: id }, { name, phone: phone || null });
+      userUpdates.email = cleanEmail;
     }
+    await User.updateOne({ _id: id }, userUpdates);
 
     // If doctor profile exists, update doctor details
     const doctor = await Doctor.findOne({ userId: id, organizationId: orgId });

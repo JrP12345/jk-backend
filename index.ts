@@ -208,7 +208,7 @@ app.register(websocket, {
 });
 
 const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS
-  ? process.env.CORS_ALLOWED_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
+  ? process.env.CORS_ALLOWED_ORIGINS.split(",").map((o) => o.trim().replace(/\/+$/, "")).filter(Boolean)
   : ["http://localhost:3000", "http://localhost:3001"];
 
 const isDev = process.env.NODE_ENV === "development" || !process.env.NODE_ENV;
@@ -217,14 +217,16 @@ app.register(cors, {
   origin: (origin, cb) => {
     if (!origin) return cb(null, true);
 
+    const cleanOrigin = origin.trim().replace(/\/+$/, "");
+
     // In development mode, allow localhost, 127.0.0.1, and private LAN/hotspot IPs (10.x, 192.168.x, 172.x)
     if (isDev) {
-      if (/^https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/.test(origin)) {
+      if (/^https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/.test(cleanOrigin)) {
         return cb(null, true);
       }
     }
 
-    if (allowedOrigins.includes(origin)) {
+    if (allowedOrigins.includes(cleanOrigin)) {
       return cb(null, true);
     }
     return cb(null, false);

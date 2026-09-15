@@ -1,6 +1,11 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate, checkPermission } from "../middleware/auth.ts";
-import { createOrganizationSchema } from "../schemas/onboarding.ts";
+import { authenticate, checkPermission, requirePlatformRoot } from "../middleware/auth.ts";
+import {
+  createOrganizationSchema,
+  globalUsersQuerySchema,
+  organizationIdParamSchema,
+  updateOrganizationSchema,
+} from "../schemas/onboarding.ts";
 import {
   createOrganization,
   getAllOrganizations,
@@ -32,15 +37,21 @@ export default async function onboardingRoutes(app: FastifyInstance) {
   app.post("/api/onboarding/totp/verify", { preHandler: [authenticate] }, verifyOnboardingTOTP);
 
   // Platform Organization Admin Management
-  app.get("/api/organizations", { preHandler: [authenticate] }, getAllOrganizations);
-  app.get("/api/onboarding/organizations/:id/members", { preHandler: [authenticate] }, getOrganizationMembers);
-  app.get("/api/admin/users", { preHandler: [authenticate] }, getGlobalUsers);
-  app.get("/api/admin/hierarchy", { preHandler: [authenticate] }, getPlatformHierarchy);
-  app.put("/api/organizations/:id", { preHandler: [authenticate] }, updateOrganizationById);
-  app.delete("/api/organizations/:id", { preHandler: [authenticate] }, deleteOrganizationById);
+  const platformRoot = { preHandler: [authenticate, requirePlatformRoot()] };
+  const manageOrg = { preHandler: [authenticate, checkPermission("MANAGE_ORGANIZATION")] };
+
+  app.get("/api/organizations", manageOrg, getAllOrganizations);
+  app.get(
+    "/api/onboarding/organizations/:id/members",
+    { ...manageOrg, schema: organizationIdParamSchema },
+    getOrganizationMembers
+  );
+  app.get("/api/admin/users", { ...platformRoot, schema: globalUsersQuerySchema }, getGlobalUsers);
+  app.get("/api/admin/hierarchy", platformRoot, getPlatformHierarchy);
+  app.put("/api/organizations/:id", { ...manageOrg, schema: updateOrganizationSchema }, updateOrganizationById);
+  app.delete("/api/organizations/:id", { ...platformRoot, schema: organizationIdParamSchema }, deleteOrganizationById);
 
   // Organization Settings
-  const manageOrg = { preHandler: [authenticate, checkPermission("MANAGE_ORGANIZATION")] };
   app.get("/api/onboarding/organization/me", manageOrg, getOrganizationSettings);
   app.put("/api/onboarding/organization/me", manageOrg, updateOrganizationSettings);
 

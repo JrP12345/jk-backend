@@ -11,8 +11,9 @@ export async function assignDoctor(req: FastifyRequest, reply: FastifyReply) {
     const orgId = req.user!.organization_id;
     if (!orgId) return reply.code(400).send(errorResponse("You are not linked to any organization"));
 
-    const { doctorId, clinicId, workingHours, fees, appointmentDuration, bookingMode, maxDailyTokens } = req.body as {
-      doctorId: string; clinicId: string; workingHours: string; fees: number; appointmentDuration?: number;
+    const { doctorId, clinicId, workingHours, fees, feeType, appointmentDuration, bookingMode, maxDailyTokens } = req.body as {
+      doctorId: string; clinicId: string; workingHours: string; fees: number;
+      feeType?: "fixed" | "post_consultation" | "free"; appointmentDuration?: number;
       bookingMode?: "time_slot" | "sequential_queue"; maxDailyTokens?: number | null;
     };
 
@@ -37,6 +38,7 @@ export async function assignDoctor(req: FastifyRequest, reply: FastifyReply) {
       {
         workingHours,
         fees,
+        feeType: feeType || "fixed",
         appointmentDuration: appointmentDuration || 15,
         bookingMode: bookingMode || "sequential_queue",
         maxDailyTokens: maxDailyTokens !== undefined ? maxDailyTokens : null,
@@ -94,8 +96,9 @@ export async function updateAssignment(req: FastifyRequest, reply: FastifyReply)
       return reply.code(400).send(errorResponse("Invalid assignment ID"));
     }
 
-    const { workingHours, fees, appointmentDuration, bookingMode, maxDailyTokens } = req.body as {
-      workingHours?: string; fees?: number; appointmentDuration?: number;
+    const { workingHours, fees, feeType, appointmentDuration, bookingMode, maxDailyTokens } = req.body as {
+      workingHours?: string; fees?: number; feeType?: "fixed" | "post_consultation" | "free";
+      appointmentDuration?: number;
       bookingMode?: "time_slot" | "sequential_queue"; maxDailyTokens?: number | null;
     };
 
@@ -108,6 +111,7 @@ export async function updateAssignment(req: FastifyRequest, reply: FastifyReply)
     const updateFields: any = {};
     if (workingHours !== undefined) updateFields.workingHours = workingHours;
     if (fees !== undefined) updateFields.fees = fees;
+    if (feeType !== undefined) updateFields.feeType = feeType;
     if (appointmentDuration !== undefined) updateFields.appointmentDuration = appointmentDuration;
     if (bookingMode !== undefined) updateFields.bookingMode = bookingMode;
     if (maxDailyTokens !== undefined) updateFields.maxDailyTokens = maxDailyTokens;

@@ -14,6 +14,7 @@ import { withTransaction, createWithSession } from "../utilities/transaction.ts"
 import { validateSlotLockForBooking, forceReleaseSlotLock } from "./SlotLockService.ts";
 import { generateClinicInvoiceNumber } from "../utilities/invoiceNumber.ts";
 import { getEffectiveDoctorSchedule } from "./SlotService.ts";
+import { createTrackerCapability } from "../utilities/publicTracker.ts";
 
 export class AppointmentDomainError extends Error {
   statusCode: number;
@@ -433,12 +434,15 @@ export class AppointmentService {
         apptPaymentAmount = 0;
       }
 
+      const trackerCapability = createTrackerCapability();
       const appointment = await createWithSession(Appointment, {
         organizationId: orgId || null,
         clinicId,
         doctorId,
         patientId: finalPatientId,
         bookedByUserId: actor.id,
+        trackerTokenHash: trackerCapability.hash,
+        trackerTokenExpiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
         appointmentTime: requestedDate,
         appointmentType,
         status: isPaymentRequired ? "pending_payment" : initialStatus,
@@ -574,7 +578,7 @@ export class AppointmentService {
       }
 
       // 11. Async Notification
-      sendBookingNotification(appointment._id, "booked").catch((err) =>
+      sendBookingNotification(appointment._id, "booked", trackerCapability.token).catch((err) =>
         console.error("Notification dispatch failed:", err)
       );
 
@@ -593,6 +597,7 @@ export class AppointmentService {
         duration: appointment.duration,
         reasonForVisit: appointment.reasonForVisit,
         notes: appointment.notes,
+        trackerToken: trackerCapability.token,
         createdAt: appointment.createdAt,
       };
     });

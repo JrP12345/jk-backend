@@ -19,6 +19,7 @@ const UserSchema = new Schema({
   passwordResetExpires: { type: Date },
   failedLoginAttempts: { type: Number, default: 0 },
   lockoutUntil: { type: Date, default: null },
+  image_url: { type: String, default: null },
   isActive: { type: Boolean, default: true },
 }, { timestamps: true });
 
