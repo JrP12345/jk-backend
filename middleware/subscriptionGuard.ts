@@ -8,7 +8,7 @@ import { errorResponse } from "../utilities/helpers.ts";
  */
 export async function enforceSubscriptionActive(req: FastifyRequest, reply: FastifyReply) {
   // Super-admin root and consumer patients bypass subscription check
-  if (req.user?.role === "root" || req.user?.role === "patient" || req.user?.role === "family_member") return;
+  if (req.user?.role === "root" || req.user?.role === "patient" || req.user?.role === "family_member" || req.user?.role === "guest") return;
 
   const orgId = req.user?.organization_id;
   if (!orgId) return;

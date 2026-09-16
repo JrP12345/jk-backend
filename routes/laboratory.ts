@@ -1,8 +1,15 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate, authorize, checkPermission } from "../middleware/auth.ts";
+import { authenticate, checkAnyPermission, checkAnyPermissionOrRoles, checkPermission, denyRoles } from "../middleware/auth.ts";
 import {
+  collectLabSampleSchema,
   createLabTestSchema,
   createLabOrderSchema,
+  labOrdersQuerySchema,
+  labTatMetricsSchema,
+  labTestsQuerySchema,
+  objectIdParamSchema,
+  patientLabComparisonSchema,
+  updateLabOrderStatusSchema,
   uploadLabResultSchema,
 } from "../schemas/clinical.ts";
 import {
@@ -26,29 +33,32 @@ import {
 } from "../controllers/laboratory.ts";
 
 export default async function laboratoryRoutes(app: FastifyInstance) {
-  const auth = { preHandler: [authenticate] };
-  const adminOnly = { preHandler: [authenticate, authorize("admin")] };
+  const staffOnly = denyRoles("patient", "family_member", "guest");
+  const viewLabCatalog = { preHandler: [authenticate, checkAnyPermission("VIEW_EHR", "MANAGE_ORDERS", "MANAGE_LAB_TESTS")] };
+  const manageLabCatalog = { preHandler: [authenticate, staffOnly, checkPermission("MANAGE_LAB_TESTS")] };
+  const viewOrders = { preHandler: [authenticate, checkAnyPermissionOrRoles(["patient", "family_member"], "VIEW_EHR", "MANAGE_ORDERS")] };
+  const viewLabAnalytics = { preHandler: [authenticate, staffOnly, checkAnyPermission("VIEW_ANALYTICS", "MANAGE_ORDERS", "MANAGE_LAB_TESTS")] };
   const manageOrders = { preHandler: [authenticate, checkPermission("MANAGE_ORDERS")] };
   const viewEhr = { preHandler: [authenticate, checkPermission("VIEW_EHR")] };
 
   // In-Cabin Diagnostic Historical Comparison & Reports
-  app.get("/api/lab/patient/:patientId/comparison", auth, getPatientLabComparison);
+  app.get("/api/lab/patient/:patientId/comparison", { ...viewOrders, schema: patientLabComparisonSchema }, getPatientLabComparison);
 
   // Turnaround Time (TAT) Analytics
-  app.get("/api/lab/tat-metrics", auth, getLabTatMetrics);
+  app.get("/api/lab/tat-metrics", { ...viewLabAnalytics, schema: labTatMetricsSchema }, getLabTatMetrics);
 
   // Lab Test Catalog CRUD
-  app.post("/api/lab-tests", { ...adminOnly, schema: createLabTestSchema }, createLabTest);
-  app.get("/api/lab-tests", auth, getLabTests);
-  app.put("/api/lab-tests/:id", adminOnly, updateLabTest);
-  app.delete("/api/lab-tests/:id", adminOnly, deleteLabTest);
+  app.post("/api/lab-tests", { ...manageLabCatalog, schema: createLabTestSchema }, createLabTest);
+  app.get("/api/lab-tests", { ...viewLabCatalog, schema: labTestsQuerySchema }, getLabTests);
+  app.put("/api/lab-tests/:id", { ...manageLabCatalog, schema: objectIdParamSchema }, updateLabTest);
+  app.delete("/api/lab-tests/:id", { ...manageLabCatalog, schema: objectIdParamSchema }, deleteLabTest);
 
   // Canonical direct lab-order API
-  app.post("/api/lab-orders", { ...auth, schema: createLabOrderSchema }, createLabOrder);
-  app.get("/api/lab-orders", auth, getLabOrders);
-  app.put("/api/lab-orders/:id/sample", auth, collectSample);
-  app.put("/api/lab-orders/:id/status", auth, updateLabOrderStatus);
-  app.put("/api/lab-orders/:id/result", { ...auth, schema: uploadLabResultSchema }, uploadLabResult);
+  app.post("/api/lab-orders", { ...manageOrders, schema: createLabOrderSchema }, createLabOrder);
+  app.get("/api/lab-orders", { ...viewOrders, schema: labOrdersQuerySchema }, getLabOrders);
+  app.put("/api/lab-orders/:id/sample", { ...manageOrders, schema: collectLabSampleSchema }, collectSample);
+  app.put("/api/lab-orders/:id/status", { ...manageOrders, schema: updateLabOrderStatusSchema }, updateLabOrderStatus);
+  app.put("/api/lab-orders/:id/result", { ...manageOrders, schema: uploadLabResultSchema }, uploadLabResult);
 
   // Encounter Diagnostic Orders Lifecycle API
   app.post("/api/encounters/:id/orders", manageOrders, placeOrderController);

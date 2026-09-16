@@ -11,6 +11,7 @@ import { User } from "../models/User.ts";
 import { appointmentService } from "../services/AppointmentService.ts";
 import { whatsAppCloudApiService } from "../services/WhatsAppCloudApiService.ts";
 import { getFrontendBaseUrl } from "../utilities/config.ts";
+import { appendTrackerCapability, issueAppointmentTrackerLink } from "../utilities/publicTracker.ts";
 
 interface WhatsAppBookingSession {
   step: "SELECT_DOCTOR" | "SELECT_DATE" | "CONFIRM_BOOKING";
@@ -311,7 +312,8 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
 
                   bookingSessions.delete(from);
 
-                  replyText = `🎉 *Appointment Confirmed!*\n\nHello ${patient.name}, your visit has been booked successfully!\n\n• Your Token: *#${booked.tokenNumber}*\n• Attending Doctor: Dr. ${activeSession.doctorName}\n• Date: ${activeSession.date}\n• Location: ${activeSession.clinicName}\n\n🔗 Live Queue Tracker:\n${frontendUrl}/track/${booked.id}\n\n_Please arrive at the clinic 10 minutes before your slot. Reply "1" anytime to check live queue status!_`;
+                  const trackingUrl = `${frontendUrl}/track/${booked.id}${booked.trackerToken ? `?t=${encodeURIComponent(booked.trackerToken)}` : ""}`;
+                  replyText = `🎉 *Appointment Confirmed!*\n\nHello ${patient.name}, your visit has been booked successfully!\n\n• Your Token: *#${booked.tokenNumber}*\n• Attending Doctor: Dr. ${activeSession.doctorName}\n• Date: ${activeSession.date}\n• Location: ${activeSession.clinicName}\n\n🔗 Live Queue Tracker:\n${trackingUrl}\n\n_Please arrive at the clinic 10 minutes before your slot. Reply "1" anytime to check live queue status!_`;
                 } catch (bErr: any) {
                   bookingSessions.delete(from);
                   replyText = `⚠️ Booking could not be completed: ${bErr.message || "Please contact clinic reception directly."}`;
@@ -455,7 +457,9 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
                 });
                 const estWait = Math.max(0, aheadCount * 12);
 
-                replyText = `🎫 *Live OPD Queue Status*\n\nHello ${patient.name},\n• Your Token: *#${activeAppt.tokenNumber}*\n• Currently in Cabin: *Token #${inConsult?.tokenNumber || "None"}*\n• Patients Ahead: *${aheadCount}*\n• Est. Wait Time: *~${estWait} mins*\n• Status: *${activeAppt.status.toUpperCase()}*\n\n📍 ${clinicName} (Dr. ${docName})\n\n🔗 Live Queue Tracker:\n${frontendUrl}/track/${activeAppt._id}\n\n_Reply "3" if you are running late and need to postpone._`;
+                const { url } = await issueAppointmentTrackerLink(activeAppt as any);
+                const trackingUrl = `${frontendUrl}${url}`;
+                replyText = `🎫 *Live OPD Queue Status*\n\nHello ${patient.name},\n• Your Token: *#${activeAppt.tokenNumber}*\n• Currently in Cabin: *Token #${inConsult?.tokenNumber || "None"}*\n• Patients Ahead: *${aheadCount}*\n• Est. Wait Time: *~${estWait} mins*\n• Status: *${activeAppt.status.toUpperCase()}*\n\n📍 ${clinicName} (Dr. ${docName})\n\n🔗 Live Queue Tracker:\n${trackingUrl}\n\n_Reply "3" if you are running late and need to postpone._`;
               }
             } else {
               const completedToday = await Appointment.findOne({
@@ -484,13 +488,16 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
               const docName = (latestCompleted.doctorId as any)?.name || "Attending Physician";
               const medList = latestCompleted.prescriptions.map((p, idx) => `  ${idx + 1}. *${p.name}* — ${p.dosage} (${p.duration})`).join("\n");
 
-              replyText = `📋 *Digital Prescription (Rx)*\nDoctor: Dr. ${docName}\nDiagnosis: ${latestCompleted.diagnosis || "General Outpatient Consultation"}\nDate: ${new Date(latestCompleted.appointmentTime).toLocaleDateString("en-IN")}\n\n*Prescribed Medicines:*\n${medList}\n\n${latestCompleted.followUpNotes ? `*Advice:* ${latestCompleted.followUpNotes}\n\n` : ""}📄 Download Official Rx: ${frontendUrl}/track/${latestCompleted._id}\n\n_Your PDF document attachment is arriving below..._`;
+              const { token: trackerToken, url } = await issueAppointmentTrackerLink(latestCompleted as any);
+              const trackingUrl = `${frontendUrl}${url}`;
+              const prescriptionUrl = appendTrackerCapability(`/api/public/track/${latestCompleted._id}/prescription/print`, trackerToken);
+              replyText = `📋 *Digital Prescription (Rx)*\nDoctor: Dr. ${docName}\nDiagnosis: ${latestCompleted.diagnosis || "General Outpatient Consultation"}\nDate: ${new Date(latestCompleted.appointmentTime).toLocaleDateString("en-IN")}\n\n*Prescribed Medicines:*\n${medList}\n\n${latestCompleted.followUpNotes ? `*Advice:* ${latestCompleted.followUpNotes}\n\n` : ""}📄 Download Official Rx: ${trackingUrl}\n\n_Your PDF document attachment is arriving below..._`;
 
               // Dispatch official PDF document directly into WhatsApp chat
               const cleanDoc = docName.replace(/[^a-zA-Z0-9]/g, "_");
               whatsAppCloudApiService.sendDocumentMessage({
                 to: from,
-                documentUrl: `/api/public/track/${latestCompleted._id}/prescription/print`,
+                documentUrl: prescriptionUrl,
                 filename: `Prescription_Token_${latestCompleted.tokenNumber}_Dr_${cleanDoc}.pdf`,
                 caption: `📄 Official Signed Prescription from Dr. ${docName} (Token #${latestCompleted.tokenNumber})`,
               }).catch((err) => console.error("WhatsApp document reply failed:", err));
@@ -511,12 +518,15 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
               const fee = latestAppt.paymentAmount || 500;
               const isPaid = latestAppt.paymentStatus === "paid";
 
-              replyText = `🧾 *OPD Invoice Summary*\n\n• Patient: ${patient.name}\n• Facility: ${clinicName}\n• Token: #${latestAppt.tokenNumber}\n• Amount: ₹${fee}\n• Payment Status: *${isPaid ? "PAID ✅" : "PENDING ⏳"}*\n\n🔗 View & Pay Online:\n${frontendUrl}/track/${latestAppt._id}`;
+              const { token: trackerToken, url } = await issueAppointmentTrackerLink(latestAppt as any);
+              const trackingUrl = `${frontendUrl}${url}`;
+              const prescriptionUrl = appendTrackerCapability(`/api/public/track/${latestAppt._id}/prescription/print`, trackerToken);
+              replyText = `🧾 *OPD Invoice Summary*\n\n• Patient: ${patient.name}\n• Facility: ${clinicName}\n• Token: #${latestAppt.tokenNumber}\n• Amount: ₹${fee}\n• Payment Status: *${isPaid ? "PAID ✅" : "PENDING ⏳"}*\n\n🔗 View & Pay Online:\n${trackingUrl}`;
 
               if (isPaid) {
                 whatsAppCloudApiService.sendDocumentMessage({
                   to: from,
-                  documentUrl: `/api/public/track/${latestAppt._id}/prescription/print`,
+                  documentUrl: prescriptionUrl,
                   filename: `Invoice_Receipt_Token_${latestAppt.tokenNumber}.pdf`,
                   caption: `🧾 Official Paid Receipt - Token #${latestAppt.tokenNumber} (₹${fee})`,
                 }).catch((err) => console.error("WhatsApp invoice document reply failed:", err));
@@ -544,7 +554,8 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
               activeAppt.parkedReason = "Patient requested arrival postponement via WhatsApp self-service";
               await activeAppt.save();
 
-              replyText = `⏳ *Token Postponed Successfully*\n\nHello ${patient.name}, your Token *#${activeAppt.tokenNumber}* has been moved back 2 positions to give you extra arrival time.\n\nNew Queue Sequence: Position #${activeAppt.queuePosition}\n\n🔗 Live Tracker: ${frontendUrl}/track/${activeAppt._id}`;
+              const { url } = await issueAppointmentTrackerLink(activeAppt as any);
+              replyText = `⏳ *Token Postponed Successfully*\n\nHello ${patient.name}, your Token *#${activeAppt.tokenNumber}* has been moved back 2 positions to give you extra arrival time.\n\nNew Queue Sequence: Position #${activeAppt.queuePosition}\n\n🔗 Live Tracker: ${frontendUrl}${url}`;
             } else {
               replyText = `Hello ${patient.name}, you do not have an active waiting queue token today to postpone.`;
             }

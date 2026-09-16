@@ -158,8 +158,9 @@ async function runPureRootOnlySeed() {
       password: hashedPassword,
       phone: "+1 234 567 8900",
       role: "root",
-      twoFactorEnabled: true,
-      twoFactorSecret: "GVTWIQZ7PF4DY3BQG52UUNRZOVRFCIZD",
+      // Provision an individual secret after seeding; a checked-in secret is
+      // not a valid or safe root MFA credential.
+      twoFactorEnabled: false,
       isActive: true,
     });
     console.log("✓ Root Admin account created:", rootAdmin.email);

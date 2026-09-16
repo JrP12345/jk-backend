@@ -2,7 +2,7 @@ import { Appointment } from "../models/Appointment.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { emailProvider } from "../notifications/providers/emailProvider.ts";
-import { createTrackerCapability } from "./publicTracker.ts";
+import { appendTrackerCapability, hashTrackerCapability, issueAppointmentTrackerLink } from "./publicTracker.ts";
 
 /**
  * Dispatches existing booking notifications through the configured notification channels.
@@ -50,15 +50,18 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
       timeStyle: "short"
     });
 
+    let trackingUrl = `/track/${appt._id}`;
     let capability = trackerToken;
-    if (!capability && actionType !== "cancelled") {
-      const created = createTrackerCapability();
-      appt.trackerTokenHash = created.hash;
+    if (capability && actionType !== "cancelled") {
+      appt.trackerTokenHash = hashTrackerCapability(capability);
       appt.trackerTokenExpiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
       await appt.save();
-      capability = created.token;
+      trackingUrl = `/track/${appt._id}?t=${encodeURIComponent(capability)}`;
+    } else if (actionType !== "cancelled") {
+      const issued = await issueAppointmentTrackerLink(appt);
+      capability = issued.token;
+      trackingUrl = issued.url;
     }
-    const trackingUrl = `/track/${appt._id}${capability ? `?t=${encodeURIComponent(capability)}` : ""}`;
 
     if (targetUserId) {
       eventBus.publish({
@@ -138,7 +141,7 @@ export async function sendTurnApproachingNotification(appointmentId: any, people
     const patientName = appt.patientId?.name || appt.patientId?.userId?.name || "Patient";
     const doctorName = appt.doctorId?.name || "Doctor";
     const token = appt.tokenNumber;
-    const trackingUrl = `/track/${appt._id}`;
+    const { url: trackingUrl } = await issueAppointmentTrackerLink(appt);
 
     if (targetUserId) {
       eventBus.publish({
@@ -209,7 +212,8 @@ export async function sendConsultationCompletedNotification(
     const doctorName = appt.doctorId?.name || "Doctor";
     const clinicName = appt.clinicId?.name || "Clinic";
     const token = appt.tokenNumber;
-    const trackingUrl = `/track/${appt._id}`;
+    const { token: trackerToken, url: trackingUrl } = await issueAppointmentTrackerLink(appt);
+    const prescriptionUrl = appendTrackerCapability(`/api/public/track/${appt._id}/prescription/print`, trackerToken);
 
     const rxSummaryList = Array.isArray(appt.prescriptions) && appt.prescriptions.length > 0
       ? appt.prescriptions.map((p: any) => `• ${p.name || p.medicineName} (${p.dosage || "As directed"}, ${p.duration || ""})`).join("\n")
@@ -255,7 +259,7 @@ export async function sendConsultationCompletedNotification(
           clinicName,
           tokenNumber: String(token),
           trackingUrl,
-          prescriptionUrl: `/api/public/track/${appt._id}/prescription/print`,
+          prescriptionUrl,
           medicinesSummary: rxSummaryList,
           diagnosis: appt.diagnosis || "Consultation Completed",
         },
@@ -265,7 +269,7 @@ export async function sendConsultationCompletedNotification(
       const { whatsAppCloudApiService } = await import("../services/WhatsAppCloudApiService.ts");
       const cleanDocName = (doctorName || "Doctor").replace(/[^a-zA-Z0-9]/g, "_");
       const pdfFilename = `Prescription_Token_${token}_${cleanDocName}.pdf`;
-      const documentUrl = `/api/public/track/${appt._id}/prescription/print`;
+      const documentUrl = prescriptionUrl;
 
       whatsAppCloudApiService.sendDocumentMessage({
         to: targetPhone,
@@ -380,7 +384,7 @@ export async function sendPaymentReceiptNotification(params: {
     if (!backendBase) backendBase = "http://localhost:5000/api";
     const cleanBase = backendBase.replace(/\/+$/, "");
     const receiptUrl = `${cleanBase}/public/invoices/${invoice?._id || params.invoiceId}/print`;
-    const trackingUrl = `/track/${appt._id}`;
+    const { url: trackingUrl } = await issueAppointmentTrackerLink(appt);
 
     if (patientPhone) {
       const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
@@ -454,7 +458,7 @@ export async function sendFollowUpRecallNotification(params: {
       month: "short",
       year: "numeric",
     });
-    const trackingUrl = `/track/${appt._id}`;
+    const { url: trackingUrl } = await issueAppointmentTrackerLink(appt);
 
     const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
     await sendSmsWhatsAppNotification({
@@ -505,7 +509,7 @@ export async function sendDoorwaySummonNotification(params: {
     const doctorName = appt.doctorId?.name || "Doctor";
     const clinicName = appt.clinicId?.name || "Clinic";
     const token = appt.tokenNumber || "OPD";
-    const trackingUrl = `/track/${appt._id}`;
+    const { url: trackingUrl } = await issueAppointmentTrackerLink(appt);
 
     const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
     await sendSmsWhatsAppNotification({

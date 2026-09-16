@@ -10,18 +10,32 @@ import { successResponse, errorResponse, getPaginationParams, setPaginationHeade
 import { OrdersService } from "../services/OrdersService.ts";
 import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds, getRequestOrganizationId, isRootRequest } from "../utilities/tenant.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
+import { requestHasAnyPermission } from "../utilities/permissions.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));
+}
+
+async function requireControllerPermission(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  message: string,
+  ...permissions: string[]
+) {
+  if (await requestHasAnyPermission(req, ...permissions)) {
+    return true;
+  }
+
+  reply.code(403).send(errorResponse(message));
+  return false;
 }
 
 // ─── LabTest (Catalog) CRUD Handlers ─────────────────────────────
 
 export async function createLabTest(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const userRole = req.user!.role;
-    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "root") {
-      return reply.code(403).send(errorResponse("Forbidden: Only staff can manage lab tests"));
+    if (!(await requireControllerPermission(req, reply, "Forbidden: lab catalog management permission is required", "MANAGE_LAB_TESTS"))) {
+      return;
     }
 
     const { clinicId, name, code, department, sampleType, price, normalRange } = req.body as {
@@ -105,9 +119,8 @@ export async function getLabTests(req: FastifyRequest, reply: FastifyReply) {
 
 export async function updateLabTest(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const userRole = req.user!.role;
-    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "root") {
-      return reply.code(403).send(errorResponse("Forbidden: Only staff can update lab tests"));
+    if (!(await requireControllerPermission(req, reply, "Forbidden: lab catalog management permission is required", "MANAGE_LAB_TESTS"))) {
+      return;
     }
 
     const { id } = req.params as { id: string };
@@ -224,9 +237,8 @@ export async function getLabTatMetrics(req: FastifyRequest, reply: FastifyReply)
 
 export async function deleteLabTest(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const userRole = req.user!.role;
-    if (userRole !== "admin" && userRole !== "root") {
-      return reply.code(403).send(errorResponse("Forbidden: Only admin can delete lab tests"));
+    if (!(await requireControllerPermission(req, reply, "Forbidden: lab catalog management permission is required", "MANAGE_LAB_TESTS"))) {
+      return;
     }
 
     const { id } = req.params as { id: string };
@@ -254,11 +266,10 @@ export async function deleteLabTest(req: FastifyRequest, reply: FastifyReply) {
 
 export async function createLabOrder(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const userRole = req.user!.role;
     const userId = req.user!.id;
 
-    if (userRole !== "admin" && userRole !== "receptionist" && userRole !== "doctor") {
-      return reply.code(403).send(errorResponse("Forbidden: Only staff can place diagnostic orders"));
+    if (!(await requireControllerPermission(req, reply, "Forbidden: diagnostic order management permission is required", "MANAGE_ORDERS"))) {
+      return;
     }
 
     const { clinicId, patientId, doctorId, testId } = req.body as {
@@ -437,11 +448,10 @@ export async function getLabOrders(req: FastifyRequest, reply: FastifyReply) {
 
 export async function collectSample(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const userRole = req.user!.role;
     const userId = req.user!.id;
 
-    if (!["admin", "receptionist", "doctor", "lab_tech"].includes(userRole)) {
-      return reply.code(403).send(errorResponse("Forbidden: Only staff can log sample collection"));
+    if (!(await requireControllerPermission(req, reply, "Forbidden: diagnostic order management permission is required", "MANAGE_ORDERS"))) {
+      return;
     }
 
     const { id } = req.params as { id: string };
@@ -484,11 +494,10 @@ export async function collectSample(req: FastifyRequest, reply: FastifyReply) {
 
 export async function uploadLabResult(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const userRole = req.user!.role;
     const userId = req.user!.id;
 
-    if (!["admin", "receptionist", "doctor", "lab_tech"].includes(userRole)) {
-      return reply.code(403).send(errorResponse("Forbidden: Only staff can upload lab results"));
+    if (!(await requireControllerPermission(req, reply, "Forbidden: diagnostic order management permission is required", "MANAGE_ORDERS"))) {
+      return;
     }
 
     const { id } = req.params as { id: string };
@@ -708,9 +717,8 @@ async function syncLabOrderToAppointment(order: any, resultVal?: string, notes?:
  */
 export async function updateLabOrderStatus(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const userRole = req.user!.role;
-    if (!["admin", "receptionist", "doctor", "lab_tech"].includes(userRole)) {
-      return reply.code(403).send(errorResponse("Forbidden: Only authorized laboratory staff can update order status"));
+    if (!(await requireControllerPermission(req, reply, "Forbidden: diagnostic order management permission is required", "MANAGE_ORDERS"))) {
+      return;
     }
 
     const { id } = req.params as { id: string };
@@ -1215,4 +1223,3 @@ export async function getPatientLabComparison(req: FastifyRequest, reply: Fastif
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
-

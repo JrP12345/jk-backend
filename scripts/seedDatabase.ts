@@ -130,7 +130,9 @@ async function runSeed() {
       password: defaultPassword,
       phone: "+1 415 555 9001",
       role: "root",
-      twoFactorEnabled: true,
+      // 2FA is provisioned with `npm run setup:root-2fa`; never create an
+      // enabled root account without a corresponding secret.
+      twoFactorEnabled: false,
       isActive: true,
     });
 

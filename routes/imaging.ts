@@ -1,16 +1,26 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate, authorize } from "../middleware/auth.ts";
+import { authenticate, checkAnyPermission, checkPermission, denyRoles } from "../middleware/auth.ts";
 import {
   createImagingStudy,
   getImagingStudies,
   signRadiologyReport,
   updateImagingStudyStatus,
 } from "../controllers/imaging.ts";
+import {
+  createImagingStudySchema,
+  imagingStudiesQuerySchema,
+  signRadiologyReportSchema,
+  updateImagingStudyStatusSchema,
+} from "../schemas/clinical.ts";
 
 export default async function imagingRoutes(app: FastifyInstance) {
-  app.post("/api/radiology/studies", { preHandler: [authenticate, authorize("admin", "doctor", "nurse", "receptionist")] }, createImagingStudy);
-  app.get("/api/radiology/studies", { preHandler: [authenticate] }, getImagingStudies);
-  app.put("/api/radiology/studies/:id/status", { preHandler: [authenticate, authorize("admin", "doctor", "nurse", "lab_tech")] }, updateImagingStudyStatus);
-  app.put("/api/radiology/studies/:id/report", { preHandler: [authenticate, authorize("admin", "doctor")] }, signRadiologyReport);
-}
+  const staffOnly = denyRoles("patient", "family_member", "guest");
+  const viewImaging = { preHandler: [authenticate, staffOnly, checkAnyPermission("VIEW_EHR", "MANAGE_ORDERS")] };
+  const manageImaging = { preHandler: [authenticate, staffOnly, checkPermission("MANAGE_ORDERS")] };
+  const reportImaging = { preHandler: [authenticate, staffOnly, checkAnyPermission("MANAGE_CLINICAL_NOTES", "MANAGE_EHR")] };
 
+  app.post("/api/radiology/studies", { ...manageImaging, schema: createImagingStudySchema }, createImagingStudy);
+  app.get("/api/radiology/studies", { ...viewImaging, schema: imagingStudiesQuerySchema }, getImagingStudies);
+  app.put("/api/radiology/studies/:id/status", { ...manageImaging, schema: updateImagingStudyStatusSchema }, updateImagingStudyStatus);
+  app.put("/api/radiology/studies/:id/report", { ...reportImaging, schema: signRadiologyReportSchema }, signRadiologyReport);
+}

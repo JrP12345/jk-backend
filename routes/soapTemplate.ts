@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate } from "../middleware/auth.ts";
+import { authenticate, checkAnyPermission } from "../middleware/auth.ts";
 import {
   getSoapTemplates,
   createSoapTemplate,
@@ -7,9 +7,10 @@ import {
 } from "../controllers/soapTemplate.ts";
 
 export default async function soapTemplateRoutes(app: FastifyInstance) {
-  const auth = { preHandler: [authenticate] };
+  const clinicalTemplateAccess = { preHandler: [authenticate, checkAnyPermission("VIEW_EHR", "MANAGE_EHR", "MANAGE_CLINICAL_NOTES")] };
+  const manageClinicalTemplates = { preHandler: [authenticate, checkAnyPermission("MANAGE_EHR", "MANAGE_CLINICAL_NOTES")] };
 
-  app.get("/api/soap-templates", auth, getSoapTemplates);
-  app.post("/api/soap-templates", auth, createSoapTemplate);
-  app.post("/api/soap-templates/seed", auth, seedDefaultSoapTemplates);
+  app.get("/api/soap-templates", clinicalTemplateAccess, getSoapTemplates);
+  app.post("/api/soap-templates", manageClinicalTemplates, createSoapTemplate);
+  app.post("/api/soap-templates/seed", manageClinicalTemplates, seedDefaultSoapTemplates);
 }

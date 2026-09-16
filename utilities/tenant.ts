@@ -106,7 +106,7 @@ export async function checkClinicAccess(
   }
 
   // Patients & family members are consumers and can view or book across any clinic
-  if (req.user?.role === "patient" || req.user?.role === "family_member") {
+  if (req.user?.role === "patient" || req.user?.role === "family_member" || req.user?.role === "guest") {
     return { allowed: true, organizationId: clinic.organizationId.toString() };
   }
 

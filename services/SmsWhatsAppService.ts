@@ -2,6 +2,8 @@ import { NotificationLog } from "../models/NotificationLog.ts";
 import { Organization } from "../models/Organization.ts";
 import { Patient } from "../models/Patient.ts";
 import { UsageRecord } from "../models/UsageRecord.ts";
+import { Appointment } from "../models/Appointment.ts";
+import { issueAppointmentTrackerLink } from "../utilities/publicTracker.ts";
 import { whatsAppCloudApiService } from "./WhatsAppCloudApiService.ts";
 
 export type SupportedTemplateId =
@@ -286,6 +288,13 @@ export async function sendSmsWhatsAppNotification(options: SendMessageOptions): 
   });
 }
 
+async function issueTrackerUrlForAppointment(appointmentId: string): Promise<string> {
+  const appointment = await Appointment.findById(appointmentId);
+  if (!appointment) return "";
+  const { url } = await issueAppointmentTrackerLink(appointment as any);
+  return url;
+}
+
 /**
  * Maps templateId and variables to Meta WhatsApp template format
  */
@@ -453,6 +462,7 @@ export const SmsWhatsAppService = {
       trackingUrl?: string;
     }
   ) {
+    const trackingUrl = params.trackingUrl || await issueTrackerUrlForAppointment(appointmentId);
     const log = await sendSmsWhatsAppNotification({
       organizationId,
       appointmentId,
@@ -469,7 +479,7 @@ export const SmsWhatsAppService = {
           params.appointmentTime ||
           `${params.date || ""} ${params.time || ""}`.trim() ||
           "Today",
-        trackingUrl: params.trackingUrl || `/track/${appointmentId}`,
+        trackingUrl,
       },
     });
 
@@ -498,6 +508,9 @@ export const SmsWhatsAppService = {
       paymentUrl?: string;
     }
   ) {
+    const trackerUrl = await issueTrackerUrlForAppointment(appointmentId);
+    const prescriptionUrl = params.prescriptionUrl || trackerUrl;
+    const paymentUrl = params.paymentUrl || trackerUrl;
     const log = await sendSmsWhatsAppNotification({
       organizationId,
       appointmentId,
@@ -508,10 +521,10 @@ export const SmsWhatsAppService = {
       variables: {
         patientName: params.patientName || "Patient",
         doctorName: params.doctorName,
-        prescriptionUrl: params.prescriptionUrl || `/track/${appointmentId}`,
+        prescriptionUrl,
         invoiceAmount: String(params.invoiceAmount || "0"),
         paymentStatus: params.paymentStatus || "Paid",
-        paymentUrl: params.paymentUrl || `/track/${appointmentId}`,
+        paymentUrl,
       },
     });
 
@@ -539,8 +552,10 @@ export const SmsWhatsAppService = {
       rescheduleUrl: string;
       cancelUrl: string;
       actionDeadlineMinutes?: number | string;
+      trackingUrl?: string;
     }
   ) {
+    const trackingUrl = params.trackingUrl || await issueTrackerUrlForAppointment(appointmentId);
     const log = await sendSmsWhatsAppNotification({
       organizationId,
       appointmentId,
@@ -583,6 +598,7 @@ export const SmsWhatsAppService = {
       trackingUrl?: string;
     }
   ) {
+    const trackingUrl = params.trackingUrl || await issueTrackerUrlForAppointment(appointmentId);
     const log = await sendSmsWhatsAppNotification({
       organizationId,
       appointmentId,
@@ -596,7 +612,7 @@ export const SmsWhatsAppService = {
         newDoctorName: params.newDoctorName,
         clinicName: params.clinicName || "Clinic",
         tokenNumber: String(params.tokenNumber),
-        trackingUrl: params.trackingUrl || `/track/${appointmentId}`,
+        trackingUrl,
       },
     });
 
@@ -691,5 +707,3 @@ export const SmsWhatsAppService = {
     };
   },
 };
-
-

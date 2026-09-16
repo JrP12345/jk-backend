@@ -11,6 +11,34 @@ export function createTrackerCapability(): { token: string; hash: string } {
   return { token, hash: hashTrackerCapability(token) };
 }
 
+export async function issueAppointmentTrackerLink(
+  appointment: {
+    _id: unknown;
+    trackerTokenHash?: string;
+    trackerTokenExpiresAt?: Date;
+    save?: () => Promise<unknown>;
+  },
+  options: { ttlDays?: number; pathPrefix?: string } = {},
+): Promise<{ token: string; url: string }> {
+  const ttlDays = options.ttlDays ?? 30;
+  const capability = createTrackerCapability();
+
+  appointment.trackerTokenHash = capability.hash;
+  appointment.trackerTokenExpiresAt = new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000);
+  if (typeof appointment.save === "function") {
+    await appointment.save();
+  }
+
+  const pathPrefix = options.pathPrefix || "/track";
+  const url = `${pathPrefix}/${appointment._id}?t=${encodeURIComponent(capability.token)}`;
+  return { token: capability.token, url };
+}
+
+export function appendTrackerCapability(url: string, token: string): string {
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}trackerToken=${encodeURIComponent(token)}`;
+}
+
 export function hashTrackerCapability(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
 }

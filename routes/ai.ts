@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate } from "../middleware/auth.ts";
+import { authenticate, checkAnyPermission, checkPermission } from "../middleware/auth.ts";
 import {
   generateSOAPNoteController,
   queryHealthAssistantController,
@@ -49,47 +49,71 @@ export default async function aiRoutes(app: FastifyInstance) {
       }
     }
   };
+  const clinicalAi = {
+    ...auth,
+    preHandler: [authenticate, checkAnyPermission("MANAGE_CLINICAL_NOTES", "MANAGE_EHR", "VIEW_EHR")],
+  };
+  const manageClinicalAi = {
+    ...auth,
+    preHandler: [authenticate, checkAnyPermission("MANAGE_CLINICAL_NOTES", "MANAGE_EHR")],
+  };
+  const aiGovernance = {
+    ...auth,
+    preHandler: [authenticate, checkPermission("MANAGE_ORGANIZATION")],
+  };
+  const aiAnalytics = {
+    ...auth,
+    preHandler: [authenticate, checkAnyPermission("VIEW_ANALYTICS", "MANAGE_ORGANIZATION")],
+  };
+  const billingAi = {
+    ...auth,
+    preHandler: [authenticate, checkAnyPermission("VIEW_BILLING", "MANAGE_BILLING")],
+  };
+  const inventoryAi = {
+    ...auth,
+    preHandler: [authenticate, checkPermission("MANAGE_MEDICINES")],
+  };
 
   // AI SOAP Note Draft Generation
-  app.post("/api/ai/soap-notes/generate", auth, generateSOAPNoteController);
+  app.post("/api/ai/soap-notes/generate", manageClinicalAi, generateSOAPNoteController);
 
   // Grounded Patient Health Query Assistant (Single-Turn EHR Query)
-  app.post("/api/ai/health-assistant/query", auth, queryHealthAssistantController);
+  app.post("/api/ai/health-assistant/query", clinicalAi, queryHealthAssistantController);
 
   // Enterprise DB-Backed Multi-Session Chat APIs
-  app.get("/api/ai/chat/sessions", auth, listChatSessionsController);
-  app.post("/api/ai/chat/sessions", auth, createChatSessionController);
-  app.get("/api/ai/chat/sessions/:sessionId", auth, getChatSessionController);
-  app.post("/api/ai/chat/sessions/:sessionId/messages", auth, sendChatMessageController);
-  app.delete("/api/ai/chat/sessions/:sessionId", auth, deleteChatSessionController);
+  app.get("/api/ai/chat/sessions", clinicalAi, listChatSessionsController);
+  app.post("/api/ai/chat/sessions", clinicalAi, createChatSessionController);
+  app.get("/api/ai/chat/sessions/:sessionId", clinicalAi, getChatSessionController);
+  app.post("/api/ai/chat/sessions/:sessionId/messages", clinicalAi, sendChatMessageController);
+  app.delete("/api/ai/chat/sessions/:sessionId", clinicalAi, deleteChatSessionController);
 
   // Enterprise AI Gateway & Health Probes (Phase 1)
-  app.post("/api/ai/gateway/query", auth, queryAIGatewayController);
-  app.post("/api/ai/gateway/stream", auth, streamAIGatewayController);
+  app.post("/api/ai/gateway/query", clinicalAi, queryAIGatewayController);
+  app.post("/api/ai/gateway/stream", clinicalAi, streamAIGatewayController);
   app.get("/api/ai/health", getAIHealthController);
 
   // Enterprise Prompt Governance & Approval Workflow APIs (Phase 2)
-  app.get("/api/ai/prompts", auth, listPromptTemplatesController);
-  app.post("/api/ai/prompts", auth, createPromptDraftController);
-  app.put("/api/ai/prompts/:id/approve", auth, approvePromptTemplateController);
-  app.post("/api/ai/prompts/test", auth, testPromptSandboxController);
+  app.get("/api/ai/prompts", aiGovernance, listPromptTemplatesController);
+  app.post("/api/ai/prompts", aiGovernance, createPromptDraftController);
+  app.put("/api/ai/prompts/:id/approve", aiGovernance, approvePromptTemplateController);
+  app.post("/api/ai/prompts/test", aiGovernance, testPromptSandboxController);
 
   // Enterprise Tool Calling & Clinician Co-Signature Approval APIs (Phase 5)
-  app.post("/api/ai/tools/intent", auth, detectToolIntentController);
-  app.post("/api/ai/tools/request-execution", auth, requestToolExecutionController);
-  app.put("/api/ai/tools/:id/approve", auth, approveAndExecuteToolController);
+  app.post("/api/ai/tools/intent", clinicalAi, detectToolIntentController);
+  app.post("/api/ai/tools/request-execution", manageClinicalAi, requestToolExecutionController);
+  app.put("/api/ai/tools/:id/approve", manageClinicalAi, approveAndExecuteToolController);
 
   // Enterprise AI Observability & Cost Analytics APIs (Phase 7)
-  app.get("/api/ai/observability/metrics", auth, getAIObservabilityMetricsController);
-  app.get("/api/ai/observability/costs", auth, getAICostAnalyticsController);
+  app.get("/api/ai/observability/metrics", aiAnalytics, getAIObservabilityMetricsController);
+  app.get("/api/ai/observability/costs", billingAi, getAICostAnalyticsController);
 
   // Enterprise AI Admin Console REST APIs (Phase 8)
-  app.get("/api/ai/admin/config", auth, getAIAdminConfigController);
-  app.put("/api/ai/admin/config", auth, updateAIAdminConfigController);
+  app.get("/api/ai/admin/config", aiGovernance, getAIAdminConfigController);
+  app.put("/api/ai/admin/config", aiGovernance, updateAIAdminConfigController);
 
   // Phase 4 AI & Automation Endpoints (Modules 32 - 37)
-  app.post("/api/ai/predictive/no-show", auth, predictNoShowRiskController);
-  app.post("/api/ai/billing/audit", auth, auditBillingAnomaliesController);
-  app.get("/api/ai/inventory/forecast", auth, forecastInventorySupplyController);
-  app.post("/api/ai/nlp/icd10-extract", auth, extractNlpIcd10CodesController);
+  app.post("/api/ai/predictive/no-show", aiAnalytics, predictNoShowRiskController);
+  app.post("/api/ai/billing/audit", billingAi, auditBillingAnomaliesController);
+  app.get("/api/ai/inventory/forecast", inventoryAi, forecastInventorySupplyController);
+  app.post("/api/ai/nlp/icd10-extract", manageClinicalAi, extractNlpIcd10CodesController);
 }

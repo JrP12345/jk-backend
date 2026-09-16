@@ -110,6 +110,22 @@ export function requirePlatformRoot() {
 }
 
 /**
+ * Block roles that are valid authenticated users but should not enter
+ * operational staff workflows.
+ */
+export function denyRoles(...blockedRoles: string[]) {
+  return async (req: FastifyRequest, reply: FastifyReply) => {
+    if (!req.user) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+
+    if (blockedRoles.includes(req.user.role)) {
+      return reply.code(403).send({ error: "Forbidden: insufficient permissions" });
+    }
+  };
+}
+
+/**
  * Factory: restrict access to specific permissions.
  *
  * Evaluates the required permission against the caller's Role document in the

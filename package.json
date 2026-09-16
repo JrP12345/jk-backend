@@ -11,6 +11,8 @@
     "audit": "node ../scripts/repo_auditor.js",
     "seed": "node --env-file=.env --experimental-strip-types scripts/seedDatabase.ts",
     "seed:clean": "node --env-file=.env --experimental-strip-types scripts/seedFreshCleanDB.ts",
+    "setup:root-2fa": "node --env-file=.env --experimental-strip-types scripts/setupRoot2FA.ts",
+    "setup:root-2fa:production": "node --experimental-strip-types scripts/setupRoot2FA.ts",
     "generate:keys": "node --experimental-strip-types scripts/generateKeys.ts",
     "backup:mongo": "node --env-file=.env --experimental-strip-types scripts/mongoBackup.ts",
     "restore:mongo:drill": "node --env-file=.env --experimental-strip-types scripts/mongoRestoreDrill.ts",

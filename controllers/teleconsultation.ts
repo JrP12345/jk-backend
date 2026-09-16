@@ -297,6 +297,12 @@ export async function postSessionSignal(req: FastifyRequest, reply: FastifyReply
       return reply.code(404).send(errorResponse("Teleconsultation session not found"));
     }
 
+    const sessionAccess = await checkOperationalRecordAccess(req, session);
+    if (!sessionAccess.allowed) return sendTenantError(reply, sessionAccess);
+    if (!(await checkPatientSessionOwnership(req, session.patientId))) {
+      return reply.code(404).send(errorResponse("Teleconsultation session not found"));
+    }
+
     const senderRole = req.user?.role || "user";
     if (!session.signals) session.signals = [];
 
@@ -323,8 +329,14 @@ export async function getSessionSignals(req: FastifyRequest, reply: FastifyReply
       return reply.code(400).send(errorResponse("Invalid Session ID"));
     }
 
-    const session = await TeleconsultationSession.findById(id).select("signals");
+    const session = await TeleconsultationSession.findById(id).select("clinicId patientId organizationId signals");
     if (!session) {
+      return reply.code(404).send(errorResponse("Teleconsultation session not found"));
+    }
+
+    const sessionAccess = await checkOperationalRecordAccess(req, session);
+    if (!sessionAccess.allowed) return sendTenantError(reply, sessionAccess);
+    if (!(await checkPatientSessionOwnership(req, session.patientId))) {
       return reply.code(404).send(errorResponse("Teleconsultation session not found"));
     }
 

@@ -80,16 +80,31 @@ export async function guestLoginController(req: FastifyRequest, reply: FastifyRe
       await user.save();
     }
 
+    // Check if email is already claimed by an existing User
+    const existingUserWithEmail = emailInput ? await User.findOne({ email: emailInput }) : null;
+
     if (!user) {
-      isNewUser = true;
-      user = await User.create({
-        name: nameInput,
-        phone: normPhone,
-        email: emailInput || undefined,
-        role: "patient",
-        authMethod: "phone_otp",
-        isEmailVerified: false,
-      });
+      // If no user found by phone, check if the email belongs to a patient account that has no phone attached
+      if (existingUserWithEmail && existingUserWithEmail.role === "patient" && !existingUserWithEmail.phone) {
+        existingUserWithEmail.phone = normPhone;
+        if (existingUserWithEmail.name.startsWith("Patient ")) {
+          existingUserWithEmail.name = nameInput;
+        }
+        await existingUserWithEmail.save();
+        user = existingUserWithEmail;
+      } else {
+        isNewUser = true;
+        // Only set email on User document if it's not already claimed by another User account (avoiding E11000)
+        const emailForUser = (emailInput && !existingUserWithEmail) ? emailInput : undefined;
+        user = await User.create({
+          name: nameInput,
+          phone: normPhone,
+          email: emailForUser,
+          role: "patient",
+          authMethod: "phone_otp",
+          isEmailVerified: false,
+        });
+      }
     } else {
       // Security: Do NOT overwrite verified name/email from an unauthenticated guest flow.
       // Only set name if the account was registered with a temporary placeholder name.
@@ -98,9 +113,12 @@ export async function guestLoginController(req: FastifyRequest, reply: FastifyRe
         user.name = nameInput;
         changed = true;
       }
+      // Only set email on User if user has no email AND email is not taken by another user
       if (emailInput && !user.email) {
-        user.email = emailInput;
-        changed = true;
+        if (!existingUserWithEmail || existingUserWithEmail._id.equals(user._id)) {
+          user.email = emailInput;
+          changed = true;
+        }
       }
       if (changed) await user.save();
     }
@@ -246,12 +264,17 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
       await user.save();
     }
 
+    const otpEmailInput = email?.trim().toLowerCase() || undefined;
+    const isOtpEmailTaken = otpEmailInput
+      ? !!(await User.exists({ email: otpEmailInput, ...(user ? { _id: { $ne: user._id } } : {}) }))
+      : false;
+
     if (!user) {
       isNewUser = true;
       user = await User.create({
         name: nameInput || `Patient ${normPhone.slice(-4)}`,
         phone: normPhone,
-        email: email?.trim().toLowerCase() || undefined,
+        email: isOtpEmailTaken ? undefined : otpEmailInput,
         role: "patient",
         authMethod: "phone_otp",
         isEmailVerified: false,
@@ -262,8 +285,8 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
         user.name = nameInput;
         shouldSave = true;
       }
-      if (email && !user.email) {
-        user.email = email.trim().toLowerCase();
+      if (otpEmailInput && !user.email && !isOtpEmailTaken) {
+        user.email = otpEmailInput;
         shouldSave = true;
       }
       if (shouldSave) {

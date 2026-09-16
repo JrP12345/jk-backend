@@ -10,6 +10,7 @@ import { Clinic } from "../models/Clinic.ts";
 import { User } from "../models/User.ts";
 import { SmsWhatsAppService } from "../services/SmsWhatsAppService.ts";
 import { verifyAuditChainIntegrity } from "../services/AuditTrailService.ts";
+import { issueAppointmentTrackerLink } from "../utilities/publicTracker.ts";
 
 /**
  * Calculates adaptive consultation duration based on today's completed encounters for doctor and clinic.
@@ -1315,6 +1316,7 @@ export async function triggerQueueDelayAlerts(req: FastifyRequest, reply: Fastif
             const orgId = clinic?.organizationId?.toString() || appt.organizationId?.toString() || "";
 
             try {
+              const { url: trackerUrl } = await issueAppointmentTrackerLink(appt as any);
               await SmsWhatsAppService.sendQueueDelayAlert(
                 appt._id.toString(),
                 orgId,
@@ -1325,7 +1327,7 @@ export async function triggerQueueDelayAlerts(req: FastifyRequest, reply: Fastif
                   clinicName: clinic?.name || "Clinic",
                   delayMinutes,
                   revisedArrivalTime,
-                  trackerUrl: `/track/${appt._id}`,
+                  trackerUrl,
                 }
               );
 
@@ -1556,6 +1558,7 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
 
       if (patientPhone) {
         const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
+        const { url: trackingUrl } = await issueAppointmentTrackerLink(appointment as any);
         await sendSmsWhatsAppNotification({
           organizationId: orgId?.toString(),
           appointmentId: appointment._id.toString(),
@@ -1566,7 +1569,7 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
             tokenNumber: String(appointment.tokenNumber),
             peopleAhead: "0",
             doctorName: "Laboratory Counter",
-            trackingUrl: `/track/${appointment._id}`,
+            trackingUrl,
           },
           idempotencyKey: `lab_req_${appointment._id}_${Date.now()}`,
         }).catch((err) => console.warn("Patient lab order WhatsApp notification notice:", err));
@@ -2481,7 +2484,7 @@ export async function resendQueueTrackerNotification(req: FastifyRequest, reply:
     const patientName = patientDoc?.name || patientDoc?.userId?.name || "Patient";
     const doctorName = (appointment.doctorId as any)?.name || "Doctor";
     const token = appointment.tokenNumber;
-    const trackingUrl = `/track/${appointment._id}`;
+    const { url: trackingUrl } = await issueAppointmentTrackerLink(appointment as any);
 
     // Calculate live people ahead in today's queue
     const targetDate = new Date(appointment.appointmentTime || Date.now());
@@ -2573,5 +2576,3 @@ export async function resendQueueTrackerNotification(req: FastifyRequest, reply:
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
-
-

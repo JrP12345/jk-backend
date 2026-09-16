@@ -1134,32 +1134,19 @@ export async function sendFollowUpReminder(req: FastifyRequest, reply: FastifyRe
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const patientName =
-      (appointment.patientId as any)?.userId?.name ||
-      (appointment.patientId as any)?.name ||
-      "Patient";
     const targetPhone =
       phone?.trim() ||
       (appointment.patientId as any)?.phone ||
       (appointment.patientId as any)?.userId?.phone;
 
+    const patientName =
+      (appointment.patientId as any)?.name ||
+      (appointment.patientId as any)?.userId?.name ||
+      "Patient";
+
     if (!targetPhone) {
       return reply.code(400).send(errorResponse("Patient mobile number not available"));
     }
-
-    const doctorName =
-      (appointment.doctorId as any)?.name || "Attending Physician";
-    const clinicName = (appointment.clinicId as any)?.name || "Clinic";
-    const apptDateStr = new Date(appointment.appointmentTime).toLocaleDateString("en-IN", {
-      weekday: "short",
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-    });
-
-    const trackingUrl = `https://jk.health/track?token=${appointment.tokenNumber}&clinic=${appointment.clinicId?._id || appointment.clinicId}`;
-
-    const message = `Namaste ${patientName}, your recommended medical review with Dr. ${doctorName.replace(/^Dr\.\s*/i, "")} at ${clinicName} is scheduled for ${apptDateStr}. To check your token (#${appointment.tokenNumber}) or view live wait status: ${trackingUrl}`;
 
     try {
       const { sendFollowUpRecallNotification } = await import("../utilities/notifications.ts");

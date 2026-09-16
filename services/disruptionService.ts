@@ -11,6 +11,7 @@ import { broadcastQueueUpdate, broadcastRealtimeNotification } from "../notifica
 import { SmsWhatsAppService } from "./SmsWhatsAppService.ts";
 import { paymentProvider } from "./payment/PaymentProvider.ts";
 import { withTransaction } from "../utilities/transaction.ts";
+import { issueAppointmentTrackerLink } from "../utilities/publicTracker.ts";
 
 export interface ProcessDisruptionParams {
   clinicId: string;
@@ -186,8 +187,9 @@ export const disruptionService = {
           minute: "2-digit",
         });
 
-        const rescheduleUrl = `/track/${appt._id}?action=reschedule`;
-        const cancelUrl = `/track/${appt._id}?action=cancel`;
+        const { url: trackerUrl } = await issueAppointmentTrackerLink(appt as any);
+        const rescheduleUrl = `${trackerUrl}&action=reschedule`;
+        const cancelUrl = `${trackerUrl}&action=cancel`;
 
         if (patientPhone) {
           SmsWhatsAppService.sendDisruptionAlert(
@@ -216,7 +218,7 @@ export const disruptionService = {
           message: `Dr. ${doctorName} is unavailable on ${formattedTime}. Please reschedule or cancel within 60 minutes.`,
           severity: "warning",
           priority: "high",
-          actionUrl: `/track/${appt._id}`,
+          actionUrl: trackerUrl,
           metadata: {
             appointmentId: appt._id.toString(),
             clinicId,
@@ -507,6 +509,8 @@ export const disruptionService = {
       },
     });
 
+    const { url: trackerUrl } = await issueAppointmentTrackerLink(appt as any);
+
     // Domain Event
     eventBus.publish({
       eventType: EVENT_TYPES.PATIENT_TRANSFERRED_DOCTOR,
@@ -516,7 +520,7 @@ export const disruptionService = {
       title: "Appointment Transferred",
       message: `Your appointment has been transferred to Dr. ${targetDoctor.name}. Your new token is #${newTokenNumber}.`,
       severity: "info",
-      actionUrl: `/track/${appt._id}`,
+      actionUrl: trackerUrl,
       metadata: {
         appointmentId: appt._id.toString(),
         previousDoctorId,
@@ -541,7 +545,7 @@ export const disruptionService = {
           newDoctorName: targetDoctor.name,
           clinicName,
           tokenNumber: newTokenNumber,
-          trackingUrl: `/track/${appt._id}`,
+          trackingUrl: trackerUrl,
         }
       ).catch((err) => console.error("[DisruptionService] WhatsApp transfer alert failed:", err));
     }
@@ -842,6 +846,8 @@ export const disruptionService = {
       },
     });
 
+    const { url: newAppointmentTrackerUrl } = await issueAppointmentTrackerLink(newAppt as any);
+
     // Domain Event
     eventBus.publish({
       eventType: EVENT_TYPES.PATIENT_PRIORITY_RESCHEDULED,
@@ -851,7 +857,7 @@ export const disruptionService = {
       title: "Appointment Rescheduled",
       message: `Your appointment has been rescheduled to ${targetDate} with token #${newTokenNumber}.`,
       severity: "success",
-      actionUrl: `/track/${newAppt._id}`,
+      actionUrl: newAppointmentTrackerUrl,
       metadata: {
         originalAppointmentId: originalAppt._id.toString(),
         newAppointmentId: newAppt._id.toString(),
@@ -877,7 +883,7 @@ export const disruptionService = {
           clinicName: (originalAppt.clinicId as any)?.name || "Clinic",
           date: targetDate,
           appointmentTime: newAppointmentTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          trackingUrl: `/track/${newAppt._id}`,
+          trackingUrl: newAppointmentTrackerUrl,
         }
       ).catch((err) => console.error("[DisruptionService] WhatsApp reschedule confirmation failed:", err));
     }
