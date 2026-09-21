@@ -3,7 +3,8 @@ import crypto from "node:crypto";
 import zlib from "node:zlib";
 
 describe("MongoDB Backup & Restore Cryptographic Engine Suite", () => {
-  const testKeyHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  // Test-only dummy key — NOT a real secret (zero-entropy 64-hex-char to prevent scanner false positives)
+  const testKeyHex = "00".repeat(32);
   const testKey = Buffer.from(testKeyHex, "hex");
 
   it("should compress and encrypt data with AES-256-GCM and generate valid versioned header", () => {

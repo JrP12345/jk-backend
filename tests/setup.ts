@@ -36,11 +36,12 @@ beforeAll(async () => {
   // Set environment variables for test DB and Cloudflare R2
   process.env.MONGODB_URI = uri;
   process.env.NODE_ENV = "test";
-  process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-  process.env.CLOUDFLARE_ACCOUNT_ID = "testaccount";
-  process.env.R2_ACCESS_KEY_ID = "testaccess";
-  process.env.R2_SECRET_ACCESS_KEY = "testsecret";
-  process.env.R2_BUCKET_NAME = "testbucket";
+  // Test-only dummy key — NOT a real secret (zero-entropy 64-hex-char to prevent scanner false positives)
+  process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || "00".repeat(32);
+  process.env.CLOUDFLARE_ACCOUNT_ID = "test-only-fake-account";
+  process.env.R2_ACCESS_KEY_ID = "test-only-fake-access-key";
+  process.env.R2_SECRET_ACCESS_KEY = "test-only-fake-secret-key";
+  process.env.R2_BUCKET_NAME = "test-only-fake-bucket";
 
   if (mongoose.connection.readyState !== 0) {
     await mongoose.disconnect();
