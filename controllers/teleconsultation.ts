@@ -2,6 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { TeleconsultationSession } from "../models/TeleconsultationSession.ts";
 import { Appointment } from "../models/Appointment.ts";
+import { getActiveConsultationDoctorDayKey, isActiveConsultationLockConflict } from "../utilities/consultationLock.ts";
 import { Patient } from "../models/Patient.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
@@ -125,13 +126,35 @@ export async function startTeleSession(req: FastifyRequest, reply: FastifyReply)
       return reply.code(404).send(errorResponse("Teleconsultation session not found"));
     }
 
+    const appointment = await Appointment.findById(session.appointmentId).select("doctorId appointmentTime status");
+    if (!appointment) {
+      return reply.code(404).send(errorResponse("Appointment not found"));
+    }
+    if (!["confirmed", "checked-in", "in-consultation"].includes(appointment.status)) {
+      return reply.code(409).send(errorResponse(`Cannot start a teleconsultation for a ${appointment.status} appointment`));
+    }
+
+    if (appointment.status !== "in-consultation") {
+      const transitionedAppointment = await Appointment.findOneAndUpdate(
+        { _id: appointment._id, status: { $in: ["confirmed", "checked-in"] } },
+        {
+          $set: {
+            status: "in-consultation",
+            activeConsultationDoctorDayKey: getActiveConsultationDoctorDayKey(appointment.doctorId, appointment.appointmentTime),
+          },
+        },
+        { returnDocument: "after" },
+      );
+      if (!transitionedAppointment) {
+        return reply.code(409).send(errorResponse("Appointment was changed by another request. Refresh and try again."));
+      }
+    }
+
     session.status = "active";
     if (!session.startedAt) {
       session.startedAt = new Date();
     }
     await session.save();
-
-    await Appointment.findByIdAndUpdate(session.appointmentId, { status: "in-consultation" });
 
     await AuditLog.create({
       userId,
@@ -144,6 +167,9 @@ export async function startTeleSession(req: FastifyRequest, reply: FastifyReply)
     return reply.code(200).send(successResponse(session, "Teleconsultation session active"));
   } catch (err) {
     console.error("startTeleSession error:", err);
+    if (isActiveConsultationLockConflict(err)) {
+      return reply.code(409).send(errorResponse("Doctor already has an active consultation. Complete it before starting another.", "ACTIVE_CONSULTATION_IN_PROGRESS"));
+    }
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

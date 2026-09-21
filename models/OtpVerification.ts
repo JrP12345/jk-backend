@@ -1,9 +1,10 @@
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IOtpVerification extends Document {
-  phone: string;
+  phone?: string;
+  email?: string;
   otpHash: string;
-  purpose: "authentication" | "phone_verification" | "record_claim";
+  purpose: "authentication" | "phone_verification" | "email_verification" | "record_claim";
   expiresAt: Date;
   attempts: number;
   verified: boolean;
@@ -15,11 +16,12 @@ export interface IOtpVerification extends Document {
 
 const OtpVerificationSchema = new Schema<IOtpVerification>(
   {
-    phone: { type: String, required: true, index: true },
+    phone: { type: String, required: false, index: true },
+    email: { type: String, required: false, index: true, lowercase: true, trim: true },
     otpHash: { type: String, required: true },
     purpose: {
       type: String,
-      enum: ["authentication", "phone_verification", "record_claim"],
+      enum: ["authentication", "phone_verification", "email_verification", "record_claim"],
       required: true,
     },
     expiresAt: { type: Date, required: true, expires: 0 }, // TTL index
@@ -31,7 +33,8 @@ const OtpVerificationSchema = new Schema<IOtpVerification>(
   { timestamps: true }
 );
 
-OtpVerificationSchema.index({ phone: 1, purpose: 1 });
+OtpVerificationSchema.index({ phone: 1, purpose: 1 }, { sparse: true });
+OtpVerificationSchema.index({ email: 1, purpose: 1 }, { sparse: true });
 
 export const OtpVerification =
   mongoose.models.OtpVerification ||

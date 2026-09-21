@@ -5,7 +5,7 @@ import { Patient } from "../models/Patient.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { getNextAtomicSequence } from "../models/Counter.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
-import { checkClinicAccess, checkOperationalRecordAccess, getRequestClinicIds } from "../utilities/tenant.ts";
+import { checkClinicAccess, checkOperationalRecordAccess, getRequestClinicIds, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));
@@ -97,7 +97,9 @@ export async function getPreAuthList(req: FastifyRequest, reply: FastifyReply) {
       const clinicIds = await getRequestClinicIds(req);
       if (clinicIds) filter.clinicId = { $in: clinicIds };
     }
-    if (req.user?.organization_id && req.user?.role !== "root") filter.organizationId = req.user.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return sendTenantError(reply, scope);
+    if (scope.organizationId && req.user?.role !== "root") filter.organizationId = scope.organizationId;
     if (status) filter.status = status;
     if (tpaName) filter.tpaName = new RegExp(tpaName, "i");
 

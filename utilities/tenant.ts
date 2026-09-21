@@ -1,7 +1,6 @@
 import mongoose from "mongoose";
 import { Clinic } from "../models/Clinic.ts";
 import { Patient } from "../models/Patient.ts";
-import { Organization } from "../models/Organization.ts";
 import type { FastifyRequest } from "fastify";
 
 /**
@@ -26,40 +25,27 @@ export function isRootRequest(req: FastifyRequest): boolean {
 /**
  * Resolves the target organization ID for an operation.
  * 1. If req.user.organization_id is present, returns it.
- * 2. If caller is Root Super-Admin:
- *    a. Checks query ?organizationId=...
- *    b. Checks header x-organization-id
- *    c. Checks body { organizationId: ... }
- *    d. Checks x-clinic-id header or clinicId in query/body (looks up clinic.organizationId)
- *    e. Fallback: finds first organization in MongoDB
+ * 2. If caller is Root Super-Admin, it may explicitly choose an organization
+ *    through a validated query/body value or a clinic in the query/body.
+ *
+ * HTTP tenant headers are deliberately never used as authority. They are
+ * browser-controlled and must not decide which tenant a request operates on.
  */
 export async function resolveTargetOrganizationId(req: FastifyRequest): Promise<string | undefined> {
-  const jwtOrgId = getRequestOrganizationId(req);
-  if (jwtOrgId) return jwtOrgId;
+  const scope = resolveAuthorizedOrganizationScope(req);
+  if (scope.allowed && scope.organizationId) return scope.organizationId;
 
   if (isRootRequest(req)) {
-    const fromQuery = (req.query as { organizationId?: string })?.organizationId;
-    if (fromQuery && mongoose.Types.ObjectId.isValid(fromQuery)) return fromQuery;
-
-    const fromHeader = req.headers["x-organization-id"] as string;
-    if (fromHeader && mongoose.Types.ObjectId.isValid(fromHeader)) return fromHeader;
-
-    const fromBody = (req.body as { organizationId?: string })?.organizationId;
-    if (fromBody && mongoose.Types.ObjectId.isValid(fromBody)) return fromBody;
-
     const clinicId =
-      (req.headers["x-clinic-id"] as string) ||
-      (req.query as { clinicId?: string })?.clinicId ||
-      (req.body as { clinicId?: string })?.clinicId;
+      (req.query as { clinicId?: string; clinic_id?: string })?.clinicId ||
+      (req.query as { clinicId?: string; clinic_id?: string })?.clinic_id ||
+      (req.body as { clinicId?: string; clinic_id?: string })?.clinicId ||
+      (req.body as { clinicId?: string; clinic_id?: string })?.clinic_id;
 
     if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
       const clinic = await Clinic.findById(clinicId).select("organizationId").lean();
       if (clinic?.organizationId) return clinic.organizationId.toString();
     }
-
-    // Fallback for root superadmin when inspecting settings without query params: find primary organization
-    const fallbackOrg = await Organization.findOne().select("_id").lean();
-    if (fallbackOrg) return (fallbackOrg as any)._id.toString();
   }
 
   return undefined;
@@ -68,6 +54,37 @@ export async function resolveTargetOrganizationId(req: FastifyRequest): Promise<
 export type TenantCheck =
   | { allowed: true; organizationId: string | undefined }
   | { allowed: false; statusCode: 400 | 403 | 404; message: string };
+
+/**
+ * Resolve the one organization a request may operate on. Non-root callers are
+ * always scoped to their authenticated membership; a body/query organization
+ * is only a consistency assertion and a mismatch is rejected. Root workflows
+ * may explicitly select a valid organization. Request headers are ignored.
+ */
+export function resolveAuthorizedOrganizationScope(req: FastifyRequest): TenantCheck {
+  const requestedOrganizationId =
+    (req.body as { organizationId?: unknown; organization_id?: unknown } | undefined)?.organizationId ||
+    (req.body as { organizationId?: unknown; organization_id?: unknown } | undefined)?.organization_id ||
+    (req.query as { organizationId?: unknown; organization_id?: unknown } | undefined)?.organizationId ||
+    (req.query as { organizationId?: unknown; organization_id?: unknown } | undefined)?.organization_id;
+  const requested = typeof requestedOrganizationId === "string" ? requestedOrganizationId : undefined;
+
+  if (requested && !mongoose.Types.ObjectId.isValid(requested)) {
+    return { allowed: false, statusCode: 400, message: "Invalid organization ID" };
+  }
+
+  const authenticatedOrganizationId = getRequestOrganizationId(req);
+  if (isRootRequest(req)) {
+    return { allowed: true, organizationId: requested || authenticatedOrganizationId };
+  }
+  if (!authenticatedOrganizationId) {
+    return { allowed: false, statusCode: 403, message: "Organization context is required" };
+  }
+  if (requested && requested !== authenticatedOrganizationId) {
+    return { allowed: false, statusCode: 403, message: "Cross-tenant organization selection is not allowed" };
+  }
+  return { allowed: true, organizationId: authenticatedOrganizationId };
+}
 
 /**
  * Verify that a clinic belongs to the caller's active organization.

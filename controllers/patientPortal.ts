@@ -6,7 +6,8 @@ import { Prescription } from "../models/Prescription.ts";
 import { RefillRequest } from "../models/RefillRequest.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { domainEventBus } from "../platform/events/DomainEventBus.ts";
-import { checkClinicAccess, checkOperationalRecordAccess } from "../utilities/tenant.ts";
+import { eventBus } from "../events/eventBus.ts";
+import { checkClinicAccess, checkOperationalRecordAccess, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { requestHasAnyPermission } from "../utilities/permissions.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
@@ -45,7 +46,11 @@ export async function getCurrentPatientProfile(req: FastifyRequest, reply: Fasti
         email: user.email || undefined,
         accountType: "self",
         createdBy: user._id,
-        organizationId: req.user?.organization_id ? new mongoose.Types.ObjectId(req.user.organization_id) : undefined,
+        organizationId: (() => {
+          const s = resolveAuthorizedOrganizationScope(req);
+          const oid = s.allowed ? s.organizationId : req.user?.organization_id;
+          return oid ? new mongoose.Types.ObjectId(oid) : undefined;
+        })(),
       });
       const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
       await FamilyRelationship.findOneAndUpdate(
@@ -117,7 +122,11 @@ export async function updateCurrentPatientProfile(req: FastifyRequest, reply: Fa
     if (!patient) {
       patient = new Patient({
         userId,
-        organizationId: req.user?.organization_id ? new mongoose.Types.ObjectId(req.user.organization_id) : undefined,
+        organizationId: (() => {
+          const s = resolveAuthorizedOrganizationScope(req);
+          const oid = s.allowed ? s.organizationId : req.user?.organization_id;
+          return oid ? new mongoose.Types.ObjectId(oid) : undefined;
+        })(),
       });
     }
 
@@ -189,9 +198,25 @@ export async function createPrescriptionRefillRequest(req: FastifyRequest, reply
       status: "pending",
     });
 
-    // Publish domain event
+    // Publish durable domain event
+    const eventId = `evt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    await eventBus.publishDurable({
+      eventId,
+      eventType: "PRESCRIPTION_REFILL_REQUESTED",
+      category: "clinical",
+      organizationId: prescription.organizationId?.toString(),
+      metadata: {
+        refillId: refill._id.toString(),
+        prescriptionId: id,
+        patientId: patient._id.toString(),
+        doctorId: prescription.doctorId.toString(),
+        clinicId: prescription.clinicId.toString(),
+        reason: reason.trim(),
+      },
+    });
+
     await domainEventBus.publish({
-      eventId: `evt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      eventId,
       eventType: "PRESCRIPTION_REFILL_REQUESTED",
       eventVersion: 1,
       occurredAt: new Date(),
@@ -228,8 +253,12 @@ export async function getPrescriptionRefillRequests(req: FastifyRequest, reply: 
       filter.patientId = patient._id;
     } else if (userRole === "doctor") {
       filter.doctorId = userId;
-    } else if (req.user?.organization_id) {
-      filter.organizationId = req.user.organization_id;
+    } else {
+      const scope = resolveAuthorizedOrganizationScope(req);
+      const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
+      if (orgId) {
+        filter.organizationId = orgId;
+      }
     }
 
     if (userRole !== "patient" && userRole !== "doctor") {
@@ -304,7 +333,8 @@ export async function patientSelfBookAppointment(req: FastifyRequest, reply: Fas
   try {
     if (!requirePortalPatient(req, reply)) return;
     const userId = req.user!.id;
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
 
     const { clinicId, doctorId, appointmentTime, appointmentType, notes, lockId, forPatientId, payAtClinic } = req.body as {
       clinicId: string;

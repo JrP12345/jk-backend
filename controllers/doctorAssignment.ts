@@ -5,10 +5,13 @@ import { Clinic } from "../models/Clinic.ts";
 import { User } from "../models/User.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
+import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 
 export async function assignDoctor(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user!.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
     if (!orgId) return reply.code(400).send(errorResponse("You are not linked to any organization"));
 
     const { doctorId, clinicId, workingHours, fees, feeType, appointmentDuration, bookingMode, maxDailyTokens } = req.body as {
@@ -56,8 +59,10 @@ export async function assignDoctor(req: FastifyRequest, reply: FastifyReply) {
 
 export async function getDoctorAssignments(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
     const userRole = req.user?.role;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed && userRole !== "patient") return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
     const { doctorId, clinicId } = req.query as { doctorId?: string; clinicId?: string };
 
     const query: any = { isActive: true };
@@ -89,7 +94,9 @@ export async function getDoctorAssignments(req: FastifyRequest, reply: FastifyRe
 
 export async function updateAssignment(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
     const { id } = req.params as { id: string };
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -127,7 +134,9 @@ export async function updateAssignment(req: FastifyRequest, reply: FastifyReply)
 
 export async function removeAssignment(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
     const { id } = req.params as { id: string };
 
     if (!mongoose.Types.ObjectId.isValid(id)) {

@@ -1,7 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
-import crypto from "node:crypto";
 import bcrypt from "bcryptjs";
+import crypto from "node:crypto";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
 import { OrgMember } from "../models/OrgMember.ts";
@@ -25,7 +25,7 @@ import { Subscription } from "../models/Subscription.ts";
 import { SubscriptionPayment } from "../models/SubscriptionPayment.ts";
 import { SaaSPlan } from "../models/SaaSPlan.ts";
 import { TwoFactorService } from "../services/TwoFactorService.ts";
-import { emailProvider } from "../notifications/providers/emailProvider.ts";
+import { enqueueTransactionalEmail } from "../services/CommunicationOutbox.ts";
 import { validatePasswordStrength } from "../middleware/auth.ts";
 import {
   generateAccessToken,
@@ -36,7 +36,7 @@ import {
 } from "../utilities/helpers.ts";
 import { setAuthCookies } from "../utilities/types.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
-import { resolveTargetOrganizationId } from "../utilities/tenant.ts";
+import { checkClinicAccess, resolveAuthorizedOrganizationScope, resolveTargetOrganizationId, isRootRequest } from "../utilities/tenant.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { encrypt, decrypt } from "../utilities/encryption.ts";
@@ -195,16 +195,13 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
     }
 
     const isRootUser = userRole === "root";
-    const providedSecret = (req.headers["x-onboarding-secret"] as string) || "";
-    const expectedSecret = process.env.ONBOARDING_SECRET?.trim();
-    const isNewOrgMode = (req.headers["x-onboarding-mode"] === "new_org") || ((req.query as any)?.mode === "new_org");
 
-    if (!isRootUser && process.env.NODE_ENV === "production" && !expectedSecret && !isNewOrgMode) {
-      return reply.code(403).send(errorResponse("Forbidden: public self-service onboarding is disabled in production"));
-    }
-
-    if (!isRootUser && expectedSecret && providedSecret !== expectedSecret && !isNewOrgMode && process.env.NODE_ENV !== "test" && process.env.NODE_ENV !== "development") {
-      return reply.code(403).send(errorResponse("Forbidden: invalid onboarding key"));
+    // Organization provisioning is a platform operation. A reusable shared
+    // header secret is not an authorization boundary: it is easily copied to a
+    // browser, log, or third-party sales tool. Test fixtures alone may bypass
+    // this so isolated integration databases can be bootstrapped.
+    if (!isRootUser && process.env.NODE_ENV !== "test") {
+      return reply.code(403).send(errorResponse("Organization provisioning requires an authenticated platform administrator"));
     }
 
     const {
@@ -237,27 +234,15 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
     }
 
     return await withTransaction(async (session) => {
-      const selectedPlan = (req.body as any).plan || "starter";
-      let maxClinics = (req.body as any).maxClinics;
-      let maxDoctors = (req.body as any).maxDoctors;
-      let maxStaff = (req.body as any).maxStaff;
-
-      if (!maxClinics || !maxDoctors || !maxStaff) {
-        if (selectedPlan === "pro") {
-          maxClinics = maxClinics || 5;
-          maxDoctors = maxDoctors || 15;
-          maxStaff = maxStaff || 25;
-        } else if (selectedPlan === "enterprise") {
-          maxClinics = maxClinics || 99;
-          maxDoctors = maxDoctors || 999;
-          maxStaff = maxStaff || 999;
-        } else {
-          // Starter Plan Defaults: 1 Clinic, 2 Doctors, 5 Staff
-          maxClinics = maxClinics || 1;
-          maxDoctors = maxDoctors || 2;
-          maxStaff = maxStaff || 5;
-        }
-      }
+      // Plans and quotas are commercial entitlements. Only a platform root can
+      // select a plan, and no caller can set quotas directly through onboarding.
+      const canConfigureCommercialTerms = isRootUser || process.env.NODE_ENV === "test";
+      const selectedPlan = canConfigureCommercialTerms ? ((req.body as any).plan || "starter") : "starter";
+      const planLimits = selectedPlan === "enterprise"
+        ? { maxClinics: 99, maxDoctors: 999, maxStaff: 999 }
+        : selectedPlan === "pro"
+          ? { maxClinics: 5, maxDoctors: 15, maxStaff: 25 }
+          : { maxClinics: 1, maxDoctors: 2, maxStaff: 5 };
 
       const org = await createWithSession(Organization, {
         name: org_name,
@@ -270,9 +255,7 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
         timings: timings || null,
         working_days: working_days || null,
         plan: selectedPlan,
-        maxClinics,
-        maxDoctors,
-        maxStaff,
+        ...planLimits,
         taxId: taxId?.trim() || undefined,
         licenseNumber: licenseNumber?.trim() || undefined,
         currency: currency || "INR",
@@ -343,9 +326,8 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
 
       const orgIdStr = org._id.toString();
 
-      // Initialize Subscription with custom trial days if specified
-      const customTrialDays = Number((req.body as any).trialDays) || 15;
-      await subscriptionService.getOrInitializeSubscription(orgIdStr, customTrialDays);
+      // Trial duration is server-owned, not supplied by a browser request.
+      await subscriptionService.getOrInitializeSubscription(orgIdStr, 15);
 
       // Only set auth cookies if this is an initial unauthenticated onboarding flow (not a root admin adding orgs)
       if (!isRootUser) {
@@ -356,7 +338,7 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
         setAuthCookies(reply, accessToken, refreshToken);
       }
 
-      eventBus.publish({
+      await eventBus.publishDurable({
         eventType: EVENT_TYPES.ORG_CREATED,
         category: "organization",
         targetUserId: adminUser._id.toString(),
@@ -369,12 +351,14 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
 
       if (sendWelcomeEmail !== false && admin_email && admin_password) {
         const portalUrl = `${getFrontendBaseUrl()}/login`;
-        emailProvider.sendEmail({
+        await enqueueTransactionalEmail({
           to: admin_email.trim().toLowerCase(),
           subject: `Welcome to ANANT - ${org_name} Workspace Provisioned`,
-          text: `Hello ${admin_name},\n\nYour organization workspace (${org_name}) has been provisioned on ANANT Healthcare OS.\n\nLogin Portal: ${portalUrl}\nEmail: ${admin_email}\nPassword: ${admin_password}\n\nPlease sign in to configure your clinical staff and operational settings.`,
-          html: `<p>Hello <strong>${admin_name}</strong>,</p><p>Your organization workspace (<strong>${org_name}</strong>) has been provisioned on ANANT Healthcare OS.</p><ul><li><strong>Login Portal:</strong> <a href="${portalUrl}">${portalUrl}</a></li><li><strong>Email:</strong> ${admin_email}</li><li><strong>Password:</strong> ${admin_password}</li></ul><p>Please sign in to configure your clinical staff and operational settings.</p>`,
-        }).catch((e) => console.error("Welcome email send error:", e));
+          text: `Hello ${admin_name},\n\nYour organization workspace (${org_name}) has been provisioned on ANANT Healthcare OS.\n\nLogin Portal: ${portalUrl}\nEmail: ${admin_email}\n\nUse the password you chose during provisioning to sign in. Please sign in to configure your clinical staff and operational settings.`,
+          html: `<p>Hello <strong>${admin_name}</strong>,</p><p>Your organization workspace (<strong>${org_name}</strong>) has been provisioned on ANANT Healthcare OS.</p><ul><li><strong>Login Portal:</strong> <a href="${portalUrl}">${portalUrl}</a></li><li><strong>Email:</strong> ${admin_email}</li></ul><p>Use the password you chose during provisioning to sign in. Please sign in to configure your clinical staff and operational settings.</p>`,
+          idempotencyKey: `transactional-email:organization-welcome:${org._id}`,
+          session,
+        });
       }
 
       return reply.code(201).send(
@@ -673,7 +657,7 @@ export async function addDoctor(req: FastifyRequest, reply: FastifyReply) {
         role: "doctor",
       }, session);
 
-      eventBus.publish({
+      await eventBus.publishDurable({
         eventType: EVENT_TYPES.ORG_MEMBER_INVITED,
         category: "organization",
         targetUserId: newDoctorUser._id.toString(),
@@ -681,7 +665,7 @@ export async function addDoctor(req: FastifyRequest, reply: FastifyReply) {
         message: `You have been added as a Doctor in Anant.`,
         severity: "info",
         organizationId: orgId,
-      });
+      }, session);
 
       return reply.code(201).send(
         successResponse({ id: newDoctorUser._id.toString(), name, email, role: "doctor", organization_id: orgId, specialization }, "Doctor registered successfully")
@@ -748,7 +732,7 @@ export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) 
         role: "receptionist",
       }, session);
 
-      eventBus.publish({
+      await eventBus.publishDurable({
         eventType: EVENT_TYPES.ORG_MEMBER_INVITED,
         category: "organization",
         targetUserId: newRecUser._id.toString(),
@@ -756,7 +740,7 @@ export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) 
         message: `You have been added as a Receptionist in Anant.`,
         severity: "info",
         organizationId: orgId,
-      });
+      }, session);
 
       return reply.code(201).send(
         successResponse({ id: newRecUser._id.toString(), name, email, role: "receptionist", organization_id: orgId, shift, clinicId }, "Receptionist registered successfully")
@@ -772,26 +756,25 @@ export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) 
 // ─── Get Org Staff ──────────────────────────────────────────────
 export async function getOrgStaff(req: FastifyRequest, reply: FastifyReply) {
   try {
-    let effectiveOrgId = req.user?.organization_id?.toString();
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) {
+      return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    }
 
-    const queryClinicId = (req.query as any)?.clinicId || (req.headers as any)["x-clinic-id"];
-    const queryOrgId = (req.query as any)?.organizationId || (req.headers as any)["x-organization-id"];
-
-    if (queryClinicId && mongoose.Types.ObjectId.isValid(queryClinicId)) {
-      const clinic = await Clinic.findById(queryClinicId).select("organizationId").lean();
-      if (clinic?.organizationId) {
-        effectiveOrgId = clinic.organizationId.toString();
+    let effectiveOrgId = scope.organizationId;
+    const queryClinicId = (req.query as any)?.clinicId;
+    if (queryClinicId) {
+      const clinicCheck = await checkClinicAccess(req, queryClinicId);
+      if (!clinicCheck.allowed) {
+        return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
       }
-    } else if (queryOrgId && mongoose.Types.ObjectId.isValid(queryOrgId)) {
-      effectiveOrgId = queryOrgId;
+      effectiveOrgId = clinicCheck.organizationId;
     }
 
-    const isRootWithoutOrg = req.user?.role === "root" && !effectiveOrgId;
-    const orgFilter = effectiveOrgId ? { organizationId: effectiveOrgId } : isRootWithoutOrg ? {} : null;
-
-    if (orgFilter === null) {
-      return reply.code(200).send(successResponse({ doctors: [], receptionists: [], nurses: [], labTechs: [], pharmacists: [], cashiers: [], allStaff: [] }));
-    }
+    // Root may explicitly request all staff without tenant context. Non-root
+    // callers always have a membership-derived organization scope.
+    const orgFilter = effectiveOrgId ? { organizationId: effectiveOrgId } : req.user?.role === "root" ? {} : null;
+    if (!orgFilter) return reply.code(403).send(errorResponse("Organization context is required"));
 
     const doctors = await Doctor.find(orgFilter).populate("userId");
     const receptionists = await Receptionist.find(orgFilter)
@@ -933,7 +916,7 @@ export async function addStaff(req: FastifyRequest, reply: FastifyReply) {
         role,
       }, session);
 
-      eventBus.publish({
+      await eventBus.publishDurable({
         eventType: EVENT_TYPES.ORG_MEMBER_INVITED,
         category: "organization",
         targetUserId: newUser._id.toString(),
@@ -941,7 +924,7 @@ export async function addStaff(req: FastifyRequest, reply: FastifyReply) {
         message: `You have been added as a ${role.replace("_", " ").toUpperCase()} in Anant.`,
         severity: "info",
         organizationId: orgId,
-      });
+      }, session);
 
       return reply.code(201).send(
         successResponse({ id: newUser._id.toString(), name, email, role, organization_id: orgId }, `${role.replace("_", " ").toUpperCase()} registered successfully`)
@@ -980,18 +963,15 @@ export async function inviteStaff(req: FastifyRequest, reply: FastifyReply) {
     });
 
     const inviteUrl = `${getFrontendBaseUrl()}/accept-invite?token=${rawToken}`;
-    const sent = await emailProvider.sendEmail({
+    await enqueueTransactionalEmail({
       to: email,
       subject: "Invitation to join ANANT Healthcare Platform",
       text: `You have been invited to join ANANT as a ${role.toUpperCase()}. Click here to set up your account: ${inviteUrl}`,
       html: `<p>You have been invited to join ANANT as a <strong>${role.toUpperCase()}</strong>.</p><p><a href="${inviteUrl}">Click here to accept invitation</a> (valid for 48 hours).</p>`,
+      idempotencyKey: `transactional-email:staff-invite:${tokenHash}`,
     });
-    if (!sent) {
-      await OrgInvite.deleteOne({ tokenHash });
-      return reply.code(503).send(errorResponse("Invitation email delivery is unavailable; configure SMTP and try again"));
-    }
 
-    return reply.code(201).send(successResponse({ email, role, expiresAt }, "Invitation sent successfully"));
+    return reply.code(201).send(successResponse({ email, role, expiresAt }, "Invitation delivery queued successfully"));
   } catch (err: any) {
     console.error("inviteStaff error:", err);
     return reply.code(500).send(errorResponse("Failed to send staff invitation"));
@@ -1283,7 +1263,11 @@ export async function deleteStaff(req: FastifyRequest, reply: FastifyReply) {
 // ─── Organization Settings ───────────────────────────────────────────────
 export async function getOrganizationSettings(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = await resolveTargetOrganizationId(req);
+    let orgId = await resolveTargetOrganizationId(req);
+    if (!orgId && isRootRequest(req)) {
+      const defaultOrg = await Organization.findOne({ isActive: { $ne: false } }).sort({ createdAt: 1 });
+      if (defaultOrg) orgId = defaultOrg._id.toString();
+    }
     if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
     const org = await Organization.findById(orgId);
     if (!org) return reply.code(404).send(errorResponse("Organization not found"));
@@ -1297,7 +1281,11 @@ export async function getOrganizationSettings(req: FastifyRequest, reply: Fastif
 
 export async function updateOrganizationSettings(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = await resolveTargetOrganizationId(req);
+    let orgId = await resolveTargetOrganizationId(req);
+    if (!orgId && isRootRequest(req)) {
+      const defaultOrg = await Organization.findOne({ isActive: { $ne: false } }).sort({ createdAt: 1 });
+      if (defaultOrg) orgId = defaultOrg._id.toString();
+    }
     const {
       name, city, address, phone, email, description, image_url, logo_url, images, timings, working_days
     } = req.body as any;
@@ -1340,7 +1328,11 @@ export async function updateOrganizationSettings(req: FastifyRequest, reply: Fas
 // ─── SMTP / Email Gateway Config ─────────────────────────────────
 export async function getOrganizationSmtp(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = await resolveTargetOrganizationId(req);
+    let orgId = await resolveTargetOrganizationId(req);
+    if (!orgId && isRootRequest(req)) {
+      const defaultOrg = await Organization.findOne({ isActive: { $ne: false } }).sort({ createdAt: 1 });
+      if (defaultOrg) orgId = defaultOrg._id.toString();
+    }
     if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
     const org = await Organization.findById(orgId);
 
@@ -1368,7 +1360,11 @@ export async function getOrganizationSmtp(req: FastifyRequest, reply: FastifyRep
 
 export async function updateOrganizationSmtp(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = await resolveTargetOrganizationId(req);
+    let orgId = await resolveTargetOrganizationId(req);
+    if (!orgId && isRootRequest(req)) {
+      const defaultOrg = await Organization.findOne({ isActive: { $ne: false } }).sort({ createdAt: 1 });
+      if (defaultOrg) orgId = defaultOrg._id.toString();
+    }
     const { host, port, secure, user, pass, fromEmail, fromName } = req.body as any;
 
     if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
@@ -1532,7 +1528,7 @@ export async function verifyOnboardingTOTP(req: FastifyRequest, reply: FastifyRe
     }
 
     // 4. Emit domain event ORG_CREATED
-    eventBus.publish({
+    await eventBus.publishDurable({
       eventType: EVENT_TYPES.ORG_CREATED,
       category: "organization",
       targetUserId: userId,
@@ -2219,6 +2215,3 @@ export async function getPlatformHierarchy(req: FastifyRequest, reply: FastifyRe
     return reply.code(500).send(errorResponse("Failed to fetch platform hierarchy"));
   }
 }
-
-
-

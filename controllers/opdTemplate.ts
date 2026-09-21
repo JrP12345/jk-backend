@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import { OpdTemplate, type IOpdTemplate } from "../models/OpdTemplate.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { AuditLog } from "../models/AuditLog.ts";
+import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 
 export const STANDARD_OPD_PRESETS = [
   {
@@ -135,7 +136,9 @@ export const STANDARD_OPD_PRESETS = [
 export async function getOpdTemplates(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userId = req.user?.id;
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
 
     // Retrieve doctor's custom templates and organization templates
     const query: any = {
@@ -191,7 +194,9 @@ export async function getOpdTemplates(req: FastifyRequest, reply: FastifyReply) 
 export async function createOpdTemplate(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userId = req.user?.id;
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
     const body = req.body as any;
 
     if (!body?.title?.trim()) {

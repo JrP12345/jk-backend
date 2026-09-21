@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
+import mongoose from "mongoose";
 import { app } from "../index.js";
 import { Organization } from "../models/Organization.ts";
 import { Patient } from "../models/Patient.ts";
@@ -98,6 +99,59 @@ describe("Queue State Integrity & Single-Consultation Guard Tests", () => {
     });
   });
 
+  it("enforces one active consultation per doctor/day even when two different appointments transition concurrently", async () => {
+    const raceDoctorId = new mongoose.Types.ObjectId();
+    const now = new Date();
+    const [raceAppointmentA, raceAppointmentB] = await Appointment.create([
+      {
+        organizationId: orgId,
+        clinicId,
+        doctorId: raceDoctorId,
+        patientId: patient1._id,
+        appointmentTime: now,
+        appointmentType: "online",
+        status: "checked-in",
+        tokenNumber: 91,
+      },
+      {
+        organizationId: orgId,
+        clinicId,
+        doctorId: raceDoctorId,
+        patientId: patient2._id,
+        appointmentTime: now,
+        appointmentType: "online",
+        status: "checked-in",
+        tokenNumber: 92,
+      },
+    ]);
+
+    // Production deploys create this index through the migration. Ensure the
+    // isolated in-memory database has the same database constraint before the
+    // concurrent write assertion.
+    await Appointment.createIndexes();
+
+    const results = await Promise.allSettled([
+      Appointment.findOneAndUpdate(
+        { _id: raceAppointmentA._id, status: "checked-in" },
+        { $set: { status: "in-consultation" } },
+        { returnDocument: "after" },
+      ),
+      Appointment.findOneAndUpdate(
+        { _id: raceAppointmentB._id, status: "checked-in" },
+        { $set: { status: "in-consultation" } },
+        { returnDocument: "after" },
+      ),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const activeCount = await Appointment.countDocuments({
+      doctorId: raceDoctorId,
+      status: "in-consultation",
+    });
+    expect(activeCount).toBe(1);
+  });
+
   it("Step 1: First call transitions Patient 1 to in-consultation and creates active Encounter", async () => {
     const res = await app.inject({
       method: "POST",
@@ -110,6 +164,7 @@ describe("Queue State Integrity & Single-Consultation Guard Tests", () => {
     const body = JSON.parse(res.body);
     expect(body.data.id).toBe(appt1._id.toString());
     expect(body.data.status).toBe("in-consultation");
+    expect(body.data.activeConsultationDoctorDayKey).toContain(`doctor:${doctorId}:day:`);
 
     const enc1 = await Encounter.findOne({ appointmentId: appt1._id });
     expect(enc1).toBeDefined();
@@ -149,6 +204,7 @@ describe("Queue State Integrity & Single-Consultation Guard Tests", () => {
     // Verify Patient 1 was cleanly completed
     const completedAppt1 = await Appointment.findById(appt1._id);
     expect(completedAppt1?.status).toBe("completed");
+    expect(completedAppt1?.activeConsultationDoctorDayKey).toBeUndefined();
 
     const enc1 = await Encounter.findOne({ appointmentId: appt1._id });
     expect(enc1?.status).toBe("completed");

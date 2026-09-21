@@ -26,7 +26,7 @@ import { EVENT_TYPES } from "../events/types.ts";
 import crypto from "node:crypto";
 import { validatePasswordStrength } from "../middleware/auth.ts";
 import { RefreshToken } from "../models/RefreshToken.ts";
-import { emailProvider } from "../notifications/providers/emailProvider.ts";
+import { enqueueTransactionalEmail } from "../services/CommunicationOutbox.ts";
 import { TwoFactorService } from "../services/TwoFactorService.ts";
 import { otpService } from "../services/OtpService.ts";
 import { patientMatchingService } from "../services/PatientMatchingService.ts";
@@ -39,12 +39,29 @@ import { getFrontendBaseUrl } from "../utilities/config.ts";
 // ─── Request OTP ────────────────────────────────────────────────
 export async function requestOtpController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { phone, purpose } = req.body as { phone: string; purpose?: "authentication" | "phone_verification" | "record_claim" };
-    if (!phone || !phone.trim()) {
-      return reply.code(400).send(errorResponse("Mobile phone number is required"));
+    const { phone, email, purpose } = req.body as {
+      phone?: string;
+      email?: string;
+      purpose?: "authentication" | "phone_verification" | "email_verification" | "record_claim";
+    };
+
+    const trimmedPhone = phone?.trim();
+    const trimmedEmail = email?.trim();
+
+    if (!trimmedPhone && !trimmedEmail) {
+      return reply.code(400).send(errorResponse("Mobile phone number or email address is required"));
     }
 
-    const result = await otpService.requestOtp(phone, purpose || "authentication");
+    // Security Guard: Staff accounts (admin, doctor, root, etc.) must sign in with their password on the Staff tab
+    if (trimmedEmail && (!purpose || purpose === "authentication")) {
+      const existingUser = await User.findOne({ email: trimmedEmail.toLowerCase() });
+      if (existingUser && existingUser.role !== "patient" && existingUser.role !== "family_member") {
+        return reply.code(400).send(errorResponse("Staff members must sign in using the Staff Email & Password tab"));
+      }
+    }
+
+    const target = trimmedEmail ? { email: trimmedEmail } : { phone: trimmedPhone! };
+    const result = await otpService.requestOtp(target, purpose || "authentication");
     return reply.code(200).send(successResponse(result, result.message));
   } catch (err: any) {
     console.error("requestOtpController error:", err);
@@ -52,8 +69,8 @@ export async function requestOtpController(req: FastifyRequest, reply: FastifyRe
   }
 }
 
-// ─── Guest / Direct Booking Login (Passwordless & OTP-Free) ───────
-export async function guestLoginController(req: FastifyRequest, reply: FastifyReply) {
+// Public booking session: passwordless and OTP-free, with booking-only access.
+export async function createPublicBookingSession(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { phone, name, email } = req.body as {
       phone: string;
@@ -209,11 +226,11 @@ export async function guestLoginController(req: FastifyRequest, reply: FastifyRe
           patient: patient ? { id: patient.id || patient._id?.toString(), name: patient.name } : null,
           isNewUser,
         },
-        "Guest session created successfully"
+        "Booking session created successfully"
       )
     );
   } catch (err) {
-    console.error("guestLoginController error:", err);
+    console.error("createPublicBookingSession error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -221,18 +238,21 @@ export async function guestLoginController(req: FastifyRequest, reply: FastifyRe
 // ─── Verify OTP (Passwordless Login / Registration) ─────────────
 export async function verifyOtpController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { phone, otp, purpose, name, gender, dateOfBirth, email } = req.body as {
-      phone: string;
+    const { phone, email, otp, purpose, name, gender, dateOfBirth } = req.body as {
+      phone?: string;
+      email?: string;
       otp?: string;
-      purpose?: "authentication" | "phone_verification" | "record_claim";
+      purpose?: "authentication" | "phone_verification" | "email_verification" | "record_claim";
       name?: string;
       gender?: "male" | "female" | "other";
       dateOfBirth?: string;
-      email?: string;
     };
 
-    if (!phone) {
-      return reply.code(400).send(errorResponse("Phone number is required"));
+    const trimmedPhone = phone?.trim();
+    const trimmedEmail = email?.trim();
+
+    if (!trimmedPhone && !trimmedEmail) {
+      return reply.code(400).send(errorResponse("Phone number or email address is required"));
     }
 
     const isTestEnv = process.env.NODE_ENV === "test";
@@ -242,42 +262,55 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
       return reply.code(400).send(errorResponse("OTP is required"));
     }
 
+    const target = trimmedEmail ? { email: trimmedEmail } : { phone: trimmedPhone! };
+
     if (!isBypass) {
-      const verifyResult = await otpService.verifyOtp(phone, otp!, purpose || "authentication");
+      const verifyResult = await otpService.verifyOtp(target, otp!, purpose || "authentication");
       if (!verifyResult.verified) {
         return reply.code(400).send(errorResponse(verifyResult.message));
       }
     }
 
-    const normPhone = normalizePhone(phone);
+    const normEmail = trimmedEmail ? trimmedEmail.toLowerCase() : undefined;
+    const normPhone = trimmedPhone ? normalizePhone(trimmedPhone) : undefined;
     const nameInput = name?.trim();
 
-    // Find or create User by phone (optimized direct indexed query with fallback)
-    let user = await User.findOne({ phone: normPhone });
-    if (!user) {
-      user = await User.findOne({ phone: { $in: [`+91${normPhone}`, `91${normPhone}`] } });
-    }
+    let user: any = null;
     let isNewUser = false;
 
-    if (user && user.phone !== normPhone) {
-      user.phone = normPhone;
-      await user.save();
+    if (normEmail) {
+      user = await User.findOne({ email: normEmail });
+      // Security Guard: Non-patient accounts cannot use passwordless OTP to bypass password/2FA
+      if (user && user.role !== "patient" && user.role !== "family_member") {
+        return reply.code(403).send(errorResponse("Staff accounts must sign in using the Staff Email & Password tab"));
+      }
     }
 
-    const otpEmailInput = email?.trim().toLowerCase() || undefined;
-    const isOtpEmailTaken = otpEmailInput
-      ? !!(await User.exists({ email: otpEmailInput, ...(user ? { _id: { $ne: user._id } } : {}) }))
+    if (!user && normPhone) {
+      user = await User.findOne({ phone: normPhone });
+      if (!user) {
+        user = await User.findOne({ phone: { $in: [`+91${normPhone}`, `91${normPhone}`] } });
+      }
+      if (user && user.phone !== normPhone) {
+        user.phone = normPhone;
+        await user.save();
+      }
+    }
+
+    // Check if email belongs to an existing User if we found user by phone
+    const isOtpEmailTaken = normEmail
+      ? !!(await User.exists({ email: normEmail, ...(user ? { _id: { $ne: user._id } } : {}) }))
       : false;
 
     if (!user) {
       isNewUser = true;
       user = await User.create({
-        name: nameInput || `Patient ${normPhone.slice(-4)}`,
+        name: nameInput || (normEmail ? normEmail.split("@")[0] : `Patient ${normPhone?.slice(-4) || ""}`),
         phone: normPhone,
-        email: isOtpEmailTaken ? undefined : otpEmailInput,
+        email: isOtpEmailTaken ? undefined : normEmail,
         role: "patient",
-        authMethod: "phone_otp",
-        isEmailVerified: false,
+        authMethod: normEmail ? "email_otp" : "phone_otp",
+        isEmailVerified: !!normEmail,
       });
     } else {
       let shouldSave = false;
@@ -285,8 +318,16 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
         user.name = nameInput;
         shouldSave = true;
       }
-      if (otpEmailInput && !user.email && !isOtpEmailTaken) {
-        user.email = otpEmailInput;
+      if (normEmail && !user.isEmailVerified) {
+        user.isEmailVerified = true;
+        shouldSave = true;
+      }
+      if (normEmail && !user.email && !isOtpEmailTaken) {
+        user.email = normEmail;
+        shouldSave = true;
+      }
+      if (normPhone && !user.phone) {
+        user.phone = normPhone;
         shouldSave = true;
       }
       if (shouldSave) {
@@ -321,6 +362,14 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
       patient = selfRelationship ? (selfRelationship.patientId as any) : await Patient.findOne({ userId: user._id });
     }
 
+    if (!patient && normEmail) {
+      patient = await Patient.findOne({ email: normEmail });
+      if (patient && !patient.userId) {
+        patient.userId = user._id;
+        await patient.save();
+      }
+    }
+
     // If patient is found and has a generic or empty name, sync with input
     if (patient && nameInput && (patient.name.startsWith("Patient ") || patient.accountType === "self")) {
       patient.name = nameInput;
@@ -330,20 +379,23 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
     // Check for high-confidence matching unlinked clinic records if patient doesn't exist
     let potentialMatch: any = null;
     if (!patient) {
-      const matches = await patientMatchingService.findMatchingPatients({ phone: normPhone, name: nameInput || user.name });
+      const matchCriteria: any = { name: nameInput || user.name };
+      if (normPhone) matchCriteria.phone = normPhone;
+      if (normEmail) matchCriteria.email = normEmail;
+      const matches = await patientMatchingService.findMatchingPatients(matchCriteria);
       if (matches.highConfidence.length > 0) {
         potentialMatch = matches.highConfidence[0];
       }
     }
 
-    // Auto-create Patient for this name/phone if no patient record exists
+    // Auto-create Patient for this name/phone/email if no patient record exists
     if (!patient && !potentialMatch) {
       const isFirstPatient = !(await Patient.exists({ userId: user._id }));
       patient = await Patient.create({
         userId: user._id,
         name: nameInput || user.name,
-        phone: user.phone,
-        email: email?.trim().toLowerCase() || user.email || undefined,
+        phone: user.phone || undefined,
+        email: user.email || normEmail || undefined,
         gender: (gender && ["male", "female", "other"].includes(gender) ? (gender as "male" | "female" | "other") : undefined),
         dob: dateOfBirth ? new Date(dateOfBirth) : undefined,
         accountType: isFirstPatient ? "self" : "dependent",
@@ -365,8 +417,8 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
         patient.dob = new Date(dateOfBirth);
         patientDirty = true;
       }
-      if (email && !patient.email) {
-        patient.email = email.trim().toLowerCase();
+      if (normEmail && !patient.email) {
+        patient.email = normEmail;
         patientDirty = true;
       }
       if (patientDirty) {
@@ -380,6 +432,7 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
         { upsert: true }
       );
     }
+
 
     const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
     const permissions = roleConfig ? roleConfig.permissions : [];
@@ -518,7 +571,7 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
     setAuthCookies(reply, accessToken, refreshToken);
 
     // Emit authentication notification event
-    eventBus.publish({
+    await eventBus.publishDurable({
       eventType: EVENT_TYPES.AUTH_LOGIN_NEW_DEVICE,
       category: "auth",
       targetUserId: user.id,
@@ -599,7 +652,7 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
     const accessToken = generateAccessToken(payload);
 
     setAuthCookies(reply, accessToken, refreshToken);
-    eventBus.publish({
+    await eventBus.publishDurable({
       eventType: EVENT_TYPES.AUTH_LOGIN_NEW_DEVICE,
       category: "auth",
       targetUserId: user.id,
@@ -664,15 +717,13 @@ export async function forgotPassword(req: FastifyRequest, reply: FastifyReply) {
     await user.save();
 
     const resetUrl = `${getFrontendBaseUrl()}/reset-password?token=${resetToken}`;
-    const sent = await emailProvider.sendEmail({
+    await enqueueTransactionalEmail({
       to: user.email!,
       subject: "ANANT Account Password Reset",
       text: `Reset your ANANT password using this link (valid for 1 hour): ${resetUrl}`,
       html: `<p>Click here to reset your ANANT password: <a href="${resetUrl}">${resetUrl}</a></p>`,
+      idempotencyKey: `transactional-email:password-reset:${user._id}:${crypto.createHash("sha256").update(resetToken).digest("hex")}`,
     });
-    if (!sent) {
-      console.error("forgotPassword: reset email delivery was unavailable");
-    }
 
     return reply.send(successResponse(null, "If an account exists with that email, a password reset request was received."));
   } catch (err: any) {
@@ -1082,11 +1133,12 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
     }
 
     const verificationUrl = `${getFrontendBaseUrl()}/verify-email?token=${emailVerificationToken}`;
-    await emailProvider.sendEmail({
+    await enqueueTransactionalEmail({
       to: normalizedEmail,
       subject: "Verify your ANANTA account",
       text: `Verify your account using this link (valid for 24 hours): ${verificationUrl}`,
       html: `<p>Verify your ANANTA account: <a href="${verificationUrl}">${verificationUrl}</a></p>`,
+      idempotencyKey: `transactional-email:email-verification:${newUser._id}:${crypto.createHash("sha256").update(emailVerificationToken).digest("hex")}`,
     });
 
     const roleConfig = await Role.findOne({ name: "patient" }).lean() as any;
@@ -1115,6 +1167,11 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
 // ─── Get Current User (me) ──────────────────────────────────────
 export async function me(req: FastifyRequest, reply: FastifyReply) {
   try {
+    if (req.user?.role === "guest") {
+      clearAuthCookies(reply);
+      return reply.code(401).send(errorResponse("Guest session — authentication required"));
+    }
+
     const userId = req.user!.id;
     
     const user = await User.findOne({ _id: userId });
@@ -1308,7 +1365,7 @@ export async function impersonateUser(req: FastifyRequest, reply: FastifyReply) 
 
     setAuthCookies(reply, accessToken, refreshToken);
 
-    eventBus.publish({
+    await eventBus.publishDurable({
       eventType: EVENT_TYPES.AUTH_LOGIN_NEW_DEVICE,
       category: "auth",
       targetUserId: targetUser._id.toString(),
@@ -1499,4 +1556,3 @@ export async function googleLoginController(req: FastifyRequest, reply: FastifyR
     return reply.code(400).send(errorResponse(err.message || "Failed to authenticate with Google"));
   }
 }
-

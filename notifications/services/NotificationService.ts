@@ -24,8 +24,10 @@ export class NotificationService {
    * Operational metrics helper for monitoring queue depth and SSE connections
    */
   public async getMetrics() {
-    const queueDepth = await notificationQueue.getQueueDepth();
-    const stats = notificationQueue.getStats();
+    const [queueDepth, stats] = await Promise.all([
+      notificationQueue.getQueueDepth(),
+      notificationQueue.getStats(),
+    ]);
     const activeSseConnections = getActiveSseConnectionsCount();
 
     return {

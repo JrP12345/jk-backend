@@ -117,25 +117,38 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     expect(typeof trackData.estimatedWaitMinutes).toBe("number");
   });
 
-  it("should process self check-in via public tracker and prevent duplicate/cancelled errors", async () => {
-    // 1. Check in via POST /api/public/track/:appointmentId/check-in without cookies
-    const checkInRes = await app.inject({
+  it("requires a short-lived check-in capability and rejects replay", async () => {
+    const missingCapability = await app.inject({
       method: "POST",
       url: `/api/public/track/${appointmentId}/check-in`,
     });
+    expect(missingCapability.statusCode).toBe(401);
 
+    const capabilityRes = await app.inject({
+      method: "POST",
+      url: `/api/public/track/${appointmentId}/check-in-capability`,
+    });
+    expect(capabilityRes.statusCode).toBe(200);
+    const checkInToken = JSON.parse(capabilityRes.body).data.checkInToken;
+
+    // 1. The capability can transition only its issued appointment.
+    const checkInRes = await app.inject({
+      method: "POST",
+      url: `/api/public/track/${appointmentId}/check-in`,
+      payload: { checkInToken },
+    });
     expect(checkInRes.statusCode).toBe(200);
     const checkInData = JSON.parse(checkInRes.body).data;
     expect(checkInData.status).toBe("checked-in");
     expect(checkInData.alreadyCheckedIn).toBe(false);
 
-    // 2. Second check-in attempt should be idempotent and return alreadyCheckedIn: true
+    // 2. A consumed capability cannot be replayed.
     const dupRes = await app.inject({
       method: "POST",
       url: `/api/public/track/${appointmentId}/check-in`,
+      payload: { checkInToken },
     });
-    expect(dupRes.statusCode).toBe(200);
-    expect(JSON.parse(dupRes.body).data.alreadyCheckedIn).toBe(true);
+    expect(dupRes.statusCode).toBe(401);
 
     // 3. Verify public tracker now reflects checked-in status
     const trackRes = await app.inject({
@@ -188,10 +201,17 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     expect(trackData.doctorAvailability.isAvailable).toBe(false);
     expect(trackData.doctorAvailability.reason).toBe("Emergency O.T. Duty");
 
-    // Self check-in should be rejected with clear message
+    const capabilityRes = await app.inject({
+      method: "POST",
+      url: `/api/public/track/${appt2Id}/check-in-capability`,
+    });
+    expect(capabilityRes.statusCode).toBe(200);
+
+    // Self check-in should be rejected with clear message even with a valid capability.
     const checkInRes = await app.inject({
       method: "POST",
       url: `/api/public/track/${appt2Id}/check-in`,
+      payload: { checkInToken: JSON.parse(capabilityRes.body).data.checkInToken },
     });
     expect(checkInRes.statusCode).toBe(400);
     expect(JSON.parse(checkInRes.body).message).toContain("Doctor is currently unavailable today");

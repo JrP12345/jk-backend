@@ -10,6 +10,7 @@ import { emailProvider, type SmtpConfig } from "../notifications/providers/email
 import { decrypt } from "../utilities/encryption.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { resolveTargetOrganizationId } from "../utilities/tenant.ts";
+import { enqueueTransactionalEmail } from "../services/CommunicationOutbox.ts";
 
 async function getOrganizationSmtp(organizationId?: string | null): Promise<SmtpConfig | null> {
   if (!organizationId) return null;
@@ -263,15 +264,16 @@ export default async function notificationRoutes(app: FastifyInstance) {
 
     const orgSmtp = channels?.email ? await getOrganizationSmtp(organizationId) : null;
     let dispatchedCount = 0;
-    const emailsSentTo: string[] = [];
+    const emailsQueuedTo: string[] = [];
     const emailFailures: string[] = [];
+    const dispatchId = `manual_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     for (const targetUser of targetUsers) {
       const recipientId = targetUser._id.toString();
 
       // 1. Dispatch In-App notification event
       if (channels?.inApp !== false) {
-        eventBus.publish({
-          eventId: `manual_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        await eventBus.publishDurable({
+          eventId: `${dispatchId}_${recipientId}`,
           eventType: EVENT_TYPES.SYSTEM_ALERT,
           category,
           targetUserId: recipientId,
@@ -283,18 +285,21 @@ export default async function notificationRoutes(app: FastifyInstance) {
           actionUrl: actionUrl || undefined,
           organizationId,
           metadata: {
-            requestedChannels: channels,
+            // Email is queued below with the organization SMTP configuration;
+            // prevent the event subscriber from creating a duplicate delivery.
+            requestedChannels: { ...channels, email: false },
           },
         });
       }
 
       // 2. Dispatch Email alert if email channel enabled and user has valid email
       if (channels?.email && targetUser.email) {
-        const sent = await emailProvider.sendEmail({
-          to: targetUser.email,
-          subject: `[${severity.toUpperCase()}] ${title}`,
-          text: message,
-          html: `
+        try {
+          await enqueueTransactionalEmail({
+            to: targetUser.email,
+            subject: `[${severity.toUpperCase()}] ${title}`,
+            text: message,
+            html: `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
               <div style="display: flex; items-center; justify-content: space-between; border-bottom: 2px solid #3b82f6; padding-bottom: 12px; margin-bottom: 20px;">
                 <h2 style="color: #1e293b; margin: 0; font-size: 20px;">Anant Health Alert</h2>
@@ -308,10 +313,14 @@ export default async function notificationRoutes(app: FastifyInstance) {
               <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0 16px 0;" />
               <p style="font-size: 11px; color: #94a3b8; text-align: center; margin: 0;">Sent by Anant Health Intelligence System &bull; Confidential Medical Telemetry</p>
             </div>
-          `,
-        }, orgSmtp);
-        if (sent) emailsSentTo.push(targetUser.email);
-        else emailFailures.push(targetUser.email);
+            `,
+            orgSmtp,
+            idempotencyKey: `transactional-email:manual-alert:${dispatchId}:${recipientId}`,
+          });
+          emailsQueuedTo.push(targetUser.email);
+        } catch {
+          emailFailures.push(targetUser.email);
+        }
       }
 
       dispatchedCount++;
@@ -322,14 +331,14 @@ export default async function notificationRoutes(app: FastifyInstance) {
       .map(([k]) => k)
       .join(", ");
 
-    const sentEmails = emailsSentTo;
+    const queuedEmails = emailsQueuedTo;
 
     return reply.send({
       success: true,
       message: `Dispatched to ${dispatchedCount} user(s) via [${channelNames || "inApp"}]${
-        channels?.email ? ` — Email sent to: ${sentEmails.join(", ")}` : ""
+        channels?.email ? ` — Email delivery queued for: ${queuedEmails.join(", ")}` : ""
       }`,
-      data: { count: dispatchedCount, channels, emailsSentTo, emailFailures },
+      data: { count: dispatchedCount, channels, emailsQueuedTo, emailFailures },
     });
   });
 
@@ -345,7 +354,7 @@ export default async function notificationRoutes(app: FastifyInstance) {
     const selectedCategory = validCategories.includes(category) ? category : "system";
     const selectedSeverity = validSeverities.includes(severity) ? severity : "info";
 
-    eventBus.publish({
+    await eventBus.publishDurable({
       eventId: `test_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
       eventType: EVENT_TYPES.SYSTEM_ALERT,
       category: selectedCategory,

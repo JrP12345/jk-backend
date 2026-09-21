@@ -71,6 +71,7 @@ export const upsertInsuranceTariffSchema = {
     type: "object",
     required: ["tpaName", "serviceCode", "serviceName", "agreedRate"],
     properties: {
+      organizationId: { type: "string", pattern: objectIdPattern },
       tpaName: { type: "string", minLength: 1, maxLength: 200 },
       serviceCode: { type: "string", minLength: 1, maxLength: 100 },
       serviceName: { type: "string", minLength: 1, maxLength: 300 },

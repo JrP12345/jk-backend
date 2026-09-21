@@ -6,6 +6,7 @@ import { Organization } from "../models/Organization.ts";
 import { User } from "../models/User.ts";
 import { ModuleRegistry } from "../models/ModuleRegistry.ts";
 import { GENESIS_HASH, computeAuditHash } from "../utilities/auditCrypto.ts";
+import { AUDIT_REDACTED_VALUE } from "../utilities/auditRedaction.ts";
 import { recordAuditLog, verifyAuditChainIntegrity } from "../services/AuditTrailService.ts";
 import {
   registerClinicQueueWebSocket,
@@ -71,6 +72,65 @@ describe("Cryptographic Audit Trail & WebSocket Channel Segregation Suite", () =
     });
     const patientRefresh = await createRefreshToken(patientUser._id.toString(), { organizationId: orgId });
     patientCookie = `access_token=${patientToken}; refresh_token=${patientRefresh}`;
+  });
+
+  it("redacts PHI, credentials, and capabilities before an audit entry is hashed", async () => {
+    const testOrgId = new mongoose.Types.ObjectId();
+    const log = await recordAuditLog({
+      organizationId: testOrgId,
+      action: "REDACTION_BOUNDARY_TEST",
+      category: "CLINICAL_WRITE",
+      details: {
+        patientId: "safe-reference",
+        status: "completed",
+        patientName: "Alice Example",
+        phone: "+919876500000",
+        diagnosis: "Sensitive clinical finding",
+        trackerTokenHash: "secret-capability",
+        nested: { email: "alice@example.test", notes: "Clinical free text" },
+      },
+    });
+
+    expect(log.details.patientId).toBe("safe-reference");
+    expect(log.details.status).toBe("completed");
+    expect(log.details.patientName).toBe(AUDIT_REDACTED_VALUE);
+    expect(log.details.phone).toBe(AUDIT_REDACTED_VALUE);
+    expect(log.details.diagnosis).toBe(AUDIT_REDACTED_VALUE);
+    expect(log.details.trackerTokenHash).toBe(AUDIT_REDACTED_VALUE);
+    expect(log.details.nested.email).toBe(AUDIT_REDACTED_VALUE);
+    expect(log.details.nested.notes).toBe(AUDIT_REDACTED_VALUE);
+
+    const verification = await verifyAuditChainIntegrity(testOrgId.toString());
+    expect(verification.intact).toBe(true);
+  });
+
+  it("redacts legacy audit details and actor PII in the audit API response", async () => {
+    const legacyId = new mongoose.Types.ObjectId();
+    await AuditLog.collection.insertOne({
+      _id: legacyId,
+      organizationId: new mongoose.Types.ObjectId(orgId),
+      userId: adminUser._id,
+      action: "LEGACY_PHI_AUDIT_ENTRY",
+      category: "CLINICAL_WRITE",
+      details: {
+        patientName: "Legacy Patient",
+        diagnosis: "Legacy diagnosis",
+        status: "completed",
+      },
+      createdAt: new Date(),
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/audit-logs",
+      headers: { cookie: adminCookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const entry = JSON.parse(response.body).data.find((item: any) => item.action === "LEGACY_PHI_AUDIT_ENTRY");
+    expect(entry.details.patientName).toBe(AUDIT_REDACTED_VALUE);
+    expect(entry.details.diagnosis).toBe(AUDIT_REDACTED_VALUE);
+    expect(entry.details.status).toBe("completed");
+    expect(entry.userId.email).toBeUndefined();
   });
 
   // ─── Test 1: Cryptographic Hash Chaining on Audit Creation ─────────────────

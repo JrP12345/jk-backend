@@ -7,9 +7,13 @@ import { Patient } from "../models/Patient.ts";
 import { Clinic } from "../models/Clinic.ts";
 import { Organization } from "../models/Organization.ts";
 import { Appointment } from "../models/Appointment.ts";
+import { Invoice } from "../models/Invoice.ts";
+import { AppointmentPayment } from "../models/AppointmentPayment.ts";
+import { OutboundMessage } from "../models/OutboundMessage.ts";
 import { Prescription } from "../models/Prescription.ts";
 import { CDSEvaluation } from "../models/CDSEvaluation.ts";
 import { generateAccessToken, createRefreshToken } from "../utilities/helpers.ts";
+import { createTrackerCapability } from "../utilities/publicTracker.ts";
 
 describe("Security & Safety Hardening Verification Suite", () => {
   let orgId: string;
@@ -75,14 +79,14 @@ describe("Security & Safety Hardening Verification Suite", () => {
   });
 
   // ──────────────────────────────────────────────────────────────────────────
-  // 1. GUEST LOGIN SCOPING & ACCOUNT TAKEOVER PREVENTION
+  // 1. PUBLIC BOOKING SESSION SCOPING
   // ──────────────────────────────────────────────────────────────────────────
-  describe("1. Guest Login Scoping & Account Takeover Prevention", () => {
-    it("should issue a scoped 'guest' session when an existing patient's phone is supplied and protect profile from tampering", async () => {
-      // Attacker attempts guest login using Alice's verified phone number with Mallory's name
+  describe("1. Public Booking Session Scoping", () => {
+    it("should issue a scoped 'guest' session when booking with an existing patient's phone and protect the profile from tampering", async () => {
+      // Public booking must not overwrite an existing account profile.
       const res = await app.inject({
         method: "POST",
-        url: "/api/auth/guest-login",
+        url: "/api/public/booking-session",
         payload: {
           phone: "9876500001",
           name: "Mallory Attacker",
@@ -108,10 +112,21 @@ describe("Security & Safety Hardening Verification Suite", () => {
       expect(data.patient.conditions).toBeUndefined();
     });
 
+    it("does not expose the retired guest-auth URLs", async () => {
+      for (const url of ["/api/auth/guest", "/api/auth/guest-login"]) {
+        const res = await app.inject({
+          method: "POST",
+          url,
+          payload: { phone: "9876500001", name: "Mallory Attacker" },
+        });
+        expect(res.statusCode).toBe(404);
+      }
+    });
+
     it("should reject guest session access to patient portal EHR records and personal profile", async () => {
       const guestRes = await app.inject({
         method: "POST",
-        url: "/api/auth/guest-login",
+        url: "/api/public/booking-session",
         payload: {
           phone: "9876500001",
           name: "Mallory Attacker",
@@ -147,7 +162,7 @@ describe("Security & Safety Hardening Verification Suite", () => {
     it("should preserve scoped 'guest' role when refresh token is rotated", async () => {
       const guestRes = await app.inject({
         method: "POST",
-        url: "/api/auth/guest-login",
+        url: "/api/public/booking-session",
         payload: {
           phone: "9876500001",
           name: "Mallory Attacker",
@@ -176,6 +191,163 @@ describe("Security & Safety Hardening Verification Suite", () => {
   // ──────────────────────────────────────────────────────────────────────────
   // 2. INBOUND WEBHOOK CRYPTOGRAPHIC VERIFICATION
   // ──────────────────────────────────────────────────────────────────────────
+  describe("1b. Appointment Object Scope and State Transitions", () => {
+    let unrelatedPatientCookie: string;
+    let appointment: any;
+
+    beforeAll(async () => {
+      const unrelatedPatient = await User.create({
+        name: "Unrelated Patient",
+        email: `unrelated-${Date.now()}@patient.test`,
+        role: "patient",
+      });
+      const accessToken = generateAccessToken({
+        id: unrelatedPatient._id.toString(),
+        email: unrelatedPatient.email!,
+        role: "patient",
+      });
+      const refreshToken = await createRefreshToken(unrelatedPatient._id.toString());
+      unrelatedPatientCookie = `access_token=${accessToken}; refresh_token=${refreshToken}`;
+
+      appointment = await Appointment.create({
+        organizationId: orgId,
+        clinicId,
+        doctorId: doctorUser._id,
+        patientId: testPatient._id,
+        bookedByUserId: testPatientUser._id,
+        appointmentTime: new Date(),
+        appointmentType: "walk-in",
+        status: "confirmed",
+        tokenNumber: 100,
+      });
+    });
+
+    it("blocks a patient from reading or mutating another patient's appointment by ID", async () => {
+      const detailRes = await app.inject({
+        method: "GET",
+        url: `/api/appointments/${appointment._id}`,
+        headers: { cookie: unrelatedPatientCookie },
+      });
+      expect(detailRes.statusCode).toBe(403);
+
+      const statusRes = await app.inject({
+        method: "PUT",
+        url: `/api/appointments/${appointment._id}/status`,
+        headers: { cookie: unrelatedPatientCookie },
+        payload: { status: "cancelled" },
+      });
+      expect(statusRes.statusCode).toBe(403);
+
+      const cancelRes = await app.inject({
+        method: "PUT",
+        url: `/api/appointments/${appointment._id}/cancel`,
+        headers: { cookie: unrelatedPatientCookie },
+        payload: { reason: "Not my appointment" },
+      });
+      expect(cancelRes.statusCode).toBe(403);
+
+      const checkInRes = await app.inject({
+        method: "POST",
+        url: `/api/appointments/${appointment._id}/check-in`,
+        headers: { cookie: unrelatedPatientCookie },
+      });
+      expect(checkInRes.statusCode).toBe(403);
+
+      const queueRes = await app.inject({
+        method: "GET",
+        url: `/api/queue?clinicId=${clinicId}&doctorId=${doctorUser._id}`,
+        headers: { cookie: unrelatedPatientCookie },
+      });
+      expect(queueRes.statusCode).toBe(403);
+
+      const unchanged = await Appointment.findById(appointment._id);
+      expect(unchanged?.status).toBe("confirmed");
+    });
+
+    it("rejects invalid and backward status changes", async () => {
+      const skipCheckIn = await app.inject({
+        method: "PUT",
+        url: `/api/appointments/${appointment._id}/status`,
+        headers: { cookie: doctorCookie },
+        payload: { status: "in-consultation" },
+      });
+      expect(skipCheckIn.statusCode).toBe(409);
+
+      const checkIn = await app.inject({
+        method: "PUT",
+        url: `/api/appointments/${appointment._id}/status`,
+        headers: { cookie: doctorCookie },
+        payload: { status: "checked-in" },
+      });
+      expect(checkIn.statusCode).toBe(200);
+
+      const backward = await app.inject({
+        method: "PUT",
+        url: `/api/appointments/${appointment._id}/status`,
+        headers: { cookie: doctorCookie },
+        payload: { status: "confirmed" },
+      });
+      expect(backward.statusCode).toBe(409);
+    });
+
+    it("requires a tracker-bound, short-lived single-use capability for public check-in", async () => {
+      const originalEnforcement = process.env.ENFORCE_TRACKER_CAPABILITIES;
+      process.env.ENFORCE_TRACKER_CAPABILITIES = "true";
+      try {
+        const tracker = createTrackerCapability();
+        const publicAppointment = await Appointment.create({
+          organizationId: orgId,
+          clinicId,
+          doctorId: doctorUser._id,
+          patientId: testPatient._id,
+          bookedByUserId: testPatientUser._id,
+          appointmentTime: new Date(),
+          appointmentType: "online",
+          status: "confirmed",
+          tokenNumber: 104,
+          trackerTokenHash: tracker.hash,
+          trackerTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        });
+        const trackerHeaders = { "x-tracker-token": tracker.token };
+
+        const missingRes = await app.inject({
+          method: "POST",
+          url: `/api/public/track/${publicAppointment._id}/check-in`,
+          headers: trackerHeaders,
+        });
+        expect(missingRes.statusCode).toBe(401);
+
+        const capabilityRes = await app.inject({
+          method: "POST",
+          url: `/api/public/track/${publicAppointment._id}/check-in-capability`,
+          headers: trackerHeaders,
+        });
+        expect(capabilityRes.statusCode).toBe(200);
+        const checkInToken = JSON.parse(capabilityRes.body).data.checkInToken;
+
+        const checkInRes = await app.inject({
+          method: "POST",
+          url: `/api/public/track/${publicAppointment._id}/check-in`,
+          headers: trackerHeaders,
+          payload: { checkInToken },
+        });
+        expect(checkInRes.statusCode).toBe(200);
+
+        const replayRes = await app.inject({
+          method: "POST",
+          url: `/api/public/track/${publicAppointment._id}/check-in`,
+          headers: trackerHeaders,
+          payload: { checkInToken },
+        });
+        expect(replayRes.statusCode).toBe(401);
+        expect((await Appointment.findById(publicAppointment._id))?.status).toBe("checked-in");
+      } finally {
+        if (originalEnforcement === undefined) delete process.env.ENFORCE_TRACKER_CAPABILITIES;
+        else process.env.ENFORCE_TRACKER_CAPABILITIES = originalEnforcement;
+      }
+    });
+  });
+
   describe("2. Inbound Webhook Cryptography", () => {
     const UPI_SECRET = "test_upi_webhook_secret_key_12345";
     const WHATSAPP_SECRET = "test_whatsapp_webhook_secret_key_67890";
@@ -236,6 +408,91 @@ describe("Security & Safety Hardening Verification Suite", () => {
 
       // Signature verification passed (correlation may return 404 because TX is synthetic, but auth passed)
       expect(validRes.statusCode).not.toBe(401);
+    });
+
+    it("settles only the exact server-created order once and rejects an amount-tampered callback", async () => {
+      const appointment = await Appointment.create({
+        organizationId: orgId,
+        clinicId,
+        doctorId: doctorUser._id,
+        patientId: testPatient._id,
+        bookedByUserId: testPatientUser._id,
+        appointmentTime: new Date(),
+        appointmentType: "online",
+        status: "pending_payment",
+        tokenNumber: 102,
+        paymentAmount: 500,
+      });
+      const invoice = await Invoice.create({
+        invoiceNumber: `INV-WEBHOOK-${Date.now()}`,
+        organizationId: orgId,
+        patientId: testPatient._id,
+        appointmentId: appointment._id,
+        clinicId,
+        doctorId: doctorUser._id,
+        items: [{ description: "Consultation Fee", quantity: 1, amount: 500, totalItemAmount: 500 }],
+        subtotal: 500,
+        totalAmount: 500,
+        amountPaid: 0,
+        balanceDue: 500,
+        status: "unpaid",
+      });
+      const orderId = `order_webhook_${Date.now()}`;
+      await AppointmentPayment.create({
+        appointmentId: appointment._id,
+        invoiceId: invoice._id,
+        patientId: testPatient._id,
+        amount: 500,
+        paymentMethod: "razorpay",
+        razorpayOrderId: orderId,
+        status: "created",
+        idempotencyKey: `webhook_order_${appointment._id}`,
+      });
+
+      const signedRequest = (amount: number) => {
+        const payload = {
+          transactionId: "pay_webhook_exact_001",
+          orderId,
+          appointmentId: appointment._id.toString(),
+          invoiceId: invoice._id.toString(),
+          amount,
+          status: "captured",
+          paymentMethod: "upi" as const,
+        };
+        return {
+          payload,
+          headers: {
+            "x-webhook-signature": crypto.createHmac("sha256", UPI_SECRET).update(JSON.stringify(payload)).digest("hex"),
+            "content-type": "application/json",
+          },
+        };
+      };
+
+      const tampered = signedRequest(1);
+      const tamperedRes = await app.inject({ method: "POST", url: "/api/webhooks/upi", ...tampered });
+      expect(tamperedRes.statusCode).toBe(409);
+      expect((await Invoice.findById(invoice._id))?.status).toBe("unpaid");
+
+      const correct = signedRequest(500);
+      const settledRes = await app.inject({ method: "POST", url: "/api/webhooks/upi", ...correct });
+      expect(settledRes.statusCode).toBe(200);
+      expect(JSON.parse(settledRes.body).data.replayed).toBe(false);
+
+      const replayRes = await app.inject({ method: "POST", url: "/api/webhooks/upi", ...correct });
+      expect(replayRes.statusCode).toBe(200);
+      expect(JSON.parse(replayRes.body).data.replayed).toBe(true);
+
+      const settledInvoice = await Invoice.findById(invoice._id);
+      const settledPayment = await AppointmentPayment.findOne({ razorpayOrderId: orderId });
+      expect(settledInvoice?.status).toBe("paid");
+      expect(settledInvoice?.payments).toHaveLength(1);
+      expect(settledPayment?.status).toBe("captured");
+      expect(settledPayment?.razorpayPaymentId).toBe("pay_webhook_exact_001");
+      const receiptMessages = await OutboundMessage.find({
+        idempotencyKey: "payment-receipt:pay_webhook_exact_001",
+      });
+      expect(receiptMessages).toHaveLength(1);
+      expect(receiptMessages[0].status).toBe("pending");
     });
 
     it("should reject unsigned or forged WhatsApp webhook requests with 401", async () => {

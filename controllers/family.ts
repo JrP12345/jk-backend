@@ -4,6 +4,7 @@ import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import { Patient } from "../models/Patient.ts";
 import { User } from "../models/User.ts";
 import { successResponse, errorResponse, normalizePhone } from "../utilities/helpers.ts";
+import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { patientMatchingService } from "../services/PatientMatchingService.ts";
 import { otpService } from "../services/OtpService.ts";
 
@@ -65,7 +66,11 @@ export async function addFamilyMember(req: FastifyRequest, reply: FastifyReply) 
       return reply.code(400).send(errorResponse("Invalid relationship type"));
     }
 
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed && req.user?.role !== "patient" && req.user?.role !== "family_member") {
+      return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    }
+    const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
 
     // Create the Dependent Patient record (no User account needed)
     const newPatient: any = await Patient.create({

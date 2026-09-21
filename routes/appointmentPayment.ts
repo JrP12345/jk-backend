@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate, checkAnyPermissionOrRoles } from "../middleware/auth.ts";
+import { authenticate, checkAnyPermissionOrRoles, checkAnyPermission } from "../middleware/auth.ts";
 import { requireModule } from "../middleware/moduleGuard.ts";
 import {
   createAppointmentPaymentOrder,
@@ -22,9 +22,16 @@ export default async function appointmentPaymentRoutes(app: FastifyInstance) {
       ),
     ],
   };
+  const counterPaymentAccess = {
+    preHandler: [
+      authenticate,
+      requireModule("appointments"),
+      checkAnyPermission("MANAGE_BILLING", "MANAGE_APPOINTMENTS"),
+    ],
+  };
 
   app.post("/api/appointment-payments/create-order", paymentAccess, createAppointmentPaymentOrder);
   app.post("/api/appointment-payments/verify", paymentAccess, verifyAppointmentPayment);
   app.post("/api/appointment-payments/pay-at-clinic", paymentAccess, selectPayAtClinic);
-  app.post("/api/appointment-payments/collect-counter", paymentAccess, collectCounterPayment);
+  app.post("/api/appointment-payments/collect-counter", counterPaymentAccess, collectCounterPayment);
 }

@@ -7,7 +7,8 @@ import { Organization } from "../models/Organization.ts";
 import { subscriptionService, PlanDowngradeViolationError } from "../services/billing/SubscriptionService.ts";
 import { razorpayService } from "../services/billing/RazorpayService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { resolveTargetOrganizationId } from "../utilities/tenant.ts";
+import { resolveTargetOrganizationId, isRootRequest } from "../utilities/tenant.ts";
+import { enqueueTransactionalEmail } from "../services/CommunicationOutbox.ts";
 
 /**
  * Get active commercial SaaS plans
@@ -27,7 +28,11 @@ export async function getSaaSPlans(req: FastifyRequest, reply: FastifyReply) {
  */
 export async function getSubscriptionDetails(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = await resolveTargetOrganizationId(req);
+    let orgId = await resolveTargetOrganizationId(req);
+    if (!orgId && isRootRequest(req)) {
+      const defaultOrg = await Organization.findOne({ isActive: { $ne: false } }).sort({ createdAt: 1 });
+      if (defaultOrg) orgId = defaultOrg._id.toString();
+    }
     if (!orgId) {
       return reply.code(400).send(errorResponse("No organization linked to account"));
     }
@@ -44,7 +49,11 @@ export async function getSubscriptionDetails(req: FastifyRequest, reply: Fastify
  */
 export async function getOrganizationUsageMetrics(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = await resolveTargetOrganizationId(req);
+    let orgId = await resolveTargetOrganizationId(req);
+    if (!orgId && isRootRequest(req)) {
+      const defaultOrg = await Organization.findOne({ isActive: { $ne: false } }).sort({ createdAt: 1 });
+      if (defaultOrg) orgId = defaultOrg._id.toString();
+    }
     if (!orgId) {
       return reply.code(400).send(errorResponse("No organization linked to account"));
     }
@@ -216,7 +225,11 @@ export async function cancelSubscriptionController(req: FastifyRequest, reply: F
  */
 export async function getSaaSInvoices(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = await resolveTargetOrganizationId(req);
+    let orgId = await resolveTargetOrganizationId(req);
+    if (!orgId && isRootRequest(req)) {
+      const defaultOrg = await Organization.findOne({ isActive: { $ne: false } }).sort({ createdAt: 1 });
+      if (defaultOrg) orgId = defaultOrg._id.toString();
+    }
     if (!orgId) {
       return reply.code(400).send(errorResponse("No organization linked to account"));
     }
@@ -318,7 +331,7 @@ export async function adminExtendTrial(req: FastifyRequest, reply: FastifyReply)
     // Dispatch In-App Event Notification
     const { eventBus } = await import("../events/eventBus.ts");
     const { EVENT_TYPES } = await import("../events/types.ts");
-    eventBus.publish({
+    await eventBus.publishDurable({
       eventType: EVENT_TYPES.SYSTEM_ALERT,
       category: "billing",
       organizationId: subscription.organizationId.toString(),
@@ -330,11 +343,10 @@ export async function adminExtendTrial(req: FastifyRequest, reply: FastifyReply)
 
     // Send Notification Email
     const { Organization } = await import("../models/Organization.ts");
-    const { emailProvider } = await import("../notifications/providers/emailProvider.ts");
     const org = await Organization.findById(subscription.organizationId);
     if (org?.email && !org.email.includes("placeholder.com")) {
       try {
-        await emailProvider.sendEmail({
+        await enqueueTransactionalEmail({
           to: org.email,
           subject: `[ANANT] Free Trial Extended for ${org.name}`,
           html: `<div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">
@@ -344,9 +356,10 @@ export async function adminExtendTrial(req: FastifyRequest, reply: FastifyReply)
             <p>Your trial will now expire on <strong>${subscription.trialEndsAt.toLocaleDateString()}</strong>.</p>
             <p>Best regards,<br/>ANANT Platform Operations</p>
           </div>`,
+          idempotencyKey: `transactional-email:trial-extended:${subscription._id}:${subscription.trialEndsAt.getTime()}`,
         });
       } catch (e) {
-        console.error("Failed to send trial extension email:", e);
+        console.error("Failed to enqueue trial extension email:", e);
       }
     }
 

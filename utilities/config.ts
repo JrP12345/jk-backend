@@ -63,6 +63,26 @@ export function verifyEnv() {
         missing.push("REDIS_URL or REDIS_HOST (Required in production for multi-replica WebSocket PubSub fan-out and panic alert delivery; set ALLOW_SINGLE_NODE_IN_PRODUCTION=true to explicitly allow single-node deploys)");
       }
     }
+
+    // Validate MONGODB_URI has replica set configuration for ACID multi-document transactions in production
+    const mongoUri = process.env.MONGODB_URI || "";
+    const isReplicaSetUri =
+      mongoUri.startsWith("mongodb+srv://") ||
+      mongoUri.includes("replicaSet=") ||
+      (mongoUri.startsWith("mongodb://") && mongoUri.split("?")[0].includes(","));
+
+    if (!isReplicaSetUri && process.env.ALLOW_STANDALONE_IN_PRODUCTION !== "true") {
+      missing.push(
+        "MONGODB_URI must specify a Replica Set (mongodb+srv:// or ?replicaSet=... or multiple comma-separated seed hosts) in production mode to ensure multi-document ACID transactions. Set ALLOW_STANDALONE_IN_PRODUCTION=true to explicitly override for testing."
+      );
+    }
+
+    // Require webhook HMAC secret for UPI/Razorpay callbacks in production
+    if (!process.env.UPI_WEBHOOK_SECRET && !process.env.RAZORPAY_WEBHOOK_SECRET) {
+      missing.push(
+        "UPI_WEBHOOK_SECRET or RAZORPAY_WEBHOOK_SECRET (Required in production to verify payment callbacks)"
+      );
+    }
   }
 
   // Validate ENCRYPTION_KEY length if provided

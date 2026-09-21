@@ -1,6 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { Appointment } from "../models/Appointment.ts";
+import { getActiveConsultationDoctorDayKey, isActiveConsultationLockConflict } from "../utilities/consultationLock.ts";
 import { Patient } from "../models/Patient.ts";
 import { User } from "../models/User.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
@@ -34,6 +35,80 @@ async function ensureAppointmentClinicAccess(
     return false;
   }
   return true;
+}
+
+type AppointmentAccessPurpose = "view" | "patient-self-service" | "staff-mutation";
+
+function recordId(value: unknown): string {
+  if (value && typeof value === "object" && "_id" in value) {
+    return String((value as { _id: unknown })._id);
+  }
+  return String(value || "");
+}
+
+/**
+ * Clinic membership alone is not enough for a patient-facing appointment URL:
+ * patients can book at any active clinic, so a known appointment ID must still
+ * be bound to the caller's own or active family-member patient profile.
+ */
+async function ensureAppointmentObjectAccess(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  appointment: { clinicId: unknown; doctorId: unknown; patientId: unknown; bookedByUserId?: unknown },
+  purpose: AppointmentAccessPurpose = "view",
+): Promise<boolean> {
+  if (!(await ensureAppointmentClinicAccess(req, reply, appointment.clinicId))) return false;
+
+  const { role, id: userId } = req.user!;
+  if (["patient", "family_member", "guest"].includes(role)) {
+    const patientId = recordId(appointment.patientId);
+    const isBookingOwner = recordId(appointment.bookedByUserId) === String(userId);
+    const ownsPatient = await Patient.exists({ _id: patientId, userId });
+    const hasFamilyRelationship = await FamilyRelationship.exists({
+      userId,
+      patientId,
+      status: "active",
+    });
+
+    if (!isBookingOwner && !ownsPatient && !hasFamilyRelationship) {
+      reply.code(403).send(errorResponse("Forbidden: You do not have permission to access this appointment"));
+      return false;
+    }
+
+    if (purpose === "staff-mutation") {
+      reply.code(403).send(errorResponse("Forbidden: Appointment clinical status can only be changed by clinic staff"));
+      return false;
+    }
+
+    return true;
+  }
+
+  // A doctor may work at multiple clinics, but may only alter consultations
+  // assigned to that doctor. Reception and authorised operational roles retain
+  // their clinic-scoped workflow access.
+  if (role === "doctor" && recordId(appointment.doctorId) !== String(userId)) {
+    reply.code(403).send(errorResponse("Forbidden: You can only access appointments assigned to you"));
+    return false;
+  }
+
+  return true;
+}
+
+const allowedAppointmentTransitions: Record<string, string[]> = {
+  pending_payment: ["pending", "confirmed", "cancelled"],
+  pending: ["confirmed", "checked-in", "cancelled", "no-show"],
+  confirmed: ["checked-in", "cancelled", "no-show"],
+  "checked-in": ["in-consultation", "cancelled", "no-show"],
+  "in-consultation": ["completed"],
+  standby: ["checked-in", "cancelled", "no-show"],
+  disruption_triage: ["confirmed", "cancelled"],
+  completed: [],
+  cancelled: [],
+  "no-show": [],
+};
+
+function isAllowedAppointmentTransition(from: string, to: string): boolean {
+  return allowedAppointmentTransitions[from]?.includes(to) ?? false;
 }
 
 export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) {
@@ -81,6 +156,9 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
     if (err instanceof AppointmentDomainError) {
       return reply.code(err.statusCode).send(errorResponse(err.message));
     }
+    if (err?.code === 11000) {
+      return reply.code(409).send(errorResponse("This consultation time slot has already been booked. Please choose another slot."));
+    }
     console.error("bookAppointment error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
@@ -101,14 +179,28 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
     if (userRole === "patient" || userRole === "family_member") {
       const patient = await Patient.findOne({ userId });
       if (userRole === "patient") {
-        if (!patient) return reply.code(404).send(errorResponse("Patient profile not found"));
-        filter.patientId = patient._id;
+        if (!patient) {
+          const directAppointments = await Appointment.find({ bookedByUserId: userId })
+            .populate("clinicId", "name city address")
+            .populate("doctorId", "name specialization fees")
+            .sort({ appointmentTime: 1 })
+            .lean();
+          const mapped = directAppointments.map((a: any) => ({ ...a, id: a._id.toString() }));
+          return reply.code(200).send(successResponse(mapped));
+        }
+        filter.$or = [
+          { patientId: patient._id },
+          { bookedByUserId: userId },
+        ];
       } else {
         const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
         const rels = await FamilyRelationship.find({ userId, status: "active" }).select("patientId").lean();
         const familyPatientIds: any[] = rels.map((r: any) => r.patientId).filter(Boolean);
         if (patient) familyPatientIds.push(patient._id);
-        filter.patientId = { $in: familyPatientIds };
+        filter.$or = [
+          { patientId: { $in: familyPatientIds } },
+          { bookedByUserId: userId },
+        ];
       }
     } else if (userRole === "doctor") {
       filter.doctorId = userId;
@@ -207,10 +299,20 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
       return reply.code(400).send(errorResponse("Invalid status value"));
     }
 
-    const appointment = await Appointment.findById(id);
+    let appointment = await Appointment.findById(id);
     if (!appointment) return reply.code(404).send(errorResponse("Appointment not found"));
 
-    if (!(await ensureAppointmentClinicAccess(req, reply, appointment.clinicId))) return;
+    if (!(await ensureAppointmentObjectAccess(req, reply, appointment, "staff-mutation"))) return;
+
+    if (appointment.status === status) {
+      return reply.code(200).send(successResponse(appointment, `Appointment is already ${status}`));
+    }
+
+    if (!isAllowedAppointmentTransition(appointment.status, status)) {
+      return reply.code(409).send(
+        errorResponse(`Invalid appointment transition from '${appointment.status}' to '${status}'`)
+      );
+    }
 
     // ── Clinical Decision Support (CDS) Safety Gate ──────────────────
     let cdsEvaluationResult: any = null;
@@ -281,23 +383,41 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
       }
     }
 
-    appointment.status = status as any;
-    if (notes) appointment.notes = notes;
-
-    if (symptoms) appointment.symptoms = symptoms;
-    if (diagnosis) appointment.diagnosis = diagnosis;
+    const appointmentUpdate: Record<string, unknown> = { status };
+    if (status === "in-consultation") {
+      appointmentUpdate.activeConsultationDoctorDayKey = getActiveConsultationDoctorDayKey(
+        appointment.doctorId,
+        appointment.appointmentTime,
+      );
+    }
+    if (notes) appointmentUpdate.notes = notes;
+    if (symptoms) appointmentUpdate.symptoms = symptoms;
+    if (diagnosis) appointmentUpdate.diagnosis = diagnosis;
     if (prescriptions && Array.isArray(prescriptions)) {
-      appointment.prescriptions = prescriptions.map((p) => ({
+      appointmentUpdate.prescriptions = prescriptions.map((p) => ({
         name: p.name,
         dosage: p.dosage || "As directed",
         duration: p.duration || "5 days",
-      })) as any;
+      }));
     }
-    if (followUpRecommended !== undefined) appointment.followUpRecommended = Boolean(followUpRecommended);
-    if (followUpTimeline) appointment.followUpTimeline = followUpTimeline;
-    if (followUpNotes) appointment.followUpNotes = followUpNotes;
+    if (followUpRecommended !== undefined) appointmentUpdate.followUpRecommended = Boolean(followUpRecommended);
+    if (followUpTimeline) appointmentUpdate.followUpTimeline = followUpTimeline;
+    if (followUpNotes) appointmentUpdate.followUpNotes = followUpNotes;
 
-    await appointment.save();
+    const transitionedAppointment = await Appointment.findOneAndUpdate(
+      { _id: appointment._id, status: appointment.status },
+      {
+        $set: appointmentUpdate,
+        ...(appointment.status === "in-consultation" && status !== "in-consultation"
+          ? { $unset: { activeConsultationDoctorDayKey: 1 } }
+          : {}),
+      },
+      { returnDocument: "after" },
+    );
+    if (!transitionedAppointment) {
+      return reply.code(409).send(errorResponse("Appointment was changed by another request. Refresh and try again."));
+    }
+    appointment = transitionedAppointment;
 
     if (status === "in-consultation") {
       const { Encounter } = await import("../models/Encounter.ts");
@@ -618,6 +738,9 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
     return reply.code(200).send(successResponse(appointment, "Appointment status updated successfully"));
   } catch (err) {
     console.error("updateAppointmentStatus error:", err);
+    if (isActiveConsultationLockConflict(err)) {
+      return reply.code(409).send(errorResponse("Doctor already has an active consultation. Complete it before starting another.", "ACTIVE_CONSULTATION_IN_PROGRESS"));
+    }
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -637,7 +760,14 @@ export async function resendPrescriptionNotification(req: FastifyRequest, reply:
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    if (!(await ensureAppointmentClinicAccess(req, reply, appointment.clinicId))) return;
+    if (!(await ensureAppointmentObjectAccess(req, reply, appointment, "staff-mutation"))) return;
+
+    if (appointment.status !== "completed") {
+      return reply.code(409).send(errorResponse("A prescription can only be resent after the appointment is completed"));
+    }
+    if (channel !== "whatsapp" && channel !== "sms") {
+      return reply.code(400).send(errorResponse("channel must be whatsapp or sms"));
+    }
 
     const { sendConsultationCompletedNotification } = await import("../utilities/notifications.ts");
     await sendConsultationCompletedNotification(appointment._id, {
@@ -695,15 +825,16 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
       return reply.code(400).send(errorResponse("Valid newTime is required"));
     }
 
-    const appointment = await Appointment.findById(id);
+    let appointment = await Appointment.findById(id);
     if (!appointment) {
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    if (!(await ensureAppointmentClinicAccess(req, reply, appointment.clinicId))) return;
+    if (!(await ensureAppointmentObjectAccess(req, reply, appointment, "patient-self-service"))) return;
 
-    if (appointment.status === "completed" || appointment.status === "cancelled") {
-      return reply.code(400).send(errorResponse(`Cannot reschedule an appointment that is already ${appointment.status}`));
+    const reschedulableStatuses = ["pending_payment", "pending", "confirmed", "checked-in", "standby", "disruption_triage"];
+    if (!reschedulableStatuses.includes(appointment.status)) {
+      return reply.code(409).send(errorResponse(`Cannot reschedule an appointment that is already ${appointment.status}`));
     }
 
     const newDateObj = new Date(newTime);
@@ -736,16 +867,27 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
     const counterKey = `token_${appointment.clinicId}_${appointment.doctorId}_${newDateStr}`;
     const tokenNumber = await getNextAtomicSequence(counterKey);
 
-    appointment.appointmentTime = newDateObj;
-    appointment.tokenNumber = tokenNumber;
-    appointment.queuePosition = tokenNumber;
-    appointment.status = "confirmed";
+    const rescheduleUpdate: Record<string, unknown> = {
+      appointmentTime: newDateObj,
+      tokenNumber,
+      queuePosition: tokenNumber,
+      status: "confirmed",
+    };
     if (reason) {
-      appointment.notes = appointment.notes
+      rescheduleUpdate.notes = appointment.notes
         ? `${appointment.notes}\n[Rescheduled from ${oldTimeStr}: ${reason}]`
         : `[Rescheduled from ${oldTimeStr}: ${reason}]`;
     }
-    await appointment.save();
+
+    const rescheduledAppointment = await Appointment.findOneAndUpdate(
+      { _id: appointment._id, status: appointment.status },
+      { $set: rescheduleUpdate },
+      { returnDocument: "after" },
+    );
+    if (!rescheduledAppointment) {
+      return reply.code(409).send(errorResponse("Appointment was changed by another request. Refresh and try again."));
+    }
+    appointment = rescheduledAppointment;
 
     if (lockValidation.lockKey) {
       forceReleaseSlotLock(lockValidation.lockKey).catch(() => {});
@@ -763,7 +905,10 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
     });
 
     return reply.code(200).send(successResponse(appointment, `Appointment successfully rescheduled to ${newDateObj.toISOString()}`));
-  } catch (err) {
+  } catch (err: any) {
+    if (err?.code === 11000) {
+      return reply.code(409).send(errorResponse("This consultation time slot has already been booked. Please choose another slot."));
+    }
     console.error("rescheduleAppointment error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
@@ -797,39 +942,27 @@ export async function cancelAppointment(req: FastifyRequest, reply: FastifyReply
     const { id } = req.params as { id: string };
     const { reason } = req.body as { reason?: string };
 
-    const appointment = await Appointment.findById(id);
+    let appointment = await Appointment.findById(id);
     if (!appointment) return reply.code(404).send(errorResponse("Appointment not found"));
 
-    if (!(await ensureAppointmentClinicAccess(req, reply, appointment.clinicId))) return;
+    if (!(await ensureAppointmentObjectAccess(req, reply, appointment, "patient-self-service"))) return;
 
-    // Check IDOR / Patient ownership for cancellation
-    const userRole = req.user!.role;
-    const userId = req.user!.id;
-    if (userRole === "patient") {
-      const selfPatient = await Patient.findOne({
-        $or: [
-          { userId },
-          ...(mongoose.Types.ObjectId.isValid(userId) ? [{ userId: new mongoose.Types.ObjectId(userId) }] : [])
-        ]
-      });
-      const familyRels = await FamilyRelationship.find({ userId, status: "active" }).select("patientId").lean();
-      const allowedPatientIds = [
-        ...(selfPatient ? [selfPatient._id.toString()] : []),
-        ...familyRels.map((r) => r.patientId.toString())
-      ];
-      const isBookedByUser = appointment.bookedByUserId && appointment.bookedByUserId.toString() === userId;
-      if (!isBookedByUser && !allowedPatientIds.includes(appointment.patientId.toString())) {
-        return reply.code(403).send(errorResponse("Forbidden: You do not have permission to cancel this appointment"));
-      }
+    const cancellableStatuses = ["pending_payment", "pending", "confirmed", "checked-in", "standby", "disruption_triage"];
+    if (!cancellableStatuses.includes(appointment.status)) {
+      return reply.code(409).send(errorResponse(`Cannot cancel appointment already in '${appointment.status}' status`));
     }
 
-    if (appointment.status === "completed" || appointment.status === "cancelled") {
-      return reply.code(400).send(errorResponse(`Cannot cancel appointment already in '${appointment.status}' status`));
+    const cancellationUpdate: Record<string, unknown> = { status: "cancelled" };
+    if (reason) cancellationUpdate.notes = `Cancelled by patient: ${reason}`;
+    const cancelledAppointment = await Appointment.findOneAndUpdate(
+      { _id: appointment._id, status: appointment.status },
+      { $set: cancellationUpdate },
+      { returnDocument: "after" },
+    );
+    if (!cancelledAppointment) {
+      return reply.code(409).send(errorResponse("Appointment was changed by another request. Refresh and try again."));
     }
-
-    appointment.status = "cancelled";
-    if (reason) appointment.notes = `Cancelled by patient: ${reason}`;
-    await appointment.save();
+    appointment = cancelledAppointment;
 
     sendBookingNotification(appointment._id, "cancelled").catch((err) => console.error("Cancellation notification failed:", err));
 
@@ -869,7 +1002,7 @@ export async function getAppointmentById(req: FastifyRequest, reply: FastifyRepl
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    if (!(await ensureAppointmentClinicAccess(req, reply, appointment.clinicId))) return;
+    if (!(await ensureAppointmentObjectAccess(req, reply, appointment, "view"))) return;
 
     return reply.code(200).send(successResponse(appointment));
   } catch (err) {
@@ -986,6 +1119,10 @@ export async function getFollowUpRegister(req: FastifyRequest, reply: FastifyRep
       search?: string;
     };
 
+    if (["patient", "family_member", "guest"].includes(req.user!.role)) {
+      return reply.code(403).send(errorResponse("Forbidden: Follow-up register is available to clinic staff only"));
+    }
+
     const query: any = {
       $or: [
         { followUpRecommended: true },
@@ -994,13 +1131,19 @@ export async function getFollowUpRegister(req: FastifyRequest, reply: FastifyRep
     };
 
     if (clinicId) {
+      if (!(await ensureAppointmentClinicAccess(req, reply, clinicId))) return;
       query.clinicId = clinicId;
     } else if (req.user?.organization_id) {
       const { getRequestClinicIds } = await import("../utilities/tenant.ts");
       query.clinicId = { $in: await getRequestClinicIds(req) };
     }
 
-    if (doctorId) {
+    if (req.user!.role === "doctor") {
+      if (doctorId && doctorId !== req.user!.id) {
+        return reply.code(403).send(errorResponse("Forbidden: You can only view your own follow-up register"));
+      }
+      query.doctorId = req.user!.id;
+    } else if (doctorId) {
       query.doctorId = doctorId;
     }
 
@@ -1133,6 +1276,8 @@ export async function sendFollowUpReminder(req: FastifyRequest, reply: FastifyRe
     if (!appointment) {
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
+
+    if (!(await ensureAppointmentObjectAccess(req, reply, appointment, "staff-mutation"))) return;
 
     const targetPhone =
       phone?.trim() ||

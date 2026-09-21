@@ -1,6 +1,9 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { Appointment } from "../models/Appointment.ts";
+import { getActiveConsultationDoctorDayKey, isActiveConsultationLockConflict } from "../utilities/consultationLock.ts";
+import { Patient } from "../models/Patient.ts";
+import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
@@ -417,13 +420,52 @@ export async function reorderQueue(req: FastifyRequest, reply: FastifyReply) {
 export async function getAuditLogs(req: FastifyRequest, reply: FastifyReply) {
   try {
     const filter: any = {};
+    const query = req.query as Record<string, string | number | undefined>;
+
     if (req.user?.role !== "root") {
       const orgId = getRequestOrganizationId(req);
       if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
       filter.organizationId = orgId;
+    } else {
+      // Root: apply optional organization/clinic scope filters
+      if (query.clinicId && mongoose.Types.ObjectId.isValid(String(query.clinicId))) {
+        const clinic = await Clinic.findById(String(query.clinicId)).select("organizationId").lean();
+        if (clinic?.organizationId) {
+          filter.organizationId = clinic.organizationId;
+        }
+      } else if (query.organizationId && mongoose.Types.ObjectId.isValid(String(query.organizationId))) {
+        filter.organizationId = String(query.organizationId);
+      }
     }
 
-    const { page, limit } = req.query as { page?: string | number; limit?: string | number };
+    // Shared filters (available to all authorized callers)
+    if (query.doctorId && mongoose.Types.ObjectId.isValid(String(query.doctorId))) {
+      filter.userId = new mongoose.Types.ObjectId(String(query.doctorId));
+    }
+    if (query.category && typeof query.category === "string") {
+      filter.category = query.category;
+    }
+    if (query.action && typeof query.action === "string") {
+      filter.action = query.action;
+    }
+    if (query.startDate || query.endDate) {
+      filter.createdAt = {};
+      if (query.startDate) {
+        const start = new Date(String(query.startDate));
+        if (!isNaN(start.getTime())) filter.createdAt.$gte = start;
+      }
+      if (query.endDate) {
+        const end = new Date(String(query.endDate));
+        if (!isNaN(end.getTime())) {
+          // Include the entire end day
+          end.setHours(23, 59, 59, 999);
+          filter.createdAt.$lte = end;
+        }
+      }
+      if (Object.keys(filter.createdAt).length === 0) delete filter.createdAt;
+    }
+
+    const { page, limit } = query as { page?: string | number; limit?: string | number };
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
 
     const totalCount = await AuditLog.countDocuments(filter);
@@ -474,7 +516,7 @@ export async function checkInAppointment(req: FastifyRequest, reply: FastifyRepl
       return reply.code(400).send(errorResponse("Invalid appointment ID"));
     }
 
-    const appointment = await Appointment.findById(id).populate({
+    let appointment = await Appointment.findById(id).populate({
       path: "patientId",
       populate: { path: "userId", select: "name email phone" }
     });
@@ -489,28 +531,48 @@ export async function checkInAppointment(req: FastifyRequest, reply: FastifyRepl
       return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
     }
 
-    // Patient user can only check in for their own appointment
+    // Consumer accounts may only check in themselves or a linked family member.
     const patientUserId = (appointment.patientId as any)?.userId?._id?.toString() || (appointment.patientId as any)?.userId?.id?.toString() || (appointment.patientId as any)?.userId?.toString();
-    if (userRole === "patient" && patientUserId !== userId) {
-      return reply.code(403).send(errorResponse("Forbidden: You can only check in for your own appointment"));
+    if (["patient", "family_member", "guest"].includes(userRole)) {
+      const isBookingOwner = String((appointment as any).bookedByUserId || "") === String(userId);
+      const ownsPatient = await Patient.exists({ _id: (appointment.patientId as any)?._id || appointment.patientId, userId });
+      const hasFamilyRelationship = await FamilyRelationship.exists({
+        userId,
+        patientId: (appointment.patientId as any)?._id || appointment.patientId,
+        status: "active",
+      });
+      if (!isBookingOwner && !ownsPatient && !hasFamilyRelationship) {
+        return reply.code(403).send(errorResponse("Forbidden: You can only check in for your own or linked family appointment"));
+      }
     }
 
-    if (appointment.status === "completed" || appointment.status === "cancelled") {
-      return reply.code(400).send(errorResponse(`Cannot check in for an appointment that is already ${appointment.status}`));
+    if (["completed", "cancelled", "no-show"].includes(appointment.status)) {
+      return reply.code(409).send(errorResponse(`Cannot check in for an appointment that is already ${appointment.status}`));
     }
 
     if (appointment.status === "checked-in" || appointment.status === "in-consultation") {
       return reply.code(200).send(successResponse(appointment, `Patient is already ${appointment.status}`));
     }
 
-    appointment.status = "checked-in";
-    await appointment.save();
+    const checkedInAppointment = await Appointment.findOneAndUpdate(
+      { _id: appointment._id, status: { $in: ["pending", "confirmed"] } },
+      { $set: { status: "checked-in" } },
+      { returnDocument: "after" },
+    );
+    if (!checkedInAppointment) {
+      const latestAppointment = await Appointment.findById(appointment._id);
+      if (latestAppointment && ["checked-in", "in-consultation"].includes(latestAppointment.status)) {
+        return reply.code(200).send(successResponse(latestAppointment, `Patient is already ${latestAppointment.status}`));
+      }
+      return reply.code(409).send(errorResponse("Appointment was changed by another request. Refresh and try again."));
+    }
+    appointment = checkedInAppointment;
 
     const { eventBus } = await import("../events/eventBus.ts");
     const { EVENT_TYPES } = await import("../events/types.ts");
 
     if (patientUserId) {
-      eventBus.publish({
+      await eventBus.publishDurable({
         eventType: EVENT_TYPES.PATIENT_APPOINTMENT_CHECKED_IN,
         category: "patient",
         targetUserId: patientUserId,
@@ -666,9 +728,14 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
         );
       }
 
-      // Explicitly complete previous consultation & encounter
-      activeConsultation.status = "completed";
-      await activeConsultation.save();
+      // Explicitly release the database consultation lock before advancing.
+      await Appointment.updateOne(
+        { _id: activeConsultation._id, status: "in-consultation" },
+        {
+          $set: { status: "completed" },
+          $unset: { activeConsultationDoctorDayKey: 1 },
+        },
+      );
 
       const { Encounter } = await import("../models/Encounter.ts");
       await Encounter.updateOne(
@@ -740,6 +807,7 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
         $set: {
           status: "in-consultation",
           queuePosition: 0,
+          activeConsultationDoctorDayKey: getActiveConsultationDoctorDayKey(targetDoctorId, nextCandidate.appointmentTime),
         },
       },
       { returnDocument: "after" }
@@ -772,7 +840,7 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
 
     const patientUserId = (nextAppt.patientId as any)?.userId?._id?.toString() || (nextAppt.patientId as any)?.userId?.toString();
     if (patientUserId) {
-      eventBus.publish({
+      await eventBus.publishDurable({
         eventType: EVENT_TYPES.PATIENT_CALL_NEXT,
         category: "patient",
         targetUserId: patientUserId,
@@ -827,6 +895,9 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
     return reply.code(200).send(successResponse(nextAppt, `Calling Token #${nextAppt.tokenNumber}`));
   } catch (err) {
     console.error("callNextPatient error:", err);
+    if (isActiveConsultationLockConflict(err)) {
+      return reply.code(409).send(errorResponse("Doctor already has an active consultation. Refresh the queue before calling the next patient.", "ACTIVE_CONSULTATION_IN_PROGRESS"));
+    }
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -2529,7 +2600,7 @@ export async function resendQueueTrackerNotification(req: FastifyRequest, reply:
     if (targetUserId) {
       const { eventBus } = await import("../events/eventBus.ts");
       const { EVENT_TYPES } = await import("../events/types.ts");
-      eventBus.publish({
+      await eventBus.publishDurable({
         eventType: EVENT_TYPES.PATIENT_CALL_NEXT,
         category: "patient",
         targetUserId,

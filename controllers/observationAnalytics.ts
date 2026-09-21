@@ -5,7 +5,7 @@ import { ObservationAlert } from "../models/ObservationAlert.ts";
 import { ObservationAnalyticsService } from "../services/ObservationAnalyticsService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { Patient } from "../models/Patient.ts";
-import { checkOperationalRecordAccess, checkPatientAccess } from "../utilities/tenant.ts";
+import { checkOperationalRecordAccess, checkPatientAccess, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));
@@ -21,7 +21,8 @@ export async function evaluateEncounterScoreController(req: FastifyRequest, repl
     const encounterAccess = await checkOperationalRecordAccess(req, encounter);
     if (!encounterAccess.allowed) return sendTenantError(reply, encounterAccess);
 
-    const orgId = req.user?.organization_id || encounter.organizationId?.toString();
+    const scope = resolveAuthorizedOrganizationScope(req);
+    const orgId = (scope.allowed ? scope.organizationId : undefined) || encounter.organizationId?.toString() || req.user?.organization_id || "";
     const clinicId = encounter.clinicId?.toString();
     const patientId = encounter.patientId?.toString();
 

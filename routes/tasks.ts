@@ -36,7 +36,7 @@ export default async function taskRoutes(app: FastifyInstance) {
       });
 
       // Emit TASK_ASSIGNED domain event
-      eventBus.publish({
+      await eventBus.publishDurable({
         eventType: EVENT_TYPES.TASK_ASSIGNED,
         category: "task",
         targetUserId: assignedTo,
@@ -104,7 +104,7 @@ export default async function taskRoutes(app: FastifyInstance) {
 
       // Emit TASK_STATUS_CHANGED event to creator if updated by assignee
       if (task.createdBy.toString() !== req.user!.id) {
-        eventBus.publish({
+        await eventBus.publishDurable({
           eventType: EVENT_TYPES.TASK_STATUS_CHANGED,
           category: "task",
           targetUserId: task.createdBy.toString(),

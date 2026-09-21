@@ -9,7 +9,7 @@ import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { User } from "../models/User.ts";
 import { appointmentService } from "../services/AppointmentService.ts";
-import { whatsAppCloudApiService } from "../services/WhatsAppCloudApiService.ts";
+import { enqueueWhatsAppDocument, enqueueWhatsAppFreeform } from "../services/CommunicationOutbox.ts";
 import { getFrontendBaseUrl } from "../utilities/config.ts";
 import { appendTrackerCapability, issueAppointmentTrackerLink } from "../utilities/publicTracker.ts";
 
@@ -495,12 +495,13 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
 
               // Dispatch official PDF document directly into WhatsApp chat
               const cleanDoc = docName.replace(/[^a-zA-Z0-9]/g, "_");
-              whatsAppCloudApiService.sendDocumentMessage({
+              await enqueueWhatsAppDocument({
                 to: from,
                 documentUrl: prescriptionUrl,
                 filename: `Prescription_Token_${latestCompleted.tokenNumber}_Dr_${cleanDoc}.pdf`,
+                idempotencyKey: `whatsapp-document:rx:${msg.id}:${latestCompleted._id}`,
                 caption: `📄 Official Signed Prescription from Dr. ${docName} (Token #${latestCompleted.tokenNumber})`,
-              }).catch((err) => console.error("WhatsApp document reply failed:", err));
+              });
             } else {
               replyText = `Hello ${patient.name}, no completed digital prescription found for your registered profile.`;
             }
@@ -524,12 +525,13 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
               replyText = `🧾 *OPD Invoice Summary*\n\n• Patient: ${patient.name}\n• Facility: ${clinicName}\n• Token: #${latestAppt.tokenNumber}\n• Amount: ₹${fee}\n• Payment Status: *${isPaid ? "PAID ✅" : "PENDING ⏳"}*\n\n🔗 View & Pay Online:\n${trackingUrl}`;
 
               if (isPaid) {
-                whatsAppCloudApiService.sendDocumentMessage({
+                await enqueueWhatsAppDocument({
                   to: from,
                   documentUrl: prescriptionUrl,
                   filename: `Invoice_Receipt_Token_${latestAppt.tokenNumber}.pdf`,
+                  idempotencyKey: `whatsapp-document:invoice:${msg.id}:${latestAppt._id}`,
                   caption: `🧾 Official Paid Receipt - Token #${latestAppt.tokenNumber} (₹${fee})`,
-                }).catch((err) => console.error("WhatsApp invoice document reply failed:", err));
+                });
               }
             } else {
               replyText = `Hello ${patient.name}, no recent billing records found.`;
@@ -568,20 +570,13 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
 
           // Dispatch conversational response to patient's WhatsApp
           if (replyText) {
-            await whatsAppCloudApiService.sendFreeformTextMessage({
+            await enqueueWhatsAppFreeform({
               to: from,
               text: replyText,
-            });
-
-            await NotificationLog.create({
               organizationId: patient.organizationId || undefined,
-              recipientPhone: from,
               recipientName: patient.name || undefined,
-              channel: "whatsapp",
-              templateId: "TWO_WAY_ASSISTANT",
-              messageContent: replyText,
-              status: "sent",
-            }).catch(() => {});
+              idempotencyKey: `whatsapp-freeform:${msg.id}`,
+            });
           }
         }
       }

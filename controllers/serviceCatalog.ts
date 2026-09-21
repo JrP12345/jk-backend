@@ -3,10 +3,13 @@ import mongoose from "mongoose";
 import { ServiceCatalog } from "../models/ServiceCatalog.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
+import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 
 export async function createService(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
     if (!orgId) {
       return reply.code(400).send(errorResponse("Organization ID context is missing"));
     }
@@ -62,7 +65,9 @@ export async function createService(req: FastifyRequest, reply: FastifyReply) {
 
 export async function getServices(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
     const { search, category, department, clinicId, isActive, page, limit } = req.query as any;
 
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
@@ -182,7 +187,9 @@ export async function deleteService(req: FastifyRequest, reply: FastifyReply) {
 
 export async function seedDefaultServices(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
     if (!orgId) {
       return reply.code(400).send(errorResponse("Organization ID context is missing"));
     }

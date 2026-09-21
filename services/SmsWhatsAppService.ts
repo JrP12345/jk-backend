@@ -5,6 +5,7 @@ import { UsageRecord } from "../models/UsageRecord.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { issueAppointmentTrackerLink } from "../utilities/publicTracker.ts";
 import { whatsAppCloudApiService } from "./WhatsAppCloudApiService.ts";
+import { enqueueCommunicationTemplate } from "./CommunicationOutbox.ts";
 
 export type SupportedTemplateId =
   | "OTP_VERIFICATION"
@@ -31,7 +32,27 @@ export interface SendMessageOptions {
   idempotencyKey?: string;
 }
 
+/**
+ * Accepted delivery API for application code. Clinical communications are
+ * persisted first; only OTP delivery remains immediate because its five-minute
+ * authentication window requires the low-latency auth path.
+ */
 export async function sendSmsWhatsAppNotification(options: SendMessageOptions): Promise<any> {
+  if (options.templateId === "OTP_VERIFICATION") {
+    return dispatchSmsWhatsAppNotification(options);
+  }
+
+  const queued = await enqueueCommunicationTemplate(options);
+  const record = (queued as any).toObject ? (queued as any).toObject() : queued;
+  return {
+    ...record,
+    isDuplicate: record.status !== "pending",
+    creditsDeducted: 0,
+  };
+}
+
+/** Provider-only dispatch. This must only be called by the outbound worker. */
+export async function dispatchSmsWhatsAppNotification(options: SendMessageOptions): Promise<any> {
   const channel = options.channel || "whatsapp";
   const phone = options.phone.trim();
   const appointmentId = options.appointmentId;
@@ -446,6 +467,7 @@ function buildPlainMessageContent(options: SendMessageOptions): string {
 
 export const SmsWhatsAppService = {
   sendSmsWhatsAppNotification,
+  dispatchSmsWhatsAppNotification,
 
   async sendBookingConfirmation(
     appointmentId: string,
@@ -484,6 +506,7 @@ export const SmsWhatsAppService = {
     });
 
     const isSuccess =
+      log?.status === "pending" || log?.status === "processing" || log?.status === "retrying" ||
       log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
     return {
       success: isSuccess,
@@ -529,6 +552,7 @@ export const SmsWhatsAppService = {
     });
 
     const isSuccess =
+      log?.status === "pending" || log?.status === "processing" || log?.status === "retrying" ||
       log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
     return {
       success: isSuccess,
@@ -574,7 +598,8 @@ export const SmsWhatsAppService = {
       },
     });
 
-    const isSuccess = log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
+    const isSuccess = log?.status === "pending" || log?.status === "processing" || log?.status === "retrying" ||
+      log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
     return {
       success: isSuccess,
       log,
@@ -616,7 +641,8 @@ export const SmsWhatsAppService = {
       },
     });
 
-    const isSuccess = log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
+    const isSuccess = log?.status === "pending" || log?.status === "processing" || log?.status === "retrying" ||
+      log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
     return {
       success: isSuccess,
       log,
@@ -655,7 +681,8 @@ export const SmsWhatsAppService = {
       },
     });
 
-    const isSuccess = log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
+    const isSuccess = log?.status === "pending" || log?.status === "processing" || log?.status === "retrying" ||
+      log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
     return {
       success: isSuccess,
       log,
@@ -696,7 +723,8 @@ export const SmsWhatsAppService = {
       },
     });
 
-    const isSuccess = log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
+    const isSuccess = log?.status === "pending" || log?.status === "processing" || log?.status === "retrying" ||
+      log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
     return {
       success: isSuccess,
       log,

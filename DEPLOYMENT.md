@@ -89,3 +89,56 @@ docker run -d -p 3000:3000 --name ananta-frontend ananta-frontend:latest
 - **Readiness probe:** `GET /api/health/readiness` (HTTP 200 when MongoDB is connected and Redis is ready; HTTP 503 if disconnected; HTTP 200 with `cluster_mode: "degraded_single_node"` if `ALLOW_SINGLE_NODE_IN_PRODUCTION=true`)
 - **Synthetic Canary probe:** `GET /api/health/synthetic` (HTTP 200 with full end-to-end verification: dedicated `_canary_probes` collection write/read/delete, diagnostic engine panic threshold test on Potassium 6.9, and Redis WebSocket fan-out test on isolated test channel)
 - **System metrics:** `GET /api/health` (HTTP 200 with ISO timestamp)
+
+---
+
+## 5. Background Workers Architecture
+
+Production separates HTTP request serving from asynchronous event processing and message deliveries. The API container never runs timers or background loops directly.
+
+| Worker Process | Command | Purpose |
+| :--- | :--- | :--- |
+| **Notification Worker** | `npm run worker:notifications` | Claims and delivers in-app/email `NotificationDelivery` rows with leases and exponential backoff |
+| **Outbound Message Worker** | `npm run worker:outbound-messages` | Dispatches encrypted WhatsApp, SMS, and invoice payment receipts |
+| **Disruption Timeout Worker** | `npm run worker:disruption-timeouts` | Executes single-leader lease-managed disruption sweep and queue timeout claims |
+| **Domain Event Worker** | `npm run worker:domain-events` | Claims and dispatches durable encrypted domain events from `DomainEventOutbox` |
+
+In Docker Compose or Kubernetes, run each worker as an independent replica container using the same backend image.
+
+---
+
+## 6. Required Production Migrations
+
+Before launching API or worker instances against a newly provisioned MongoDB replica set, run the following index and lock migrations:
+
+```bash
+# 1. Backfill sparse unique active-consultation lock
+npm run migrate:active-consultation-lock
+
+# 2. Prepare compound indexes for notification & message outboxes
+npm run migrate:outbox-indexes
+
+# 3. Prepare unique idempotency & compound indexes for domain event outbox
+npm run migrate:domain-event-indexes
+```
+
+---
+
+## 7. Historical Audit Remediation Runbook
+
+If legacy audit records exist prior to the write-time PHI redaction boundary, use the chain-preserving remediation tool:
+
+```bash
+# 1. Scan audit chain for unredacted fields or broken links (non-mutating)
+npm run audit:scan
+
+# 2. Export cryptographic chain attestation artifact before remediation
+node --env-file=.env --experimental-strip-types scripts/audit-remediation.ts --export-chain --org=<ORG_ID>
+
+# 3. Dry-run remediation to verify planned modifications
+node --env-file=.env --experimental-strip-types scripts/audit-remediation.ts --execute --dry-run --org=<ORG_ID>
+
+# 4. Execute remediation (redacts PHI, updates hash chain, records ChainTransitionRecord)
+npm run audit:remediate -- --org=<ORG_ID> --reason="VAPT compliance audit remediation" --operator=<ROOT_USER_ID>
+```
+

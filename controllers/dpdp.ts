@@ -3,6 +3,7 @@ import { Patient } from "../models/Patient.ts";
 import { DataBreachIncident } from "../models/DataBreachIncident.ts";
 import { DPDPService } from "../services/DPDPService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
+import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 
 /**
  * Resolves the target patient ID from the authenticated user context.
@@ -11,7 +12,8 @@ import { successResponse, errorResponse } from "../utilities/helpers.ts";
  */
 async function resolvePatientId(req: FastifyRequest): Promise<{ patientId: string; orgId?: string }> {
   const userRole = req.user?.role;
-  const orgId = req.user?.organization_id;
+  const scope = resolveAuthorizedOrganizationScope(req);
+  const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
 
   if (userRole === "patient") {
     const patient = await Patient.findOne({ userId: req.user!.id });
@@ -106,7 +108,9 @@ export async function updatePatientConsents(req: FastifyRequest, reply: FastifyR
 // ─── 4. Data Breach Incident Governance (Section 8(6)) ─────────────────────
 export async function recordBreachIncident(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
     if (!orgId && req.user?.role !== "root") {
       return reply.code(403).send(errorResponse("Organization context required"));
     }
@@ -132,7 +136,9 @@ export async function recordBreachIncident(req: FastifyRequest, reply: FastifyRe
 
 export async function getBreachIncidents(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed && req.user?.role !== "root") return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
     const filter: any = {};
     if (orgId && req.user?.role !== "root") {
       filter.organizationId = orgId;

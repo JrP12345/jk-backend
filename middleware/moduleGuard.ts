@@ -1,6 +1,4 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import mongoose from "mongoose";
-import { Clinic } from "../models/Clinic.ts";
 import { isModuleEnabledForOrganization } from "../utilities/moduleAccess.ts";
 import { MODULE_KEYS, getAlwaysOnModules } from "../data/moduleKeys.ts";
 
@@ -8,29 +6,9 @@ async function resolveModuleOrganizationId(req: FastifyRequest): Promise<string 
   if (req.user?.organization_id) {
     return req.user.organization_id;
   }
-
-  // Portal patients often book across clinics without an org claim in their JWT.
-  const clinicId =
-    (req.headers["x-clinic-id"] as string) ||
-    (req.body as { clinicId?: string })?.clinicId ||
-    (req.query as { clinicId?: string })?.clinicId;
-
-  if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
-    const clinic = await Clinic.findById(clinicId).select("organizationId").lean();
-    return clinic?.organizationId?.toString();
-  }
-
-  const paramId = (req.params as { id?: string; appointmentId?: string })?.id || (req.params as { id?: string; appointmentId?: string })?.appointmentId;
-  if (paramId && mongoose.Types.ObjectId.isValid(paramId)) {
-    const { Appointment } = await import("../models/Appointment.ts");
-    const appt = await Appointment.findById(paramId).select("organizationId clinicId").lean();
-    if (appt?.organizationId) return appt.organizationId.toString();
-    if (appt?.clinicId) {
-      const clinic = await Clinic.findById(appt.clinicId).select("organizationId").lean();
-      if (clinic?.organizationId) return clinic.organizationId.toString();
-    }
-  }
-
+  // Portal consumers and root callers bypass this guard. Staff without a
+  // membership claim fail closed rather than selecting a tenant from request
+  // IDs or client headers.
   return undefined;
 }
 

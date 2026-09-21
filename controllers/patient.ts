@@ -7,10 +7,10 @@ import { Doctor } from "../models/Doctor.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
+import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 
 export async function searchPatients(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
     const userRole = req.user?.role;
     const { search, gender, page, limit } = req.query as {
       search?: string;
@@ -23,6 +23,12 @@ export async function searchPatients(req: FastifyRequest, reply: FastifyReply) {
     if (userRole === "patient" || userRole === "family_member") {
       return reply.code(403).send(errorResponse("Forbidden: staff access required"));
     }
+
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) {
+      return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    }
+    const orgId = scope.organizationId;
 
     const patientFilter: Record<string, unknown> = {};
     const andConditions: Record<string, unknown>[] = [];
@@ -102,7 +108,11 @@ export async function searchPatients(req: FastifyRequest, reply: FastifyReply) {
 export async function getPatientDetails(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id } = req.params as { id: string };
-    const requesterOrgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed && req.user?.role !== "patient" && req.user?.role !== "family_member") {
+      return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    }
+    const requesterOrgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
     const requesterRole = req.user?.role;
     const requesterUserId = req.user?.id;
 
@@ -225,13 +235,16 @@ export async function submitDoctorReview(req: FastifyRequest, reply: FastifyRepl
 export async function getPatientTimelineController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id } = req.params as { id: string };
-    let orgId: string = req.user?.organization_id || "";
+    const isPatientSelf = req.user?.role === "patient" || req.user?.role === "family_member";
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed && !isPatientSelf) {
+      return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    }
+    let orgId: string = (scope.allowed ? scope.organizationId : req.user?.organization_id) || "";
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return reply.code(400).send(errorResponse("Invalid patient ID"));
     }
-
-    const isPatientSelf = req.user?.role === "patient" || req.user?.role === "family_member";
 
     const patientDoc = await Patient.findById(id).setOptions({ bypassTenantFilter: true }).lean() as any;
     if (!patientDoc) {
@@ -299,9 +312,13 @@ export async function getPatientTimelineController(req: FastifyRequest, reply: F
 export async function updatePatientProfile(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id } = req.params as { id: string };
-    const requesterOrgId = req.user?.organization_id;
     const requesterRole = req.user?.role;
     const requesterUserId = req.user?.id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed && requesterRole !== "patient" && requesterRole !== "family_member" && requesterRole !== "root") {
+      return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    }
+    const requesterOrgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return reply.code(400).send(errorResponse("Invalid patient ID"));
@@ -413,7 +430,9 @@ export async function updatePatientProfile(req: FastifyRequest, reply: FastifyRe
 
 export async function createPatient(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
     const userId = req.user!.id;
     if (!orgId) return reply.code(400).send(errorResponse("Organization context required"));
 

@@ -1,6 +1,7 @@
 import mongoose, { Schema } from "mongoose";
 import { computeAuditHash, GENESIS_HASH } from "../utilities/auditCrypto.ts";
 import { withChainLock } from "../utilities/auditLock.ts";
+import { redactAuditDetails } from "../utilities/auditRedaction.ts";
 
 const AuditLogSchema = new Schema({
   userId: { type: Schema.Types.ObjectId, ref: "User", index: true },
@@ -26,6 +27,12 @@ const AuditLogSchema = new Schema({
 AuditLogSchema.index({ organizationId: 1, createdAt: -1 });
 AuditLogSchema.index({ organizationId: 1, sequence: 1 }, { unique: true });
 AuditLogSchema.index({ category: 1, createdAt: -1 });
+
+// This model-level boundary protects both direct AuditLog.create calls and
+// generic audit-plugin snapshots. It runs before the immutable hash is made.
+AuditLogSchema.pre("validate", function() {
+  this.details = redactAuditDetails(this.details);
+});
 
 // Automatic cryptographic hash chaining for all audit creations
 AuditLogSchema.pre("save", async function() {
@@ -67,6 +74,15 @@ AuditLogSchema.set("toJSON", {
   virtuals: true,
   transform: (doc, ret: any) => {
     ret.id = ret._id.toString();
+    // Legacy entries may pre-date the write-time boundary. Never expose their
+    // raw detail snapshots through an API serialization.
+    ret.details = redactAuditDetails(ret.details);
+    if (ret.userId && typeof ret.userId === "object") {
+      ret.userId = {
+        id: String(ret.userId._id || ret.userId.id),
+        role: ret.userId.role,
+      };
+    }
     delete ret._id;
     delete ret.__v;
     return ret;
@@ -74,4 +90,3 @@ AuditLogSchema.set("toJSON", {
 });
 
 export const AuditLog = mongoose.models.AuditLog || mongoose.model("AuditLog", AuditLogSchema);
-

@@ -2,10 +2,13 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { InsuranceTariff } from "../models/InsuranceTariff.ts";
 import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
+import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 
 export async function upsertTariff(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
     if (!orgId) {
       return reply.code(400).send(errorResponse("Organization context missing"));
     }
@@ -53,7 +56,9 @@ export async function upsertTariff(req: FastifyRequest, reply: FastifyReply) {
 
 export async function getTariffs(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
     const { tpaName, search, page, limit } = req.query as any;
 
     const filter: any = {};
@@ -87,7 +92,9 @@ export async function getTariffs(req: FastifyRequest, reply: FastifyReply) {
 
 export async function evaluateTariff(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
     const { tpaName, items } = req.body as {
       tpaName: string;
       items: Array<{ serviceCode: string; amount: number; quantity: number }>;

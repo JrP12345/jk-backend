@@ -6,7 +6,7 @@ import { paymentProvider } from "../services/payment/PaymentProvider.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import crypto from "node:crypto";
 import mongoose from "mongoose";
-import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds, resolveTargetOrganizationId } from "../utilities/tenant.ts";
+import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds, resolveAuthorizedOrganizationScope, resolveTargetOrganizationId } from "../utilities/tenant.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));
@@ -148,7 +148,9 @@ export async function adjudicateClaimController(req: FastifyRequest, reply: Fast
 // ─── GET /api/billing/claims ───────────────────────────────────────────
 export async function getClaimsController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed && req.user?.role !== "patient") return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
     const { patientId, status } = req.query as { patientId?: string; status?: string };
 
     const filter: any = { deletedAt: null };

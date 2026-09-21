@@ -1,6 +1,6 @@
 import mongoose, { Schema } from "mongoose";
 
-export const AUTH_METHOD_OPTIONS = ["email_password", "phone_otp", "both"] as const;
+export const AUTH_METHOD_OPTIONS = ["email_password", "phone_otp", "email_otp", "both"] as const;
 export type AuthMethod = (typeof AUTH_METHOD_OPTIONS)[number];
 
 const UserSchema = new Schema({

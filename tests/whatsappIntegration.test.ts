@@ -1,10 +1,15 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import { app } from "../index.js";
 import { Organization } from "../models/Organization.ts";
 import { Patient } from "../models/Patient.ts";
 import { NotificationLog } from "../models/NotificationLog.ts";
+import { OutboundMessage } from "../models/OutboundMessage.ts";
 import { SaaSInvoice } from "../models/SaaSInvoice.ts";
 import { SmsWhatsAppService } from "../services/SmsWhatsAppService.ts";
+import { outboundMessageDeliveryWorker } from "../services/OutboundMessageDeliveryWorker.ts";
+import { enqueueTransactionalEmail, enqueueWhatsAppDocument, enqueueWhatsAppFreeform } from "../services/CommunicationOutbox.ts";
+import { whatsAppCloudApiService } from "../services/WhatsAppCloudApiService.ts";
+import { emailProvider } from "../notifications/providers/emailProvider.ts";
 
 describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
   let adminCookies: string[] = [];
@@ -62,7 +67,36 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
     expect(body.data.availablePacks[2].id).toBe("gold");
   });
 
-  it("2. should atomically deduct 1 credit and create NotificationLog on booking notification dispatch", async () => {
+  it("derives WhatsApp configuration scope from membership and rejects a cross-tenant query", async () => {
+    const otherOrganization = await Organization.create({
+      name: `Other WhatsApp Tenant ${Date.now()}`,
+      city: "Pune",
+      email: `other-wa-${Date.now()}@health.test`,
+      whatsappConfig: { mode: "dedicated", creditsBalance: 77 },
+    });
+
+    const crossTenantQuery = await app.inject({
+      method: "GET",
+      url: `/api/organization/whatsapp?organizationId=${otherOrganization._id}`,
+      headers: { cookie: adminCookies.join("; ") },
+    });
+    expect(crossTenantQuery.statusCode).toBe(403);
+
+    // A forged legacy header is ignored. The response remains the caller's
+    // organization rather than the target tenant's distinct credit balance.
+    const forgedHeader = await app.inject({
+      method: "GET",
+      url: "/api/organization/whatsapp",
+      headers: {
+        cookie: adminCookies.join("; "),
+        "x-organization-id": otherOrganization._id.toString(),
+      },
+    });
+    expect(forgedHeader.statusCode).toBe(200);
+    expect(JSON.parse(forgedHeader.body).data.creditsBalance).not.toBe(77);
+  });
+
+  it("2. persists a PHI-minimized booking delivery before the worker deducts a credit and creates NotificationLog", async () => {
     // Reset initial credits to exactly 100 for clear arithmetic
     await Organization.updateOne(
       { _id: orgId },
@@ -84,15 +118,28 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
     );
 
     expect(sendRes.success).toBe(true);
-    expect(sendRes.creditsDeducted).toBe(1);
+    expect(sendRes.status).toBe("pending");
+    expect(sendRes.creditsDeducted).toBe(0);
 
-    // Verify Organization balance decremented by 1
+    const outboxKey = `whatsapp_${testAppointmentId}_BOOKING_CONFIRMATION`;
+    const queued = await OutboundMessage.findOne({ idempotencyKey: outboxKey }).lean();
+    expect(queued?.kind).toBe("communication_template");
+    expect(queued?.status).toBe("pending");
+    expect((queued as any)?.payload.phone).toBeUndefined();
+    expect((queued as any)?.sensitivePayloadCiphertext).toBeUndefined();
+
+    // The API does not debit credits or call Meta. Only the worker does so.
+    expect((await Organization.findById(orgId))?.whatsappConfig?.creditsBalance).toBe(100);
+    expect(await NotificationLog.exists({ idempotencyKey: outboxKey })).toBeFalsy();
+
+    await outboundMessageDeliveryWorker.processBatch();
+
     const updatedOrg = await Organization.findById(orgId);
     expect(updatedOrg?.whatsappConfig?.creditsBalance).toBe(99);
 
     // Verify NotificationLog record
     const log = await NotificationLog.findOne({
-      idempotencyKey: `whatsapp_${testAppointmentId}_BOOKING_CONFIRMATION`,
+      idempotencyKey: outboxKey,
     });
     expect(log).not.toBeNull();
     expect(log?.creditsDeducted).toBe(1);
@@ -128,6 +175,93 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
     expect(afterOrg?.whatsappConfig?.creditsBalance).toBe(initialBalance);
   });
 
+  it("persists WhatsApp documents and two-way replies before the worker calls Meta", async () => {
+    const documentSpy = vi.spyOn(whatsAppCloudApiService, "sendDocumentMessage").mockResolvedValue({
+      success: true,
+      status: "sent",
+      providerMessageId: "wamid.document-outbox-test",
+    });
+    const replySpy = vi.spyOn(whatsAppCloudApiService, "sendFreeformTextMessage").mockResolvedValue({
+      success: true,
+      status: "sent",
+      providerMessageId: "wamid.reply-outbox-test",
+    });
+
+    try {
+      const documentKey = `whatsapp-document:test:${Date.now()}`;
+      const replyKey = `whatsapp-freeform:test:${Date.now()}`;
+      await enqueueWhatsAppDocument({
+        to: testPhone,
+        documentUrl: "https://example.test/private-prescription.pdf?capability=secret",
+        filename: "Prescription.pdf",
+        caption: "Private prescription",
+        idempotencyKey: documentKey,
+      });
+      await enqueueWhatsAppFreeform({
+        to: testPhone,
+        text: "Private clinical reply",
+        organizationId: orgId,
+        recipientName: "Ramesh Sharma",
+        idempotencyKey: replyKey,
+      });
+
+      const storedDocument = await OutboundMessage.findOne({ idempotencyKey: documentKey }).lean();
+      expect(storedDocument?.status).toBe("pending");
+      expect((storedDocument as any)?.payload.documentUrl).toBeUndefined();
+      expect((storedDocument as any)?.sensitivePayloadCiphertext).toBeUndefined();
+
+      await outboundMessageDeliveryWorker.processBatch();
+
+      expect(documentSpy).toHaveBeenCalledOnce();
+      expect(replySpy).toHaveBeenCalledOnce();
+      expect((await OutboundMessage.findOne({ idempotencyKey: documentKey }))?.status).toBe("sent");
+      expect((await OutboundMessage.findOne({ idempotencyKey: replyKey }))?.status).toBe("sent");
+      expect(await NotificationLog.exists({ idempotencyKey: `outbound:${replyKey}` })).toBeTruthy();
+    } finally {
+      documentSpy.mockRestore();
+      replySpy.mockRestore();
+    }
+  });
+
+  it("persists transactional email encrypted and dispatches it only from the worker", async () => {
+    const emailSpy = vi.spyOn(emailProvider, "sendEmail").mockResolvedValue(true);
+    const idempotencyKey = `transactional-email:test:${Date.now()}`;
+
+    try {
+      await enqueueTransactionalEmail({
+        to: "private-recipient@example.test",
+        subject: "Private clinical update",
+        text: "Sensitive appointment details",
+        html: "<p>Sensitive appointment details</p>",
+        idempotencyKey,
+      });
+      // A retry from the producer does not add a second durable delivery.
+      await enqueueTransactionalEmail({
+        to: "private-recipient@example.test",
+        subject: "Private clinical update",
+        text: "Sensitive appointment details",
+        html: "<p>Sensitive appointment details</p>",
+        idempotencyKey,
+      });
+
+      const queued = await OutboundMessage.findOne({ idempotencyKey }).lean();
+      expect(queued?.kind).toBe("transactional_email");
+      expect(queued?.status).toBe("pending");
+      expect((queued as any)?.payload.to).toBeUndefined();
+      expect((queued as any)?.payload.subject).toBeUndefined();
+      expect((queued as any)?.sensitivePayloadCiphertext).toBeUndefined();
+      expect(await OutboundMessage.countDocuments({ idempotencyKey })).toBe(1);
+      expect(emailSpy).not.toHaveBeenCalled();
+
+      await outboundMessageDeliveryWorker.processBatch();
+
+      expect(emailSpy).toHaveBeenCalledOnce();
+      expect((await OutboundMessage.findOne({ idempotencyKey }))?.status).toBe("sent");
+    } finally {
+      emailSpy.mockRestore();
+    }
+  });
+
   it("4. should gracefully fall back without error when credits are completely exhausted (Zero Disruption)", async () => {
     // Set credits to 0
     await Organization.updateOne(
@@ -150,9 +284,11 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
       }
     );
 
-    // Verifies it does not throw an error and clinical flows continue
-    expect(result.success).toBe(false);
-    expect(result.errorReason).toBe("INSUFFICIENT_CREDITS");
+    // API acceptance remains non-blocking; the worker records the terminal,
+    // non-retryable credit failure without affecting the booking flow.
+    expect(result.success).toBe(true);
+    expect(result.status).toBe("pending");
+    await outboundMessageDeliveryWorker.processBatch();
 
     // Balance remains 0 (never negative)
     const org = await Organization.findById(orgId);
@@ -165,6 +301,7 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
     expect(log).not.toBeNull();
     expect(log?.status).toBe("failed");
     expect(log?.creditsDeducted).toBe(0);
+    expect((await OutboundMessage.findOne({ idempotencyKey: `whatsapp_${exhaustedAptId}_BOOKING_CONFIRMATION` }))?.status).toBe("failed");
   });
 
   it("5. should top-up Bronze pack (+1,000 credits) and generate SaaSInvoice", async () => {
@@ -329,7 +466,13 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
       }
     );
 
-    expect(blockedResult.success).toBe(false);
-    expect(blockedResult.errorReason).toBe("PATIENT_OPTED_OUT_WHATSAPP");
+    expect(blockedResult.success).toBe(true);
+    expect(blockedResult.status).toBe("pending");
+    await outboundMessageDeliveryWorker.processBatch();
+    const blockedLog = await NotificationLog.findOne({
+      idempotencyKey: `whatsapp_${blockedAptId}_BOOKING_CONFIRMATION`,
+    });
+    expect(blockedLog?.errorReason).toBe("PATIENT_OPTED_OUT_WHATSAPP");
+    expect((await OutboundMessage.findOne({ idempotencyKey: `whatsapp_${blockedAptId}_BOOKING_CONFIRMATION` }))?.status).toBe("failed");
   });
 });

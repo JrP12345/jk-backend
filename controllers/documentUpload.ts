@@ -44,7 +44,7 @@ export const uploadDocument = async (req: FastifyRequest, reply: FastifyReply) =
     });
 
     // Emit domain event for asynchronous OCR & vision extraction pipeline
-    eventBus.publish({
+    await eventBus.publishDurable({
       eventType: EVENT_TYPES.DOCUMENT_UPLOADED,
       category: "clinical",
       organizationId: organizationId.toString(),

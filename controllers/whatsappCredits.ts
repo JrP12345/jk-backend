@@ -2,6 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { Organization } from "../models/Organization.ts";
 import { SaaSInvoice } from "../models/SaaSInvoice.ts";
 import { AuditLog } from "../models/AuditLog.ts";
+import { resolveAuthorizedOrganizationScope, isRootRequest } from "../utilities/tenant.ts";
 
 export const WHATSAPP_CREDIT_PACKS = {
   bronze: {
@@ -25,24 +26,37 @@ export const WHATSAPP_CREDIT_PACKS = {
     id: "gold",
     name: "Gold Credit Pack",
     credits: 10000,
-    price: 1700,
+    price: 1500,
     currency: "INR",
     description: "10,000 WhatsApp Notification Credits (~4,000 appointments)",
   },
 } as const;
+
+async function resolveOrganizationIdOrReply(req: FastifyRequest, reply: FastifyReply): Promise<string | undefined> {
+  const scope = resolveAuthorizedOrganizationScope(req);
+  if (!scope.allowed) {
+    reply.code(scope.statusCode).send({ success: false, message: scope.message });
+    return undefined;
+  }
+  let orgId = scope.organizationId;
+  if (!orgId && isRootRequest(req)) {
+    const defaultOrg = await Organization.findOne({ isActive: { $ne: false } }).sort({ createdAt: 1 });
+    if (defaultOrg) orgId = defaultOrg._id.toString();
+  }
+  if (!orgId) {
+    reply.code(400).send({ success: false, message: "Organization context required" });
+    return undefined;
+  }
+  return orgId;
+}
 
 /**
  * GET /api/organization/whatsapp
  * Returns WhatsApp configuration, usage metrics, low-balance warning, and pack rates.
  */
 export async function getOrganizationWhatsAppConfig(req: FastifyRequest, reply: FastifyReply) {
-  const user = (req as any).user;
-  const queryOrgId = (req.query as any)?.organizationId;
-  const orgId = queryOrgId || req.headers["x-organization-id"] || user?.organization_id || user?.organizationId;
-
-  if (!orgId) {
-    return reply.code(400).send({ success: false, message: "Organization context required" });
-  }
+  const orgId = await resolveOrganizationIdOrReply(req, reply);
+  if (!orgId) return;
 
   const org = await Organization.findById(orgId);
   if (!org) {
@@ -111,14 +125,9 @@ export async function getOrganizationWhatsAppConfig(req: FastifyRequest, reply: 
  * Updates WhatsApp gateway mode, notification preferences, and thresholds.
  */
 export async function updateOrganizationWhatsAppConfig(req: FastifyRequest, reply: FastifyReply) {
-  const user = (req as any).user;
   const body = req.body as any;
-  const queryOrgId = (req.query as any)?.organizationId;
-  const orgId = body?.organizationId || queryOrgId || req.headers["x-organization-id"] || user?.organization_id || user?.organizationId;
-
-  if (!orgId) {
-    return reply.code(400).send({ success: false, message: "Organization context required" });
-  }
+  const orgId = await resolveOrganizationIdOrReply(req, reply);
+  if (!orgId) return;
 
   const updateFields: Record<string, any> = {};
 
@@ -187,12 +196,8 @@ export async function updateOrganizationWhatsAppConfig(req: FastifyRequest, repl
 export async function purchaseWhatsAppCredits(req: FastifyRequest, reply: FastifyReply) {
   const user = (req as any).user;
   const body = req.body as any;
-  const queryOrgId = (req.query as any)?.organizationId;
-  const orgId = body?.organizationId || queryOrgId || req.headers["x-organization-id"] || user?.organization_id || user?.organizationId;
-
-  if (!orgId) {
-    return reply.code(400).send({ success: false, message: "Organization context required" });
-  }
+  const orgId = await resolveOrganizationIdOrReply(req, reply);
+  if (!orgId) return;
 
   const packId = body.pack as keyof typeof WHATSAPP_CREDIT_PACKS;
   const pack = WHATSAPP_CREDIT_PACKS[packId];

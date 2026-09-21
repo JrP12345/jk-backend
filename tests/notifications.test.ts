@@ -7,6 +7,8 @@ import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { User } from "../models/User.ts";
 import { emailProvider } from "../notifications/providers/emailProvider.ts";
+import { NotificationDelivery } from "../models/NotificationDelivery.ts";
+import { notificationDeliveryWorker } from "../notifications/workers/NotificationDeliveryWorker.ts";
 
 describe("Notification Infrastructure System", () => {
   const userId = new mongoose.Types.ObjectId().toHexString();
@@ -14,6 +16,7 @@ describe("Notification Infrastructure System", () => {
   beforeEach(async () => {
     await Notification.deleteMany({});
     await NotificationPreference.deleteMany({});
+    await NotificationDelivery.deleteMany({});
     await User.deleteMany({ _id: userId });
     await User.create({
       _id: userId,
@@ -185,7 +188,7 @@ describe("Notification Infrastructure System", () => {
     expect(await notificationService.getUnreadCount(userId)).toBe(1);
   });
 
-  it("should process background queue jobs asynchronously and track metrics", async () => {
+  it("persists email work in the durable outbox and dispatches it only from the worker", async () => {
     const sendEmail = vi.spyOn(emailProvider, "sendEmail").mockResolvedValue(true);
     const metricsBefore = await notificationService.getMetrics();
     expect(metricsBefore).toBeDefined();
@@ -201,11 +204,20 @@ describe("Notification Infrastructure System", () => {
       message: "Testing async background delivery queue",
     });
 
-    // Allow worker loop tick to process enqueued job
-    await new Promise((r) => setTimeout(r, 600));
+    // The API only persists a durable job; no API-process timer sends email.
+    await new Promise((r) => setTimeout(r, 150));
+    const queuedDelivery = await NotificationDelivery.findOne({
+      channel: "email",
+      recipient: "notification-test@example.com",
+    });
+    expect(queuedDelivery?.status).toBe("pending");
+    expect(sendEmail).not.toHaveBeenCalled();
+
+    await notificationDeliveryWorker.processBatch();
 
     const metricsAfter = await notificationService.getMetrics();
     expect(metricsAfter.queueStats.processedCount).toBeGreaterThanOrEqual(1);
+    expect((await NotificationDelivery.findById(queuedDelivery?._id))?.status).toBe("sent");
     sendEmail.mockRestore();
   });
 

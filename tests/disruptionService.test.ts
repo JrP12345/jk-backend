@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import { app } from "../index.js";
 import { Organization } from "../models/Organization.ts";
 import { Patient } from "../models/Patient.ts";
@@ -8,6 +8,8 @@ import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { runDisruptionTimeoutSweep } from "../jobs/disruptionTimeoutJob.ts";
+import { disruptionService } from "../services/disruptionService.ts";
+import { eventBus } from "../events/eventBus.ts";
 
 describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () => {
   let adminCookies: string[] = [];
@@ -235,6 +237,65 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
     expect(freshPending?.status).toBe("disruption_triage");
   });
 
+  it("claims each disruption appointment once when duplicate processors run concurrently", async () => {
+    const appointmentTime = new Date();
+    appointmentTime.setHours(11, 0, 0, 0);
+    const override = await DoctorDayOverride.findOne({ clinicId, doctorId: doc1Id, date: todayStr });
+    expect(override).toBeDefined();
+    const [checkedInAppointment, confirmedAppointment] = await Appointment.create([
+      {
+        organizationId: orgId,
+        clinicId,
+        doctorId: doc1Id,
+        patientId: patient1._id,
+        appointmentTime,
+        appointmentType: "walk-in",
+        status: "checked-in",
+        tokenNumber: 81,
+      },
+      {
+        organizationId: orgId,
+        clinicId,
+        doctorId: doc1Id,
+        patientId: patient2._id,
+        appointmentTime,
+        appointmentType: "online",
+        status: "confirmed",
+        tokenNumber: 82,
+      },
+    ]);
+    const publishSpy = vi.spyOn(eventBus, "publish");
+
+    try {
+      const params = {
+        clinicId,
+        doctorId: doc1Id,
+        date: todayStr,
+        status: "unavailable" as const,
+        userId: doc1Id,
+        organizationId: orgId,
+        disruptionId: override!._id,
+      };
+      const summaries = await Promise.all([
+        disruptionService.processDoctorDisruption(params),
+        disruptionService.processDoctorDisruption(params),
+      ]);
+
+      expect(summaries.reduce((count, summary) => count + summary.checkedInTriageCount, 0)).toBe(1);
+      expect(summaries.reduce((count, summary) => count + summary.remoteNotifiedCount, 0)).toBe(1);
+      expect((await Appointment.findById(checkedInAppointment._id))?.status).toBe("disruption_triage");
+      expect((await Appointment.findById(confirmedAppointment._id))?.status).toBe("disruption_triage");
+
+      const claimedIds = new Set([checkedInAppointment._id.toString(), confirmedAppointment._id.toString()]);
+      const disruptionEvents = publishSpy.mock.calls.filter(([event]) =>
+        claimedIds.has((event as any)?.metadata?.appointmentId),
+      );
+      expect(disruptionEvents).toHaveLength(2);
+    } finally {
+      publishSpy.mockRestore();
+    }
+  });
+
   it("Scenario D: Fetches eligible replacement doctors at the same clinic", async () => {
     const res = await app.inject({
       method: "GET",
@@ -298,7 +359,8 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
     const freshDoc2Appt = await Appointment.findById(existingDoc2Appt._id);
     expect(freshDoc2Appt?.queuePosition).toBe(2);
 
-    // Persistent AuditLog Verification: APPOINTMENT_TRANSFERRED { fromDoctor, toDoctor, reason, staffId }
+    // Persistent AuditLog Verification: structural operational fields remain,
+    // while free-text clinical/operational rationale is redacted at rest.
     const auditTransfer = await AuditLog.findOne({
       action: "APPOINTMENT_TRANSFERRED",
       targetId: apptCheckedIn._id,
@@ -306,7 +368,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
     expect(auditTransfer).toBeDefined();
     expect(auditTransfer?.details.fromDoctor).toBe(doc1Id);
     expect(auditTransfer?.details.toDoctor).toBe(doc2Id);
-    expect(auditTransfer?.details.reason).toBe("Primary doctor emergency leave");
+    expect(auditTransfer?.details.reason).toBe("[REDACTED]");
     expect(auditTransfer?.details.queuePosition).toBe(1);
     expect(auditTransfer?.details.isPriorityNextUp).toBe(true);
 
@@ -447,6 +509,31 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
     const checkAppt = await Appointment.findById(expiredAppt._id);
     expect(checkAppt?.status).toBe("cancelled");
     expect(checkAppt?.cancellationReason).toContain("expired");
+  });
+
+  it("claims an expired disruption appointment once when timeout workers overlap", async () => {
+    const expiredAppt = await Appointment.create({
+      organizationId: orgId,
+      clinicId,
+      doctorId: doc1Id,
+      patientId: patient4._id,
+      appointmentTime: new Date(),
+      appointmentType: "online",
+      status: "disruption_triage",
+      triageAction: "pending",
+      disruptionResponseDeadline: new Date(Date.now() - 5 * 60 * 1000),
+      tokenNumber: 100,
+    });
+
+    const [first, second] = await Promise.all([
+      disruptionService.processDisruptionTimeout(),
+      disruptionService.processDisruptionTimeout(),
+    ]);
+
+    expect(first.autoCancelledCount + second.autoCancelledCount).toBe(1);
+    const updated = await Appointment.findById(expiredAppt._id);
+    expect(updated?.status).toBe("cancelled");
+    expect(["cancelled", "refunded"]).toContain(updated?.triageAction);
   });
 
   it("Scenario I: Patient self-service endpoint handles action from live tracker", async () => {

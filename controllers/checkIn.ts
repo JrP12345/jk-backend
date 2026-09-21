@@ -5,6 +5,7 @@ import { AuditLog } from "../models/AuditLog.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
+import { checkClinicAccess } from "../utilities/tenant.ts";
 
 export async function processSelfCheckInQr(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -14,42 +15,37 @@ export async function processSelfCheckInQr(req: FastifyRequest, reply: FastifyRe
       clinicId?: string;
     };
 
-    let appointment: any = null;
-
-    // This is a public kiosk endpoint.  An appointment ID alone is not a
-    // sufficient check-in credential because it is enumerable/leakable.  The
-    // existing kiosk contract already supplies the clinic and queue token, so
-    // require all supplied identifiers to match the same appointment.
     if (
-      appointmentId &&
-      mongoose.Types.ObjectId.isValid(appointmentId) &&
-      tokenNumber !== undefined &&
-      clinicId &&
-      mongoose.Types.ObjectId.isValid(clinicId)
+      !appointmentId ||
+      !mongoose.Types.ObjectId.isValid(appointmentId) ||
+      tokenNumber === undefined ||
+      !Number.isInteger(Number(tokenNumber)) ||
+      Number(tokenNumber) < 1 ||
+      !clinicId ||
+      !mongoose.Types.ObjectId.isValid(clinicId)
     ) {
-      appointment = await Appointment.findOne({
-        _id: appointmentId,
-        clinicId,
-        tokenNumber: Number(tokenNumber),
-      })
-        .populate("clinicId", "name city")
-        .populate("doctorId", "name specialization")
-        .populate({ path: "patientId", populate: { path: "userId", select: "name email phone" } });
-    } else if (tokenNumber !== undefined && clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
-      const startOfDay = new Date();
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date();
-      endOfDay.setHours(23, 59, 59, 999);
-
-      appointment = await Appointment.findOne({
-        clinicId,
-        tokenNumber: Number(tokenNumber),
-        appointmentTime: { $gte: startOfDay, $lte: endOfDay },
-      })
-        .populate("clinicId", "name city")
-        .populate("doctorId", "name specialization")
-        .populate({ path: "patientId", populate: { path: "userId", select: "name email phone" } });
+      return reply.code(400).send(errorResponse("appointmentId, clinicId, and a valid tokenNumber are required"));
     }
+
+    const clinicAccess = await checkClinicAccess(req, clinicId);
+    if (!clinicAccess.allowed) {
+      return reply.code(403).send(errorResponse("Unauthorized clinic access"));
+    }
+
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const appointment: any = await Appointment.findOne({
+      _id: appointmentId,
+      clinicId,
+      tokenNumber: Number(tokenNumber),
+      appointmentTime: { $gte: startOfDay, $lte: endOfDay },
+    })
+      .populate("clinicId", "name city")
+      .populate("doctorId", "name specialization")
+      .populate({ path: "patientId", populate: { path: "userId", select: "name" } });
 
     if (!appointment) {
       return reply.code(404).send(errorResponse("No active appointment found for check-in with provided details"));
@@ -75,7 +71,7 @@ export async function processSelfCheckInQr(req: FastifyRequest, reply: FastifyRe
     await appointment.save();
 
     // Publish event for real-time queue update
-    eventBus.publish({
+    await eventBus.publishDurable({
       eventType: EVENT_TYPES.PATIENT_APPOINTMENT_CHECKED_IN,
       category: "patient",
       targetUserId: appointment.doctorId?._id?.toString() || "",
@@ -87,7 +83,7 @@ export async function processSelfCheckInQr(req: FastifyRequest, reply: FastifyRe
     });
 
     await AuditLog.create({
-      userId: req.user?.id || appointment.patientId?.userId?._id || new mongoose.Types.ObjectId(),
+      userId: req.user!.id,
       action: "SELF_CHECKIN_QR",
       targetId: appointment._id,
       targetModel: "Appointment",

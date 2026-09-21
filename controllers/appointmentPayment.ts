@@ -275,10 +275,9 @@ export async function selectPayAtClinic(req: FastifyRequest, reply: FastifyReply
 // ─── POST /api/appointment-payments/collect-counter ──────────────────
 export async function collectCounterPayment(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { appointmentId, paymentMethod = "upi", amount } = req.body as {
+    const { appointmentId, paymentMethod = "upi" } = req.body as {
       appointmentId: string;
-      paymentMethod?: "upi" | "cash" | "card" | "net-banking";
-      amount?: number;
+      paymentMethod?: "upi" | "cash" | "card";
     };
 
     if (!mongoose.Types.ObjectId.isValid(appointmentId)) {
@@ -290,11 +289,21 @@ export async function collectCounterPayment(req: FastifyRequest, reply: FastifyR
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const assignment = await DoctorAssignment.findOne({ doctorId: appointment.doctorId, clinicId: appointment.clinicId });
-    const feeAmount = amount || assignment?.fees || 500;
+    if (!(await requestHasAnyPermission(req, ...BILLING_STAFF_PAYMENT_PERMISSIONS))) {
+      return reply.code(403).send(errorResponse("Counter payment requires billing staff access"));
+    }
+    const clinicAccess = await checkClinicAccess(req, appointment.clinicId);
+    if (!clinicAccess.allowed) {
+      return reply.code(403).send(errorResponse("Unauthorized clinic access"));
+    }
+    if (!["upi", "cash", "card"].includes(paymentMethod)) {
+      return reply.code(400).send(errorResponse("Unsupported counter payment method"));
+    }
 
     let invoice: any = await Invoice.findOne({ appointmentId: appointment._id });
     if (!invoice) {
+      const assignment = await DoctorAssignment.findOne({ doctorId: appointment.doctorId, clinicId: appointment.clinicId });
+      const feeAmount = Number(assignment?.fees ?? appointment.paymentAmount ?? 500);
       const { generateClinicInvoiceNumber } = await import("../utilities/invoiceNumber.ts");
       const invoiceNumber = await generateClinicInvoiceNumber(appointment.clinicId.toString());
       invoice = await Invoice.create({
@@ -307,33 +316,47 @@ export async function collectCounterPayment(req: FastifyRequest, reply: FastifyR
         items: [{ description: "OPD Consultation Fee", amount: feeAmount, quantity: 1 }],
         subtotal: feeAmount,
         totalAmount: feeAmount,
-        amountPaid: feeAmount,
-        balanceDue: 0,
-        status: "paid",
-        paymentMethod,
-        paymentDate: new Date(),
-        payments: [{
-          amount: feeAmount,
-          paymentMethod,
-          paidAt: new Date(),
-          notes: "Settled via front-desk countertop dynamic UPI QR modal",
-        }],
+        amountPaid: 0,
+        balanceDue: feeAmount,
+        status: "unpaid",
       });
-    } else {
-      invoice.status = "paid";
-      invoice.amountPaid = (invoice.amountPaid || 0) + feeAmount;
-      invoice.balanceDue = 0;
-      invoice.paymentMethod = paymentMethod;
-      invoice.paymentDate = new Date();
-      if (!invoice.payments) invoice.payments = [];
-      invoice.payments.push({
-        amount: feeAmount,
-        paymentMethod,
-        paidAt: new Date(),
-        notes: "Settled via front-desk countertop dynamic UPI QR modal",
-      });
-      await invoice.save();
     }
+
+    const feeAmount = Number(
+      invoice.balanceDue ?? Math.max(0, Number(invoice.totalAmount || 0) - Number(invoice.amountPaid || 0))
+    );
+    if (!Number.isFinite(feeAmount) || feeAmount <= 0 || invoice.status === "paid") {
+      return reply.code(409).send(errorResponse("This appointment invoice has already been paid"));
+    }
+
+    // The conditional update is the single settlement gate: a concurrent or
+    // replayed request observes the already-paid status and cannot append an
+    // additional payment record.
+    const settledInvoice: any = await Invoice.findOneAndUpdate(
+      { _id: invoice._id, status: { $ne: "paid" } },
+      {
+        $set: {
+          status: "paid",
+          amountPaid: Number(invoice.amountPaid || 0) + feeAmount,
+          balanceDue: 0,
+          paymentMethod,
+          paymentDate: new Date(),
+        },
+        $push: {
+          payments: {
+            amount: feeAmount,
+            paymentMethod,
+            paidAt: new Date(),
+            notes: "Settled via authenticated front-desk payment flow",
+          },
+        },
+      },
+      { new: true },
+    );
+    if (!settledInvoice) {
+      return reply.code(409).send(errorResponse("This appointment invoice has already been paid"));
+    }
+    invoice = settledInvoice;
 
     appointment.paymentStatus = "paid";
     appointment.paymentAmount = feeAmount;
@@ -342,10 +365,12 @@ export async function collectCounterPayment(req: FastifyRequest, reply: FastifyR
 
     await AppointmentPayment.create({
       appointmentId: appointment._id,
+      invoiceId: invoice._id,
       patientId: appointment.patientId,
       amount: feeAmount,
       paymentMethod,
       status: "captured",
+      idempotencyKey: `counter_payment_${invoice._id.toString()}`,
     });
 
     const clinicIdStr = appointment.clinicId.toString();
@@ -382,4 +407,3 @@ export async function collectCounterPayment(req: FastifyRequest, reply: FastifyR
     return reply.code(500).send(errorResponse(err.message || "Failed to collect counter payment"));
   }
 }
-

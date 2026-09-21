@@ -5,6 +5,7 @@ import {
   getPublicClinics,
   getPublicClinicDetails,
   getPublicAppointmentTracker,
+  issuePublicTrackerCheckInCapability,
   processPublicTrackerCheckIn,
   printPublicTrackerPrescription,
   processPublicTrackerPayment,
@@ -15,8 +16,10 @@ import {
 } from "../controllers/public.ts";
 
 import { getDoctorSlots } from "../controllers/appointment.ts";
+import { createPublicBookingSession } from "../controllers/auth.ts";
 
 export default async function publicRoutes(app: FastifyInstance) {
+  const isTest = process.env.NODE_ENV === "test";
   // GET /api/public/organizations — List all hospitals/clinics
   app.get("/api/public/organizations", getOrganizations);
 
@@ -32,13 +35,40 @@ export default async function publicRoutes(app: FastifyInstance) {
   // GET /api/public/doctors/:doctorId/slots — Get slot & booking mode availability for unauthenticated guests
   app.get("/api/public/doctors/:doctorId/slots", getDoctorSlots);
 
+  // POST /api/public/booking-session â€” OTP-free session limited to appointment creation
+  app.post("/api/public/booking-session", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["name", "phone"],
+        properties: {
+          name: { type: "string", minLength: 1, maxLength: 100 },
+          phone: { type: "string", minLength: 8, maxLength: 32 },
+          email: { type: "string", maxLength: 254 },
+        },
+        additionalProperties: false,
+      },
+    },
+    config: {
+      rateLimit: {
+        max: isTest ? 1000 : 20,
+        timeWindow: "1 minute",
+      },
+    },
+  }, createPublicBookingSession);
+
   // GET /api/public/track/:appointmentId — Public live queue tracking for patient
   app.get("/api/public/track/:appointmentId", getPublicAppointmentTracker);
   app.get("/api/public/tracker/:appointmentId", getPublicAppointmentTracker);
   app.get("/api/public/appointments/:appointmentId/tracker", getPublicAppointmentTracker);
 
   // POST /api/public/track/:appointmentId/check-in — Patient "I have arrived" self check-in
-  app.post("/api/public/track/:appointmentId/check-in", processPublicTrackerCheckIn);
+  app.post("/api/public/track/:appointmentId/check-in-capability", {
+    config: { rateLimit: { max: isTest ? 1000 : 10, timeWindow: "10 minutes" } },
+  }, issuePublicTrackerCheckInCapability);
+  app.post("/api/public/track/:appointmentId/check-in", {
+    config: { rateLimit: { max: isTest ? 1000 : 10, timeWindow: "10 minutes" } },
+  }, processPublicTrackerCheckIn);
 
   // POST /api/public/track/:appointmentId/return — Patient "I'm back from lab/break" signal
   app.post("/api/public/track/:appointmentId/return", processPublicTrackerReturn);

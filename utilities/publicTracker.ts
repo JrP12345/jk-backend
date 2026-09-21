@@ -52,6 +52,15 @@ export function getTrackerCapability(req: FastifyRequest): string | undefined {
   return candidate && candidate.length <= 256 ? candidate : undefined;
 }
 
+/** A separate, short-lived capability for the state-changing check-in action. */
+export function getCheckInCapability(req: FastifyRequest): string | undefined {
+  const header = req.headers["x-check-in-token"];
+  const fromHeader = Array.isArray(header) ? header[0] : header;
+  const body = (req.body as { checkInToken?: unknown } | undefined)?.checkInToken;
+  const candidate = fromHeader || (typeof body === "string" ? body : undefined);
+  return candidate && candidate.length <= 256 ? candidate : undefined;
+}
+
 export function isTrackerCapabilityEnforced(): boolean {
   // Production must never fall back to ObjectId-as-secret.  A non-production
   // rollout can explicitly opt in while old development fixtures are migrated.

@@ -226,7 +226,6 @@ export async function enforceTenantIsolation(req: FastifyRequest, reply: Fastify
   }
 
   const targetOrgId =
-    (req.headers["x-organization-id"] as string) ||
     (req.body as any)?.organizationId ||
     (req.query as any)?.organizationId ||
     (req.params as any)?.organizationId;

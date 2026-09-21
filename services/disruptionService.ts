@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import mongoose from "mongoose";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
@@ -124,21 +125,36 @@ export const disruptionService = {
 
       // 2. Checked-in patients: Physical wait triage (never auto-cancel)
       if (appt.status === "checked-in") {
-        checkedInTriageCount++;
-        appt.status = "disruption_triage";
-        appt.disruptionId = disruptionId;
-        appt.disruptedAt = now;
-        appt.triageAction = "pending";
-        appt.notes = appt.notes
+        const notes = appt.notes
           ? `${appt.notes} | [TRIAGE: Doctor unavailable - awaiting reception action]`
           : `[TRIAGE: Doctor unavailable - awaiting reception action]`;
-        await appt.save();
+        // Compare-and-set makes repeated scheduler/API delivery idempotent.
+        // Only the request that claims this appointment may emit notifications.
+        const triagedAppointment = await Appointment.findOneAndUpdate(
+          { _id: appt._id, status: "checked-in" },
+          {
+            $set: {
+              status: "disruption_triage",
+              disruptionId,
+              disruptedAt: now,
+              triageAction: "pending",
+              notes,
+            },
+          },
+          { returnDocument: "after" },
+        )
+          .populate("clinicId", "name phone organizationId")
+          .populate("doctorId", "name email")
+          .populate({ path: "patientId", populate: { path: "userId", select: "name email phone" } });
+        if (!triagedAppointment) continue;
 
-        const patientDoc = appt.patientId as any;
-        triagedAppointments.push(appt);
+        checkedInTriageCount++;
+
+        const patientDoc = triagedAppointment.patientId as any;
+        triagedAppointments.push(triagedAppointment);
 
         // Publish triage domain event
-        eventBus.publish({
+        await eventBus.publishDurable({
           eventType: EVENT_TYPES.PATIENT_DISRUPTION_TRIAGED,
           category: "patient",
           organizationId: organizationId || undefined,
@@ -149,10 +165,10 @@ export const disruptionService = {
           priority: "urgent",
           actionUrl: `/dashboard/queue`,
           metadata: {
-            appointmentId: appt._id.toString(),
+            appointmentId: triagedAppointment._id.toString(),
             clinicId,
             doctorId,
-            tokenNumber: appt.tokenNumber,
+            tokenNumber: triagedAppointment.tokenNumber,
           },
         });
         continue;
@@ -160,41 +176,54 @@ export const disruptionService = {
 
       // 3. Confirmed & Pending patients: Remote triage with 60-minute deadline
       if (appt.status === "confirmed" || appt.status === "pending") {
-        remoteNotifiedCount++;
-        appt.status = "disruption_triage";
-        appt.disruptionId = disruptionId;
-        appt.disruptedAt = now;
-        appt.disruptionNotifiedAt = now;
-        appt.disruptionResponseDeadline = responseDeadline;
-        appt.triageAction = "pending";
-        appt.notes = appt.notes
+        const notes = appt.notes
           ? `${appt.notes} | [Doctor unavailable (${status}) - 60min patient action window]`
           : `[Doctor unavailable (${status}) - 60min patient action window]`;
-        await appt.save();
+        const triagedAppointment = await Appointment.findOneAndUpdate(
+          { _id: appt._id, status: appt.status },
+          {
+            $set: {
+              status: "disruption_triage",
+              disruptionId,
+              disruptedAt: now,
+              disruptionNotifiedAt: now,
+              disruptionResponseDeadline: responseDeadline,
+              triageAction: "pending",
+              notes,
+            },
+          },
+          { returnDocument: "after" },
+        )
+          .populate("clinicId", "name phone organizationId")
+          .populate("doctorId", "name email")
+          .populate({ path: "patientId", populate: { path: "userId", select: "name email phone" } });
+        if (!triagedAppointment) continue;
 
-        triagedAppointments.push(appt);
+        remoteNotifiedCount++;
+
+        triagedAppointments.push(triagedAppointment);
 
         // Send WhatsApp notification with interactive action URLs
-        const patientDoc = appt.patientId as any;
+        const patientDoc = triagedAppointment.patientId as any;
         const patientPhone = patientDoc?.phone || patientDoc?.userId?.phone;
         const patientName = patientDoc?.name || patientDoc?.userId?.name || "Patient";
-        const doctorName = (appt.doctorId as any)?.name || "Doctor";
-        const clinicName = (appt.clinicId as any)?.name || "Clinic";
-        const formattedTime = new Date(appt.appointmentTime).toLocaleDateString("en-US", {
+        const doctorName = (triagedAppointment.doctorId as any)?.name || "Doctor";
+        const clinicName = (triagedAppointment.clinicId as any)?.name || "Clinic";
+        const formattedTime = new Date(triagedAppointment.appointmentTime).toLocaleDateString("en-US", {
           month: "short",
           day: "numeric",
           hour: "2-digit",
           minute: "2-digit",
         });
 
-        const { url: trackerUrl } = await issueAppointmentTrackerLink(appt as any);
+        const { url: trackerUrl } = await issueAppointmentTrackerLink(triagedAppointment as any);
         const rescheduleUrl = `${trackerUrl}&action=reschedule`;
         const cancelUrl = `${trackerUrl}&action=cancel`;
 
         if (patientPhone) {
           SmsWhatsAppService.sendDisruptionAlert(
-            appt._id.toString(),
-            organizationId || (appt.clinicId as any)?.organizationId?.toString() || "",
+            triagedAppointment._id.toString(),
+            organizationId || (triagedAppointment.clinicId as any)?.organizationId?.toString() || "",
             patientPhone,
             {
               patientName,
@@ -209,7 +238,7 @@ export const disruptionService = {
         }
 
         // Publish domain event
-        eventBus.publish({
+        await eventBus.publishDurable({
           eventType: EVENT_TYPES.PATIENT_DISRUPTION_NOTIFIED,
           category: "patient",
           organizationId: organizationId || undefined,
@@ -220,7 +249,7 @@ export const disruptionService = {
           priority: "high",
           actionUrl: trackerUrl,
           metadata: {
-            appointmentId: appt._id.toString(),
+            appointmentId: triagedAppointment._id.toString(),
             clinicId,
             doctorId,
             deadline: responseDeadline.toISOString(),
@@ -512,7 +541,7 @@ export const disruptionService = {
     const { url: trackerUrl } = await issueAppointmentTrackerLink(appt as any);
 
     // Domain Event
-    eventBus.publish({
+    await eventBus.publishDurable({
       eventType: EVENT_TYPES.PATIENT_TRANSFERRED_DOCTOR,
       category: "patient",
       organizationId: (appt.clinicId as any)?.organizationId?.toString(),
@@ -636,7 +665,7 @@ export const disruptionService = {
           }
 
           // Emit refund domain event
-          eventBus.publish({
+          await eventBus.publishDurable({
             eventType: EVENT_TYPES.PATIENT_DISRUPTION_REFUNDED,
             category: "billing",
             organizationId: (appt.clinicId as any)?.organizationId?.toString(),
@@ -713,7 +742,7 @@ export const disruptionService = {
     });
 
     // Domain Event
-    eventBus.publish({
+    await eventBus.publishDurable({
       eventType: EVENT_TYPES.PATIENT_DISRUPTION_CANCELLED,
       category: "patient",
       organizationId: (appt.clinicId as any)?.organizationId?.toString(),
@@ -849,7 +878,7 @@ export const disruptionService = {
     const { url: newAppointmentTrackerUrl } = await issueAppointmentTrackerLink(newAppt as any);
 
     // Domain Event
-    eventBus.publish({
+    await eventBus.publishDurable({
       eventType: EVENT_TYPES.PATIENT_PRIORITY_RESCHEDULED,
       category: "patient",
       organizationId: (originalAppt.clinicId as any)?.organizationId?.toString(),
@@ -958,15 +987,49 @@ export const disruptionService = {
    */
   async processDisruptionTimeout() {
     const now = new Date();
+    const staleClaimBefore = new Date(now.getTime() - 15 * 60 * 1000);
     const expiredAppointments = await Appointment.find({
       status: "disruption_triage",
-      triageAction: "pending",
       disruptionResponseDeadline: { $lte: now },
+      $or: [
+        { triageAction: "pending" },
+        {
+          triageAction: "timeout_processing",
+          disruptionTimeoutClaimedAt: { $lte: staleClaimBefore },
+        },
+      ],
     });
 
     let autoCancelledCount = 0;
     for (const appt of expiredAppointments) {
+      const claimToken = crypto.randomUUID();
       try {
+        // Scheduler leadership prevents normal duplicate sweeps; this CAS is
+        // the fencing layer if a worker dies or loses its lease mid-sweep.
+        const claimedAppointment = await Appointment.findOneAndUpdate(
+          {
+            _id: appt._id,
+            status: "disruption_triage",
+            disruptionResponseDeadline: { $lte: now },
+            $or: [
+              { triageAction: "pending" },
+              {
+                triageAction: "timeout_processing",
+                disruptionTimeoutClaimedAt: { $lte: staleClaimBefore },
+              },
+            ],
+          },
+          {
+            $set: {
+              triageAction: "timeout_processing",
+              disruptionTimeoutClaimedAt: now,
+              disruptionTimeoutClaimToken: claimToken,
+            },
+          },
+          { returnDocument: "after" },
+        );
+        if (!claimedAppointment) continue;
+
         await this.cancelByDisruption({
           appointmentId: appt._id.toString(),
           cancelledByUserId: "system",
@@ -974,6 +1037,20 @@ export const disruptionService = {
         });
         autoCancelledCount++;
       } catch (err) {
+        // A delivery/provider failure should be retried by a later sweep, but
+        // only the worker that owns this claim may return it to pending.
+        await Appointment.updateOne(
+          {
+            _id: appt._id,
+            status: "disruption_triage",
+            triageAction: "timeout_processing",
+            disruptionTimeoutClaimToken: claimToken,
+          },
+          {
+            $set: { triageAction: "pending" },
+            $unset: { disruptionTimeoutClaimedAt: 1, disruptionTimeoutClaimToken: 1 },
+          },
+        );
         console.error(`[DisruptionService] Failed to auto-cancel expired appointment ${appt._id}:`, err);
       }
     }

@@ -8,14 +8,16 @@ import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
-import { checkClinicAccess, checkOperationalRecordAccess, getRequestClinicIds } from "../utilities/tenant.ts";
+import { checkClinicAccess, checkOperationalRecordAccess, getRequestClinicIds, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
 
 export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
     const userId = req.user!.id;
-    let orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    let orgId = scope.organizationId;
 
     const {
       patientId, clinicId, doctorId, appointmentId, encounterId, items, tax, discount,
@@ -168,7 +170,7 @@ export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
     });
 
     if (patient?.userId) {
-      eventBus.publish({
+      await eventBus.publishDurable({
         eventType: EVENT_TYPES.BILLING_INVOICE_GENERATED,
         category: "billing",
         targetUserId: patient.userId.toString(),
@@ -191,7 +193,11 @@ export async function getInvoices(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
     const userId = req.user!.id;
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed && userRole !== "patient" && userRole !== "family_member") {
+      return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    }
+    const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
     const { status, patientId, clinicId, page, limit } = req.query as any;
 
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
@@ -201,7 +207,7 @@ export async function getInvoices(req: FastifyRequest, reply: FastifyReply) {
     if (userRole === "patient" || userRole === "family_member") {
       const patient = await Patient.findOne({ userId });
       if (userRole === "patient") {
-        if (!patient) return reply.code(404).send(errorResponse("Patient profile not found"));
+        if (!patient) return reply.code(200).send(successResponse([]));
         filter.patientId = patient._id;
       } else {
         const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
@@ -261,7 +267,11 @@ export async function getInvoiceDetails(req: FastifyRequest, reply: FastifyReply
     const { id } = req.params as { id: string };
     const userRole = req.user!.role;
     const userId = req.user!.id;
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed && userRole !== "patient" && userRole !== "family_member") {
+      return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    }
+    const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return reply.code(400).send(errorResponse("Invalid invoice ID"));
@@ -342,7 +352,11 @@ export async function collectPayment(req: FastifyRequest, reply: FastifyReply) {
     // Security check: Patients can pay their own online/UPI, staff can collect anything
     const userRole = req.user!.role;
     const userId = req.user!.id;
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed && userRole !== "patient") {
+      return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    }
+    const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
 
     if (userRole === "patient") {
       const patient = await Patient.findOne({ userId });

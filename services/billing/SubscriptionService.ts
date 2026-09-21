@@ -13,6 +13,7 @@ import { Appointment } from "../../models/Appointment.ts";
 import { razorpayService } from "./RazorpayService.ts";
 import { eventBus } from "../../events/eventBus.ts";
 import { EVENT_TYPES } from "../../events/types.ts";
+import { enqueueTransactionalEmail } from "../CommunicationOutbox.ts";
 
 export class PlanDowngradeViolationError extends Error {
   statusCode: number;
@@ -294,7 +295,7 @@ export class SubscriptionService {
       maxStaff: plan.limits?.maxStaff ?? 5,
     });
 
-    eventBus.publish({
+    await eventBus.publishDurable({
       eventType: EVENT_TYPES.BILLING_INVOICE_GENERATED,
       category: "billing",
       organizationId,
@@ -476,7 +477,7 @@ export class SubscriptionService {
     });
 
     // Dispatch Event & Notifications
-    eventBus.publish({
+    await eventBus.publishDurable({
       eventType: EVENT_TYPES.BILLING_INVOICE_GENERATED,
       category: "billing",
       organizationId,
@@ -529,14 +530,14 @@ export class SubscriptionService {
           </div>
         `;
 
-        const { emailProvider } = await import("../../notifications/providers/emailProvider.ts");
-        await emailProvider.sendEmail({
+        await enqueueTransactionalEmail({
           to: recipientEmail,
           subject: `[ANANT Invoice #${invoiceNumber}] Subscription Payment Confirmed - ${plan.name} Plan`,
           html: emailBodyHtml,
+          idempotencyKey: `transactional-email:subscription-invoice:${invoice._id}`,
         });
       } catch (emailErr) {
-        console.error("Failed to send subscription invoice email:", emailErr);
+        console.error("Failed to enqueue subscription invoice email:", emailErr);
       }
     }
 
@@ -605,7 +606,7 @@ export class SubscriptionService {
     await sub.save();
 
     // Dispatch In-App Event Notification
-    eventBus.publish({
+    await eventBus.publishDurable({
       eventType: EVENT_TYPES.SYSTEM_ALERT,
       category: "billing",
       organizationId,
@@ -619,8 +620,7 @@ export class SubscriptionService {
     const org = await Organization.findById(organizationId);
     if (org?.email && !org.email.includes("placeholder.com")) {
       try {
-        const { emailProvider } = await import("../../notifications/providers/emailProvider.ts");
-        await emailProvider.sendEmail({
+        await enqueueTransactionalEmail({
           to: org.email,
           subject: `[ANANT] Subscription Cancellation Confirmed - ${org.name}`,
           html: `<div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">
@@ -630,9 +630,10 @@ export class SubscriptionService {
             <p>Your organization's current plan features and resource limits will remain active until the end of your current billing period.</p>
             <p>Best regards,<br/>ANANT Billing Team</p>
           </div>`,
+          idempotencyKey: `transactional-email:subscription-cancelled:${sub._id}:${sub.cancelledAt!.getTime()}`,
         });
       } catch (emailErr) {
-        console.error("Failed to send cancellation email:", emailErr);
+        console.error("Failed to enqueue cancellation email:", emailErr);
       }
     }
 

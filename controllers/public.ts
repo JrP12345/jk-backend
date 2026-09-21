@@ -17,7 +17,13 @@ import { broadcastQueueUpdate } from "../notifications/websocket.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { successResponse, errorResponse, escapeRegex } from "../utilities/helpers.ts";
-import { createTrackerCapability, getTrackerCapability, hashTrackerCapability, isTrackerCapabilityEnforced } from "../utilities/publicTracker.ts";
+import {
+  createTrackerCapability,
+  getCheckInCapability,
+  getTrackerCapability,
+  hashTrackerCapability,
+  isTrackerCapabilityEnforced,
+} from "../utilities/publicTracker.ts";
 
 export async function getOrganizations(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -642,6 +648,69 @@ function publicTrackerAccessAllowed(req: FastifyRequest, appointment: { trackerT
   return suppliedHash.length === appointment.trackerTokenHash.length && crypto.timingSafeEqual(Buffer.from(suppliedHash), Buffer.from(appointment.trackerTokenHash));
 }
 
+function publicCheckInCapabilityAllowed(
+  req: FastifyRequest,
+  appointment: { checkInTokenHash?: string | null; checkInTokenExpiresAt?: Date | null; checkInTokenUsedAt?: Date | null },
+): boolean {
+  const token = getCheckInCapability(req);
+  if (!token || !appointment.checkInTokenHash || !appointment.checkInTokenExpiresAt || appointment.checkInTokenUsedAt) return false;
+  if (appointment.checkInTokenExpiresAt.getTime() <= Date.now()) return false;
+  const suppliedHash = hashTrackerCapability(token);
+  return suppliedHash.length === appointment.checkInTokenHash.length && crypto.timingSafeEqual(
+    Buffer.from(suppliedHash),
+    Buffer.from(appointment.checkInTokenHash),
+  );
+}
+
+/**
+ * Issue a ten-minute, single-use mutation capability only after the caller has
+ * presented the longer-lived private tracker capability. The token is never
+ * derivable from an appointment ID and is consumed atomically by check-in.
+ */
+export async function issuePublicTrackerCheckInCapability(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { appointmentId } = req.params as { appointmentId: string };
+    if (!mongoose.Types.ObjectId.isValid(appointmentId)) {
+      return reply.code(400).send(errorResponse("Invalid appointment tracking ID"));
+    }
+    const appointment = await Appointment.findById(appointmentId).select("+trackerTokenHash");
+    if (!appointment) {
+      return reply.code(404).send(errorResponse("Appointment not found"));
+    }
+    if (!publicTrackerAccessAllowed(req, appointment)) {
+      return reply.code(401).send(errorResponse("A valid appointment tracker link is required"));
+    }
+    if (!["pending", "confirmed"].includes(appointment.status)) {
+      return reply.code(409).send(errorResponse("This appointment is not eligible for self check-in"));
+    }
+
+    const capability = createTrackerCapability();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    const issued = await Appointment.findOneAndUpdate(
+      { _id: appointment._id, status: { $in: ["pending", "confirmed"] } },
+      {
+        $set: {
+          checkInTokenHash: capability.hash,
+          checkInTokenExpiresAt: expiresAt,
+          checkInTokenUsedAt: null,
+        },
+      },
+      { returnDocument: "after" },
+    );
+    if (!issued) {
+      return reply.code(409).send(errorResponse("This appointment is no longer eligible for self check-in"));
+    }
+
+    return reply.code(200).send(successResponse({
+      checkInToken: capability.token,
+      expiresAt: expiresAt.toISOString(),
+    }));
+  } catch (err) {
+    console.error("issuePublicTrackerCheckInCapability error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
 export async function getPublicAppointmentTracker(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { appointmentId } = req.params as { appointmentId: string };
@@ -935,7 +1004,7 @@ export async function processPublicTrackerCheckIn(req: FastifyRequest, reply: Fa
     }
 
     const appointment = await Appointment.findById(appointmentId)
-      .select("+trackerTokenHash trackerTokenExpiresAt")
+      .select("+trackerTokenHash +checkInTokenHash")
       .populate("clinicId", "name city")
       .populate("doctorId", "name specialization")
       .populate({
@@ -949,19 +1018,8 @@ export async function processPublicTrackerCheckIn(req: FastifyRequest, reply: Fa
     if (!publicTrackerAccessAllowed(req, appointment)) {
       return reply.code(401).send(errorResponse("A valid appointment tracker link is required"));
     }
-
-    if (appointment.status === "checked-in" || appointment.status === "in-consultation") {
-      return reply.code(200).send(
-        successResponse(
-          {
-            appointmentId: appointment._id,
-            status: appointment.status,
-            tokenNumber: appointment.tokenNumber,
-            alreadyCheckedIn: true,
-          },
-          `Already checked in! Your Queue Token is #${appointment.tokenNumber}`
-        )
-      );
+    if (!publicCheckInCapabilityAllowed(req, appointment)) {
+      return reply.code(401).send(errorResponse("A valid, unexpired self check-in capability is required"));
     }
 
     if (appointment.status === "cancelled" || appointment.status === "completed" || appointment.status === "no-show") {
@@ -985,8 +1043,27 @@ export async function processPublicTrackerCheckIn(req: FastifyRequest, reply: Fa
       );
     }
 
-    appointment.status = "checked-in";
-    await appointment.save();
+    // The same capability can win this guarded transition only once. A replay
+    // cannot move another appointment or create a second check-in event.
+    const checkedIn = await Appointment.findOneAndUpdate(
+      {
+        _id: appointment._id,
+        status: { $in: ["pending", "confirmed"] },
+        checkInTokenHash: appointment.checkInTokenHash,
+        checkInTokenExpiresAt: { $gt: new Date() },
+        checkInTokenUsedAt: null,
+      },
+      {
+        $set: {
+          status: "checked-in",
+          checkInTokenUsedAt: new Date(),
+        },
+      },
+      { returnDocument: "after" },
+    );
+    if (!checkedIn) {
+      return reply.code(409).send(errorResponse("Self check-in capability has already been used or expired"));
+    }
 
     const clinicIdStr = ((appointment.clinicId as any)?._id || appointment.clinicId).toString();
     const doctorIdStr = ((appointment.doctorId as any)?._id || appointment.doctorId).toString();
@@ -1003,7 +1080,7 @@ export async function processPublicTrackerCheckIn(req: FastifyRequest, reply: Fa
       timestamp: new Date().toISOString(),
     });
 
-    eventBus.publish({
+    await eventBus.publishDurable({
       eventType: EVENT_TYPES.PATIENT_APPOINTMENT_CHECKED_IN,
       category: "patient",
       targetUserId: doctorIdStr,

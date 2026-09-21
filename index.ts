@@ -5,8 +5,6 @@ import "./db.ts";
 import mongoose from "mongoose";
 import { requestContextStore } from "./utilities/context.ts";
 import { redisClient } from "./utilities/redis.ts";
-import { notificationQueue } from "./notifications/services/NotificationQueue.ts";
-import { startDisruptionTimeoutJob, stopDisruptionTimeoutJob } from "./jobs/disruptionTimeoutJob.ts";
 import { reportCriticalError } from "./utilities/telemetry.ts";
 import fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import cookie from "@fastify/cookie";
@@ -60,6 +58,7 @@ import abdmRoutes from "./routes/abdm.ts";
 import syntheticHealthRoutes from "./routes/syntheticHealth.ts";
 import dpdpRoutes from "./routes/dpdp.ts";
 import scheduleH1Routes from "./routes/scheduleH1.ts";
+import outboxOperationsRoutes from "./routes/outboxOperations.ts";
 import { seedDefaultRoles, syncOrganizationPlanQuotas } from "./controllers/onboarding.ts";
 
 import fastifySwagger from "@fastify/swagger";
@@ -161,7 +160,7 @@ app.addHook("onSend", async (request, reply, payload) => {
   reply.header("Permissions-Policy", "geolocation=(), camera=(self), microphone=(self)");
   reply.header(
     "Content-Security-Policy",
-    "default-src 'self'; img-src 'self' data: blob: https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https:; font-src 'self' data: https:; connect-src 'self' ws: wss: https:;"
+    "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; img-src 'self' data: blob: https:; script-src 'self'; style-src 'self'; font-src 'self' data: https:; connect-src 'self' ws: wss: https:;"
   );
   return payload;
 });
@@ -235,9 +234,7 @@ app.register(cors, {
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
   allowedHeaders: [
     "Content-Type", "Authorization", "X-Requested-With", "Accept",
-    "Cache-Control", "cache-control", "Pragma", "Expires",
-    "X-Onboarding-Secret", "x-onboarding-secret", "X-Clinic-Id", "x-clinic-id",
-    "X-Organization-Id", "x-organization-id"
+    "Cache-Control", "cache-control", "Pragma", "Expires"
   ],
 });
 
@@ -300,6 +297,7 @@ app.register(abdmRoutes);
 app.register(syntheticHealthRoutes);
 app.register(dpdpRoutes);
 app.register(scheduleH1Routes);
+app.register(outboxOperationsRoutes);
 
 // ─── Health-checks & Probes (SRE-001, SRE-002, SRE-003) ─────────
 const healthCheckHandler = async () => {
@@ -357,7 +355,6 @@ async function startServer() {
     await syncOrganizationPlanQuotas();
     app.log.info("✓ Tenant plan resource quotas verified / synchronized.");
 
-    startDisruptionTimeoutJob();
   } catch (err) {
     app.log.error(err);
     process.exit(1);
@@ -367,8 +364,6 @@ async function startServer() {
 const gracefulShutdown = async (signal: string) => {
   app.log.info(`Received ${signal}. Shutting down gracefully...`);
   try {
-    stopDisruptionTimeoutJob();
-    await notificationQueue.shutdown();
     await app.close();
     if (mongoose.connection.readyState !== 0) {
       await mongoose.disconnect();

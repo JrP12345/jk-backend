@@ -10,6 +10,7 @@ import { Encounter } from "../models/Encounter.ts";
 import { Claim } from "../models/Claim.ts";
 import { PatientFeedback } from "../models/PatientFeedback.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
+import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 
 /**
  * Executive Analytics Dashboard Endpoint
@@ -17,7 +18,9 @@ import { successResponse, errorResponse } from "../utilities/helpers.ts";
  */
 export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyReply) {
   try {
-    let orgId = req.user!.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed && req.user?.role !== "root") return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    let orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
     const { startDate, endDate, clinicId } = req.query as { startDate?: string; endDate?: string; clinicId?: string };
 
     // 1. Resolve Clinics under organization scope
@@ -229,7 +232,9 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
  */
 export async function getNabhKpis(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed && req.user?.role !== "root") return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
 
     let clinics = orgId ? await Clinic.find({ organizationId: orgId, isActive: true }) : [];
     if (clinics.length === 0 && req.user?.role === "root") {
@@ -272,7 +277,9 @@ export async function getNabhKpis(req: FastifyRequest, reply: FastifyReply) {
  */
 export async function getClinicalSummaryAnalyticsController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed && req.user?.role !== "root") return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
     let clinics = orgId ? await Clinic.find({ organizationId: orgId, isActive: true }) : [];
     if (clinics.length === 0 && req.user?.role === "root") {
       const rootOrgs = await Organization.find().select("_id").lean();
@@ -308,7 +315,9 @@ export async function getClinicalSummaryAnalyticsController(req: FastifyRequest,
  */
 export async function exportAnalyticsReportController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed && req.user?.role !== "root") return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
     const format = (req.query as any)?.format || "json";
     const reportType = (req.query as any)?.reportType || "executive";
 

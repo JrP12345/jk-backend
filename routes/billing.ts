@@ -95,6 +95,7 @@ export default async function billingRoutes(app: FastifyInstance) {
   // ─── Clinical / Patient Medical Invoices & Payment Collections ──
   app.post("/api/invoices", { ...manageInvoices, schema: createInvoiceSchema }, createInvoice);
   app.get("/api/invoices", viewInvoices, getInvoices);
+  app.get("/api/invoices/patient/me", viewInvoices, getInvoices);
   app.get("/api/invoices/:id", viewInvoices, getInvoiceDetails);
   app.put("/api/invoices/:id/pay", { ...manageInvoices, schema: collectPaymentSchema }, collectPayment);
   app.post("/api/invoices/:id/payments", manageInvoices, recordPartialPayment);

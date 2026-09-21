@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import { AuditLog } from "../models/AuditLog.ts";
 import { AuditCheckpoint } from "../models/AuditCheckpoint.ts";
 import { computeAuditHash, GENESIS_HASH } from "../utilities/auditCrypto.ts";
+import { redactAuditDetails } from "../utilities/auditRedaction.ts";
 import { reportCriticalError } from "../utilities/telemetry.ts";
 
 export interface AuditRecordInput {
@@ -64,6 +65,7 @@ export async function recordAuditLog(input: AuditRecordInput): Promise<any> {
         const sequence = (lastEntry?.sequence || 0) + 1;
         const prevHash = lastEntry?.hash || GENESIS_HASH;
         const createdAt = input.createdAt || new Date();
+        const redactedDetails = redactAuditDetails(input.details);
 
         const hash = computeAuditHash({
           sequence,
@@ -74,12 +76,13 @@ export async function recordAuditLog(input: AuditRecordInput): Promise<any> {
           category: input.category,
           targetId: input.targetId,
           targetModel: input.targetModel,
-          details: input.details,
+          details: redactedDetails,
           createdAt,
         });
 
         const log = new AuditLog({
           ...input,
+          details: redactedDetails,
           sequence,
           prevHash,
           hash,

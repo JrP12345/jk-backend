@@ -2,11 +2,14 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { SoapTemplate } from "../models/SoapTemplate.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
+import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 
 export async function getSoapTemplates(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { specialty } = req.query as { specialty?: string };
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
 
     const filter: any = {
       $or: [{ isPublic: true }],
@@ -31,7 +34,9 @@ export async function getSoapTemplates(req: FastifyRequest, reply: FastifyReply)
 export async function createSoapTemplate(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userId = req.user!.id;
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
     const { title, specialty, subjective, objective, assessment, plan, isPublic } = req.body as any;
 
     if (!title || !specialty) {

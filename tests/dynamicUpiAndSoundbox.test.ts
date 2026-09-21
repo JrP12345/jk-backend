@@ -7,6 +7,7 @@ import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { AppointmentPayment } from "../models/AppointmentPayment.ts";
+import { generateAccessToken } from "../utilities/helpers.ts";
 
 describe("Counter-Top Dynamic UPI VPA, Itemized Billing & Soundbox Settlement Test Suite", () => {
   let adminCookies: string[] = [];
@@ -145,6 +146,27 @@ describe("Counter-Top Dynamic UPI VPA, Itemized Billing & Soundbox Settlement Te
     // Consolidated bill: Consultation (₹500) + CBC (₹350) + RBS (₹150) = ₹1000
     const consolidatedTotal = 1000;
 
+    // The invoice is the authoritative source for a consolidated charge. The
+    // browser must not be able to choose the collected amount.
+    await Invoice.create({
+      invoiceNumber: `DYN-UPI-${Date.now()}`,
+      organizationId: orgId,
+      clinicId,
+      doctorId,
+      patientId: patient._id,
+      appointmentId: appt._id,
+      items: [
+        { description: "Consultation", amount: 500, quantity: 1 },
+        { description: "CBC", amount: 350, quantity: 1 },
+        { description: "RBS", amount: 150, quantity: 1 },
+      ],
+      subtotal: consolidatedTotal,
+      totalAmount: consolidatedTotal,
+      amountPaid: 0,
+      balanceDue: consolidatedTotal,
+      status: "unpaid",
+    });
+
     const payRes = await app.inject({
       method: "POST",
       url: "/api/appointment-payments/collect-counter",
@@ -152,7 +174,7 @@ describe("Counter-Top Dynamic UPI VPA, Itemized Billing & Soundbox Settlement Te
       payload: {
         appointmentId: appt._id.toString(),
         paymentMethod: "upi",
-        amount: consolidatedTotal,
+        amount: 1, // Deliberately tampered client value; it must be ignored.
       },
     });
 
@@ -221,5 +243,28 @@ describe("Counter-Top Dynamic UPI VPA, Itemized Billing & Soundbox Settlement Te
     const cashInvoice = await Invoice.findOne({ appointmentId: apptCash._id });
     expect(cashInvoice?.paymentMethod).toBe("cash");
     expect(cashInvoice?.status).toBe("paid");
+
+    const guestToken = generateAccessToken({
+      id: "000000000000000000000001",
+      email: "guest@example.test",
+      role: "guest",
+      organization_id: orgId,
+    });
+    const guestRes = await app.inject({
+      method: "POST",
+      url: "/api/appointment-payments/collect-counter",
+      headers: { cookie: `access_token=${guestToken}` },
+      payload: { appointmentId: apptCash._id.toString(), paymentMethod: "cash" },
+    });
+    expect(guestRes.statusCode).toBe(403);
+  });
+
+  it("requires authentication for the legacy reception check-in route", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/check-in/qr",
+      payload: {},
+    });
+    expect(response.statusCode).toBe(401);
   });
 });

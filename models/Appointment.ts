@@ -1,4 +1,5 @@
 import mongoose, { Schema } from "mongoose";
+import { getActiveConsultationDoctorDayKey } from "../utilities/consultationLock.ts";
 
 const AppointmentSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
@@ -8,6 +9,12 @@ const AppointmentSchema = new Schema({
   bookedByUserId: { type: Schema.Types.ObjectId, ref: "User", index: true },
   trackerTokenHash: { type: String, select: false, index: true },
   trackerTokenExpiresAt: { type: Date, index: true },
+  // A tracker link is a read capability. Self check-in requires this separate,
+  // short-lived, single-use capability so an appointment identifier or an old
+  // tracker link cannot be replayed at a kiosk.
+  checkInTokenHash: { type: String, select: false, index: true },
+  checkInTokenExpiresAt: { type: Date, index: true },
+  checkInTokenUsedAt: { type: Date },
   appointmentTime: { type: Date, required: true, index: true },
   appointmentType: { type: String, enum: ["walk-in", "online", "reception", "qr"], required: true },
   status: { 
@@ -38,6 +45,9 @@ const AppointmentSchema = new Schema({
   },
   tokenNumber: { type: Number, required: true },
   queuePosition: { type: Number, index: true },
+  // Present only while this appointment holds the doctor's consultation slot.
+  // The sparse unique index below makes this an atomic, database-enforced lock.
+  activeConsultationDoctorDayKey: { type: String, sparse: true },
   bookingMode: { type: String, enum: ["time_slot", "sequential_queue"], default: "sequential_queue" },
   duration: { type: Number, default: 15 },
   reasonForVisit: { 
@@ -67,11 +77,15 @@ const AppointmentSchema = new Schema({
   disruptedAt: { type: Date },
   disruptionNotifiedAt: { type: Date },
   disruptionResponseDeadline: { type: Date, index: true },
+  // A bounded claim prevents two timeout workers from refunding/cancelling the
+  // same disruption appointment if leadership changes during a sweep.
+  disruptionTimeoutClaimedAt: { type: Date, index: true },
+  disruptionTimeoutClaimToken: { type: String, index: true },
   cancellationReason: { type: String },
   priorityRescheduledFromId: { type: Schema.Types.ObjectId, ref: "Appointment", index: true },
   triageAction: { 
     type: String, 
-    enum: ["pending", "transferred", "cancelled", "rescheduled", "refunded"],
+    enum: ["pending", "timeout_processing", "transferred", "cancelled", "rescheduled", "refunded"],
     default: "pending" 
   },
   // Parked / Standby Queue Fields
@@ -164,6 +178,53 @@ AppointmentSchema.index(
 AppointmentSchema.index({ organizationId: 1, appointmentTime: -1 });
 AppointmentSchema.index({ clinicId: 1, status: 1, appointmentTime: -1 });
 AppointmentSchema.index({ clinicId: 1, doctorId: 1, appointmentTime: 1, queuePosition: 1 });
+AppointmentSchema.index(
+  { activeConsultationDoctorDayKey: 1 },
+  { name: "uniq_active_consultation_per_doctor_day", unique: true, sparse: true },
+);
+
+// Preserve the lock invariant for document saves and model-level updates. API
+// handlers also set/unset the field explicitly; these hooks protect less common
+// paths such as teleconsultation and future maintenance code.
+AppointmentSchema.pre("save", function () {
+  const appointment = this as any;
+  if (appointment.status === "in-consultation") {
+    appointment.activeConsultationDoctorDayKey = getActiveConsultationDoctorDayKey(
+      appointment.doctorId,
+      appointment.appointmentTime,
+    );
+  } else if (appointment.activeConsultationDoctorDayKey) {
+    appointment.activeConsultationDoctorDayKey = undefined;
+  }
+});
+
+AppointmentSchema.pre(["findOneAndUpdate", "updateOne"], async function () {
+  const operation = this as any;
+  const update = operation.getUpdate() || {};
+  const nextStatus = update?.$set?.status ?? update?.status;
+
+  if (nextStatus === "in-consultation") {
+    if (!(update.$set?.activeConsultationDoctorDayKey || update.activeConsultationDoctorDayKey)) {
+      const appointment = await operation.model
+        .findOne(operation.getQuery())
+        .select("doctorId appointmentTime")
+        .lean();
+      if (appointment) {
+        update.$set = {
+          ...(update.$set || {}),
+          activeConsultationDoctorDayKey: getActiveConsultationDoctorDayKey(
+            appointment.doctorId,
+            appointment.appointmentTime,
+          ),
+        };
+      }
+    }
+  } else if (nextStatus && nextStatus !== "in-consultation") {
+    update.$unset = { ...(update.$unset || {}), activeConsultationDoctorDayKey: 1 };
+  }
+
+  operation.setUpdate(update);
+});
 
 AppointmentSchema.virtual("id").get(function() {
   return this._id.toHexString();

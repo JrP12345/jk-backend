@@ -29,7 +29,10 @@ const AppointmentPaymentSchema = new Schema<IAppointmentPayment>(
       required: true,
     },
     razorpayOrderId: { type: String, index: true },
-    razorpayPaymentId: { type: String },
+    // The gateway transaction ID is globally unique. A sparse unique index
+    // makes a duplicate provider callback impossible to apply to a second
+    // payment record.
+    razorpayPaymentId: { type: String, unique: true, sparse: true, index: true },
     razorpaySignature: { type: String },
     status: {
       type: String,

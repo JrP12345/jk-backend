@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { authenticate, checkAnyPermission, checkAnyPermissionOrRoles, checkPermission } from "../middleware/auth.ts";
 import { requireModule } from "../middleware/moduleGuard.ts";
 import { enforceSubscriptionActive } from "../middleware/subscriptionGuard.ts";
@@ -52,6 +52,11 @@ import {
 import { handleQueueWebSocket, handleClinicalWebSocket } from "../notifications/websocket.ts";
 
 export default async function appointmentRoutes(app: FastifyInstance) {
+  const denyConsumerQueueAccess = async (req: FastifyRequest, reply: FastifyReply) => {
+    if (["patient", "family_member", "guest"].includes(req.user?.role || "")) {
+      return reply.code(403).send({ success: false, message: "Full queue access is restricted to clinic staff" });
+    }
+  };
   const viewAppointments = {
     preHandler: [authenticate, requireModule("appointments"), checkAnyPermissionOrRoles(["patient", "family_member"], "VIEW_APPOINTMENTS", "MANAGE_APPOINTMENTS")],
   };
@@ -68,7 +73,9 @@ export default async function appointmentRoutes(app: FastifyInstance) {
     preHandler: [authenticate, requireModule("patients"), checkAnyPermissionOrRoles(["patient", "family_member"], "MANAGE_PATIENTS")],
   };
   const viewQueue = {
-    preHandler: [authenticate, requireModule("queue"), checkAnyPermissionOrRoles(["patient", "family_member"], "MANAGE_QUEUE", "VIEW_APPOINTMENTS")],
+    // Full queue responses contain other patients' contact details. Consumers
+    // use the capability-protected tracker; this operational view is staff-only.
+    preHandler: [authenticate, requireModule("queue"), denyConsumerQueueAccess, checkAnyPermission("MANAGE_QUEUE", "VIEW_APPOINTMENTS")],
   };
   const manageQueue = {
     preHandler: [authenticate, requireModule("queue"), checkPermission("MANAGE_QUEUE")],
@@ -83,6 +90,7 @@ export default async function appointmentRoutes(app: FastifyInstance) {
   // Appointments
   app.post("/api/appointments", { ...bookAppointments, schema: bookAppointmentSchema }, bookAppointment);
   app.get("/api/appointments", viewAppointments, getAppointments);
+  app.get("/api/appointments/patient/me", viewAppointments, getAppointments);
   app.get("/api/appointments/:id", viewAppointments, getAppointmentById);
   app.put("/api/appointments/:id/status", { ...manageAppointments, schema: updateAppointmentStatusSchema }, updateAppointmentStatus);
   app.post("/api/appointments/:id/check-in", checkIn, checkInAppointment);

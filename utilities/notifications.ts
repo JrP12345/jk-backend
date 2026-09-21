@@ -1,7 +1,7 @@
 import { Appointment } from "../models/Appointment.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
-import { emailProvider } from "../notifications/providers/emailProvider.ts";
+import { enqueueTransactionalEmail } from "../services/CommunicationOutbox.ts";
 import { appendTrackerCapability, hashTrackerCapability, issueAppointmentTrackerLink } from "./publicTracker.ts";
 
 /**
@@ -64,7 +64,7 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
     }
 
     if (targetUserId) {
-      eventBus.publish({
+      await eventBus.publishDurable({
         eventType: actionType === "booked" ? EVENT_TYPES.PATIENT_APPOINTMENT_BOOKED : EVENT_TYPES.PATIENT_APPOINTMENT_CANCELLED,
         category: "patient",
         targetUserId: targetUserId.toString(),
@@ -86,11 +86,12 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
         ? `Hello ${patientName},\n\nYour appointment booking with Dr. ${doctorName} at ${clinicName} is confirmed for ${time}.\n\nYour assigned daily queue token is #${token}.\n\nYou can track your live queue position in real-time here:\n${trackingUrl}\n\nPlease scan the reception QR code or check in via the tracker when you arrive.\n\nBest regards,\nAnant Health Desk`
         : `Hello ${patientName},\n\nThis is to inform you that your appointment with Dr. ${doctorName} at ${clinicName} scheduled for ${time} has been cancelled.\n\nIf you believe this is an error, please contact clinic reception.\n\nBest regards,\nAnant Health Desk`;
 
-      await emailProvider.sendEmail({
+      await enqueueTransactionalEmail({
         to: patientEmail,
         subject,
         text: body,
-        html: `<div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">${body.replace(/\n/g, "<br/>")}</div>`
+        html: `<div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">${body.replace(/\n/g, "<br/>")}</div>`,
+        idempotencyKey: `transactional-email:booking:${appt._id}:${actionType}`,
       });
     }
 
@@ -144,7 +145,7 @@ export async function sendTurnApproachingNotification(appointmentId: any, people
     const { url: trackingUrl } = await issueAppointmentTrackerLink(appt);
 
     if (targetUserId) {
-      eventBus.publish({
+      await eventBus.publishDurable({
         eventType: EVENT_TYPES.PATIENT_CALL_NEXT,
         category: "patient",
         targetUserId: targetUserId.toString(),
@@ -220,7 +221,7 @@ export async function sendConsultationCompletedNotification(
       : "Prescription attached";
 
     if (targetUserId) {
-      eventBus.publish({
+      await eventBus.publishDurable({
         eventType: EVENT_TYPES.CLINICAL_ENCOUNTER_COMPLETED,
         category: "clinical",
         targetUserId: targetUserId.toString(),
@@ -236,11 +237,12 @@ export async function sendConsultationCompletedNotification(
       const subject = `Consultation Completed - Prescription & Bill for Token #${token}`;
       const body = `Hello ${patientName},\n\nYour consultation with Dr. ${doctorName} at ${clinicName} has been completed.\n\nYour digital prescription, prescribed medicines, doctor's advice, and invoice are now available to view and download:\n${trackingUrl}\n\nThank you for choosing ${clinicName}.\n\nBest regards,\nAnant Health Desk`;
 
-      await emailProvider.sendEmail({
+      await enqueueTransactionalEmail({
         to: patientEmail,
         subject,
         text: body,
         html: `<div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">${body.replace(/\n/g, "<br/>")}</div>`,
+        idempotencyKey: `transactional-email:consultation-completed:${appt._id}`,
       });
     }
 
@@ -266,17 +268,18 @@ export async function sendConsultationCompletedNotification(
       }).catch((err) => console.error("SMS/WhatsApp consultation completion dispatch failed:", err));
 
       // Direct WhatsApp PDF Prescription Document Attachment Dispatch
-      const { whatsAppCloudApiService } = await import("../services/WhatsAppCloudApiService.ts");
+      const { enqueueWhatsAppDocument } = await import("../services/CommunicationOutbox.ts");
       const cleanDocName = (doctorName || "Doctor").replace(/[^a-zA-Z0-9]/g, "_");
       const pdfFilename = `Prescription_Token_${token}_${cleanDocName}.pdf`;
       const documentUrl = prescriptionUrl;
 
-      whatsAppCloudApiService.sendDocumentMessage({
+      if (channel === "whatsapp") await enqueueWhatsAppDocument({
         to: targetPhone,
         documentUrl,
         filename: pdfFilename,
+        idempotencyKey: `whatsapp-document:consultation-complete:${appt._id}`,
         caption: `📄 Official Digital Prescription & Care Advice from Dr. ${doctorName} (Token #${token})`,
-      }).catch((err) => console.error("WhatsApp direct PDF document dispatch failed:", err));
+      });
     }
   } catch (err) {
     console.error("sendConsultationCompletedNotification error:", err);
@@ -329,11 +332,12 @@ export async function sendDisruptionAlertNotification(appointmentId: any, params
     if (patientEmail) {
       const subject = `Urgent: Schedule Disruption for Dr. ${params.doctorName}`;
       const body = `Hello ${patientName},\n\nWe regret to inform you that Dr. ${params.doctorName} at ${params.clinicName} has experienced an unexpected schedule disruption for your appointment on ${params.formattedTime}.\n\nPlease choose one of the following options within 60 minutes:\n- Reschedule: ${params.rescheduleUrl}\n- Cancel & Refund: ${params.cancelUrl}\n\nWe apologize for any inconvenience.\n\nBest regards,\nAnant Health Desk`;
-      await emailProvider.sendEmail({
+      await enqueueTransactionalEmail({
         to: patientEmail,
         subject,
         text: body,
         html: `<div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">${body.replace(/\n/g, "<br/>")}</div>`,
+        idempotencyKey: `transactional-email:disruption:${appt._id}`,
       });
     }
   } catch (err) {
@@ -413,12 +417,13 @@ export async function sendPaymentReceiptNotification(params: {
       const subject = `Payment Confirmed - Receipt #${invoiceNum} (${amountStr})`;
       const body = `Hello ${patientName},\n\nWe have received your payment of ${amountStr} via ${params.paymentMethod.toUpperCase()} for Token #${token} (Dr. ${doctorName} at ${clinicName}).\n\nYour official payment receipt is available here:\n${receiptUrl}\n\nView your live visit tracker:\n${trackingUrl}\n\nThank you for choosing ${clinicName}.\n\nBest regards,\nAnant Health Billing Team`;
 
-      await emailProvider.sendEmail({
+      await enqueueTransactionalEmail({
         to: patientEmail,
         subject,
         text: body,
         html: `<div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">${body.replace(/\n/g, "<br/>")}</div>`,
-      }).catch((err) => console.error("Email payment receipt dispatch notice:", err));
+        idempotencyKey: `transactional-email:payment-receipt:${invoice?._id || params.invoiceId || appt._id}:${params.paymentMethod}:${params.amount}`,
+      }).catch((err) => console.error("Email payment receipt outbox enqueue failed:", err));
     }
   } catch (err) {
     console.error("sendPaymentReceiptNotification error:", err);

@@ -8,7 +8,7 @@ import { AuditLog } from "../models/AuditLog.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { OrdersService } from "../services/OrdersService.ts";
-import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds, getRequestOrganizationId, isRootRequest } from "../utilities/tenant.ts";
+import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds, getRequestOrganizationId, isRootRequest, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
 import { requestHasAnyPermission } from "../utilities/permissions.ts";
 
@@ -791,7 +791,9 @@ export async function placeOrderController(req: FastifyRequest, reply: FastifyRe
   try {
     const { id: encounterId } = req.params as { id: string };
     const userId = req.user?.id!;
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return sendTenantError(reply, scope);
+    const orgId = scope.organizationId;
     let {
       testId, clinicId, patientId,
       priority, clinicalReason,
@@ -959,7 +961,7 @@ export async function recordResultController(req: FastifyRequest, reply: Fastify
     if (interpretation === "critical" || (abnormalSignal && abnormalSignal.interpretation === "critical")) {
       await AuditLog.create({
         userId,
-        organizationId: order.organizationId || req.user?.organization_id,
+        organizationId: order.organizationId || getRequestOrganizationId(req),
         action: "LAB_CRITICAL_VALUE_ALERT",
         targetId: order._id,
         targetModel: "LabOrder",
