@@ -729,12 +729,13 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
     }
 
     const appointment = await Appointment.findById(appointmentId)
-      .select("+trackerTokenHash trackerTokenExpiresAt")
+      .select("+trackerTokenHash trackerTokenExpiresAt clinicId doctorId patientId tokenNumber queuePosition status paymentStatus appointmentTime appointmentType disruptionResponseDeadline triageAction parkedAt parkedReason patientReturned patientReturnedAt consultationPhase investigationSentAt investigationNotes delayNotifiedAt lastNotifiedDelayMinutes isEmergency vitals investigationResults updatedAt")
       .populate("clinicId", "name city address phone upiVpa merchantName")
       .populate("doctorId", "name specialization")
       .populate({
         path: "patientId",
         populate: { path: "userId", select: "name" },
+        select: "name userId",
       });
 
     if (!appointment) {
@@ -748,12 +749,12 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
     const doctorId = (appointment.doctorId as any)?._id || appointment.doctorId;
 
     // Doctor details & assignment
-    const doctorAssignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
+    const doctorAssignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true }).select("appointmentDuration").lean();
     const defaultDuration = doctorAssignment?.appointmentDuration || 15;
-    const docProfile = await Doctor.findOne({ userId: doctorId }).lean();
+    const docProfile = await Doctor.findOne({ userId: doctorId }).select("specialization").lean();
     const doctorSpecialization = docProfile?.specialization || (appointment.doctorId as any)?.specialization || "General Physician";
 
-    // Safely establish appointmentTime validity before toISOString() (Finding: Step 3.4)
+    // Safely establish appointmentTime validity before toISOString()
     const rawApptTime = appointment.appointmentTime;
     const apptDate = rawApptTime ? new Date(rawApptTime) : new Date();
     const isValidApptDate = !isNaN(apptDate.getTime());
@@ -770,7 +771,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
       doctorId,
       clinicId,
       date: dateStr,
-    });
+    }).select("status reason delayMinutes").lean();
 
     const doctorAvailability = {
       status: dayOverride?.status || "available",
@@ -788,20 +789,18 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
       defaultDuration
     );
 
-    // Fetch all active appointments for this doctor & clinic on this day
-    const appointmentsToday = await Appointment.find({
+    // Lightweight status derivation: Query only current active consultation token (Step 5.2)
+    const inConsultationAppt = await Appointment.findOne({
       clinicId,
       doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
-      status: { $nin: ["cancelled"] },
-    }).sort({ queuePosition: 1, tokenNumber: 1 });
-
-    const inConsultationAppt = appointmentsToday.find((a) => a.status === "in-consultation");
+      status: "in-consultation",
+    }).select("tokenNumber _id").lean();
     const currentlyServingToken = inConsultationAppt ? inConsultationAppt.tokenNumber : null;
 
     let inConsultationRemainingMinutes = 0;
     if (inConsultationAppt) {
-      const activeEncounter = await Encounter.findOne({ appointmentId: inConsultationAppt._id, status: "in_progress" }).lean();
+      const activeEncounter = await Encounter.findOne({ appointmentId: inConsultationAppt._id, status: "in_progress" }).select("startedAt").lean();
       if (activeEncounter?.startedAt) {
         const elapsedMinutes = Math.floor((Date.now() - new Date(activeEncounter.startedAt).getTime()) / (60 * 1000));
         inConsultationRemainingMinutes = Math.max(1, duration - elapsedMinutes);
@@ -822,19 +821,37 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
       estimatedWaitMinutes = 0;
       estimatedCallTime = new Date().toISOString();
     } else if (appointment.status === "standby") {
-      peopleAhead = 0; // Next Up priority upon resuming!
+      peopleAhead = 0;
       estimatedWaitMinutes = inConsultationRemainingMinutes;
       estimatedCallTime = new Date(Date.now() + estimatedWaitMinutes * 60 * 1000).toISOString();
     } else if (waitingStatuses.includes(appointment.status)) {
-      peopleAhead = appointmentsToday.filter((a) => {
-        const aRank = a.queuePosition ?? a.tokenNumber ?? 999;
-        const isAhead = aRank < myRank;
-        const isWaitingOrInConsultation = [...waitingStatuses, "in-consultation"].includes(a.status);
-        return isAhead && isWaitingOrInConsultation;
-      }).length;
+      // Indexed count query instead of pulling all appointments into memory
+      peopleAhead = await Appointment.countDocuments({
+        clinicId,
+        doctorId,
+        appointmentTime: { $gte: startOfDay, $lte: endOfDay },
+        status: { $in: [...waitingStatuses, "in-consultation"] },
+        $or: [
+          { queuePosition: { $lt: myRank } },
+          { queuePosition: null, tokenNumber: { $lt: myRank } },
+        ],
+      });
 
       estimatedWaitMinutes = inConsultationRemainingMinutes + (peopleAhead * duration);
       estimatedCallTime = new Date(Date.now() + estimatedWaitMinutes * 60 * 1000).toISOString();
+    }
+
+    // Step 5.2: Generate deterministic ETag & 304 Not Modified check
+    const apptUpdatedAt = appointment.updatedAt ? new Date(appointment.updatedAt).getTime() : 0;
+    const etagSource = `${appointment._id}:${appointment.status}:${apptUpdatedAt}:${currentlyServingToken ?? ""}:${peopleAhead}:${appointment.paymentStatus || "unpaid"}`;
+    const etag = `W/"${crypto.createHash("sha1").update(etagSource).digest("hex")}"`;
+
+    reply.header("ETag", etag);
+    reply.header("Cache-Control", "private, no-cache, must-revalidate");
+
+    const ifNoneMatch = req.headers["if-none-match"];
+    if (ifNoneMatch && ifNoneMatch === etag) {
+      return reply.code(304).send();
     }
 
     const patientName =
@@ -845,18 +862,25 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
     let consultationSummary: any = null;
     let billing: any = null;
 
-    if (appointment.status === "completed" || appointment.status === "in-consultation") {
-      const encounter = await Encounter.findOne({ appointmentId: appointment._id }).sort({ createdAt: -1 });
+    // Avoid loading full encounters, clinical notes, prescriptions, and invoices unless appointment has actually completed
+    if (appointment.status === "completed") {
+      const encounter = await Encounter.findOne({ appointmentId: appointment._id }).sort({ createdAt: -1 }).select("endedAt _id").lean();
       if (encounter) {
         const { ClinicalNote } = await import("../models/ClinicalNote.ts");
         const { Prescription } = await import("../models/Prescription.ts");
         const { decryptField } = await import("../utilities/cryptoEnvelope.ts");
 
-        const note = (await ClinicalNote.findOne({ encounterId: encounter._id, isLatest: true }).lean()) as any;
-        let prescriptions = (await Prescription.find({ encounterId: encounter._id, deletedAt: null }).lean()) as any[];
+        const note = (await ClinicalNote.findOne({ encounterId: encounter._id, isLatest: true })
+          .select("subjective assessment plan signature")
+          .lean()) as any;
+        let prescriptions = (await Prescription.find({ encounterId: encounter._id, deletedAt: null })
+          .select("medicineName dosage frequency duration instructions status")
+          .lean()) as any[];
 
         if (prescriptions.length === 0 && note?.plan?.prescriptionIds?.length > 0) {
-          prescriptions = (await Prescription.find({ _id: { $in: note.plan.prescriptionIds }, deletedAt: null }).lean()) as any[];
+          prescriptions = (await Prescription.find({ _id: { $in: note.plan.prescriptionIds }, deletedAt: null })
+            .select("medicineName dosage frequency duration instructions status")
+            .lean()) as any[];
         }
 
         if (note || prescriptions.length > 0) {
@@ -893,7 +917,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
         }
       }
 
-      // Check for linked invoice
+      // Check for linked invoice only when completed
       const { Invoice } = await import("../models/Invoice.ts");
       const invoiceFilter: any = {
         deletedAt: null,
@@ -902,7 +926,10 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
           ...(encounter ? [{ encounterId: encounter._id }] : []),
         ],
       };
-      const invoice = (await Invoice.findOne(invoiceFilter).sort({ createdAt: -1 }).lean()) as any;
+      const invoice = (await Invoice.findOne(invoiceFilter)
+        .select("invoiceNumber totalAmount amountPaid balanceDue status paymentMethod paymentDate items")
+        .sort({ createdAt: -1 })
+        .lean()) as any;
       if (invoice) {
         billing = {
           invoiceId: invoice._id.toString(),
@@ -935,20 +962,22 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
 
     // Check if an auto-booked follow-up review appointment exists
     let followUpAppointment: any = null;
-    const followUpDoc = (await Appointment.findOne({
-      followUpForAppointmentId: appointment._id,
-      status: { $ne: "cancelled" },
-    })
-      .select("tokenNumber appointmentTime status")
-      .lean()) as any;
+    if (appointment.status === "completed") {
+      const followUpDoc = (await Appointment.findOne({
+        followUpForAppointmentId: appointment._id,
+        status: { $ne: "cancelled" },
+      })
+        .select("tokenNumber appointmentTime status")
+        .lean()) as any;
 
-    if (followUpDoc) {
-      followUpAppointment = {
-        id: followUpDoc._id.toString(),
-        tokenNumber: followUpDoc.tokenNumber,
-        appointmentTime: followUpDoc.appointmentTime,
-        status: followUpDoc.status,
-      };
+      if (followUpDoc) {
+        followUpAppointment = {
+          id: followUpDoc._id.toString(),
+          tokenNumber: followUpDoc.tokenNumber,
+          appointmentTime: followUpDoc.appointmentTime,
+          status: followUpDoc.status,
+        };
+      }
     }
 
     return reply.code(200).send(
