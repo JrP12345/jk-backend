@@ -72,25 +72,31 @@ export async function getServices(req: FastifyRequest, reply: FastifyReply) {
 
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
 
-    const filter: any = {};
+    const andConditions: any[] = [];
     if (orgId && req.user?.role !== "root") {
-      filter.organizationId = orgId;
+      andConditions.push({ organizationId: orgId });
     }
 
     if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
-      filter.$or = [{ clinicId }, { clinicId: { $exists: false } }, { clinicId: null }];
+      andConditions.push({
+        $or: [{ clinicId: new mongoose.Types.ObjectId(clinicId) }, { clinicId: { $exists: false } }, { clinicId: null }],
+      });
     }
 
-    if (category) filter.category = category;
-    if (department) filter.department = department;
+    if (category) andConditions.push({ category });
+    if (department) andConditions.push({ department });
     if (isActive !== undefined && isActive !== "") {
-      filter.isActive = isActive === "true" || isActive === true;
+      andConditions.push({ isActive: isActive === "true" || isActive === true });
     }
 
     if (search) {
       const reg = new RegExp(escapeRegex(search), "i");
-      filter.$or = [{ name: reg }, { code: reg }, { department: reg }, { hsnSacCode: reg }];
+      andConditions.push({
+        $or: [{ name: reg }, { code: reg }, { department: reg }, { hsnSacCode: reg }],
+      });
     }
+
+    const filter = andConditions.length > 0 ? { $and: andConditions } : {};
 
     const totalCount = await ServiceCatalog.countDocuments(filter);
     const totalPages = Math.ceil(totalCount / pageSize);
