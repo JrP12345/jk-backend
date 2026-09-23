@@ -12,7 +12,7 @@ import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { SiteVisit } from "../models/SiteVisit.ts";
-import { getAdaptiveConsultationDuration, autoDetectNoShows } from "./queue.ts";
+import { getAdaptiveConsultationDuration } from "./queue.ts";
 import { broadcastQueueUpdate } from "../notifications/websocket.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
@@ -780,9 +780,6 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
       endOfDay,
       defaultDuration
     );
-
-    // Auto sweep no shows for today
-    await autoDetectNoShows(clinicId, doctorId, startOfDay, endOfDay);
 
     // Fetch all active appointments for this doctor & clinic on this day
     const appointmentsToday = await Appointment.find({
