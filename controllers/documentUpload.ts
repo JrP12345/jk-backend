@@ -13,7 +13,7 @@ const documentRepo = createTenantRepository(DocumentUpload);
 
 export const uploadDocument = async (req: FastifyRequest, reply: FastifyReply) => {
   try {
-    const { patientId, category, fileName, fileUrl, mimeType, fileSizeBytes } = req.body as any;
+    const { patientId, category, fileName, fileUrl, mimeType, fileSizeBytes, uploadIntentId } = req.body as any;
     const userId = (req as any).user?.id || (req as any).user?._id;
     const tenantCheck = await checkPatientAccess(req, patientId);
     if (!tenantCheck.allowed) {
@@ -34,6 +34,24 @@ export const uploadDocument = async (req: FastifyRequest, reply: FastifyReply) =
       return reply.code(409).send(errorResponse("Patient organization context is required"));
     }
 
+    // Step 2.6: Enforce that document is registered from a valid, completed UploadIntent
+    if (uploadIntentId) {
+      const { UploadIntent } = await import("../models/UploadIntent.ts");
+      if (!mongoose.Types.ObjectId.isValid(uploadIntentId)) {
+        return reply.code(400).send(errorResponse("Invalid uploadIntentId format"));
+      }
+      const intent = await UploadIntent.findOne({ _id: uploadIntentId, organizationId });
+      if (!intent) {
+        return reply.code(400).send(errorResponse("UploadIntent not found for your organization"));
+      }
+      if (intent.status !== "completed") {
+        return reply.code(400).send(errorResponse(`UploadIntent status is '${intent.status}'. Must be 'completed' before registering document.`));
+      }
+      if (intent.registeredDocumentId) {
+        return reply.code(409).send(errorResponse("UploadIntent already registered to a clinical document"));
+      }
+    }
+
     const doc = await documentRepo.create({
       patientId,
       organizationId,
@@ -46,6 +64,11 @@ export const uploadDocument = async (req: FastifyRequest, reply: FastifyReply) =
       ocrStatus: "pending",
       uploadedAt: new Date(),
     }, { organizationId });
+
+    if (uploadIntentId) {
+      const { UploadIntent } = await import("../models/UploadIntent.ts");
+      await UploadIntent.updateOne({ _id: uploadIntentId }, { $set: { registeredDocumentId: doc._id } });
+    }
 
     // Emit domain event for asynchronous OCR & vision extraction pipeline
     await eventBus.publishDurable({
