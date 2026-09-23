@@ -570,37 +570,43 @@ export class AppointmentService {
         details: { tokenNumber, appointmentTime, clinicId, doctorId }
       }, session);
 
-      // 10. Release slot lock
-      if (lockValidation.lockKey) {
-        forceReleaseSlotLock(lockValidation.lockKey).catch((err) =>
-          console.error("Slot lock release failed (non-critical):", err)
-        );
-      }
-
-      // 11. Async Notification
-      sendBookingNotification(appointment._id, "booked", trackerCapability.token).catch((err) =>
-        console.error("Notification dispatch failed:", err)
-      );
-
       return {
-        id: appointment.id,
-        clinicId,
-        doctorId,
-        patientId: finalPatientId,
-        appointmentTime: appointment.appointmentTime,
-        appointmentType: appointment.appointmentType,
-        status: appointment.status,
-        paymentStatus: appointment.paymentStatus,
-        bookingMode: appointment.bookingMode,
-        tokenNumber: appointment.tokenNumber,
-        queuePosition: appointment.queuePosition,
-        duration: appointment.duration,
-        reasonForVisit: appointment.reasonForVisit,
-        notes: appointment.notes,
+        booking: {
+          id: appointment.id,
+          clinicId,
+          doctorId,
+          patientId: finalPatientId,
+          appointmentTime: appointment.appointmentTime,
+          appointmentType: appointment.appointmentType,
+          status: appointment.status,
+          paymentStatus: appointment.paymentStatus,
+          bookingMode: appointment.bookingMode,
+          tokenNumber: appointment.tokenNumber,
+          queuePosition: appointment.queuePosition,
+          duration: appointment.duration,
+          reasonForVisit: appointment.reasonForVisit,
+          notes: appointment.notes,
+          trackerToken: trackerCapability.token,
+          createdAt: appointment.createdAt,
+        },
+        lockKey: lockValidation.lockKey,
+        appointmentId: appointment._id,
         trackerToken: trackerCapability.token,
-        createdAt: appointment.createdAt,
       };
     });
+
+    // 10. Post-Commit External Side Effects: Release slot lock & dispatch notifications
+    if (lockKey) {
+      forceReleaseSlotLock(lockKey).catch((err) =>
+        console.error("Slot lock release failed (non-critical):", err),
+      );
+    }
+
+    sendBookingNotification(appointmentId, "booked", trackerToken).catch((err) =>
+      console.error("Notification dispatch failed:", err),
+    );
+
+    return booking;
   }
 }
 

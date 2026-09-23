@@ -10,6 +10,9 @@ import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import { checkClinicAccess } from "../utilities/tenant.ts";
 import { requestHasAnyPermission, BILLING_STAFF_PAYMENT_PERMISSIONS } from "../utilities/permissions.ts";
 import { broadcastQueueUpdate } from "../notifications/websocket.ts";
+import { withTransaction } from "../utilities/transaction.ts";
+import { AuditLog } from "../models/AuditLog.ts";
+import { resilientHttpClient } from "../utilities/resilientHttpClient.ts";
 
 async function authorizeAppointmentAccess(
   req: FastifyRequest,
@@ -177,26 +180,31 @@ export async function verifyAppointmentPayment(req: FastifyRequest, reply: Fasti
       return reply.code(403).send(errorResponse("Unauthorized access to appointment"));
     }
 
-    paymentRecord.status = "captured";
-    paymentRecord.razorpayPaymentId = razorpayPaymentId;
-    paymentRecord.razorpaySignature = razorpaySignature;
-    await paymentRecord.save();
+    await withTransaction(async (session) => {
+      paymentRecord.status = "captured";
+      paymentRecord.razorpayPaymentId = razorpayPaymentId;
+      paymentRecord.razorpaySignature = razorpaySignature;
+      await paymentRecord.save({ session });
 
-    appointment.paymentStatus = "paid";
-    if (appointment.status === "pending_payment" || appointment.status === "pending") {
-      appointment.status = "confirmed";
-    }
-    await appointment.save();
-
-    await Invoice.updateOne(
-      { appointmentId: appointment._id },
-      {
-        status: "paid",
-        amountPaid: paymentRecord.amount || 0,
-        paymentMethod: "online",
-        paymentDate: new Date(),
+      appointment.paymentStatus = "paid";
+      if (appointment.status === "pending_payment" || appointment.status === "pending") {
+        appointment.status = "confirmed";
       }
-    );
+      await appointment.save({ session });
+
+      await Invoice.updateOne(
+        { appointmentId: appointment._id },
+        {
+          $set: {
+            status: "paid",
+            amountPaid: paymentRecord.amount || 0,
+            paymentMethod: "online",
+            paymentDate: new Date(),
+          },
+        },
+        { session },
+      );
+    });
 
     const clinicIdStr = appointment.clinicId?.toString();
     if (clinicIdStr) {
@@ -405,5 +413,133 @@ export async function collectCounterPayment(req: FastifyRequest, reply: FastifyR
   } catch (err: any) {
     console.error("collectCounterPayment error:", err);
     return reply.code(500).send(errorResponse(err.message || "Failed to collect counter payment"));
+  }
+}
+
+// ─── POST /api/appointment-payments/reconcile ──────────────────────────
+export async function reconcileAppointmentPayment(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { appointmentId, razorpayOrderId } = req.body as {
+      appointmentId?: string;
+      razorpayOrderId?: string;
+    };
+
+    if (!appointmentId && !razorpayOrderId) {
+      return reply.code(400).send(errorResponse("Must provide appointmentId or razorpayOrderId"));
+    }
+
+    if (!(await requestHasAnyPermission(req, ...BILLING_STAFF_PAYMENT_PERMISSIONS))) {
+      return reply.code(403).send(errorResponse("Reconciliation requires billing staff permissions"));
+    }
+
+    const query: Record<string, any> = {};
+    if (appointmentId) query.appointmentId = appointmentId;
+    if (razorpayOrderId) query.razorpayOrderId = razorpayOrderId;
+
+    const paymentRecord = await AppointmentPayment.findOne(query);
+    if (!paymentRecord) {
+      return reply.code(404).send(errorResponse("Payment record not found"));
+    }
+
+    const appointment = await Appointment.findById(paymentRecord.appointmentId);
+    if (!appointment) {
+      return reply.code(404).send(errorResponse("Appointment not found"));
+    }
+
+    const clinicCheck = await checkClinicAccess(req, appointment.clinicId);
+    if (!clinicCheck.allowed) {
+      return reply.code(403).send(errorResponse("Unauthorized clinic access"));
+    }
+
+    // Query gateway using resilientHttpClient with explicit timeout & credentials
+    const { keyId, keySecret } = await razorpayService.getCredentials();
+    const auth = Buffer.from(`${keyId}:${keySecret}`).toString("base64");
+
+    const response = await resilientHttpClient.request(
+      `https://api.razorpay.com/v1/orders/${paymentRecord.razorpayOrderId}/payments`,
+      {
+        provider: "razorpay",
+        method: "GET",
+        headers: { Authorization: `Basic ${auth}` },
+        timeoutMs: 10_000,
+        enableCircuitBreaker: true,
+      },
+    );
+
+    const paymentsList = response.data?.items || [];
+    const capturedItem = paymentsList.find((p: any) => p.status === "captured");
+
+    if (capturedItem) {
+      // Reconcile and settle atomically in transaction
+      await withTransaction(async (session) => {
+        paymentRecord.status = "captured";
+        paymentRecord.razorpayPaymentId = capturedItem.id;
+        await paymentRecord.save({ session });
+
+        appointment.paymentStatus = "paid";
+        if (appointment.status === "pending_payment" || appointment.status === "pending") {
+          appointment.status = "confirmed";
+        }
+        await appointment.save({ session });
+
+        await Invoice.updateOne(
+          { appointmentId: appointment._id },
+          {
+            $set: {
+              status: "paid",
+              amountPaid: paymentRecord.amount || 0,
+              paymentMethod: capturedItem.method || "online",
+              paymentDate: new Date(),
+            },
+          },
+          { session },
+        );
+
+        await AuditLog.create(
+          [
+            {
+              userId: req.user!.id,
+              organizationId: clinicCheck.organizationId || undefined,
+              action: "PAYMENT_RECONCILED",
+              targetId: paymentRecord._id,
+              targetModel: "AppointmentPayment",
+              category: "ADMIN",
+              details: {
+                appointmentId: appointment._id,
+                razorpayOrderId: paymentRecord.razorpayOrderId,
+                razorpayPaymentId: capturedItem.id,
+                reconciliationOutcome: "captured_settled",
+              },
+            },
+          ],
+          { session },
+        );
+      });
+
+      // Post-commit side effects
+      const { sendPaymentReceiptNotification } = await import("../utilities/notifications.ts");
+      sendPaymentReceiptNotification({
+        appointmentId: appointment._id.toString(),
+        amount: paymentRecord.amount || 0,
+        paymentMethod: capturedItem.method || "online",
+      }).catch((err) => console.error("reconcile payment receipt notification notice:", err));
+
+      return reply.code(200).send(
+        successResponse(
+          { status: "captured", paymentId: capturedItem.id },
+          "Payment successfully reconciled and settled via gateway verification",
+        ),
+      );
+    }
+
+    return reply.code(200).send(
+      successResponse(
+        { status: paymentRecord.status, gatewayRecordsFound: paymentsList.length },
+        "Reconciliation check complete. No captured gateway payments found for this order.",
+      ),
+    );
+  } catch (err: any) {
+    console.error("reconcileAppointmentPayment error:", err);
+    return reply.code(500).send(errorResponse(err.message || "Reconciliation failed"));
   }
 }

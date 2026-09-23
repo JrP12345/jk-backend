@@ -6,6 +6,7 @@ import {
   verifyAppointmentPayment,
   selectPayAtClinic,
   collectCounterPayment,
+  reconcileAppointmentPayment,
 } from "../controllers/appointmentPayment.ts";
 
 export default async function appointmentPaymentRoutes(app: FastifyInstance) {
@@ -34,4 +35,5 @@ export default async function appointmentPaymentRoutes(app: FastifyInstance) {
   app.post("/api/appointment-payments/verify", paymentAccess, verifyAppointmentPayment);
   app.post("/api/appointment-payments/pay-at-clinic", paymentAccess, selectPayAtClinic);
   app.post("/api/appointment-payments/collect-counter", counterPaymentAccess, collectCounterPayment);
+  app.post("/api/appointment-payments/reconcile", counterPaymentAccess, reconcileAppointmentPayment);
 }
