@@ -18,6 +18,12 @@ import { timelineService } from "../services/TimelineService.ts";
 import { PHIAnonymizer } from "../utilities/phiAnonymizer.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { checkClinicAccess, getRequestClinicIds, resolveTargetOrganizationId } from "../utilities/tenant.ts";
+import {
+  getCursorPaginationParams,
+  decodeCursor,
+  buildCursorFilter,
+  formatCursorResult,
+} from "../utilities/cursorPagination.ts";
 
 // ─── POST /api/ai/soap-notes/generate ─────────────────────────────────
 export async function generateSOAPNoteController(req: FastifyRequest, reply: FastifyReply) {
@@ -181,23 +187,48 @@ export async function listChatSessionsController(req: FastifyRequest, reply: Fas
   try {
     const userId = req.user?.id;
     const orgId = await resolveTargetOrganizationId(req);
+    const query = req.query as { cursor?: string; limit?: string | number; format?: string };
 
     if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
     if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
 
-    const sessions = await AIChatSession.find({
+    // Step 5.3: Cursor pagination with deterministic compound sorting and hard maximum limits
+    const pagination = getCursorPaginationParams(query, 20, 100);
+    const decoded = decodeCursor(pagination.cursor);
+    const cursorFilter = buildCursorFilter(decoded, { timeField: "updatedAt", sortDirection: "desc" });
+
+    const filter: Record<string, any> = {
       userId,
       organizationId: orgId,
-      status: "active"
-    })
-      .select("title messages createdAt updatedAt")
-      .sort({ updatedAt: -1 })
+      status: "active",
+      ...cursorFilter,
+    };
+
+    const rawSessions = await AIChatSession.find(filter)
+      .select("title createdAt updatedAt patientId")
+      .sort({ updatedAt: -1, _id: -1 })
+      .limit(pagination.limit + 1)
       .lean();
 
-    const formattedSessions = sessions.map(s => ({
+    const result = formatCursorResult(rawSessions as any[], pagination.limit, "updatedAt");
+    const formattedSessions = result.items.map((s: any) => ({
       id: s._id.toString(),
-      ...s
+      ...s,
     }));
+
+    reply.header("X-Next-Cursor", result.nextCursor || "");
+    reply.header("X-Has-Next-Page", String(result.hasNextPage));
+    reply.header("X-Page-Limit", String(result.limit));
+    reply.header("Access-Control-Expose-Headers", "X-Next-Cursor, X-Has-Next-Page, X-Page-Limit");
+
+    if (query.format === "paginated" || query.cursor) {
+      return reply.code(200).send(successResponse({
+        items: formattedSessions,
+        nextCursor: result.nextCursor,
+        hasNextPage: result.hasNextPage,
+        limit: result.limit,
+      }));
+    }
 
     return reply.code(200).send(successResponse(formattedSessions));
   } catch (err) {

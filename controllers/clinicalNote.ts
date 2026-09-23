@@ -10,6 +10,12 @@ import { createTenantRepository } from "../platform/TenantRepository.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { checkClinicAccess, checkOperationalRecordAccess, resolveTargetOrganizationId } from "../utilities/tenant.ts";
 import { getNextAtomicSequence } from "../models/Counter.ts";
+import {
+  getCursorPaginationParams,
+  decodeCursor,
+  buildCursorFilter,
+  formatCursorResult,
+} from "../utilities/cursorPagination.ts";
 
 const encounterRepo = createTenantRepository(Encounter);
 
@@ -435,6 +441,7 @@ export async function amendClinicalNoteController(req: FastifyRequest, reply: Fa
 export async function getClinicalNoteHistoryController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id } = req.params as { id: string }; // patientId
+    const queryParams = req.query as { cursor?: string; limit?: string | number; format?: string };
     let orgId = await resolveTargetOrganizationId(req);
 
     if (!mongoose.Types.ObjectId.isValid(id)) return reply.code(400).send(errorResponse("Invalid patient ID"));
@@ -457,19 +464,36 @@ export async function getClinicalNoteHistoryController(req: FastifyRequest, repl
       }
     }
 
-    const query: any = { patientId: patient._id };
+    // Step 5.3: Cursor pagination with deterministic compound sorting and hard maximum limits
+    const pagination = getCursorPaginationParams(queryParams, 20, 100);
+    const decoded = decodeCursor(pagination.cursor);
+    const cursorFilter = buildCursorFilter(decoded, { timeField: "createdAt", sortDirection: "desc" });
+
+    const query: any = { patientId: patient._id, ...cursorFilter };
     if (orgId && req.user?.role !== "root" && req.user?.role !== "patient" && req.user?.role !== "family_member") {
       query.organizationId = orgId;
     }
 
-    const notes = await ClinicalNote.find(query)
+    const rawNotes = await ClinicalNote.find(query)
       .populate("doctorId", "name email")
       .populate("objective.observationIds")
       .populate("plan.prescriptionIds")
-      .sort({ version: -1 })
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(pagination.limit + 1)
       .lean();
 
-    return reply.code(200).send(successResponse(notes));
+    const result = formatCursorResult(rawNotes as any[], pagination.limit, "createdAt");
+
+    reply.header("X-Next-Cursor", result.nextCursor || "");
+    reply.header("X-Has-Next-Page", String(result.hasNextPage));
+    reply.header("X-Page-Limit", String(result.limit));
+    reply.header("Access-Control-Expose-Headers", "X-Next-Cursor, X-Has-Next-Page, X-Page-Limit");
+
+    if (queryParams.format === "paginated" || queryParams.cursor) {
+      return reply.code(200).send(successResponse(result));
+    }
+
+    return reply.code(200).send(successResponse(result.items));
   } catch (err) {
     console.error("getClinicalNoteHistoryController error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));

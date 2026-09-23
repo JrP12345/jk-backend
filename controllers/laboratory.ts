@@ -1039,7 +1039,7 @@ export async function getPatientLabComparison(req: FastifyRequest, reply: Fastif
       return reply.code(404).send(errorResponse("Patient not found"));
     }
 
-    // 1. Fetch finalized Lab Orders
+    // 1. Fetch finalized Lab Orders (bounded with hard maximum limit)
     const labOrders = await LabOrder.find({
       patientId,
       status: "result-uploaded",
@@ -1047,10 +1047,11 @@ export async function getPatientLabComparison(req: FastifyRequest, reply: Fastif
     })
       .populate("testId", "name code department sampleType normalRange")
       .populate("doctorId", "name specialization")
-      .sort({ resultedAt: -1, orderDate: -1 })
+      .sort({ resultedAt: -1, orderDate: -1, _id: -1 })
+      .limit(100)
       .lean();
 
-    // 2. Fetch completed Appointment investigationResults
+    // 2. Fetch completed Appointment investigationResults (bounded with hard maximum limit)
     const { Appointment } = await import("../models/Appointment.ts");
     const appts = await Appointment.find({
       patientId,
@@ -1058,7 +1059,8 @@ export async function getPatientLabComparison(req: FastifyRequest, reply: Fastif
     })
       .populate("doctorId", "name specialization")
       .select("appointmentTime doctorId investigationResults tokenNumber")
-      .sort({ appointmentTime: -1 })
+      .sort({ appointmentTime: -1, _id: -1 })
+      .limit(100)
       .lean();
 
     interface DataPoint {

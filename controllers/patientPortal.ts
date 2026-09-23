@@ -510,6 +510,9 @@ export async function getPatientMedicalRecords(req: FastifyRequest, reply: Fasti
   try {
     if (!requirePortalPatient(req, reply)) return;
     const userId = req.user!.id;
+    const { limit: queryLimit } = req.query as { limit?: string | number };
+    const maxSectionLimit = Math.min(100, Math.max(1, Number(queryLimit) || 25));
+
     const patient = await Patient.findOne({ userId }).populate("userId", "name email phone");
     if (!patient) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
@@ -518,9 +521,22 @@ export async function getPatientMedicalRecords(req: FastifyRequest, reply: Fasti
     const { ClinicalNote } = await import("../models/ClinicalNote.ts");
     const { LabOrder } = await import("../models/LabOrder.ts");
 
-    const prescriptions = await Prescription.find({ patientId: patient._id }).sort({ createdAt: -1 });
-    const clinicalNotes = await ClinicalNote.find({ patientId: patient._id }).sort({ createdAt: -1 });
-    const labOrders = await LabOrder.find({ patientId: patient._id }).populate("testId", "name code").sort({ createdAt: -1 });
+    // Step 5.3: Hard maximum limit and deterministic compound sorting
+    const [prescriptions, clinicalNotes, labOrders] = await Promise.all([
+      Prescription.find({ patientId: patient._id })
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(maxSectionLimit)
+        .lean(),
+      ClinicalNote.find({ patientId: patient._id })
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(maxSectionLimit)
+        .lean(),
+      LabOrder.find({ patientId: patient._id })
+        .populate("testId", "name code")
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(maxSectionLimit)
+        .lean(),
+    ]);
 
     const medicalRecordSummary = {
       patient,
@@ -528,6 +544,7 @@ export async function getPatientMedicalRecords(req: FastifyRequest, reply: Fasti
       clinicalNotes,
       labOrders,
       exportedAt: new Date().toISOString(),
+      sectionLimit: maxSectionLimit,
     };
 
     return reply.code(200).send(successResponse(medicalRecordSummary, "Patient longitudinal medical records retrieved"));

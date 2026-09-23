@@ -15,6 +15,12 @@ import { SmsWhatsAppService } from "../services/SmsWhatsAppService.ts";
 import { verifyAuditChainIntegrity } from "../services/AuditTrailService.ts";
 import { issueAppointmentTrackerLink } from "../utilities/publicTracker.ts";
 import { runNoShowSweep } from "../jobs/noShowSweepJob.ts";
+import {
+  getCursorPaginationParams,
+  decodeCursor,
+  buildCursorFilter,
+  formatCursorResult,
+} from "../utilities/cursorPagination.ts";
 
 /**
  * Calculates adaptive consultation duration based on today's completed encounters for doctor and clinic.
@@ -423,7 +429,31 @@ export async function getAuditLogs(req: FastifyRequest, reply: FastifyReply) {
       if (Object.keys(filter.createdAt).length === 0) delete filter.createdAt;
     }
 
-    const { page, limit } = query as { page?: string | number; limit?: string | number };
+    const { page, limit, cursor, format } = query as { page?: string | number; limit?: string | number; cursor?: string; format?: string };
+
+    // Step 5.3: Cursor pagination with deterministic compound sorting and hard maximum limits
+    if (cursor || format === "paginated") {
+      const pagination = getCursorPaginationParams({ cursor, limit }, 20, 100);
+      const decoded = decodeCursor(pagination.cursor);
+      const cursorFilter = buildCursorFilter(decoded, { timeField: "createdAt", sortDirection: "desc" });
+
+      const cursorQueryFilter = { ...filter, ...cursorFilter };
+      const rawLogs = await AuditLog.find(cursorQueryFilter)
+        .populate("userId", "name email role")
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(pagination.limit + 1)
+        .lean();
+
+      const result = formatCursorResult(rawLogs as any[], pagination.limit, "createdAt");
+
+      reply.header("X-Next-Cursor", result.nextCursor || "");
+      reply.header("X-Has-Next-Page", String(result.hasNextPage));
+      reply.header("X-Page-Limit", String(result.limit));
+      reply.header("Access-Control-Expose-Headers", "X-Next-Cursor, X-Has-Next-Page, X-Page-Limit");
+
+      return reply.code(200).send(successResponse(result));
+    }
+
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
 
     const totalCount = await AuditLog.countDocuments(filter);
@@ -431,7 +461,7 @@ export async function getAuditLogs(req: FastifyRequest, reply: FastifyReply) {
 
     const logs = await AuditLog.find(filter)
       .populate("userId", "name email role")
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .skip(skip)
       .limit(pageSize);
 

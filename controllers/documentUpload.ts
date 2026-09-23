@@ -8,6 +8,12 @@ import { EVENT_TYPES } from "../events/types.ts";
 import { logger } from "../utilities/logger.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { checkPatientAccess } from "../utilities/tenant.ts";
+import {
+  getCursorPaginationParams,
+  decodeCursor,
+  buildCursorFilter,
+  formatCursorResult,
+} from "../utilities/cursorPagination.ts";
 
 const documentRepo = createTenantRepository(DocumentUpload);
 
@@ -101,6 +107,7 @@ export const uploadDocument = async (req: FastifyRequest, reply: FastifyReply) =
 export const getPatientDocuments = async (req: FastifyRequest, reply: FastifyReply) => {
   try {
     const { patientId } = req.params as { patientId: string };
+    const query = req.query as { cursor?: string; limit?: string | number; format?: string };
 
     const tenantCheck = await checkPatientAccess(req, patientId);
     if (!tenantCheck.allowed) {
@@ -117,14 +124,33 @@ export const getPatientDocuments = async (req: FastifyRequest, reply: FastifyRep
       return reply.code(409).send(errorResponse("Organization context missing"));
     }
 
-    const docs = await documentRepo.find({
-      patientId: new mongoose.Types.ObjectId(patientId),
-    }, undefined, {
-      organizationId: orgId,
-      sort: { uploadedAt: -1 },
-    });
+    // Step 5.3: Cursor pagination with deterministic compound sorting and hard maximum limit
+    const pagination = getCursorPaginationParams(query, 20, 100);
+    const decoded = decodeCursor(pagination.cursor);
+    const cursorFilter = buildCursorFilter(decoded, { timeField: "uploadedAt", sortDirection: "desc" });
 
-    return reply.code(200).send(successResponse(docs));
+    const filter: Record<string, any> = {
+      patientId: new mongoose.Types.ObjectId(patientId),
+      ...cursorFilter,
+    };
+
+    const rawDocs = await DocumentUpload.find(filter)
+      .sort({ uploadedAt: -1, _id: -1 })
+      .limit(pagination.limit + 1)
+      .lean();
+
+    const result = formatCursorResult(rawDocs as any[], pagination.limit, "uploadedAt");
+
+    reply.header("X-Next-Cursor", result.nextCursor || "");
+    reply.header("X-Has-Next-Page", String(result.hasNextPage));
+    reply.header("X-Page-Limit", String(result.limit));
+    reply.header("Access-Control-Expose-Headers", "X-Next-Cursor, X-Has-Next-Page, X-Page-Limit");
+
+    if (query.format === "paginated" || query.cursor) {
+      return reply.code(200).send(successResponse(result));
+    }
+
+    return reply.code(200).send(successResponse(result.items));
   } catch (err: any) {
     logger.error("Failed to fetch patient documents", { errMessage: err.message } as any);
     return reply.code(500).send(errorResponse("Internal server error fetching documents"));

@@ -25,14 +25,48 @@ import {
   isTrackerCapabilityEnforced,
 } from "../utilities/publicTracker.ts";
 import { toPublicOrganizationSummary, toPublicOrganizationDetail } from "../types/publicDtos.ts";
+import {
+  getCursorPaginationParams,
+  decodeCursor,
+  buildCursorFilter,
+  formatCursorResult,
+} from "../utilities/cursorPagination.ts";
 
 export async function getOrganizations(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgs = await Organization.find({ isActive: true })
-      .select("_id name address city phone email description image_url logo_url images timings working_days currency timezone isActive")
-      .sort({ name: 1 })
+    const query = req.query as { cursor?: string; limit?: string | number; format?: string };
+    const pagination = getCursorPaginationParams(query, 20, 100);
+    const decoded = decodeCursor(pagination.cursor);
+    const cursorFilter = buildCursorFilter(decoded, { timeField: "createdAt", sortDirection: "desc" });
+
+    const filter: Record<string, any> = {
+      isActive: true,
+      ...cursorFilter,
+    };
+
+    const rawOrgs = await Organization.find(filter)
+      .select("_id name address city phone email description image_url logo_url images timings working_days currency timezone isActive createdAt")
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(pagination.limit + 1)
       .lean();
-    const formatted = orgs.map(toPublicOrganizationSummary);
+
+    const result = formatCursorResult(rawOrgs as any[], pagination.limit, "createdAt");
+    const formatted = result.items.map(toPublicOrganizationSummary);
+
+    reply.header("X-Next-Cursor", result.nextCursor || "");
+    reply.header("X-Has-Next-Page", String(result.hasNextPage));
+    reply.header("X-Page-Limit", String(result.limit));
+    reply.header("Access-Control-Expose-Headers", "X-Next-Cursor, X-Has-Next-Page, X-Page-Limit");
+
+    if (query.format === "paginated" || query.cursor) {
+      return reply.code(200).send(successResponse({
+        items: formatted,
+        nextCursor: result.nextCursor,
+        hasNextPage: result.hasNextPage,
+        limit: result.limit,
+      }));
+    }
+
     return reply.code(200).send(successResponse(formatted));
   } catch (err) {
     console.error("getOrganizations error:", err);
@@ -163,8 +197,20 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
       andConditions.push({ _id: { $in: clinicIds } });
     }
 
+    const pagination = getCursorPaginationParams(req.query as any, 20, 100);
+    const decoded = decodeCursor(pagination.cursor);
+    const cursorFilter = buildCursorFilter(decoded, { timeField: "createdAt", sortDirection: "desc" });
+    if (Object.keys(cursorFilter).length > 0) {
+      andConditions.push(cursorFilter);
+    }
+
     const filter: any = andConditions.length > 1 ? { $and: andConditions } : andConditions[0] || {};
-    const clinics = await Clinic.find(filter).sort({ name: 1 });
+    const rawClinics = await Clinic.find(filter)
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(pagination.limit + 1);
+
+    const paginatedResult = formatCursorResult(rawClinics as any[], pagination.limit, "createdAt");
+    const clinics = paginatedResult.items;
 
     const clinicIds = clinics.map(c => c._id);
     const allAssignments = await DoctorAssignment.find({ clinicId: { $in: clinicIds }, isActive: true })
@@ -229,6 +275,21 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
         doctorsSummary,
       };
     });
+
+    reply.header("X-Next-Cursor", paginatedResult.nextCursor || "");
+    reply.header("X-Has-Next-Page", String(paginatedResult.hasNextPage));
+    reply.header("X-Page-Limit", String(paginatedResult.limit));
+    reply.header("Access-Control-Expose-Headers", "X-Next-Cursor, X-Has-Next-Page, X-Page-Limit");
+
+    const query = req.query as { cursor?: string; format?: string };
+    if (query?.format === "paginated" || query?.cursor) {
+      return reply.code(200).send(successResponse({
+        items: formattedClinics,
+        nextCursor: paginatedResult.nextCursor,
+        hasNextPage: paginatedResult.hasNextPage,
+        limit: paginatedResult.limit,
+      }));
+    }
 
     return reply.code(200).send(successResponse(formattedClinics));
   } catch (err) {
