@@ -49,3 +49,23 @@ function createRedisClient(): Redis | null {
 }
 
 export const redisClient = createRedisClient();
+
+/**
+ * Creates a dedicated Redis client instance for Pub/Sub subscriptions.
+ */
+export function createRedisSubscriber(): Redis | null {
+  return createRedisClient();
+}
+
+/**
+ * Publishes a JSON-encoded event across the cluster via Redis PubSub.
+ */
+export async function publishRedisEvent(channel: string, payload: any): Promise<number> {
+  if (!redisClient) return 0;
+  try {
+    return await redisClient.publish(channel, typeof payload === "string" ? payload : JSON.stringify(payload));
+  } catch (err: any) {
+    console.warn(`[Redis PubSub] Failed to publish on channel '${channel}':`, err.message);
+    return 0;
+  }
+}

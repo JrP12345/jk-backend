@@ -68,12 +68,11 @@ export function authorize(...allowedRoles: string[]) {
       return reply.code(401).send({ error: "Unauthorized" });
     }
 
-    if (req.user.role === "root" || req.user.role === "admin" || allowedRoles.includes(req.user.role)) {
+    if (req.user.role === "root" || allowedRoles.includes(req.user.role)) {
       return;
     }
 
-    const jwtPerms = (req.user as { permissions?: string[] }).permissions || [];
-    const all = await getEffectivePermissions(req.user.role, jwtPerms);
+    const all = await getEffectivePermissions(req.user.role, req.user.organization_id, req.user.authVersion);
 
     const hasPermissionMatch = allowedRoles.some((role) => {
       const permissionName = `MANAGE_${role.toUpperCase()}`;
@@ -128,10 +127,9 @@ export function denyRoles(...blockedRoles: string[]) {
 /**
  * Factory: restrict access to specific permissions.
  *
- * Evaluates the required permission against the caller's Role document in the
- * database. All roles — including "admin" — are evaluated through the same
- * permission table, ensuring the Role.permissions[] array is the single source
- * of truth for authorization decisions across the entire system.
+ * Evaluates the required permission authoritatively against the caller's Role
+ * document in the database (cached in Redis / memory). All roles are evaluated
+ * through the authoritative permission table.
  *
  * Usage: { preHandler: [authenticate, checkPermission("MANAGE_STAFF")] }
  */
@@ -145,8 +143,7 @@ export function checkPermission(requiredPermission: string) {
       return;
     }
 
-    const jwtPerms = (req.user as { permissions?: string[] }).permissions || [];
-    const all = await getEffectivePermissions(req.user.role, jwtPerms);
+    const all = await getEffectivePermissions(req.user.role, req.user.organization_id, req.user.authVersion);
     if (all.has(requiredPermission)) {
       return;
     }
@@ -170,8 +167,7 @@ export function checkAnyPermission(...requiredPermissions: string[]) {
       return;
     }
 
-    const jwtPerms = (req.user as { permissions?: string[] }).permissions || [];
-    const all = await getEffectivePermissions(req.user.role, jwtPerms);
+    const all = await getEffectivePermissions(req.user.role, req.user.organization_id, req.user.authVersion);
     if (requiredPermissions.some((perm) => all.has(perm))) {
       return;
     }
@@ -201,8 +197,7 @@ export function checkAnyPermissionOrRoles(
       return;
     }
 
-    const jwtPerms = (req.user as { permissions?: string[] }).permissions || [];
-    const all = await getEffectivePermissions(req.user.role, jwtPerms);
+    const all = await getEffectivePermissions(req.user.role, req.user.organization_id, req.user.authVersion);
     if (requiredPermissions.some((perm) => all.has(perm))) {
       return;
     }

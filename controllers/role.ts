@@ -240,10 +240,11 @@ export async function updateRolePermissions(req: FastifyRequest, reply: FastifyR
     } else {
       if (description !== undefined) role.description = description;
       role.permissions = finalPermissions;
+      (role as any).version = ((role as any).version || 1) + 1;
       await role.save();
     }
 
-    invalidateRoleCache(name);
+    await invalidateRoleCache(name);
     return reply.code(200).send(successResponse(role, `Permissions updated for role '${name}'`));
   } catch (err) {
     console.error("updateRolePermissions error:", err);
@@ -328,6 +329,7 @@ export async function updateUserRole(req: FastifyRequest, reply: FastifyReply) {
 
     const previousRole = user.role;
     user.role = newRole;
+    (user as any).authVersion = ((user as any).authVersion || 1) + 1;
     await user.save();
 
     // If OrgMember exists for this org, keep membership role in sync

@@ -21,6 +21,7 @@ const UserSchema = new Schema({
   lockoutUntil: { type: Date, default: null },
   image_url: { type: String, default: null },
   isActive: { type: Boolean, default: true },
+  authVersion: { type: Number, default: 1 },
 }, { timestamps: true });
 
 UserSchema.virtual("id").get(function() {

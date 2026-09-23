@@ -28,6 +28,7 @@ const OrganizationSchema = new Schema({
   isOnboarded: { type: Boolean, default: false },
   isActive: { type: Boolean, default: true },
   status: { type: String, enum: ["active", "inactive"], default: "active" },
+  authVersion: { type: Number, default: 1 },
   // ─── SMTP / Outbound Email Gateway Configuration ───────────────────────
   // If set, overrides backend .env SMTP credentials for this organization.
   smtp: {

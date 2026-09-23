@@ -5,7 +5,8 @@ const RoleSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", default: null, index: true },
   description: { type: String },
   permissions: [{ type: String }], // List of permission codes
-  isSystemRole: { type: Boolean, default: false }
+  isSystemRole: { type: Boolean, default: false },
+  version: { type: Number, default: 1 }
 });
 
 // Scope unique role names to their tenant organization (or null for global system roles)
