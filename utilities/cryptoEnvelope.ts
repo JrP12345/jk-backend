@@ -5,20 +5,42 @@ import crypto from "node:crypto";
  * Compliant with DPDP Act 2023 (Section 8) & HIPAA Security Rule (45 CFR § 164.312)
  *
  * Algorithm: AES-256-GCM (Authenticated Encryption with Associated Data)
- * Format:    enc:v1:<iv_hex>:<tag_hex>:<ciphertext_hex>
+ * Primary Format: enc:v1:<iv_hex>:<tag_hex>:<ciphertext_hex>
+ * Legacy Format:  <iv_hex>:<tag_hex>:<ciphertext_hex>
  */
 
-const ENCRYPTION_SECRET =
-  process.env.APP_ENCRYPTION_KEY ||
-  process.env.JWT_SECRET ||
-  "healthos-default-data-encryption-master-key-32b";
+function resolveEncryptionSecret(): string {
+  const secret =
+    process.env.DATA_ENCRYPTION_KEY ||
+    process.env.ENCRYPTION_KEY ||
+    process.env.APP_ENCRYPTION_KEY;
 
-// Deterministic key derivation via scrypt
+  if (!secret) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("DATA_ENCRYPTION_KEY (or ENCRYPTION_KEY) is strictly required in production mode");
+    }
+    console.warn("⚠️ [FLE Warning] No DATA_ENCRYPTION_KEY or ENCRYPTION_KEY configured. Using local dev fallback key.");
+    return "dev-local-data-encryption-key-32b-secure";
+  }
+  return secret;
+}
+
+const ENCRYPTION_SECRET = resolveEncryptionSecret();
+
+// Primary deterministic key derivation via scrypt (FLE standard)
 const MASTER_KEY = crypto.scryptSync(ENCRYPTION_SECRET, "healthos-fle-salt-2026", 32);
 const BLIND_INDEX_KEY = crypto.scryptSync(ENCRYPTION_SECRET, "healthos-blind-index-salt-2026", 32);
 
+// Legacy raw/SHA256 key for backward-compatibility with legacy encryption.ts records
+const LEGACY_KEY = /^[0-9a-fA-F]{64}$/.test(ENCRYPTION_SECRET)
+  ? Buffer.from(ENCRYPTION_SECRET, "hex")
+  : crypto.createHash("sha256").update(ENCRYPTION_SECRET).digest();
+
 export function isEncrypted(val: any): boolean {
-  return typeof val === "string" && val.startsWith("enc:v1:");
+  if (typeof val !== "string") return false;
+  if (val.startsWith("enc:v1:")) return true;
+  const parts = val.split(":");
+  return parts.length === 3 && parts[0].length === 24 && parts[1].length === 32;
 }
 
 /**
@@ -45,7 +67,7 @@ export function encryptField(plaintext: string | null | undefined): string {
 }
 
 /**
- * Decrypts an authenticated AES-256-GCM envelope back to plaintext.
+ * Decrypts an authenticated AES-256-GCM envelope or legacy ciphertext back to plaintext.
  * Gracefully returns unencrypted values unchanged to maintain backward compatibility.
  */
 export function decryptField(ciphertext: string | null | undefined): string {
@@ -57,28 +79,66 @@ export function decryptField(ciphertext: string | null | undefined): string {
     return str;
   }
 
-  try {
+  // 1. Primary envelope format: enc:v1:<iv>:<tag>:<ciphertext>
+  if (str.startsWith("enc:v1:")) {
     const parts = str.split(":");
-    if (parts.length !== 5 || parts[0] !== "enc" || parts[1] !== "v1") {
-      return str;
+    if (parts.length === 5) {
+      const iv = Buffer.from(parts[2], "hex");
+      const authTag = Buffer.from(parts[3], "hex");
+      const encryptedText = parts[4];
+
+      // Try with MASTER_KEY first
+      try {
+        const decipher = crypto.createDecipheriv("aes-256-gcm", MASTER_KEY, iv);
+        decipher.setAuthTag(authTag);
+        let decrypted = decipher.update(encryptedText, "hex", "utf8");
+        decrypted += decipher.final("utf8");
+        return decrypted;
+      } catch {
+        // Fallback to LEGACY_KEY
+        try {
+          const decipher = crypto.createDecipheriv("aes-256-gcm", LEGACY_KEY, iv);
+          decipher.setAuthTag(authTag);
+          let decrypted = decipher.update(encryptedText, "hex", "utf8");
+          decrypted += decipher.final("utf8");
+          return decrypted;
+        } catch {
+          // fall through
+        }
+      }
     }
-
-    const iv = Buffer.from(parts[2], "hex");
-    const authTag = Buffer.from(parts[3], "hex");
-    const encryptedText = parts[4];
-
-    const decipher = crypto.createDecipheriv("aes-256-gcm", MASTER_KEY, iv);
-    decipher.setAuthTag(authTag);
-
-    let decrypted = decipher.update(encryptedText, "hex", "utf8");
-    decrypted += decipher.final("utf8");
-
-    return decrypted;
-  } catch (err) {
-    // If decryption or tag verification fails, return unrevealed fallback
-    console.error("[FLE] Decryption or authentication tag verification failed:", err);
-    return "[DECRYPTION_FAILED]";
   }
+
+  // 2. Legacy 3-part hex format: <iv_hex>:<tag_hex>:<ciphertext_hex>
+  const parts = str.split(":");
+  if (parts.length === 3) {
+    const iv = Buffer.from(parts[0], "hex");
+    const authTag = Buffer.from(parts[1], "hex");
+    const encryptedText = parts[2];
+
+    // Try with LEGACY_KEY first (matches original encryption.ts)
+    try {
+      const decipher = crypto.createDecipheriv("aes-256-gcm", LEGACY_KEY, iv);
+      decipher.setAuthTag(authTag);
+      let decrypted = decipher.update(encryptedText, "hex", "utf8");
+      decrypted += decipher.final("utf8");
+      return decrypted;
+    } catch {
+      // Try with MASTER_KEY
+      try {
+        const decipher = crypto.createDecipheriv("aes-256-gcm", MASTER_KEY, iv);
+        decipher.setAuthTag(authTag);
+        let decrypted = decipher.update(encryptedText, "hex", "utf8");
+        decrypted += decipher.final("utf8");
+        return decrypted;
+      } catch {
+        // fall through
+      }
+    }
+  }
+
+  console.error("[FLE] Decryption or authentication tag verification failed");
+  return "[DECRYPTION_FAILED]";
 }
 
 /**

@@ -3,12 +3,10 @@ import path from "node:path";
 
 const baseRequiredEnv = [
   "MONGODB_URI",
-  "ENCRYPTION_KEY",
 ];
 
 const productionRequiredEnv = [
   "MONGODB_URI",
-  "ENCRYPTION_KEY",
   "CORS_ALLOWED_ORIGINS",
 ];
 
@@ -85,11 +83,24 @@ export function verifyEnv() {
     }
   }
 
-  // Validate ENCRYPTION_KEY length if provided
-  if (process.env.ENCRYPTION_KEY) {
-    const key = process.env.ENCRYPTION_KEY;
-    if (key.length !== 64 && key.length < 32) {
-      console.warn("⚠️ [Security Warning] ENCRYPTION_KEY is shorter than 32 characters. Recommended: 64-char hex string.");
+  // Validate DATA_ENCRYPTION_KEY / ENCRYPTION_KEY (SEC-003)
+  const encryptionKey = process.env.DATA_ENCRYPTION_KEY || process.env.ENCRYPTION_KEY || process.env.APP_ENCRYPTION_KEY;
+  if (!encryptionKey) {
+    if (isProd) {
+      missing.push("DATA_ENCRYPTION_KEY (Required in production for field-level encryption of PHI and secrets)");
+    } else {
+      console.warn("⚠️ [Security Notice] Neither DATA_ENCRYPTION_KEY nor ENCRYPTION_KEY is set. Using dev fallback key.");
+    }
+  } else {
+    if (!process.env.DATA_ENCRYPTION_KEY) {
+      console.warn("⚠️ [Security Notice] Using legacy ENCRYPTION_KEY/APP_ENCRYPTION_KEY. Please migrate to DATA_ENCRYPTION_KEY.");
+    }
+    if (encryptionKey.length !== 64 && encryptionKey.length < 32) {
+      if (isProd) {
+        missing.push("DATA_ENCRYPTION_KEY must be at least 32 characters (or a 64-char hex string)");
+      } else {
+        console.warn("⚠️ [Security Warning] Encryption key is shorter than 32 characters. Recommended: 64-char hex string.");
+      }
     }
   }
 
