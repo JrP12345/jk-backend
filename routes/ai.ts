@@ -6,6 +6,7 @@ import {
   listChatSessionsController,
   createChatSessionController,
   getChatSessionController,
+  listChatSessionMessagesController,
   sendChatMessageController,
   deleteChatSessionController,
   predictNoShowRiskController,
@@ -84,6 +85,7 @@ export default async function aiRoutes(app: FastifyInstance) {
   app.get("/api/ai/chat/sessions", clinicalAi, listChatSessionsController);
   app.post("/api/ai/chat/sessions", clinicalAi, createChatSessionController);
   app.get("/api/ai/chat/sessions/:sessionId", clinicalAi, getChatSessionController);
+  app.get("/api/ai/chat/sessions/:sessionId/messages", clinicalAi, listChatSessionMessagesController);
   app.post("/api/ai/chat/sessions/:sessionId/messages", clinicalAi, sendChatMessageController);
   app.delete("/api/ai/chat/sessions/:sessionId", clinicalAi, deleteChatSessionController);
 

@@ -3,6 +3,18 @@
   "generatedAt": "2026-09-23T22:15:00Z",
   "description": "Authoritative machine-readable tenant data ownership matrix and model isolation specification.",
   "models": {
+    "AIChatMessage": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["RetentionCleanupWorker", "AIBackfillWorker"],
+      "accessingControllers": ["controllers/ai.ts"],
+      "queryMethods": ["find", "findOne", "create", "updateOne", "deleteMany", "countDocuments"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
     "AIChatSession": {
       "classification": "tenant",
       "ownershipField": "organizationId",

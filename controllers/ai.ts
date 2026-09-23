@@ -11,6 +11,7 @@ import { Invoice } from "../models/Invoice.ts";
 import { Organization } from "../models/Organization.ts";
 import { Medicine } from "../models/Medicine.ts";
 import { AIChatSession } from "../models/AIChatSession.ts";
+import { AIChatMessage } from "../models/AIChatMessage.ts";
 import type { ChatTurn } from "../services/ai/AIProvider.ts";
 import { aiService, AIServiceUnavailableError } from "../services/ai/AIService.ts";
 import { aiGateway } from "../services/ai/AIGateway.ts";
@@ -250,7 +251,7 @@ export async function createChatSessionController(req: FastifyRequest, reply: Fa
 
     const welcomeMsg = {
       id: "m1",
-      sender: "ai",
+      sender: "ai" as const,
       text: `Hello ${(req.user as any)?.name || "User"}! I am your Anant Clinical AI Copilot.\n\nI can assist you with real-time patient records, clinic operational analytics, active prescriptions, lab reports, or appointment scheduling. How can I help you today?`,
       citations: [],
       suggestedActions: [],
@@ -263,8 +264,22 @@ export async function createChatSessionController(req: FastifyRequest, reply: Fa
       userId,
       patientId: patientId && mongoose.Types.ObjectId.isValid(patientId) ? patientId : null,
       title: initialTitle || "New Clinical Session",
-      messages: [welcomeMsg],
+      messages: [welcomeMsg], // dual-write temporarily for rollback safety
       retentionExpiresAt: new Date(Date.now() + 30 * 86400 * 1000)
+    });
+
+    // Step 5.4: Write welcome message to normalized AIChatMessage collection
+    await AIChatMessage.create({
+      sessionId: session._id,
+      organizationId: orgId,
+      userId,
+      sender: "ai",
+      text: welcomeMsg.text,
+      citations: [],
+      suggestedActions: [],
+      sequence: 1,
+      timestamp: welcomeMsg.timestamp,
+      createdAt: welcomeMsg.createdAt,
     });
 
     return reply.code(201).send(successResponse(session, "Chat session initialized"));
@@ -280,6 +295,7 @@ export async function getChatSessionController(req: FastifyRequest, reply: Fasti
     const { sessionId } = req.params as { sessionId: string };
     const userId = req.user?.id;
     const orgId = await resolveTargetOrganizationId(req);
+    const query = req.query as { cursor?: string; limit?: string | number };
 
     if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
     if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
@@ -290,14 +306,119 @@ export async function getChatSessionController(req: FastifyRequest, reply: Fasti
     const session = await AIChatSession.findOne({ _id: sessionId, userId, organizationId: orgId, status: "active" }).lean();
     if (!session) return reply.code(404).send(errorResponse("Chat session not found"));
 
+    // Step 5.4: Read messages from normalized AIChatMessage collection with cursor pagination
+    const pagination = getCursorPaginationParams(query, 50, 100);
+    const decoded = decodeCursor(pagination.cursor);
+    const cursorFilter = buildCursorFilter(decoded, { timeField: "createdAt", sortDirection: "desc" });
+
+    const rawMessages = await AIChatMessage.find({
+      sessionId: session._id,
+      ...cursorFilter,
+    })
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(pagination.limit + 1)
+      .lean();
+
+    let messagesForClient: any[] = [];
+    let nextCursor: string | null = null;
+    let hasNextPage = false;
+
+    if (rawMessages.length > 0) {
+      const paginatedResult = formatCursorResult(rawMessages as any[], pagination.limit, "createdAt");
+      nextCursor = paginatedResult.nextCursor;
+      hasNextPage = paginatedResult.hasNextPage;
+      // Client UI displays in chronological order
+      messagesForClient = paginatedResult.items.slice().reverse().map(m => ({
+        id: m._id.toString(),
+        sender: m.sender,
+        text: m.text,
+        citations: m.citations || [],
+        suggestedActions: m.suggestedActions || [],
+        sequence: m.sequence,
+        timestamp: m.timestamp,
+        createdAt: m.createdAt,
+      }));
+    } else {
+      // Rollback/migration compatibility fallback to embedded messages
+      messagesForClient = session.messages || [];
+    }
+
+    reply.header("X-Next-Cursor", nextCursor || "");
+    reply.header("X-Has-Next-Page", String(hasNextPage));
+    reply.header("X-Page-Limit", String(pagination.limit));
+    reply.header("Access-Control-Expose-Headers", "X-Next-Cursor, X-Has-Next-Page, X-Page-Limit");
+
     const formattedSession = {
       id: session._id.toString(),
-      ...session
+      ...session,
+      messages: messagesForClient,
+      nextCursor,
+      hasNextPage,
     };
 
     return reply.code(200).send(successResponse(formattedSession));
   } catch (err) {
     console.error("getChatSessionController error:", err);
+    return reply.code(500).send(errorResponse("Internal server error"));
+  }
+}
+
+// ─── GET /api/ai/chat/sessions/:sessionId/messages ─────────────────────
+export async function listChatSessionMessagesController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { sessionId } = req.params as { sessionId: string };
+    const userId = req.user?.id;
+    const orgId = await resolveTargetOrganizationId(req);
+    const query = req.query as { cursor?: string; limit?: string | number };
+
+    if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
+    if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
+    if (!mongoose.Types.ObjectId.isValid(sessionId)) {
+      return reply.code(400).send(errorResponse("Invalid session ID"));
+    }
+
+    const session = await AIChatSession.findOne({ _id: sessionId, userId, organizationId: orgId, status: "active" })
+      .select("_id")
+      .lean();
+    if (!session) return reply.code(404).send(errorResponse("Chat session not found"));
+
+    const pagination = getCursorPaginationParams(query, 50, 100);
+    const decoded = decodeCursor(pagination.cursor);
+    const cursorFilter = buildCursorFilter(decoded, { timeField: "createdAt", sortDirection: "desc" });
+
+    const rawMessages = await AIChatMessage.find({
+      sessionId: session._id,
+      ...cursorFilter,
+    })
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(pagination.limit + 1)
+      .lean();
+
+    const paginatedResult = formatCursorResult(rawMessages as any[], pagination.limit, "createdAt");
+    const items = paginatedResult.items.map(m => ({
+      id: m._id.toString(),
+      sender: m.sender,
+      text: m.text,
+      citations: m.citations || [],
+      suggestedActions: m.suggestedActions || [],
+      sequence: m.sequence,
+      timestamp: m.timestamp,
+      createdAt: m.createdAt,
+    }));
+
+    reply.header("X-Next-Cursor", paginatedResult.nextCursor || "");
+    reply.header("X-Has-Next-Page", String(paginatedResult.hasNextPage));
+    reply.header("X-Page-Limit", String(paginatedResult.limit));
+    reply.header("Access-Control-Expose-Headers", "X-Next-Cursor, X-Has-Next-Page, X-Page-Limit");
+
+    return reply.code(200).send(successResponse({
+      items,
+      nextCursor: paginatedResult.nextCursor,
+      hasNextPage: paginatedResult.hasNextPage,
+      limit: paginatedResult.limit,
+    }));
+  } catch (err) {
+    console.error("listChatSessionMessagesController error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -320,6 +441,13 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
       return reply.code(400).send(errorResponse("Invalid session ID"));
     }
 
+    // Step 5.4: Calculate next sequence number for message
+    const lastMsg = await AIChatMessage.findOne({ sessionId })
+      .sort({ sequence: -1 })
+      .select("sequence")
+      .lean();
+    const userSeq = (lastMsg?.sequence || 0) + 1;
+
     const userMsg = {
       id: `usr_${Date.now()}`,
       sender: "user" as const,
@@ -330,7 +458,21 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
       createdAt: new Date()
     };
 
-    // 1. Atomically append User Message to session in MongoDB
+    // 1. Dual-write User Message to normalized collection
+    await AIChatMessage.create({
+      sessionId: new mongoose.Types.ObjectId(sessionId),
+      organizationId: new mongoose.Types.ObjectId(requesterOrgId),
+      userId: new mongoose.Types.ObjectId(userId),
+      sender: "user",
+      text: userMsg.text,
+      citations: [],
+      suggestedActions: [],
+      sequence: userSeq,
+      timestamp: userMsg.timestamp,
+      createdAt: userMsg.createdAt,
+    });
+
+    // Dual-write to session.messages in MongoDB for rollback safety
     const sessionBefore = await AIChatSession.findOneAndUpdate(
       { _id: sessionId, userId, organizationId: requesterOrgId, status: "active" },
       { $push: { messages: userMsg } },
@@ -353,16 +495,22 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
       phone: (p.userId as any)?.phone
     }));
 
-    // Extract previous conversation turns for multi-turn conversational memory (last 8 messages)
-    const historyTurns: ChatTurn[] = sessionBefore.messages
-      .slice(0, -1)
-      .slice(-8)
-      .map(m => ({
-        sender: m.sender as "user" | "ai",
-        text: m.text
-      }));
+    // Step 5.4: Limit provider context separately from retained history (last 8 turns / 16 messages)
+    const recentHistoryMsgs = await AIChatMessage.find({
+      sessionId,
+      sequence: { $lt: userSeq }
+    })
+      .sort({ sequence: -1 })
+      .limit(8)
+      .lean();
 
-    // 3. Execute request through Enterprise AI Gateway pipeline with multi-turn memory
+    recentHistoryMsgs.reverse();
+    const historyTurns: ChatTurn[] = recentHistoryMsgs.map(m => ({
+      sender: m.sender as "user" | "ai",
+      text: m.text
+    }));
+
+    // 3. Execute request through Enterprise AI Gateway pipeline with bounded memory
     const aiResponse = await aiGateway.execute({
       requestId: `req_${Date.now()}`,
       userId: req.user?.id || "",
@@ -375,6 +523,7 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
     }, patientMapList, { currentRoute, activePatientId, userRole: req.user?.role });
 
     // 4. Formulate AI Message
+    const aiSeq = userSeq + 1;
     const aiMsg = {
       id: `ai_${Date.now()}`,
       sender: "ai" as const,
@@ -385,11 +534,26 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
       createdAt: new Date()
     };
 
+    // Write AI message to normalized collection
+    await AIChatMessage.create({
+      sessionId: new mongoose.Types.ObjectId(sessionId),
+      organizationId: new mongoose.Types.ObjectId(requesterOrgId),
+      userId: new mongoose.Types.ObjectId(userId),
+      sender: "ai",
+      text: aiMsg.text,
+      citations: aiMsg.citations,
+      suggestedActions: aiMsg.suggestedActions,
+      sequence: aiSeq,
+      tokens: (aiResponse as any).tokens,
+      timestamp: aiMsg.timestamp,
+      createdAt: aiMsg.createdAt,
+    });
+
     const newTitle = isFirstUserTurn
       ? (query.trim().length > 30 ? query.trim().substring(0, 27) + "..." : query.trim())
       : undefined;
 
-    // 5. Atomically append AI Message and update title if first turn
+    // 5. Dual-write to session.messages and update title if first turn
     const updatedSession = await AIChatSession.findOneAndUpdate(
       { _id: sessionId, userId, organizationId: requesterOrgId, status: "active" },
       {
@@ -412,7 +576,6 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
   }
 }
 
-
 // ─── DELETE /api/ai/chat/sessions/:sessionId ───────────────────────────
 export async function deleteChatSessionController(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -428,8 +591,11 @@ export async function deleteChatSessionController(req: FastifyRequest, reply: Fa
     }
 
     if (hardDelete === "true") {
-      // Permanent deletion of sensitive clinical chat session and messages
-      await AIChatSession.deleteOne({ _id: sessionId, userId, organizationId: orgId });
+      // Step 5.4: Permanent deletion of sensitive clinical chat session and normalized messages
+      await Promise.all([
+        AIChatSession.deleteOne({ _id: sessionId, userId, organizationId: orgId }),
+        AIChatMessage.deleteMany({ sessionId, organizationId: orgId }),
+      ]);
       return reply.code(200).send(successResponse({ sessionId }, "Chat session permanently purged"));
     }
 
