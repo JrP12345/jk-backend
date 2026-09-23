@@ -3,10 +3,9 @@ import { Role } from "../models/Role.ts";
 import { User } from "../models/User.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { AuditLog } from "../models/AuditLog.ts";
-import { successResponse, errorResponse } from "../utilities/helpers.ts";
+import { successResponse, errorResponse, revokeAllRefreshTokens } from "../utilities/helpers.ts";
 import { invalidateRoleCache } from "../utilities/permissions.ts";
 import { getRequestOrganizationId, isRootRequest } from "../utilities/tenant.ts";
-import { revokeAllRefreshTokens } from "./auth.ts";
 import { broadcastRealtimeNotification } from "../notifications/websocket.ts";
 
 // Standard System Permissions Catalog with Human-Readable Labels & Categories
