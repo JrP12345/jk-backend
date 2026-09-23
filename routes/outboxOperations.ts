@@ -7,6 +7,7 @@ import {
   type DeadLetterKind,
 } from "../services/deadLetterReplay.ts";
 import { domainEventDeliveryWorker } from "../services/DomainEventDeliveryWorker.ts";
+import { resilientHttpClient } from "../utilities/resilientHttpClient.ts";
 
 export default async function outboxOperationsRoutes(app: FastifyInstance) {
   const rootOnly = { preHandler: [authenticate, requirePlatformRoot()] };
@@ -17,6 +18,15 @@ export default async function outboxOperationsRoutes(app: FastifyInstance) {
       return reply.send({ success: true, data: metrics });
     } catch (err: any) {
       return reply.code(500).send({ success: false, message: err?.message || "Failed to retrieve domain event metrics" });
+    }
+  });
+
+  app.get("/api/admin/operations/providers/metrics", rootOnly, async (_req, reply) => {
+    try {
+      const metrics = resilientHttpClient.getAllMetrics();
+      return reply.send({ success: true, data: metrics });
+    } catch (err: any) {
+      return reply.code(500).send({ success: false, message: err?.message || "Failed to retrieve provider metrics" });
     }
   });
 

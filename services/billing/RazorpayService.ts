@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { SaaSConfig } from "../../models/SaaSConfig.ts";
+import { resilientHttpClient, AmbiguousOutcomeError } from "../../utilities/resilientHttpClient.ts";
 
 export interface CreateOrderParams {
   amount: number; // in INR
@@ -97,26 +98,32 @@ export class RazorpayService {
       notes: params.notes || {},
     };
 
-    const response = await fetch("https://api.razorpay.com/v1/orders", {
-      method: "POST",
-      headers: {
-        "Authorization": `Basic ${auth}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
+    try {
+      const response = await resilientHttpClient.request<RazorpayOrderResponse>(
+        "https://api.razorpay.com/v1/orders",
+        {
+          provider: "razorpay",
+          method: "POST",
+          headers: {
+            "Authorization": `Basic ${auth}`,
+            "Content-Type": "application/json",
+          },
+          body: payload,
+          timeoutMs: 10_000,
+          idempotencyKey: params.receipt ? `rzp_order:${params.receipt}` : undefined,
+          enableCircuitBreaker: true,
+        },
+      );
 
-    if (!response.ok) {
-      const errText = await response.text();
-      if (response.status === 401) {
+      return response.data;
+    } catch (err: any) {
+      if (err.status === 401) {
         throw new Error(
-          `Razorpay Authentication Failed (401): The Key ID '${keyId}' or Key Secret saved in MongoDB is invalid or rejected by Razorpay. Please re-enter your valid Razorpay Key ID (rzp_test_...) and Key Secret in Dashboard → Admin → Billing and click Save.`
+          `Razorpay Authentication Failed (401): The Key ID '${keyId}' or Key Secret saved in MongoDB is invalid or rejected by Razorpay. Please re-enter your valid Razorpay Key ID (rzp_test_...) and Key Secret in Dashboard → Admin → Billing and click Save.`,
         );
       }
-      throw new Error(`Razorpay API Order Creation Failed (${response.status}): ${errText}`);
+      throw err;
     }
-
-    return (await response.json()) as RazorpayOrderResponse;
   }
 
   /**
@@ -167,21 +174,24 @@ export class RazorpayService {
     const payload: any = {};
     if (params.amount) payload.amount = Math.round(params.amount * 100);
 
-    const response = await fetch(`https://api.razorpay.com/v1/payments/${params.paymentId}/refund`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Basic ${auth}`,
-        "Content-Type": "application/json",
+    const idempotencyKey = `refund:${params.paymentId}:${params.amount || "full"}`;
+    const response = await resilientHttpClient.request(
+      `https://api.razorpay.com/v1/payments/${params.paymentId}/refund`,
+      {
+        provider: "razorpay",
+        method: "POST",
+        headers: {
+          "Authorization": `Basic ${auth}`,
+          "Content-Type": "application/json",
+        },
+        body: payload,
+        timeoutMs: 10_000,
+        idempotencyKey,
+        enableCircuitBreaker: true,
       },
-      body: JSON.stringify(payload),
-    });
+    );
 
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Razorpay Refund Failed (${response.status}): ${errText}`);
-    }
-
-    return await response.json();
+    return response.data;
   }
 }
 
