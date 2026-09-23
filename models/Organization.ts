@@ -35,7 +35,7 @@ const OrganizationSchema = new Schema({
     port: { type: Number, default: 587 },
     secure: { type: Boolean, default: false },
     user: { type: String, default: null },
-    pass: { type: String, default: null }, // stored as plain text (internal/self-hosted)
+    pass: { type: String, default: null, select: false }, // stored encrypted/internal, never selected by default
     fromEmail: { type: String, default: null },
     fromName: { type: String, default: null },
   },
@@ -44,7 +44,7 @@ const OrganizationSchema = new Schema({
     mode: { type: String, enum: ["disabled", "shared", "dedicated"], default: "shared" },
     wabaId: { type: String, default: null },
     phoneNumberId: { type: String, default: null },
-    accessToken: { type: String, default: null },
+    accessToken: { type: String, default: null, select: false }, // secret credential, never selected by default
     monthlyQuota: { type: Number, default: 500 },
     creditsBalance: { type: Number, default: 500 },
     creditsUsedThisMonth: { type: Number, default: 0 },
@@ -75,6 +75,12 @@ OrganizationSchema.set("toJSON", {
     ret.id = ret._id.toString();
     delete ret._id;
     delete ret.__v;
+    if (ret.smtp && "pass" in ret.smtp) {
+      delete ret.smtp.pass;
+    }
+    if (ret.whatsappConfig && "accessToken" in ret.whatsappConfig) {
+      delete ret.whatsappConfig.accessToken;
+    }
     return ret;
   }
 });

@@ -1334,7 +1334,7 @@ export async function getOrganizationSmtp(req: FastifyRequest, reply: FastifyRep
       if (defaultOrg) orgId = defaultOrg._id.toString();
     }
     if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
-    const org = await Organization.findById(orgId);
+    const org = await Organization.findById(orgId).select("+smtp.pass");
 
     if (!org) {
       return reply.send(successResponse({ smtp: null }, "No organization found"));
@@ -1388,7 +1388,7 @@ export async function updateOrganizationSmtp(req: FastifyRequest, reply: Fastify
     const result = await Organization.findByIdAndUpdate(
       orgId,
       { $set: smtpUpdate },
-      { returnDocument: "after" }
+      { returnDocument: "after", select: "+smtp.pass" }
     );
 
     return reply.send(successResponse({

@@ -103,7 +103,7 @@ export async function dispatchSmsWhatsAppNotification(options: SendMessageOption
     let didDeductCredit = false;
 
     if (options.organizationId) {
-      org = await Organization.findById(options.organizationId);
+      org = await Organization.findById(options.organizationId).select("+whatsappConfig.accessToken");
     }
 
     if (org?.whatsappConfig) {

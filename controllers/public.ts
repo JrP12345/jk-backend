@@ -24,11 +24,16 @@ import {
   hashTrackerCapability,
   isTrackerCapabilityEnforced,
 } from "../utilities/publicTracker.ts";
+import { toPublicOrganizationSummary, toPublicOrganizationDetail } from "../types/publicDtos.ts";
 
 export async function getOrganizations(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgs = await Organization.find({ isActive: true }).sort({ name: 1 });
-    return reply.code(200).send(successResponse(orgs));
+    const orgs = await Organization.find({ isActive: true })
+      .select("_id name address city phone email description image_url logo_url images timings working_days currency timezone isActive")
+      .sort({ name: 1 })
+      .lean();
+    const formatted = orgs.map(toPublicOrganizationSummary);
+    return reply.code(200).send(successResponse(formatted));
   } catch (err) {
     console.error("getOrganizations error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -43,7 +48,9 @@ export async function getOrganizationDetails(req: FastifyRequest, reply: Fastify
       return reply.code(400).send(errorResponse("Invalid organization ID"));
     }
 
-    const org = await Organization.findOne({ _id: id, isActive: true });
+    const org = await Organization.findOne({ _id: id, isActive: true })
+      .select("_id name address city phone email description image_url logo_url images timings working_days currency timezone isActive")
+      .lean();
 
     if (!org) {
       return reply.code(404).send(errorResponse("Organization not found"));
@@ -70,10 +77,9 @@ export async function getOrganizationDetails(req: FastifyRequest, reply: Fastify
         languages: d.languages
       }));
 
-    return reply.code(200).send(successResponse({
-      ...org.toJSON(),
-      doctors: formattedDoctors
-    }));
+    return reply.code(200).send(successResponse(
+      toPublicOrganizationDetail(org, formattedDoctors)
+    ));
   } catch (err) {
     console.error("getOrganizationDetails error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -415,7 +421,11 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
 
     const cleanDoctors = formattedDoctors.filter(d => d !== null);
 
-    const org = clinic.organizationId ? await Organization.findById(clinic.organizationId).lean() : null;
+    const org = clinic.organizationId
+      ? await Organization.findById(clinic.organizationId)
+          .select("_id name logo_url image_url images description currency phone email address city")
+          .lean()
+      : null;
     const effectiveLogo = clinic.logo || org?.logo_url || org?.image_url || null;
     const effectiveImages = (Array.isArray(clinic.images) && clinic.images.length > 0) ? clinic.images : (org?.images || []);
     const effectiveCover = org?.image_url || clinic.images?.[0] || effectiveLogo || null;

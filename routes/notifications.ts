@@ -14,7 +14,7 @@ import { enqueueTransactionalEmail } from "../services/CommunicationOutbox.ts";
 
 async function getOrganizationSmtp(organizationId?: string | null): Promise<SmtpConfig | null> {
   if (!organizationId) return null;
-  const organization = await Organization.findById(organizationId).select("smtp").lean();
+  const organization = await Organization.findById(organizationId).select("smtp +smtp.pass").lean();
   const smtp = (organization as any)?.smtp;
   if (!smtp?.host || !smtp?.user || !smtp?.pass) return null;
 
@@ -392,7 +392,7 @@ export default async function notificationRoutes(app: FastifyInstance) {
     // Load org SMTP config if available — decrypt password before use
     let orgSmtp: SmtpConfig | null = null;
     if (orgId) {
-      const org = await Organization.findById(orgId).select("smtp").lean();
+      const org = await Organization.findById(orgId).select("smtp +smtp.pass").lean();
       const smtp = (org as any)?.smtp;
       if (smtp?.host && smtp?.user && smtp?.pass) {
         orgSmtp = {
