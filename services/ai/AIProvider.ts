@@ -74,6 +74,9 @@ export interface AIRequest {
   maxTokens?: number;
   systemDirective?: string;
   chatHistory?: ChatTurn[];
+  dataClassification?: "nonclinical" | "deidentified_clinical" | "identifiable_clinical";
+  purpose?: string;
+  retentionCategory?: string;
 }
 
 export interface AIResponse {
@@ -84,6 +87,8 @@ export interface AIResponse {
   usage: AIUsage;
   provider: string;
   model: string;
+  dataCategoriesDisclosed?: string[];
+  privacyClassification?: string;
 }
 
 export interface AIStreamChunk {

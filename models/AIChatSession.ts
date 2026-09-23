@@ -22,6 +22,7 @@ const AIChatSessionSchema = new Schema({
   title: { type: String, default: "New Clinical Session", required: true },
   messages: [MessageItemSchema],
   status: { type: String, enum: ["active", "archived"], default: "active", index: true },
+  retentionExpiresAt: { type: Date, default: null, index: true },
   deletedAt: { type: Date, default: null, index: true }
 }, { timestamps: true });
 

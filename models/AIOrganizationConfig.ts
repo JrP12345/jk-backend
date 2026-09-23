@@ -8,6 +8,17 @@ const AIOrganizationConfigSchema = new Schema({
     default: "CLINICAL_FAST"
   },
   monthlyTokenQuota: { type: Number, default: 10000000 },
+  externalAIKillSwitch: { type: Boolean, default: false, index: true },
+  defaultDataClassification: {
+    type: String,
+    enum: ["nonclinical", "deidentified_clinical", "identifiable_clinical"],
+    default: "deidentified_clinical"
+  },
+  allowIdentifiableClinical: { type: Boolean, default: false },
+  providerBAA: { type: Boolean, default: false },
+  zeroRetentionContract: { type: Boolean, default: true },
+  messageRetentionDays: { type: Number, default: 30 },
+  allowedProviders: [{ type: String }],
   featureFlags: {
     enableStreaming: { type: Boolean, default: true },
     enablePHIAnonymization: { type: Boolean, default: true },

@@ -33,11 +33,17 @@ export async function generateSOAPNoteController(req: FastifyRequest, reply: Fas
       return reply.code(400).send(errorResponse("chiefComplaint is required for SOAP note generation"));
     }
 
-    const draft = await aiService.generateSOAPNote({
+    const orgId = await resolveTargetOrganizationId(req);
+    const userId = req.user?.id || "";
+
+    const draft = await aiGateway.generateSOAPNote({
       chiefComplaint: chiefComplaint.trim(),
       vitals,
       examinationFindings,
       history,
+    }, {
+      organizationId: orgId || "",
+      userId
     });
 
     return reply.code(200).send(successResponse(draft, "SOAP note draft generated successfully"));
@@ -46,7 +52,7 @@ export async function generateSOAPNoteController(req: FastifyRequest, reply: Fas
     if (err instanceof AIServiceUnavailableError) {
       return reply.code(503).send(errorResponse(err.message));
     }
-    return reply.code(500).send(errorResponse("Internal server error"));
+    return reply.code(err.statusCode || 500).send(errorResponse(err.message || "Internal server error"));
   }
 }
 
@@ -226,7 +232,8 @@ export async function createChatSessionController(req: FastifyRequest, reply: Fa
       userId,
       patientId: patientId && mongoose.Types.ObjectId.isValid(patientId) ? patientId : null,
       title: initialTitle || "New Clinical Session",
-      messages: [welcomeMsg]
+      messages: [welcomeMsg],
+      retentionExpiresAt: new Date(Date.now() + 30 * 86400 * 1000)
     });
 
     return reply.code(201).send(successResponse(session, "Chat session initialized"));
@@ -379,6 +386,7 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
 export async function deleteChatSessionController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { sessionId } = req.params as { sessionId: string };
+    const { hardDelete } = (req.query || {}) as { hardDelete?: string };
     const userId = req.user?.id;
     const orgId = await resolveTargetOrganizationId(req);
 
@@ -388,9 +396,20 @@ export async function deleteChatSessionController(req: FastifyRequest, reply: Fa
       return reply.code(400).send(errorResponse("Invalid session ID"));
     }
 
+    if (hardDelete === "true") {
+      // Permanent deletion of sensitive clinical chat session and messages
+      await AIChatSession.deleteOne({ _id: sessionId, userId, organizationId: orgId });
+      return reply.code(200).send(successResponse({ sessionId }, "Chat session permanently purged"));
+    }
+
+    // Soft delete/archive with 7-day retention grace before purge
     await AIChatSession.updateOne(
       { _id: sessionId, userId, organizationId: orgId },
-      { status: "archived", deletedAt: new Date() }
+      {
+        status: "archived",
+        deletedAt: new Date(),
+        retentionExpiresAt: new Date(Date.now() + 7 * 86400 * 1000)
+      }
     );
 
     return reply.code(200).send(successResponse({ sessionId }, "Chat session archived"));
@@ -414,13 +433,17 @@ export async function queryHealthAssistantController(req: FastifyRequest, reply:
       return reply.code(400).send(errorResponse("query is required"));
     }
 
+    const orgId = await resolveTargetOrganizationId(req);
     const { finalSummary, targetPatientId } = await buildRAGContext(req, patientId, patientRecordSummary);
 
-    const response = await aiService.queryPatientHealthAssistant({
+    const response = await aiGateway.queryPatientHealthAssistant({
       patientId: targetPatientId || req.user?.id || "general",
       query: query.trim(),
       patientRecordSummary: finalSummary,
       chatHistory: chatHistory || [],
+    }, {
+      organizationId: orgId || "",
+      userId: req.user?.id || ""
     });
 
     return reply.code(200).send(successResponse(response));
@@ -429,7 +452,7 @@ export async function queryHealthAssistantController(req: FastifyRequest, reply:
     if (err instanceof AIServiceUnavailableError) {
       return reply.code(503).send(errorResponse(err.message));
     }
-    return reply.code(500).send(errorResponse("Internal server error"));
+    return reply.code(err.statusCode || 500).send(errorResponse(err.message || "Internal server error"));
   }
 }
 

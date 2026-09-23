@@ -3,6 +3,7 @@ import { AIToolExecutionLog } from "../models/AIToolExecutionLog.ts";
 import { aiToolRouter } from "../services/ai/AIToolRouter.ts";
 import { aiToolRegistry } from "../services/ai/AIToolRegistry.ts";
 import { aiService } from "../services/ai/AIService.ts";
+import { aiGateway } from "../services/ai/AIGateway.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 
 // ─── POST /api/ai/tools/intent ─────────────────────────────────────────
@@ -95,11 +96,14 @@ export async function approveAndExecuteToolController(req: FastifyRequest, reply
         return reply.code(400).send(errorResponse("chiefComplaint is required for SOAP note generation"));
       }
 
-      result = await aiService.generateSOAPNote({
+      result = await aiGateway.generateSOAPNote({
         chiefComplaint: input.chiefComplaint.trim(),
         vitals: input.vitals,
         examinationFindings: input.examinationFindings,
         history: input.history,
+      }, {
+        organizationId: log.organizationId?.toString() || "",
+        userId: req.user?.id || ""
       });
     } else if (log.toolName === "createAppointmentTool") {
       const { Appointment } = await import("../models/Appointment.ts");

@@ -47,26 +47,10 @@ export async function queryAIGatewayController(req: FastifyRequest, reply: Fasti
       systemDirective: currentRoute ? `Clinician viewing screen "${currentRoute}".` : "Enterprise Clinical Context"
     }, patientMapList, { currentRoute, activePatientId, userRole: req.user?.role });
 
-    // Asynchronously record telemetry metric
-    AIObservabilityMetric.create({
-      correlationId: response.correlationId,
-      organizationId: orgId,
-      userId,
-      sessionId: sessionId || "general",
-      provider: response.provider,
-      model: response.model,
-      modelAlias: modelAlias || "CLINICAL_FAST",
-      inputTokens: response.usage.inputTokens,
-      outputTokens: response.usage.outputTokens,
-      estimatedCostUSD: response.usage.estimatedCostUSD,
-      latencyMs: response.usage.latencyMs,
-      status: "success"
-    }).catch(err => console.error("Error writing AIObservabilityMetric:", err));
-
     return reply.code(200).send(successResponse(response));
   } catch (err: any) {
     console.error("queryAIGatewayController error:", err);
-    return reply.code(500).send(errorResponse(err.message || "Internal AI Gateway error"));
+    return reply.code(err.statusCode || 500).send(errorResponse(err.message || "Internal AI Gateway error"));
   }
 }
 
@@ -128,22 +112,6 @@ export async function streamAIGatewayController(req: FastifyRequest, reply: Fast
       undefined,
       { currentRoute, activePatientId, userRole: req.user?.role }
     );
-
-    // Asynchronously record telemetry metric for stream
-    AIObservabilityMetric.create({
-      correlationId: response.correlationId,
-      organizationId: orgId,
-      userId,
-      sessionId: "stream",
-      provider: response.provider,
-      model: response.model,
-      modelAlias: modelAlias || "CLINICAL_FAST",
-      inputTokens: response.usage.inputTokens,
-      outputTokens: response.usage.outputTokens,
-      estimatedCostUSD: response.usage.estimatedCostUSD,
-      latencyMs: response.usage.latencyMs,
-      status: "success"
-    }).catch(err => console.error("Error writing AIObservabilityMetric (stream):", err));
 
     StreamingService.endStream(reply, correlationId);
   } catch (err: any) {

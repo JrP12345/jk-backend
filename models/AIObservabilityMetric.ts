@@ -12,8 +12,16 @@ const AIObservabilityMetricSchema = new Schema({
   outputTokens: { type: Number, default: 0 },
   estimatedCostUSD: { type: Number, default: 0 },
   latencyMs: { type: Number, default: 0 },
-  status: { type: String, enum: ["success", "failover", "error"], default: "success", index: true },
+  status: { type: String, enum: ["success", "failover", "error", "blocked_privacy", "blocked_killswitch"], default: "success", index: true },
   errorMessage: { type: String, default: null },
+  privacyClassification: {
+    type: String,
+    enum: ["nonclinical", "deidentified_clinical", "identifiable_clinical"],
+    default: "deidentified_clinical"
+  },
+  dataCategoriesDisclosed: [{ type: String }],
+  purpose: { type: String, default: "clinical_assistant" },
+  retentionCategory: { type: String, default: "operational_transient" },
   timestamp: { type: Date, default: Date.now, index: true }
 }, { timestamps: true });
 
