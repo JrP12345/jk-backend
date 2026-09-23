@@ -1,8 +1,8 @@
 import mongoose, { Schema } from "mongoose";
 
 const DocumentUploadSchema = new Schema({
-  patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
-  organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
+  patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true },
+  organizationId: { type: Schema.Types.ObjectId, ref: "Organization" },
   uploadedByUserId: { type: Schema.Types.ObjectId, ref: "User", required: true },
 
   fileName: { type: String, required: true },
@@ -49,6 +49,7 @@ const DocumentUploadSchema = new Schema({
 
 DocumentUploadSchema.index({ patientId: 1, uploadedAt: -1 });
 DocumentUploadSchema.index({ organizationId: 1, category: 1 });
+DocumentUploadSchema.index({ organizationId: 1, patientId: 1, uploadedAt: -1 });
 
 DocumentUploadSchema.virtual("id").get(function () {
   return this._id.toHexString();

@@ -150,3 +150,39 @@ node --env-file=.env --experimental-strip-types scripts/audit-remediation.ts --e
 npm run audit:remediate -- --org=<ORG_ID> --reason="VAPT compliance audit remediation" --operator=<ROOT_USER_ID>
 ```
 
+---
+
+## 8. Multi-Replica Horizontal Scaling Architecture (Phase 6)
+
+### 8.1 API Replicas & Stateless Invariants
+HealthOS API instances are fully stateless and run with at least 2 active replicas behind a reverse proxy / load balancer:
+- **No in-process sticky state**: User sessions, permissions, and locks do not depend on routing affinity.
+- **Session Revocation Broadcast**: Handled via Redis Pub/Sub channel `session:events` and `session:revoke`. When any replica revokes a session or token family, all peer replicas immediately evict local memory caches and disconnect user WebSockets.
+- **Authoritative Permission Invalidation**: Changes to roles or user permissions broadcast across `auth:role:invalidate` and `perm:invalidate`, immediately purging in-memory role caches across all nodes.
+- **WebSocket Pub/Sub & Fan-Out**: Real-time notifications and queue display updates broadcast via Redis pub/sub (`user_notifications:*`, `clinic_queue:*`, `clinic_clinical:*`). Each node tags outgoing messages with `NODE_ID` to guarantee self-echo suppression.
+- **Graceful Draining**: On `SIGTERM`/`SIGINT`, readiness probes immediately return HTTP 503 to decouple from load-balancer ingress traffic, draining in-flight requests for `SHUTDOWN_DRAIN_MS` (default 2000ms) before terminating listeners.
+
+### 8.2 Distributed Locks & Leader-Elected Background Jobs
+- **WorkerLease**: Scheduled jobs (e.g. `noShowSweepJob`, `disruptionTimeoutJob`) acquire an atomic distributed lease backed by MongoDB with unique index on `name`.
+- **Fail-Safe Invariant**: If a lease acquisition fails or encounters network partition, replicas fail safely by skipping execution rather than falling back to competing local work.
+
+### 8.3 Worker Scaling & Backpressure
+- **Independent Concurrency**: Each worker defines concurrency independently via `scalability.ts` (`DOMAIN_EVENT_WORKER_BATCH_SIZE`, `OUTBOUND_MESSAGE_WORKER_BATCH_SIZE`).
+- **Single-Worker Claim Semantics**: Outbox rows are claimed atomically with `findOneAndUpdate` using unique `lockedBy` UUIDs, status CAS updates, and TTL locks (`lockedUntil`).
+- **Dynamic Backpressure**: When queue age exceeds `WORKER_BACKPRESSURE_QUEUE_AGE_SEC` (300s) or pending count exceeds `WORKER_BACKPRESSURE_PENDING_LIMIT` (500), workers throttle poll rates by `WORKER_BACKPRESSURE_POLL_MULTIPLIER` to prevent downstream cascading failures.
+- **Queue Age Metrics**: Monitored via `/health` metrics reporting `oldestEventAgeMs`, `pendingCount`, `retryingCount`, `processingCount`, and `inBackpressure`.
+
+### 8.4 Resource Budgets
+Centralized limits in `backend/utilities/scalability.ts`:
+- Request body ceiling: `MAX_REQUEST_BODY_BYTES` (10 MB)
+- Single-file upload: `MAX_UPLOAD_BYTES` (25 MB)
+- Hard pagination ceiling: `MAX_PAGINATION_LIMIT` (100 items, default 20)
+- Report range ceiling: `MAX_REPORT_RANGE_DAYS` (365 days)
+- Report export row limit: `MAX_REPORT_ROWS` (10,000 rows)
+- AI context window: `MAX_AI_CONTEXT_TURNS` (8 turns)
+- AI session message ceiling: `MAX_AI_SESSION_MESSAGES` (500 messages)
+- Domain event retry ceiling: `MAX_EVENT_RETRY_COUNT` (5 retries)
+- Database pool size: `DB_POOL_SIZE` (50 in production, 10 in dev)
+- Per-tenant rate limit: `TENANT_RATE_LIMIT_PER_MINUTE` (2,000 req/min enforced via `tenantRateLimiter`)
+
+

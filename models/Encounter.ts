@@ -1,10 +1,10 @@
 import mongoose, { Schema } from "mongoose";
 
 const EncounterSchema = new Schema({
-  organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
+  organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true },
   clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
   appointmentId: { type: Schema.Types.ObjectId, ref: "Appointment", index: true },
-  patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
+  patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true },
   doctorId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
 
   encounterType: { type: String, enum: ["opd", "ipd", "emergency", "telehealth"], default: "opd" },
@@ -18,6 +18,7 @@ const EncounterSchema = new Schema({
 EncounterSchema.index({ organizationId: 1, appointmentId: 1, status: 1 });
 EncounterSchema.index({ clinicId: 1, status: 1 });
 EncounterSchema.index({ patientId: 1, createdAt: -1 });
+EncounterSchema.index({ organizationId: 1, clinicId: 1, status: 1, createdAt: -1 });
 
 EncounterSchema.virtual("id").get(function () {
   return this._id.toHexString();

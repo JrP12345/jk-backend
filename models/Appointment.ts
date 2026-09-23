@@ -188,6 +188,8 @@ AppointmentSchema.index({ clinicId: 1, status: 1, appointmentTime: -1 });
 AppointmentSchema.index({ clinicId: 1, status: 1, appointmentTime: 1 });
 AppointmentSchema.index({ organizationId: 1, clinicId: 1, status: 1, appointmentTime: 1 });
 AppointmentSchema.index({ clinicId: 1, doctorId: 1, appointmentTime: 1, queuePosition: 1 });
+AppointmentSchema.index({ patientId: 1, organizationId: 1, createdAt: -1 });
+AppointmentSchema.index({ status: 1, disruptionResponseDeadline: 1 });
 AppointmentSchema.index(
   { activeConsultationDoctorDayKey: 1 },
   { name: "uniq_active_consultation_per_doctor_day", unique: true, sparse: true },

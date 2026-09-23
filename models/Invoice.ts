@@ -16,12 +16,12 @@ const InvoiceItemSchema = new Schema({
 });
 
 const InvoiceSchema = new Schema({
-  invoiceNumber: { type: String, required: true, unique: true, index: true },
-  organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
+  invoiceNumber: { type: String, required: true, unique: true },
+  organizationId: { type: Schema.Types.ObjectId, ref: "Organization" },
   patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
   appointmentId: { type: Schema.Types.ObjectId, ref: "Appointment", index: true },
   encounterId: { type: Schema.Types.ObjectId, ref: "Encounter", index: true },
-  clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
+  clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true },
   doctorId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
   
   items: [InvoiceItemSchema],
@@ -79,6 +79,7 @@ const InvoiceSchema = new Schema({
 
 InvoiceSchema.index({ clinicId: 1, status: 1 });
 InvoiceSchema.index({ organizationId: 1, createdAt: -1 });
+InvoiceSchema.index({ organizationId: 1, patientId: 1, createdAt: -1 });
 
 InvoiceSchema.virtual("id").get(function() {
   return this._id.toHexString();

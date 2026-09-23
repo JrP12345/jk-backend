@@ -8,12 +8,12 @@ const ImpersonationSchema = new Schema({
 }, { _id: false });
 
 const RefreshTokenSchema = new Schema({
-  userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
+  userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
   familyId: { type: String, required: true, index: true },
   generation: { type: Number, default: 1 },
   authVersion: { type: Number, default: 1 },
-  tokenHash: { type: String, required: true, unique: true, index: true },
+  tokenHash: { type: String, required: true, unique: true },
   expiresAt: { type: Date, required: true },
   revoked: { type: Boolean, default: false, index: true },
   revocationReason: { type: String, enum: ["rotated", "displaced", "terminated", "logout", "reuse_detected"], default: "rotated" },
@@ -30,6 +30,7 @@ const RefreshTokenSchema = new Schema({
 
 // Automatically remove expired tokens via MongoDB TTL index
 RefreshTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+RefreshTokenSchema.index({ userId: 1, revoked: 1, createdAt: -1 });
 
 RefreshTokenSchema.virtual("id").get(function() {
   return this._id.toHexString();

@@ -14,13 +14,13 @@ import { tenantPlugin } from "../utilities/tenantPlugin.ts";
  */
 const LabOrderSchema = new Schema({
   // ─── Multi-Tenant Isolation ────────────────────────────────────
-  organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
+  organizationId: { type: Schema.Types.ObjectId, ref: "Organization" },
   clinicId:       { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
 
   // ─── Encounter Aggregate Root Linkage ──────────────────────────
   // Optional for backward compatibility with pre-v1.6 orders
   encounterId: { type: Schema.Types.ObjectId, ref: "Encounter", index: true, default: null },
-  appointmentId: { type: Schema.Types.ObjectId, ref: "Appointment", index: true, default: null },
+  appointmentId: { type: Schema.Types.ObjectId, ref: "Appointment", default: null },
 
   // ─── Clinical Context ──────────────────────────────────────────
   patientId:      { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
@@ -81,6 +81,8 @@ const LabOrderSchema = new Schema({
 }, { timestamps: true });
 
 LabOrderSchema.index({ appointmentId: 1, status: 1 });
+LabOrderSchema.index({ organizationId: 1, patientId: 1, createdAt: -1 });
+LabOrderSchema.index({ organizationId: 1, clinicId: 1, status: 1, createdAt: -1 });
 
 // Apply automatic multi-tenant scoping
 LabOrderSchema.plugin(tenantPlugin);

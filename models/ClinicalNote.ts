@@ -10,9 +10,9 @@ const StructuredDiagnosisSchema = new Schema({
 });
 
 const ClinicalNoteSchema = new Schema({
-  organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
+  organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true },
   clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
-  encounterId: { type: Schema.Types.ObjectId, ref: "Encounter", required: true, index: true },
+  encounterId: { type: Schema.Types.ObjectId, ref: "Encounter", required: true },
   patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
   doctorId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
 
@@ -71,6 +71,7 @@ const ClinicalNoteSchema = new Schema({
 }, { timestamps: true });
 
 ClinicalNoteSchema.index({ organizationId: 1, patientId: 1, isLatest: 1 });
+ClinicalNoteSchema.index({ encounterId: 1, version: -1 });
 
 // Apply automatic multi-tenant scoping
 ClinicalNoteSchema.plugin(tenantPlugin);

@@ -1,4 +1,5 @@
 import mongoose, { Schema } from "mongoose";
+import { MAX_EVENT_RETRY_COUNT } from "../utilities/scalability.ts";
 
 export interface IDomainEventOutbox extends mongoose.Document {
   idempotencyKey: string;
@@ -37,7 +38,7 @@ const DomainEventOutboxSchema = new Schema<IDomainEventOutbox>(
       index: true,
     },
     attempts: { type: Number, default: 0 },
-    maxAttempts: { type: Number, default: 5 },
+    maxAttempts: { type: Number, default: MAX_EVENT_RETRY_COUNT },
     nextAttemptAt: { type: Date, default: Date.now, index: true },
     lockedAt: { type: Date },
     lockedUntil: { type: Date, index: true },

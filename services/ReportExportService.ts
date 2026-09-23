@@ -4,6 +4,7 @@ import { ClinicalNote } from "../models/ClinicalNote.ts";
 import { MedicineBatch } from "../models/MedicineBatch.ts";
 import { Clinic } from "../models/Clinic.ts";
 import mongoose from "mongoose";
+import { MAX_REPORT_ROWS } from "../utilities/scalability.ts";
 
 // ─── TYPED REPORT-ROW DTOS (Finding: Step 3.2) ────────────────────────
 
@@ -55,7 +56,10 @@ export async function generateCsvReport(
   reportType: "billing" | "clinical" | "pharmacy",
   organizationId?: string,
   clinicId?: string,
-  version: "v1" | "v2" = "v1"
+  version: "v1" | "v2" = "v1",
+  startDate?: string,
+  endDate?: string,
+  maxRows: number = MAX_REPORT_ROWS,
 ): Promise<string> {
   const filter: any = {};
 
@@ -67,12 +71,20 @@ export async function generateCsvReport(
     filter.clinicId = new mongoose.Types.ObjectId(clinicId);
   }
 
+  if (startDate || endDate) {
+    filter.createdAt = {};
+    if (startDate) filter.createdAt.$gte = new Date(startDate);
+    if (endDate) filter.createdAt.$lte = new Date(endDate);
+  }
+
+  const boundedLimit = Math.min(Math.max(1, maxRows), MAX_REPORT_ROWS);
+
   // 1. BILLING REPORT
   if (reportType === "billing") {
     const invoices = await Invoice.find(filter)
       .populate("patientId", "name")
       .sort({ createdAt: -1 })
-      .limit(500)
+      .limit(boundedLimit)
       .lean();
 
     const dtos: BillingReportRowDTO[] = invoices.map((inv: any) => ({
@@ -107,7 +119,7 @@ export async function generateCsvReport(
       .populate("patientId", "name")
       .populate("doctorId", "name")
       .sort({ createdAt: -1 })
-      .limit(500)
+      .limit(boundedLimit)
       .lean();
 
     const encounterIds = encounters.map(e => e._id);
@@ -184,7 +196,7 @@ export async function generateCsvReport(
   const batches = await MedicineBatch.find(pharmacyFilter)
     .populate("medicineId", "name code")
     .sort({ expiryDate: 1 })
-    .limit(500)
+    .limit(boundedLimit)
     .lean();
 
   const dtos: PharmacyReportRowDTO[] = batches.map((b: any) => ({

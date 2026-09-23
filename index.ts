@@ -72,7 +72,14 @@ import fastifySwaggerUi from "@fastify/swagger-ui";
 import { apiV1VersioningPlugin } from "./utilities/versioningPlugin.ts";
 import { csrfProtection } from "./middleware/csrf.ts";
 import { sanitizeMiddleware } from "./middleware/sanitize.ts";
+import { tenantRateLimiter } from "./middleware/tenantRateLimiter.ts";
 import { registerProfilingHooks, getHandlerProfilingMetrics } from "./utilities/profiling.ts";
+import { initReplicaCoordination } from "./utilities/replicaCoordination.ts";
+import {
+  MAX_REQUEST_BODY_BYTES,
+  GLOBAL_RATE_LIMIT_PER_MINUTE,
+  SHUTDOWN_DRAIN_MS,
+} from "./utilities/scalability.ts";
 
 const app = fastify({
   logger: {
@@ -85,7 +92,7 @@ const app = fastify({
       "req.body.twoFactorSecret",
     ],
   },
-  bodyLimit: 10485760, // 10MB, reverse-proxy aware
+  bodyLimit: MAX_REQUEST_BODY_BYTES, // Centralized resource budget
   trustProxy: process.env.TRUSTED_PROXY_HOPS
     ? parseInt(process.env.TRUSTED_PROXY_HOPS, 10)
     : (process.env.TRUSTED_PROXY_CIDRS
@@ -204,6 +211,9 @@ app.addHook("preValidation", sanitizeMiddleware);
 // Register CSRF protection guard on state-changing requests
 app.addHook("preHandler", csrfProtection);
 
+// Register per-tenant rate limit guard (Step 6.4)
+app.addHook("preHandler", tenantRateLimiter);
+
 app.setErrorHandler(async (error: any, request, reply) => {
   if (error.validation) {
     return reply.code(400).send({
@@ -272,7 +282,7 @@ app.register(cors, {
 });
 
 app.register(rateLimit, {
-  max: process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test" ? 10000 : 500,
+  max: GLOBAL_RATE_LIMIT_PER_MINUTE,
   timeWindow: "1 minute",
   ...(redisClient ? { redis: redisClient } : {})
 });
@@ -379,6 +389,10 @@ async function startServer() {
     markBootstrapComplete();
     app.log.info("✓ Application bootstrap completed successfully.");
 
+    // 2.5 Initialize multi-replica coordination
+    initReplicaCoordination();
+    app.log.info("✓ Multi-replica coordination subscriber initialized.");
+
     // 3. Start scheduled no-show sweeper if running inline background jobs
     if (process.env.RUN_INLINE_JOBS === "true" || process.env.NODE_ENV !== "production") {
       startNoShowSweepJob();
@@ -402,7 +416,7 @@ const gracefulShutdown = async (signal: string) => {
 
     // Step 1: Remove server from traffic by failing readiness probes immediately
     markShuttingDown();
-    const drainMs = process.env.NODE_ENV === "test" ? 0 : Number(process.env.SHUTDOWN_DRAIN_MS) || 2000;
+    const drainMs = SHUTDOWN_DRAIN_MS;
     if (drainMs > 0) {
       app.log.info(`Draining inbound traffic for ${drainMs}ms before closing listeners...`);
       await new Promise((resolve) => setTimeout(resolve, drainMs));

@@ -3,6 +3,7 @@ import { RefreshToken } from "../models/RefreshToken.ts";
 import { User } from "../models/User.ts";
 import { redisClient, publishRedisEvent, createRedisSubscriber } from "./redis.ts";
 import { disconnectUserWebSockets } from "../notifications/websocket.ts";
+import { revokeSessionFamily } from "./replicaCoordination.ts";
 import { logger } from "./logger.ts";
 
 export interface SessionState {
@@ -51,6 +52,15 @@ if (sessionSubClient) {
             }
           }
           disconnectUserWebSockets(event.userId, 4001, "All user sessions terminated");
+        } else if (event.type === "REVOKE_FAMILY" && event.familyId) {
+          if (Array.isArray(event.sessionIds)) {
+            for (const sid of event.sessionIds) {
+              localSessionMemoryCache.delete(sid);
+            }
+          }
+          if (event.userId) {
+            disconnectUserWebSockets(event.userId, 4003, `Token family revoked: ${event.reason || "reuse_detected"}`);
+          }
         }
       } catch {
         // safe ignore
@@ -282,12 +292,23 @@ export async function revokeTokenFamily(familyId: string, reason: string = "reus
   const tokens = await RefreshToken.find({ familyId }).select("_id userId").lean();
   await RefreshToken.updateMany({ familyId }, { revoked: true, revocationReason: reason });
 
-  tokens.forEach((t) => {
-    localSessionMemoryCache.delete(t._id.toString());
+  const sessionIds = tokens.map((t) => t._id.toString());
+  sessionIds.forEach((sid) => {
+    localSessionMemoryCache.delete(sid);
   });
 
   const firstUser = tokens[0]?.userId?.toString();
   if (firstUser) {
     disconnectUserWebSockets(firstUser, 4003, `Token family revoked: ${reason}`);
   }
+
+  // Multi-replica synchronization
+  await revokeSessionFamily(familyId);
+  await publishRedisEvent("session:events", {
+    type: "REVOKE_FAMILY",
+    familyId,
+    sessionIds,
+    userId: firstUser,
+    reason,
+  });
 }

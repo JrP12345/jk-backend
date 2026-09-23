@@ -1,4 +1,5 @@
 import mongoose, { Schema } from "mongoose";
+import { MAX_OUTBOUND_RETRY_COUNT } from "../utilities/scalability.ts";
 
 export interface IOutboundMessage extends mongoose.Document {
   kind: "payment_receipt" | "communication_template" | "whatsapp_document" | "whatsapp_freeform" | "transactional_email";
@@ -39,7 +40,7 @@ const OutboundMessageSchema = new Schema<IOutboundMessage>(
       index: true,
     },
     attempts: { type: Number, default: 0 },
-    maxAttempts: { type: Number, default: 5 },
+    maxAttempts: { type: Number, default: MAX_OUTBOUND_RETRY_COUNT },
     nextAttemptAt: { type: Date, default: Date.now, index: true },
     lockedAt: { type: Date },
     lockedUntil: { type: Date, index: true },

@@ -16,7 +16,7 @@ const MessageItemSchema = new Schema({
 }, { _id: false });
 
 const AIChatSessionSchema = new Schema({
-  organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
+  organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true },
   userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
   patientId: { type: Schema.Types.ObjectId, ref: "Patient", default: null, index: true },
   title: { type: String, default: "New Clinical Session", required: true },
@@ -25,6 +25,8 @@ const AIChatSessionSchema = new Schema({
   retentionExpiresAt: { type: Date, default: null, index: true },
   deletedAt: { type: Date, default: null, index: true }
 }, { timestamps: true });
+
+AIChatSessionSchema.index({ organizationId: 1, userId: 1, deletedAt: 1, updatedAt: -1 });
 
 AIChatSessionSchema.virtual("id").get(function() {
   return this._id.toHexString();

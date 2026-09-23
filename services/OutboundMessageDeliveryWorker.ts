@@ -13,6 +13,14 @@ import { whatsAppCloudApiService } from "./WhatsAppCloudApiService.ts";
 import { NotificationLog } from "../models/NotificationLog.ts";
 import { emailProvider } from "../notifications/providers/emailProvider.ts";
 
+import {
+  OUTBOUND_MESSAGE_WORKER_BATCH_SIZE,
+  OUTBOUND_MESSAGE_WORKER_POLL_MS,
+  WORKER_BACKPRESSURE_QUEUE_AGE_SEC,
+  WORKER_BACKPRESSURE_PENDING_LIMIT,
+  WORKER_BACKPRESSURE_POLL_MULTIPLIER,
+} from "../utilities/scalability.ts";
+
 const LOCK_DURATION_MS = 60_000;
 const PERMANENT_COMMUNICATION_FAILURES = new Set([
   "PATIENT_OPTED_OUT_WHATSAPP",
@@ -24,16 +32,31 @@ const PERMANENT_COMMUNICATION_FAILURES = new Set([
 
 class PermanentDeliveryError extends Error {}
 
+export interface OutboundMessageMetrics {
+  oldestMessageAgeMs: number | null;
+  pendingCount: number;
+  retryingCount: number;
+  processingCount: number;
+  failedCount: number;
+  sentCount: number;
+  inBackpressure: boolean;
+}
+
 /** Durable dispatcher for receipts and encrypted clinical communication templates. */
 export class OutboundMessageDeliveryWorker {
   private timer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
+  private inBackpressure = false;
 
-  public start(intervalMs = 500) {
+  public start(intervalMs = OUTBOUND_MESSAGE_WORKER_POLL_MS) {
     if (this.timer) return;
     this.stopped = false;
     this.timer = setInterval(() => {
-      this.processBatch().catch((error) => console.error("[OutboundMessageWorker] Batch failed:", error));
+      const batchSize = this.inBackpressure
+        ? Math.max(1, Math.floor(OUTBOUND_MESSAGE_WORKER_BATCH_SIZE / WORKER_BACKPRESSURE_POLL_MULTIPLIER))
+        : OUTBOUND_MESSAGE_WORKER_BATCH_SIZE;
+
+      this.processBatch(batchSize).catch((error) => console.error("[OutboundMessageWorker] Batch failed:", error));
     }, intervalMs);
     this.timer.unref?.();
   }
@@ -44,7 +67,7 @@ export class OutboundMessageDeliveryWorker {
     this.timer = null;
   }
 
-  public async processBatch(batchSize = 10) {
+  public async processBatch(batchSize = OUTBOUND_MESSAGE_WORKER_BATCH_SIZE) {
     if (this.stopped) return { processed: 0 };
     const results = await Promise.allSettled(Array.from({ length: batchSize }, () => this.processOne()));
     return { processed: results.filter((result) => result.status === "fulfilled" && result.value).length };
@@ -149,6 +172,54 @@ export class OutboundMessageDeliveryWorker {
       );
     }
     return true;
+  }
+
+  /**
+   * Real-time metrics for monitoring queue depth, age, and backpressure state.
+   */
+  public async getMetrics(): Promise<OutboundMessageMetrics> {
+    const stats = await OutboundMessage.aggregate([
+      { $group: { _id: "$status", count: { $sum: 1 } } },
+    ]);
+
+    const counts: Record<string, number> = {
+      pending: 0,
+      retrying: 0,
+      processing: 0,
+      failed: 0,
+      sent: 0,
+    };
+
+    for (const item of stats) {
+      if (item._id && typeof counts[item._id] === "number") {
+        counts[item._id] = item.count;
+      }
+    }
+
+    const oldest = await OutboundMessage.findOne(
+      { status: { $in: ["pending", "retrying"] } },
+      { createdAt: 1 },
+    )
+      .sort({ createdAt: 1 })
+      .lean();
+
+    const oldestMessageAgeMs = oldest?.createdAt
+      ? Math.max(0, Date.now() - new Date(oldest.createdAt).getTime())
+      : null;
+
+    this.inBackpressure =
+      counts.pending >= WORKER_BACKPRESSURE_PENDING_LIMIT ||
+      (oldestMessageAgeMs !== null && oldestMessageAgeMs >= WORKER_BACKPRESSURE_QUEUE_AGE_SEC * 1000);
+
+    return {
+      oldestMessageAgeMs,
+      pendingCount: counts.pending,
+      retryingCount: counts.retrying,
+      processingCount: counts.processing,
+      failedCount: counts.failed,
+      sentCount: counts.sent,
+      inBackpressure: this.inBackpressure,
+    };
   }
 }
 

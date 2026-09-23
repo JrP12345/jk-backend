@@ -5,7 +5,7 @@ import { redactAuditDetails } from "../utilities/auditRedaction.ts";
 
 const AuditLogSchema = new Schema({
   userId: { type: Schema.Types.ObjectId, ref: "User", index: true },
-  organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true, default: null },
+  organizationId: { type: Schema.Types.ObjectId, ref: "Organization", default: null },
   action: { type: String, required: true, index: true }, // e.g. "APPOINTMENT_CREATE", "VIP_OVERRIDE", "PHI_READ_ACCESS", "DPDP_PII_ANONYMIZED"
   targetId: { type: Schema.Types.ObjectId },
   targetModel: { type: String }, // "Appointment", "ClinicalNote", "Patient", "DataBreachIncident"
@@ -27,6 +27,7 @@ const AuditLogSchema = new Schema({
 AuditLogSchema.index({ organizationId: 1, createdAt: -1 });
 AuditLogSchema.index({ organizationId: 1, sequence: 1 }, { unique: true });
 AuditLogSchema.index({ category: 1, createdAt: -1 });
+AuditLogSchema.index({ organizationId: 1, category: 1, createdAt: -1 });
 
 // This model-level boundary protects both direct AuditLog.create calls and
 // generic audit-plugin snapshots. It runs before the immutable hash is made.

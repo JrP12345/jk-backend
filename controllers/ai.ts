@@ -25,6 +25,10 @@ import {
   buildCursorFilter,
   formatCursorResult,
 } from "../utilities/cursorPagination.ts";
+import {
+  MAX_AI_CONTEXT_TURNS,
+  MAX_AI_SESSION_MESSAGES,
+} from "../utilities/scalability.ts";
 
 // ─── POST /api/ai/soap-notes/generate ─────────────────────────────────
 export async function generateSOAPNoteController(req: FastifyRequest, reply: FastifyReply) {
@@ -448,6 +452,10 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
       .lean();
     const userSeq = (lastMsg?.sequence || 0) + 1;
 
+    if (userSeq > MAX_AI_SESSION_MESSAGES) {
+      return reply.code(400).send(errorResponse(`Session message limit (${MAX_AI_SESSION_MESSAGES}) reached. Please start a new session.`));
+    }
+
     const userMsg = {
       id: `usr_${Date.now()}`,
       sender: "user" as const,
@@ -495,13 +503,13 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
       phone: (p.userId as any)?.phone
     }));
 
-    // Step 5.4: Limit provider context separately from retained history (last 8 turns / 16 messages)
+    // Step 5.4 / 6.4: Limit provider context separately from retained history (last turns)
     const recentHistoryMsgs = await AIChatMessage.find({
       sessionId,
       sequence: { $lt: userSeq }
     })
       .sort({ sequence: -1 })
-      .limit(8)
+      .limit(MAX_AI_CONTEXT_TURNS)
       .lean();
 
     recentHistoryMsgs.reverse();

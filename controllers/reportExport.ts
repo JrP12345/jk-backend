@@ -6,15 +6,33 @@ import {
   isRootRequest,
   checkClinicAccess,
 } from "../utilities/tenant.ts";
+import { MAX_REPORT_RANGE_DAYS } from "../utilities/scalability.ts";
 
 export async function exportReport(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { reportType, clinicId, organizationId: queryOrgId, version } = req.query as {
+    const { reportType, clinicId, organizationId: queryOrgId, version, startDate, endDate } = req.query as {
       reportType: "billing" | "clinical" | "pharmacy";
       clinicId?: string;
       organizationId?: string;
       version?: "v1" | "v2";
+      startDate?: string;
+      endDate?: string;
     };
+
+    if (startDate && endDate) {
+      const start = new Date(startDate).getTime();
+      const end = new Date(endDate).getTime();
+      if (isNaN(start) || isNaN(end)) {
+        return reply.code(400).send(errorResponse("Invalid startDate or endDate format"));
+      }
+      if (start > end) {
+        return reply.code(400).send(errorResponse("startDate cannot be after endDate"));
+      }
+      const diffDays = (end - start) / (1000 * 60 * 60 * 24);
+      if (diffDays > MAX_REPORT_RANGE_DAYS) {
+        return reply.code(400).send(errorResponse(`Report date range cannot exceed ${MAX_REPORT_RANGE_DAYS} days`));
+      }
+    }
 
     const isRoot = isRootRequest(req);
     let targetOrgId = getRequestOrganizationId(req);
@@ -37,7 +55,7 @@ export async function exportReport(req: FastifyRequest, reply: FastifyReply) {
 
     const type = reportType || "billing";
     const reportVersion = version === "v2" ? "v2" : "v1";
-    const csvContent = await generateCsvReport(type, targetOrgId, clinicId, reportVersion);
+    const csvContent = await generateCsvReport(type, targetOrgId, clinicId, reportVersion, startDate, endDate);
 
     const filename = `ananta_${type}_report_${new Date().toISOString().split("T")[0]}.csv`;
 

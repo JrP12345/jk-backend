@@ -3,9 +3,9 @@ import { tenantPlugin } from "../utilities/tenantPlugin.ts";
 
 const PrescriptionSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
-  clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
-  encounterId: { type: Schema.Types.ObjectId, ref: "Encounter", required: true, index: true },
-  patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
+  clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true },
+  encounterId: { type: Schema.Types.ObjectId, ref: "Encounter", required: true },
+  patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true },
   doctorId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
 
   medicineId: { type: Schema.Types.ObjectId, ref: "Medicine", index: true },
@@ -35,6 +35,7 @@ const PrescriptionSchema = new Schema({
 
 PrescriptionSchema.index({ patientId: 1, createdAt: -1 });
 PrescriptionSchema.index({ clinicId: 1, status: 1 });
+PrescriptionSchema.index({ encounterId: 1, createdAt: -1 });
 
 // Apply automatic multi-tenant scoping
 PrescriptionSchema.plugin(tenantPlugin);

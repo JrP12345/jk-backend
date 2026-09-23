@@ -1,10 +1,13 @@
+import crypto from "node:crypto";
 import mongoose from "mongoose";
 import { Appointment } from "../models/Appointment.ts";
 import { broadcastQueueUpdate } from "../notifications/websocket.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
+import { acquireOrRenewWorkerLease } from "../utilities/workerLease.ts";
 
 let intervalHandle: NodeJS.Timeout | null = null;
+const sweeperHolderId = `${process.env.HOSTNAME || "api"}:${process.pid}:${crypto.randomUUID()}`;
 
 export interface NoShowSweepOptions {
   organizationId?: string;
@@ -138,8 +141,22 @@ export async function runNoShowSweep(options: NoShowSweepOptions = {}): Promise<
 export function startNoShowSweepJob(intervalMs: number = 5 * 60 * 1000) {
   if (intervalHandle) return;
   console.log(`[NoShowSweepJob] Starting scheduled no-show sweeper (interval: ${intervalMs}ms)`);
-  intervalHandle = setInterval(() => {
-    runNoShowSweep().catch((err) => console.error("[NoShowSweepJob] Scheduled run failed:", err));
+  intervalHandle = setInterval(async () => {
+    try {
+      const ownsLease = await acquireOrRenewWorkerLease({
+        name: "no-show-sweeper",
+        holderId: sweeperHolderId,
+        leaseMs: Math.max(intervalMs * 2, 60_000),
+      });
+      if (!ownsLease) {
+        // Safe skip: another replica is currently the sweeper leader
+        return;
+      }
+      await runNoShowSweep();
+    } catch (err: any) {
+      // Lock failure fails safely rather than falling back to competing local work
+      console.warn("[NoShowSweepJob] Lock acquisition failed; failing safely:", err.message);
+    }
   }, intervalMs);
   if (intervalHandle.unref) {
     intervalHandle.unref();

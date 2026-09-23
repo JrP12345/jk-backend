@@ -1,4 +1,8 @@
 import mongoose from "mongoose";
+import {
+  DEFAULT_PAGINATION_LIMIT,
+  MAX_PAGINATION_LIMIT,
+} from "./scalability.ts";
 
 export interface CursorPaginationParams {
   cursor?: string;
@@ -23,8 +27,8 @@ export interface CursorPaginatedResult<T> {
  */
 export function getCursorPaginationParams(
   query: { cursor?: string; limit?: string | number },
-  defaultLimit = 20,
-  maxLimit = 100,
+  defaultLimit = DEFAULT_PAGINATION_LIMIT,
+  maxLimit = MAX_PAGINATION_LIMIT,
 ): CursorPaginationParams {
   const parsedLimit = Number(query?.limit);
   const limit = Number.isFinite(parsedLimit) && parsedLimit > 0

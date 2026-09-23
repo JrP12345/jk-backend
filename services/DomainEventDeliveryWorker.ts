@@ -4,10 +4,15 @@ import { readEncryptedDomainEvent } from "./DomainEventOutboxService.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { domainEventBus } from "../platform/events/DomainEventBus.ts";
 import type { DomainEventPayload } from "../events/types.ts";
+import {
+  DOMAIN_EVENT_WORKER_BATCH_SIZE,
+  DOMAIN_EVENT_WORKER_POLL_MS,
+  WORKER_BACKPRESSURE_QUEUE_AGE_SEC,
+  WORKER_BACKPRESSURE_PENDING_LIMIT,
+  WORKER_BACKPRESSURE_POLL_MULTIPLIER,
+} from "../utilities/scalability.ts";
 
 const LOCK_DURATION_MS = Number(process.env.DOMAIN_EVENT_LOCK_MS) || 60_000;
-const DEFAULT_POLL_INTERVAL_MS = Number(process.env.DOMAIN_EVENT_WORKER_POLL_MS) || 500;
-const DEFAULT_BATCH_SIZE = Number(process.env.DOMAIN_EVENT_WORKER_BATCH_SIZE) || 10;
 const BASE_RETRY_DELAY_MS = 1_000;
 const MAX_RETRY_DELAY_MS = 300_000; // 5 minutes ceiling
 
@@ -20,17 +25,23 @@ export interface DomainEventMetrics {
   deadLetterCount: number;
   sentCount: number;
   totalAttempts: number;
+  inBackpressure?: boolean;
 }
 
 export class DomainEventDeliveryWorker {
   private timer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
+  private inBackpressure = false;
 
-  public start(intervalMs = DEFAULT_POLL_INTERVAL_MS) {
+  public start(intervalMs = DOMAIN_EVENT_WORKER_POLL_MS) {
     if (this.timer) return;
     this.stopped = false;
     this.timer = setInterval(() => {
-      this.processBatch(DEFAULT_BATCH_SIZE).catch((error) =>
+      const batchSize = this.inBackpressure
+        ? Math.max(1, Math.floor(DOMAIN_EVENT_WORKER_BATCH_SIZE / WORKER_BACKPRESSURE_POLL_MULTIPLIER))
+        : DOMAIN_EVENT_WORKER_BATCH_SIZE;
+
+      this.processBatch(batchSize).catch((error) =>
         console.error("[DomainEventWorker] Batch failed:", error),
       );
     }, intervalMs);
@@ -43,7 +54,7 @@ export class DomainEventDeliveryWorker {
     this.timer = null;
   }
 
-  public async processBatch(batchSize = DEFAULT_BATCH_SIZE) {
+  public async processBatch(batchSize = DOMAIN_EVENT_WORKER_BATCH_SIZE) {
     if (this.stopped) return { processed: 0 };
     const results = await Promise.allSettled(Array.from({ length: batchSize }, () => this.processOne()));
     return { processed: results.filter((result) => result.status === "fulfilled" && result.value).length };
@@ -195,6 +206,10 @@ export class DomainEventDeliveryWorker {
       ? Math.max(0, Date.now() - new Date(oldestEvent.createdAt).getTime())
       : null;
 
+    this.inBackpressure =
+      counts.pending >= WORKER_BACKPRESSURE_PENDING_LIMIT ||
+      (oldestEventAgeMs !== null && oldestEventAgeMs >= WORKER_BACKPRESSURE_QUEUE_AGE_SEC * 1000);
+
     return {
       oldestEventAgeMs,
       pendingCount: counts.pending,
@@ -204,6 +219,7 @@ export class DomainEventDeliveryWorker {
       deadLetterCount: counts.dead_letter,
       sentCount: counts.sent,
       totalAttempts,
+      inBackpressure: this.inBackpressure,
     };
   }
 }

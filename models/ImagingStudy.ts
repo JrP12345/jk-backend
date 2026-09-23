@@ -21,7 +21,6 @@ const imagingStudySchema = new Schema<IImagingStudy>(
       type: String,
       required: true,
       unique: true,
-      index: true,
     },
     patientId: {
       type: Schema.Types.ObjectId,
@@ -33,7 +32,6 @@ const imagingStudySchema = new Schema<IImagingStudy>(
       type: Schema.Types.ObjectId,
       ref: "Clinic",
       required: true,
-      index: true,
     },
     modality: {
       type: String,
@@ -69,5 +67,7 @@ const imagingStudySchema = new Schema<IImagingStudy>(
 );
 
 imagingStudySchema.plugin(auditPlugin);
+
+imagingStudySchema.index({ clinicId: 1, patientId: 1, createdAt: -1 });
 
 export const ImagingStudy = mongoose.model<IImagingStudy>("ImagingStudy", imagingStudySchema);
