@@ -58,6 +58,7 @@ import moduleRegistryRoutes from "./routes/moduleRegistry.ts";
 import doctorAvailabilityRoutes from "./routes/doctorAvailability.ts";
 import whatsappWebhookRoutes from "./routes/whatsappWebhook.ts";
 import whatsappCreditsRoutes from "./routes/whatsappCredits.ts";
+import { startNoShowSweepJob, stopNoShowSweepJob } from "./jobs/noShowSweepJob.ts";
 import upiWebhookRoutes from "./routes/upiWebhook.ts";
 import abdmRoutes from "./routes/abdm.ts";
 import syntheticHealthRoutes from "./routes/syntheticHealth.ts";
@@ -371,7 +372,13 @@ async function startServer() {
     markBootstrapComplete();
     app.log.info("✓ Application bootstrap completed successfully.");
 
-    // 3. Bind HTTP listener to begin receiving traffic
+    // 3. Start scheduled no-show sweeper if running inline background jobs
+    if (process.env.RUN_INLINE_JOBS === "true" || process.env.NODE_ENV !== "production") {
+      startNoShowSweepJob();
+      app.log.info("✓ Scheduled no-show background sweeper started (inline mode).");
+    }
+
+    // 4. Bind HTTP listener to begin receiving traffic
     const address = await app.listen({ port: PORT, host: "0.0.0.0" });
     app.log.info(`🚀 HealthOS Fastify Server running at ${address}`);
   } catch (err) {
@@ -383,6 +390,9 @@ async function startServer() {
 const gracefulShutdown = async (signal: string) => {
   app.log.info(`Received ${signal}. Initiating graceful traffic drain and shutdown...`);
   try {
+    // Step 0: Stop scheduled background sweepers
+    stopNoShowSweepJob();
+
     // Step 1: Remove server from traffic by failing readiness probes immediately
     markShuttingDown();
     const drainMs = process.env.NODE_ENV === "test" ? 0 : Number(process.env.SHUTDOWN_DRAIN_MS) || 2000;

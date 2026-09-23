@@ -14,6 +14,7 @@ import { User } from "../models/User.ts";
 import { SmsWhatsAppService } from "../services/SmsWhatsAppService.ts";
 import { verifyAuditChainIntegrity } from "../services/AuditTrailService.ts";
 import { issueAppointmentTrackerLink } from "../utilities/publicTracker.ts";
+import { runNoShowSweep } from "../jobs/noShowSweepJob.ts";
 
 /**
  * Calculates adaptive consultation duration based on today's completed encounters for doctor and clinic.
@@ -77,53 +78,12 @@ export async function getAdaptiveConsultationDuration(
  */
 export async function autoDetectNoShows(
   clinicId: string | mongoose.Types.ObjectId,
-  doctorId: string | mongoose.Types.ObjectId,
-  startOfDay: Date,
-  endOfDay: Date
+  _doctorId?: string | mongoose.Types.ObjectId,
+  _startOfDay?: Date,
+  _endOfDay?: Date
 ): Promise<number> {
-  try {
-    const now = new Date();
-    // Only detect no-shows for today
-    if (now < startOfDay || now > endOfDay) return 0;
-
-    const gracePeriodMinutes = 30;
-    const cutoffTime = new Date(now.getTime() - gracePeriodMinutes * 60 * 1000);
-
-    const staleAppointments = await Appointment.find({
-      clinicId,
-      doctorId,
-      appointmentTime: { $gte: startOfDay, $lte: cutoffTime },
-      status: { $in: ["pending", "confirmed"] },
-    });
-
-    if (staleAppointments.length === 0) return 0;
-
-    for (const appt of staleAppointments) {
-      appt.status = "no-show";
-      appt.notes = appt.notes
-        ? `${appt.notes} | [Auto-marked no-show: Patient did not arrive within 30 mins of scheduled slot]`
-        : `[Auto-marked no-show: Patient did not arrive within 30 mins of scheduled slot]`;
-      await appt.save();
-    }
-
-    // Broadcast queue update if any changed
-    const clinicIdStr = clinicId.toString();
-    broadcastQueueUpdate(clinicIdStr, {
-      type: "QUEUE_UPDATED",
-      data: {
-        clinicId: clinicIdStr,
-        doctorId: doctorId.toString(),
-        autoNoShowsDetected: staleAppointments.length,
-      },
-      message: `${staleAppointments.length} un-arrived appointment(s) automatically marked as no-show`,
-      timestamp: new Date().toISOString(),
-    });
-
-    return staleAppointments.length;
-  } catch (err) {
-    console.error("autoDetectNoShows error:", err);
-    return 0;
-  }
+  const result = await runNoShowSweep({ clinicId: clinicId.toString() });
+  return result.sweptCount;
 }
 
 export async function getQueue(req: FastifyRequest, reply: FastifyReply) {
@@ -158,9 +118,7 @@ export async function getQueue(req: FastifyRequest, reply: FastifyReply) {
       defaultDuration
     );
 
-    // Automatically sweep and mark no-shows for past-due un-arrived appointments today
-    await autoDetectNoShows(clinicId, doctorId, startOfDay, endOfDay);
-
+    // Pure read query: no mutations executed on GET requests (Step 5.1 hardened)
     const appointments = await Appointment.find({
       clinicId,
       doctorId,

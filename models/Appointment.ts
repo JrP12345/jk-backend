@@ -185,6 +185,8 @@ AppointmentSchema.index(
 );
 AppointmentSchema.index({ organizationId: 1, appointmentTime: -1 });
 AppointmentSchema.index({ clinicId: 1, status: 1, appointmentTime: -1 });
+AppointmentSchema.index({ clinicId: 1, status: 1, appointmentTime: 1 });
+AppointmentSchema.index({ organizationId: 1, clinicId: 1, status: 1, appointmentTime: 1 });
 AppointmentSchema.index({ clinicId: 1, doctorId: 1, appointmentTime: 1, queuePosition: 1 });
 AppointmentSchema.index(
   { activeConsultationDoctorDayKey: 1 },
