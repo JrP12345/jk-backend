@@ -1,17 +1,29 @@
 import { Invoice } from "../models/Invoice.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { MedicineBatch } from "../models/MedicineBatch.ts";
+import { Clinic } from "../models/Clinic.ts";
 import mongoose from "mongoose";
 
-export async function generateCsvReport(reportType: "billing" | "clinical" | "pharmacy", clinicId?: string): Promise<string> {
+export async function generateCsvReport(
+  reportType: "billing" | "clinical" | "pharmacy",
+  organizationId?: string,
+  clinicId?: string
+): Promise<string> {
   const filter: any = {};
-  if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) filter.clinicId = clinicId;
+
+  if (organizationId && mongoose.Types.ObjectId.isValid(organizationId)) {
+    filter.organizationId = new mongoose.Types.ObjectId(organizationId);
+  }
+
+  if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
+    filter.clinicId = new mongoose.Types.ObjectId(clinicId);
+  }
 
   if (reportType === "billing") {
     const invoices = await Invoice.find(filter)
       .populate("patientId", "name")
       .sort({ createdAt: -1 })
-      .limit(100);
+      .limit(500);
 
     const headers = "InvoiceNumber,PatientName,TotalAmount,AmountPaid,BalanceDue,Status,CreatedAt\n";
     const rows = invoices.map((inv: any) => {
@@ -27,7 +39,7 @@ export async function generateCsvReport(reportType: "billing" | "clinical" | "ph
       .populate("patientId", "name")
       .populate("doctorId", "name")
       .sort({ createdAt: -1 })
-      .limit(100);
+      .limit(500);
 
     const headers = "EncounterID,PatientName,DoctorName,Status,ChiefComplaint,CreatedAt\n";
     const rows = encounters.map((enc: any) => {
@@ -41,15 +53,28 @@ export async function generateCsvReport(reportType: "billing" | "clinical" | "ph
   }
 
   // Pharmacy Stock Report
-  const batches = await MedicineBatch.find(filter)
+  const pharmacyFilter: any = {};
+  if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
+    pharmacyFilter.clinicId = new mongoose.Types.ObjectId(clinicId);
+  } else if (organizationId && mongoose.Types.ObjectId.isValid(organizationId)) {
+    // Resolve all clinics for this organization to maintain tenant isolation
+    const orgClinics = await Clinic.find({ organizationId, isActive: { $ne: false } }).select("_id").lean();
+    const clinicIds = orgClinics.map((c) => c._id);
+    pharmacyFilter.clinicId = { $in: clinicIds };
+  }
+
+  const batches = await MedicineBatch.find(pharmacyFilter)
     .populate("medicineId", "name code")
     .sort({ expiryDate: 1 })
-    .limit(100);
+    .limit(500);
 
   const headers = "BatchNumber,MedicineName,QuantityRemaining,PricePerUnit,ExpiryDate,Status\n";
   const rows = batches.map((b: any) => {
     const medName = (b.medicineId as any)?.name || "Medicine";
-    return `${b.batchNumber},"${medName}",${b.quantityRemaining},${b.pricePerUnit || 0},${b.expiryDate.toISOString().split("T")[0]},${b.status}`;
+    const expiry = b.expiryDate ? b.expiryDate.toISOString().split("T")[0] : "N/A";
+    const qty = b.quantity ?? (b as any).quantityRemaining ?? 0;
+    const price = b.sellingPrice ?? b.pricePerUnit ?? 0;
+    return `${b.batchNumber},"${medName}",${qty},${price},${expiry},${b.status}`;
   }).join("\n");
 
   return headers + rows;
