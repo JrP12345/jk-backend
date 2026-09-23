@@ -214,7 +214,16 @@ export function sendToUserLocally(userId: string, payload: RealtimeMessage) {
 }
 
 function sanitizePublicQueueMessage(payload: RealtimeMessage): RealtimeMessage | null {
-  const allowedTypes = new Set(["QUEUE_UPDATED", "QUEUE_CALL_NEXT", "PATIENT_RECALLED_TO_CABIN"]);
+  const allowedTypes = new Set([
+    "QUEUE_UPDATED",
+    "QUEUE_CALL_NEXT",
+    "PATIENT_RECALLED_TO_CABIN",
+    "QUEUE_POSITION_CHANGED",
+    "QUEUE_DELAY_ALERT",
+    "DOCTOR_STATUS_CHANGED",
+    "QUEUE_EMERGENCY_STAT",
+    "PATIENT_RETURNED"
+  ]);
   if (!allowedTypes.has(payload.type)) return null;
 
   const data = payload.data || {};
@@ -223,9 +232,15 @@ function sanitizePublicQueueMessage(payload: RealtimeMessage): RealtimeMessage |
     timestamp: payload.timestamp,
     data: {
       tokenNumber: data.tokenNumber,
-      status: data.status,
+      currentToken: data.currentToken ?? data.tokenNumber,
+      queueLength: data.queueLength,
       queuePosition: data.queuePosition,
       estimatedWaitTime: data.estimatedWaitTime,
+      estimatedWaitMinutes: data.estimatedWaitMinutes ?? data.estimatedWaitTime,
+      status: data.status,
+      doctorStatus: data.doctorStatus,
+      doctorName: data.doctorName,
+      roomNumber: data.roomNumber,
     },
   };
 }
@@ -443,7 +458,7 @@ export function broadcastClinicRealtime(clinicId: string, payload: RealtimeMessa
 // ─── Native WebSocket Connection Handlers ─────────────────────────────
 
 /**
- * Extract auth user from WebSocket request cookies or Authorization header.
+ * Extract auth user from WebSocket request cookies, Authorization header, or token query param.
  */
 export function resolveWebSocketAuth(req: FastifyRequest): { id: string; role?: string; organization_id?: string } | null {
   let token = req.cookies?.access_token || (req.headers.authorization?.replace(/^Bearer\s+/i, ""));
@@ -452,6 +467,22 @@ export function resolveWebSocketAuth(req: FastifyRequest): { id: string; role?: 
     const match = req.headers.cookie.match(/(?:^|;\s*)access_token=([^;]+)/);
     if (match) {
       token = decodeURIComponent(match[1]);
+    }
+  }
+
+  if (!token && (req.query as any)?.token) {
+    token = (req.query as any).token;
+  }
+
+  if (!token && req.headers["sec-websocket-protocol"]) {
+    const protoHeader = req.headers["sec-websocket-protocol"];
+    const protocols = Array.isArray(protoHeader) ? protoHeader.join(",").split(",") : String(protoHeader).split(",");
+    for (const p of protocols) {
+      const trimmed = p.trim();
+      if (trimmed.startsWith("bearer.") || trimmed.startsWith("token.")) {
+        token = trimmed.split(".")[1];
+        break;
+      }
     }
   }
 
@@ -466,6 +497,47 @@ export function resolveWebSocketAuth(req: FastifyRequest): { id: string; role?: 
     return null;
   }
   return null;
+}
+
+// Rate limiting and connection tracking for public queue websockets
+const publicWsIpConnections = new Map<string, number>();
+const publicWsIpAttempts = new Map<string, { count: number; resetAt: number }>();
+
+const MAX_PUBLIC_WS_PER_IP = 10;
+const MAX_CONNECTS_PER_MINUTE = 30;
+
+export function checkPublicWsRateLimit(ip: string): { allowed: boolean; reason?: string; code?: number } {
+  const now = Date.now();
+  let attemptInfo = publicWsIpAttempts.get(ip);
+  if (!attemptInfo || attemptInfo.resetAt < now) {
+    attemptInfo = { count: 1, resetAt: now + 60000 };
+    publicWsIpAttempts.set(ip, attemptInfo);
+  } else {
+    attemptInfo.count++;
+    if (attemptInfo.count > MAX_CONNECTS_PER_MINUTE) {
+      return { allowed: false, reason: "Connection rate limit exceeded", code: 4029 };
+    }
+  }
+
+  const currentCount = publicWsIpConnections.get(ip) || 0;
+  if (currentCount >= MAX_PUBLIC_WS_PER_IP) {
+    return { allowed: false, reason: "Too many concurrent connections from this IP", code: 4029 };
+  }
+
+  return { allowed: true };
+}
+
+export function incrementPublicWsIp(ip: string) {
+  publicWsIpConnections.set(ip, (publicWsIpConnections.get(ip) || 0) + 1);
+}
+
+export function decrementPublicWsIp(ip: string) {
+  const current = publicWsIpConnections.get(ip) || 0;
+  if (current <= 1) {
+    publicWsIpConnections.delete(ip);
+  } else {
+    publicWsIpConnections.set(ip, current - 1);
+  }
 }
 
 /**
@@ -531,16 +603,41 @@ export function handleNotificationWebSocket(socket: WebSocket, req: FastifyReque
 }
 
 /**
- * Fastify WebSocket handler for Clinic OPD Queue Displays (/api/queue/ws)
+ * Fastify WebSocket handler for Clinic OPD Queue Displays (/api/queue/ws & /ws/public/queue/:clinicId)
+ * Public, sanitized queue statistics, rate-limited per IP.
  */
-export function handleQueueWebSocket(socket: WebSocket, req: FastifyRequest) {
-  const clinicId = (req.query as any)?.clinicId;
-  if (!clinicId || typeof clinicId !== "string" || clinicId.length !== 24) {
-    socket.send(JSON.stringify({ type: "ERROR", message: "Valid 24-character clinicId query parameter required" }));
-    socket.close(1008, "Invalid clinicId");
+export async function handleQueueWebSocket(socket: WebSocket, req: FastifyRequest) {
+  const clientIp = req.ip || (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || "127.0.0.1";
+  
+  const rateLimit = checkPublicWsRateLimit(clientIp);
+  if (!rateLimit.allowed) {
+    socket.send(JSON.stringify({ type: "ERROR", message: rateLimit.reason }));
+    socket.close(rateLimit.code || 4029, rateLimit.reason);
     return;
   }
 
+  const clinicId = (req.params as any)?.clinicId || (req.query as any)?.clinicId;
+  if (!clinicId || typeof clinicId !== "string" || clinicId.length !== 24) {
+    socket.send(JSON.stringify({ type: "ERROR", message: "Valid 24-character clinicId required" }));
+    socket.close(4004, "Invalid clinicId");
+    return;
+  }
+
+  // Validate clinic exists and is active
+  try {
+    const clinic = await Clinic.findOne({ _id: clinicId, isActive: true }).select("_id isActive").lean();
+    if (!clinic) {
+      socket.send(JSON.stringify({ type: "ERROR", message: "Clinic facility not found or inactive" }));
+      socket.close(4004, "Clinic Not Found or Inactive");
+      return;
+    }
+  } catch {
+    socket.send(JSON.stringify({ type: "ERROR", message: "Unable to validate clinic facility" }));
+    socket.close(1011, "Clinic lookup failed");
+    return;
+  }
+
+  incrementPublicWsIp(clientIp);
   registerClinicQueueWebSocket(clinicId, socket);
 
   socket.send(JSON.stringify({
@@ -574,6 +671,7 @@ export function handleQueueWebSocket(socket: WebSocket, req: FastifyRequest) {
   });
 
   socket.on("close", () => {
+    decrementPublicWsIp(clientIp);
     clearInterval(pingInterval);
   });
 }
@@ -591,26 +689,26 @@ const CLINICAL_STAFF_ROLES = new Set([
 ]);
 
 /**
- * Fastify WebSocket handler for Authenticated Clinical Staff Displays (/api/clinical/ws)
+ * Fastify WebSocket handler for Authenticated Clinical Staff Displays (/api/clinical/ws & /ws/clinical)
  */
 export async function handleClinicalWebSocket(socket: WebSocket, req: FastifyRequest) {
   const user = resolveWebSocketAuth(req);
   if (!user) {
     socket.send(JSON.stringify({ type: "ERROR", message: "Unauthorized: Valid authentication token required" }));
-    socket.close(1008, "Unauthorized");
+    socket.close(4001, "Unauthorized");
     return;
   }
 
   if (!user.role || !CLINICAL_STAFF_ROLES.has(user.role)) {
     socket.send(JSON.stringify({ type: "ERROR", message: "Forbidden: Clinical staff role required for clinical channel" }));
-    socket.close(1008, "Forbidden");
+    socket.close(4003, "Forbidden");
     return;
   }
 
-  const clinicId = (req.query as any)?.clinicId;
+  const clinicId = (req.params as any)?.clinicId || (req.query as any)?.clinicId;
   if (!clinicId || typeof clinicId !== "string" || clinicId.length !== 24) {
     socket.send(JSON.stringify({ type: "ERROR", message: "Valid 24-character clinicId query parameter required" }));
-    socket.close(1008, "Invalid clinicId");
+    socket.close(4004, "Invalid clinicId");
     return;
   }
 
@@ -624,7 +722,7 @@ export async function handleClinicalWebSocket(socket: WebSocket, req: FastifyReq
   }
   if (!clinic || clinic.isActive === false || (user.role !== "root" && (!user.organization_id || clinic.organizationId.toString() !== user.organization_id))) {
     socket.send(JSON.stringify({ type: "ERROR", message: "Forbidden: clinic access denied" }));
-    socket.close(1008, "Forbidden");
+    socket.close(4003, "Forbidden");
     return;
   }
 

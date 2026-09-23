@@ -143,13 +143,26 @@ export default async function appointmentRoutes(app: FastifyInstance) {
   app.get("/api/audit-logs", viewAudit, getAuditLogs);
   app.get("/api/audit-logs/verify-integrity", viewAudit, verifyAuditLogsIntegrity);
 
-  // Real-time Queue WebSocket for Clinic TV / Lobby Displays
+  // Real-time Queue WebSocket for Clinic TV / Lobby Displays (Public & Sanitized)
   app.get("/api/queue/ws", { websocket: true }, (socket, req) => {
-    handleQueueWebSocket(socket as any, req);
+    void handleQueueWebSocket(socket as any, req);
+  });
+  app.get("/ws/public/queue/:clinicId", { websocket: true }, (socket, req) => {
+    void handleQueueWebSocket(socket as any, req);
   });
 
   // Real-time Clinical WebSocket for Authenticated Clinical Staff (Doctor/Nurse/Admin)
   app.get("/api/clinical/ws", { websocket: true }, (socket, req) => {
+    void handleClinicalWebSocket(socket as any, req).catch(() => {
+      (socket as any).close(1011, "Clinical channel initialization failed");
+    });
+  });
+  app.get("/ws/clinical", { websocket: true }, (socket, req) => {
+    void handleClinicalWebSocket(socket as any, req).catch(() => {
+      (socket as any).close(1011, "Clinical channel initialization failed");
+    });
+  });
+  app.get("/ws/clinical/:clinicId", { websocket: true }, (socket, req) => {
     void handleClinicalWebSocket(socket as any, req).catch(() => {
       (socket as any).close(1011, "Clinical channel initialization failed");
     });
