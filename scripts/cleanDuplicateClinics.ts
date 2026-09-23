@@ -1,6 +1,11 @@
 import mongoose from "mongoose";
 
 async function purgeDuplicatesAndOrphans() {
+  if (process.env.NODE_ENV === "production" && !process.argv.includes("--force-production-clean")) {
+    console.error("FATAL: Destructive cleanup scripts cannot run in production without --force-production-clean flag!");
+    process.exit(1);
+  }
+
   const uri = process.env.MONGODB_URI || "mongodb://localhost:27017/jk-healthcare";
   await mongoose.connect(uri);
 

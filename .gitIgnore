@@ -23,3 +23,9 @@ index.js
 Thumbs.db
 .vscode/
 .idea/
+
+# Database Backups & Dumps (OPS-002)
+backups/
+*.enc.gz
+*.enc
+*.dump

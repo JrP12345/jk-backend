@@ -15,6 +15,11 @@ import { DocumentUpload } from "../models/DocumentUpload.ts";
 import { Medicine } from "../models/Medicine.ts";
 
 async function seedClinicOne() {
+  if (process.env.NODE_ENV === "production" && !process.argv.includes("--force-production-seed")) {
+    console.error("FATAL: Seed scripts cannot run in production without --force-production-seed flag!");
+    process.exit(1);
+  }
+
   const mongoUri = process.env.MONGODB_URI || "mongodb://localhost:27017/ananta_health_os";
   console.log(`Connecting to MongoDB at ${mongoUri}...`);
   await mongoose.connect(mongoUri);
