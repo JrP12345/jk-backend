@@ -59,6 +59,23 @@ export function getActiveSseConnectionsCount(): number {
   return count;
 }
 
+/**
+ * Force-terminates all active WebSockets associated with a revoked user session.
+ */
+export function disconnectUserWebSockets(userId: string, code: number = 4001, reason: string = "Session revoked"): void {
+  const sockets = userWebSocketsMap.get(userId);
+  if (sockets) {
+    for (const ws of sockets) {
+      try {
+        ws.close(code, reason);
+      } catch {
+        // safe ignore
+      }
+    }
+    userWebSocketsMap.delete(userId);
+  }
+}
+
 // ─── Critical Alert Replay Buffer (Patient Safety Guarantee) ─────────
 // Plain Redis PubSub is fire-and-forget. For critical clinical panic alerts and emergency
 // STAT triage, reconnecting clients or pods restarting during an alert must receive
@@ -460,7 +477,7 @@ export function broadcastClinicRealtime(clinicId: string, payload: RealtimeMessa
 /**
  * Extract auth user from WebSocket request cookies, Authorization header, or token query param.
  */
-export function resolveWebSocketAuth(req: FastifyRequest): { id: string; role?: string; organization_id?: string } | null {
+export async function resolveWebSocketAuth(req: FastifyRequest): Promise<{ id: string; role?: string; organization_id?: string; sessionId?: string } | null> {
   let token = req.cookies?.access_token || (req.headers.authorization?.replace(/^Bearer\s+/i, ""));
 
   if (!token && req.headers.cookie) {
@@ -491,7 +508,14 @@ export function resolveWebSocketAuth(req: FastifyRequest): { id: string; role?: 
   try {
     const payload = verifyAccessToken(token);
     if (payload?.id) {
-      return { id: payload.id, role: payload.role, organization_id: payload.organization_id };
+      if (payload.sessionId) {
+        const { resolveSession } = await import("../utilities/sessionResolver.ts");
+        const resolution = await resolveSession(payload.sessionId, payload.authVersion);
+        if (!resolution.valid) {
+          return null;
+        }
+      }
+      return { id: payload.id, role: payload.role, organization_id: payload.organization_id, sessionId: payload.sessionId };
     }
   } catch (err) {
     return null;
@@ -543,8 +567,8 @@ export function decrementPublicWsIp(ip: string) {
 /**
  * Fastify WebSocket handler for User Notifications (/api/ws & /api/notifications/ws)
  */
-export function handleNotificationWebSocket(socket: WebSocket, req: FastifyRequest) {
-  const user = resolveWebSocketAuth(req);
+export async function handleNotificationWebSocket(socket: WebSocket, req: FastifyRequest) {
+  const user = await resolveWebSocketAuth(req);
   if (!user) {
     socket.send(JSON.stringify({ type: "ERROR", message: "Unauthorized: Valid authentication token required" }));
     socket.close(1008, "Unauthorized");
@@ -692,7 +716,7 @@ const CLINICAL_STAFF_ROLES = new Set([
  * Fastify WebSocket handler for Authenticated Clinical Staff Displays (/api/clinical/ws & /ws/clinical)
  */
 export async function handleClinicalWebSocket(socket: WebSocket, req: FastifyRequest) {
-  const user = resolveWebSocketAuth(req);
+  const user = await resolveWebSocketAuth(req);
   if (!user) {
     socket.send(JSON.stringify({ type: "ERROR", message: "Unauthorized: Valid authentication token required" }));
     socket.close(4001, "Unauthorized");

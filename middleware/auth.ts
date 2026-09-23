@@ -1,5 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { verifyAccessToken, revokedSessionIds } from "../utilities/helpers.ts";
+import { verifyAccessToken } from "../utilities/helpers.ts";
+import { resolveSession } from "../utilities/sessionResolver.ts";
 import type { JwtPayload } from "../utilities/types.ts";
 import { requestContextStore } from "../utilities/context.ts";
 import {
@@ -34,9 +35,12 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
     // Verify signature in-memory using service public key
     const decoded = verifyAccessToken(token);
 
-    // Check if this session was revoked (e.g. root single-session login elsewhere or admin logout)
-    if (decoded.sessionId && revokedSessionIds.has(decoded.sessionId)) {
-      return reply.code(401).send({ error: "Session has been terminated or logged in from another device" });
+    // Distributed session resolution across replicas (Finding: AUTH-002)
+    if (decoded.sessionId) {
+      const resolution = await resolveSession(decoded.sessionId, decoded.authVersion);
+      if (!resolution.valid) {
+        return reply.code(401).send({ error: resolution.reason || "Session has been terminated or logged in from another device" });
+      }
     }
 
     req.user = decoded;

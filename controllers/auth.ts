@@ -20,6 +20,8 @@ import {
   normalizePhone,
 } from "../utilities/helpers.ts";
 import { setAuthCookies, clearAuthCookies, type JwtPayload } from "../utilities/types.ts";
+import { resolveSession, revokeSession, revokeUserSessions, revokeTokenFamily } from "../utilities/sessionResolver.ts";
+import { disconnectUserWebSockets } from "../notifications/websocket.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 
@@ -901,15 +903,7 @@ export async function getAdminAllSessions(req: FastifyRequest, reply: FastifyRep
 export async function adminRevokeSession(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { sessionId } = req.params as { sessionId: string };
-    const session = await RefreshToken.findById(sessionId);
-    if (!session) {
-      return reply.code(404).send(errorResponse("Session not found"));
-    }
-
-    session.revoked = true;
-    await session.save();
-    revokeSessionCache(sessionId);
-
+    await revokeSession(sessionId, "admin_revocation");
     return reply.send(successResponse(null, "Session terminated successfully"));
   } catch (err: any) {
     console.error("adminRevokeSession error:", err);
@@ -921,22 +915,15 @@ export async function adminRevokeSession(req: FastifyRequest, reply: FastifyRepl
 export async function adminRevokeUserSessions(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { userId } = req.params as { userId: string };
-    const sessions = await RefreshToken.find({ userId, revoked: false }).select("_id").lean();
-    if (sessions.length > 0) {
-      await RefreshToken.updateMany({ userId, revoked: false }, { revoked: true });
-      sessions.forEach((s) => revokeSessionCache(s._id.toString()));
-    }
-
-    return reply.send(successResponse(null, `Terminated ${sessions.length} active session(s) for user`));
+    await revokeUserSessions(userId, "admin_revocation");
+    return reply.send(successResponse(null, "Terminated active sessions for user"));
   } catch (err: any) {
     console.error("adminRevokeUserSessions error:", err);
     return reply.code(500).send(errorResponse("Failed to terminate user sessions"));
   }
 }
 
-
-
-// ─── Refresh Access Token (with Token Rotation & Reuse Detection) ───────────
+// ─── Refresh Access Token (with Atomic Token Rotation & Reuse Detection) ───────────
 export async function refreshAccessToken(req: FastifyRequest, reply: FastifyReply) {
   try {
     // Read refresh token from httpOnly cookie
@@ -947,59 +934,115 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
 
     const tokenHash = crypto.createHash("sha256").update(rawRefreshToken).digest("hex");
 
-    // Check if token was already revoked (potential token reuse / theft detection)
-    const revokedCheck = await RefreshToken.findOne({ tokenHash, revoked: true });
-    if (revokedCheck) {
-      const reason = (revokedCheck as any).revocationReason;
-      if (reason === "displaced" || reason === "terminated" || reason === "logout") {
-        clearAuthCookies(reply);
-        return reply.code(401).send(errorResponse("Session has expired or was terminated. Please log in again."));
+    const currentRecord = await RefreshToken.findOne({ tokenHash });
+    if (!currentRecord) {
+      clearAuthCookies(reply);
+      return reply.code(401).send(errorResponse("Invalid refresh token"));
+    }
+
+    // Reuse & Concurrency Grace Mechanism (Finding: AUTH-003)
+    if (currentRecord.revoked) {
+      const now = Date.now();
+      // Concurrency grace window check (10 seconds)
+      if (currentRecord.graceExpiresAt && new Date(currentRecord.graceExpiresAt).getTime() > now) {
+        const user = await User.findById(currentRecord.userId).select("role authVersion isActive email").lean();
+        if (!user || !user.isActive) {
+          clearAuthCookies(reply);
+          return reply.code(401).send(errorResponse("User account deactivated"));
+        }
+        const authVersion = (user as any).authVersion || 1;
+        const payload: JwtPayload = {
+          id: user._id.toString(),
+          email: user.email || "",
+          role: user.role,
+          organization_id: currentRecord.organizationId?.toString(),
+          sessionId: currentRecord._id.toString(),
+          authVersion,
+        };
+        const accessToken = generateAccessToken(payload);
+        reply.header("X-Concurrency-Grace", "true");
+        return reply.code(200).send(successResponse(null, "Token refreshed within concurrency grace window"));
       }
 
-      // Automatic breach response: revoke all sessions for this compromised account
-      await revokeAllRefreshTokens(revokedCheck.userId.toString());
+      // Suspicious Reuse Outside Grace Window! Revoke entire token family
+      if (currentRecord.familyId) {
+        await revokeTokenFamily(currentRecord.familyId, "reuse_detected");
+      } else {
+        await revokeUserSessions(currentRecord.userId.toString(), "reuse_detected");
+      }
       clearAuthCookies(reply);
-      return reply.code(401).send(errorResponse("Revoked session token reuse detected. All sessions invalidated for security."));
+      return reply.code(401).send(errorResponse("Suspicious refresh token reuse detected. All sessions in this family invalidated."));
     }
 
-    const refreshRecord = await RefreshToken.findOne({
-      tokenHash,
-      revoked: false,
-      expiresAt: { $gt: new Date() },
-    });
-
-    if (!refreshRecord) {
-      return reply.code(401).send(errorResponse("Invalid or expired refresh token"));
+    if (new Date(currentRecord.expiresAt).getTime() < Date.now()) {
+      clearAuthCookies(reply);
+      return reply.code(401).send(errorResponse("Refresh token expired"));
     }
 
-    const user = await User.findOne({ _id: refreshRecord.userId, isActive: true });
+    const user = await User.findOne({ _id: currentRecord.userId, isActive: true });
     if (!user) {
+      clearAuthCookies(reply);
       return reply.code(401).send(errorResponse("User not found or deactivated"));
     }
 
     const orgMember = await OrgMember.findOne({ userId: user._id });
-    const organization_id = refreshRecord.organizationId?.toString() || orgMember?.organizationId?.toString();
+    const organization_id = currentRecord.organizationId?.toString() || orgMember?.organizationId?.toString();
     if (organization_id && user.role !== "root") {
       const organization = await Organization.findById(organization_id).select("status isActive").lean();
       if (!organization || organization.status === "inactive" || organization.isActive === false) {
+        clearAuthCookies(reply);
         return reply.code(403).send(errorResponse("Organization workspace is inactive or suspended"));
       }
     }
 
-    // 1. Invalidate current refresh token (one-time use)
-    refreshRecord.revoked = true;
-    refreshRecord.lastActiveAt = new Date();
-    await refreshRecord.save();
+    // Atomic Consumption conditioned on tokenHash, revoked: false, generation, expiresAt
+    const GRACE_WINDOW_MS = 10000;
+    const consumed = await RefreshToken.findOneAndUpdate(
+      {
+        _id: currentRecord._id,
+        tokenHash,
+        revoked: false,
+        generation: currentRecord.generation || 1,
+        expiresAt: { $gt: new Date() },
+      },
+      {
+        $set: {
+          revoked: true,
+          revocationReason: "rotated",
+          graceExpiresAt: new Date(Date.now() + GRACE_WINDOW_MS),
+          lastActiveAt: new Date(),
+        },
+      },
+      { new: false }
+    );
 
-    // 2. Issue new rotated refresh token + access token
-    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || refreshRecord.ipAddress;
-    const userAgent = (req.headers["user-agent"] as string) || refreshRecord.userAgent;
-    const deviceName = refreshRecord.deviceName || (userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser");
-    const isGuestToken = (refreshRecord as any).isGuest === true;
+    if (!consumed) {
+      // Race condition or concurrent update occurred
+      const recheck = await RefreshToken.findById(currentRecord._id);
+      if (recheck?.graceExpiresAt && new Date(recheck.graceExpiresAt).getTime() > Date.now()) {
+        const payload: JwtPayload = {
+          id: user._id.toString(),
+          email: user.email || "",
+          role: user.role,
+          organization_id,
+          sessionId: currentRecord._id.toString(),
+          authVersion: (user as any).authVersion || 1,
+        };
+        const accessToken = generateAccessToken(payload);
+        return reply.code(200).send(successResponse(null, "Token refreshed within concurrency grace window"));
+      }
+      clearAuthCookies(reply);
+      return reply.code(401).send(errorResponse("Token rotation collision. Please sign in again."));
+    }
+
+    // Issue new rotated refresh token + access token only AFTER successful atomic consumption
+    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || currentRecord.ipAddress;
+    const userAgent = (req.headers["user-agent"] as string) || currentRecord.userAgent;
+    const deviceName = currentRecord.deviceName || (userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser");
+    const isGuestToken = (currentRecord as any).isGuest === true;
     const targetRole = isGuestToken ? "guest" : user.role;
-    const targetPermissions = isGuestToken ? ["CREATE_APPOINTMENTS"] : undefined;
 
-    const rawImpersonatedBy = (refreshRecord as any).impersonatedBy;
+    const rawImpersonatedBy = (currentRecord as any).impersonatedBy;
     const hasValidImpersonation = Boolean(rawImpersonatedBy && rawImpersonatedBy.id);
     const validImpersonatedBy = hasValidImpersonation ? {
       id: rawImpersonatedBy.id.toString(),
@@ -1008,6 +1051,9 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
       originalRole: rawImpersonatedBy.originalRole || "root",
     } : undefined;
 
+    const nextGeneration = (currentRecord.generation || 1) + 1;
+    const authVersion = (user as any).authVersion || 1;
+
     const { rawToken: newRefreshToken, sessionId } = await createRefreshTokenDetails(user.id, {
       ipAddress,
       userAgent,
@@ -1015,21 +1061,29 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
       organizationId: organization_id,
       isGuest: isGuestToken,
       isRoot: user.role === "root",
+      familyId: currentRecord.familyId || crypto.randomUUID(),
+      generation: nextGeneration,
+      authVersion,
       impersonatedBy: validImpersonatedBy,
     });
 
-    const payload: any = { id: user.id, email: user.email || "", role: targetRole, organization_id, sessionId };
-    if (targetPermissions) {
-      payload.permissions = targetPermissions;
-    }
+    const newHash = crypto.createHash("sha256").update(newRefreshToken).digest("hex");
+    await RefreshToken.updateOne({ _id: currentRecord._id }, { $set: { replacedByTokenHash: newHash } });
+
+    const payload: JwtPayload = {
+      id: user.id,
+      email: user.email || "",
+      role: targetRole,
+      organization_id,
+      sessionId,
+      authVersion,
+    };
     if (validImpersonatedBy) {
       payload.impersonatedBy = validImpersonatedBy;
     }
     const accessToken = generateAccessToken(payload);
 
-    // Set rotated auth cookies
     setAuthCookies(reply, accessToken, newRefreshToken);
-
     return reply.code(200).send(successResponse(null, "Token refreshed"));
   } catch (err) {
     console.error("refreshAccessToken error:", err);
@@ -1037,17 +1091,40 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
   }
 }
 
-
-// ─── Logout (revoke + clear cookies) ────────────────────────────
+// ─── Logout (revoke session, family & close associated sockets) ──────────────────
 export async function logout(req: FastifyRequest, reply: FastifyReply) {
   try {
-    // If the user has a valid refresh token, revoke it
     const rawRefreshToken = req.cookies?.refresh_token;
+    const accessCookie = req.cookies?.access_token;
+    let sessionId = req.user?.sessionId;
+    let userId = req.user?.id;
+
+    if (!sessionId && accessCookie) {
+      try {
+        const decoded = (await import("../utilities/helpers.ts")).verifyAccessToken(accessCookie);
+        sessionId = decoded.sessionId;
+        userId = userId || decoded.id;
+      } catch {}
+    }
+
     if (rawRefreshToken) {
-      const userId = await validateRefreshToken(rawRefreshToken);
-      if (userId) {
-        await revokeAllRefreshTokens(userId);
+      const tokenHash = crypto.createHash("sha256").update(rawRefreshToken).digest("hex");
+      const record = await RefreshToken.findOne({ tokenHash });
+      if (record) {
+        userId = userId || record.userId.toString();
+        if (record.familyId) {
+          await revokeTokenFamily(record.familyId, "logout");
+        }
+        await revokeSession(record._id.toString(), "logout");
       }
+    }
+
+    if (sessionId) {
+      await revokeSession(sessionId, "logout");
+    }
+
+    if (userId) {
+      disconnectUserWebSockets(userId, 4001, "User logged out");
     }
 
     // Unconditionally clear httpOnly cookies so the browser forgets the session
