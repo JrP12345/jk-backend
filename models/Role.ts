@@ -1,11 +1,15 @@
 import mongoose, { Schema } from "mongoose";
 
 const RoleSchema = new Schema({
-  name: { type: String, required: true, unique: true, index: true },
+  name: { type: String, required: true, index: true },
+  organizationId: { type: Schema.Types.ObjectId, ref: "Organization", default: null, index: true },
   description: { type: String },
   permissions: [{ type: String }], // List of permission codes
   isSystemRole: { type: Boolean, default: false }
 });
+
+// Scope unique role names to their tenant organization (or null for global system roles)
+RoleSchema.index({ name: 1, organizationId: 1 }, { unique: true });
 
 RoleSchema.set("toJSON", {
   virtuals: true,

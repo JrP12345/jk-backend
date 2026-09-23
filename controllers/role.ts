@@ -1,8 +1,13 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { Role } from "../models/Role.ts";
 import { User } from "../models/User.ts";
+import { OrgMember } from "../models/OrgMember.ts";
+import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { invalidateRoleCache } from "../utilities/permissions.ts";
+import { getRequestOrganizationId, isRootRequest } from "../utilities/tenant.ts";
+import { revokeAllRefreshTokens } from "./auth.ts";
+import { broadcastRealtimeNotification } from "../notifications/websocket.ts";
 
 // Standard System Permissions Catalog with Human-Readable Labels & Categories
 export const SYSTEM_PERMISSIONS_CATALOG = [
@@ -93,13 +98,17 @@ export async function getRoles(req: FastifyRequest, reply: FastifyReply) {
     // Seed any missing default system roles
     for (const sysRole of DEFAULT_SYSTEM_ROLES) {
       await Role.findOneAndUpdate(
-        { name: sysRole.name },
-        { $setOnInsert: sysRole },
+        { name: sysRole.name, organizationId: null },
+        { $setOnInsert: { ...sysRole, organizationId: null } },
         { upsert: true, returnDocument: "after" }
       );
     }
 
-    const roles = await Role.find({}).sort({ isSystemRole: -1, name: 1 });
+    const orgId = getRequestOrganizationId(req);
+    const roleQuery = req.user?.role === "root" && !orgId
+      ? {}
+      : { $or: [{ organizationId: orgId }, { organizationId: null }] };
+    const roles = await Role.find(roleQuery).sort({ isSystemRole: -1, name: 1 });
     const allCatalogCodes = SYSTEM_PERMISSIONS_CATALOG.map((p) => p.code);
     const sanitizedRoles = roles.map((r) => {
       if (r.name === "admin" || r.name === "root") {
@@ -153,13 +162,18 @@ export async function createRole(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse("Permissions must contain only catalog permission codes"));
     }
 
-    const existing = await Role.findOne({ name: formattedName });
+    const orgId = getRequestOrganizationId(req);
+    const existing = await Role.findOne({
+      name: formattedName,
+      $or: [{ organizationId: orgId || null }, { organizationId: null }]
+    });
     if (existing) {
       return reply.code(400).send(errorResponse(`Role '${formattedName}' already exists`));
     }
 
     const role = await Role.create({
       name: formattedName,
+      organizationId: orgId || null,
       description: description || `Custom role: ${name}`,
       permissions: Array.isArray(permissions) ? permissions : [],
       isSystemRole: false,
@@ -274,28 +288,95 @@ export async function updateUserRole(req: FastifyRequest, reply: FastifyReply) {
 
     const { id } = req.params as { id: string };
     const { role: newRole } = req.body as { role: string };
+    const requesterOrgId = getRequestOrganizationId(req);
+    const isRoot = isRootRequest(req);
 
     if (!newRole) {
       return reply.code(400).send(errorResponse("Target role is required"));
     }
-    if (newRole === "root" && requesterRole !== "root") {
+    if (newRole === "root" && !isRoot) {
       return reply.code(403).send(errorResponse("Forbidden: Only Root Super-Admin can assign the Root role"));
     }
+
+    // Validate role is either a built-in system role or custom role belonging to this org
     if (!BUILT_IN_ROLE_NAMES.has(newRole)) {
-      const configuredRole = await Role.findOne({ name: newRole }).select("_id").lean();
-      if (!configuredRole) return reply.code(400).send(errorResponse("Target role is not configured"));
+      const roleFilter: any = { name: newRole };
+      if (!isRoot && requesterOrgId) {
+        roleFilter.$or = [{ organizationId: requesterOrgId }, { organizationId: null }];
+      }
+      const configuredRole = await Role.findOne(roleFilter).select("_id").lean();
+      if (!configuredRole) return reply.code(400).send(errorResponse("Target role is not configured for your organization"));
+    }
+
+    // Tenant isolation: verify target user belongs to requester's organization (unless root)
+    if (!isRoot) {
+      if (!requesterOrgId) {
+        return reply.code(403).send(errorResponse("Organization context is required to assign roles"));
+      }
+      const membership = await OrgMember.findOne({ userId: id, organizationId: requesterOrgId });
+      if (!membership) {
+        return reply.code(404).send(errorResponse("User not found in your organization"));
+      }
     }
 
     const user = await User.findById(id);
     if (!user) {
       return reply.code(404).send(errorResponse("User not found"));
     }
-    if (user.role === "root" && requesterRole !== "root") {
+    if (user.role === "root" && !isRoot) {
       return reply.code(403).send(errorResponse("Forbidden: Only Root Super-Admin can modify accounts with the Root role"));
     }
 
+    const previousRole = user.role;
     user.role = newRole;
     await user.save();
+
+    // If OrgMember exists for this org, keep membership role in sync
+    if (requesterOrgId) {
+      await OrgMember.updateOne({ userId: id, organizationId: requesterOrgId }, { $set: { role: newRole } });
+    }
+
+    // Invalidate existing sessions immediately (prevents privilege escalation window)
+    try {
+      await revokeAllRefreshTokens(id);
+    } catch (revokeErr) {
+      console.warn("[updateUserRole] Failed to revoke refresh tokens:", revokeErr);
+    }
+
+    // Broadcast WebSocket notification to target user
+    try {
+      broadcastRealtimeNotification(id, {
+        type: "NOTIFICATION_RECEIVED",
+        message: `Your account role has been updated to '${newRole}'. Please sign in again.`,
+        data: { newRole, previousRole }
+      });
+    } catch {
+      // safe ignore
+    }
+
+    // Create cryptographically signed Audit Log entry
+    try {
+      await AuditLog.create({
+        userId: req.user.id,
+        organizationId: requesterOrgId || null,
+        action: "ROLE_ASSIGNED",
+        targetId: user._id,
+        targetModel: "User",
+        category: "ADMIN",
+        ipAddress: req.ip,
+        userAgent: req.headers["user-agent"],
+        details: {
+          previousRole,
+          newRole,
+          targetUserId: id,
+          targetUserName: user.name,
+          organizationId: requesterOrgId,
+          assignedBy: req.user.id,
+        },
+      });
+    } catch (auditErr) {
+      console.error("[updateUserRole] Failed to create audit log entry:", auditErr);
+    }
 
     return reply.code(200).send(successResponse(user, `User '${user.name}' assigned role '${newRole}' successfully`));
   } catch (err) {
