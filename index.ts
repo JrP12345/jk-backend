@@ -6,6 +6,11 @@ import mongoose from "mongoose";
 import { requestContextStore } from "./utilities/context.ts";
 import { redisClient } from "./utilities/redis.ts";
 import { reportCriticalError } from "./utilities/telemetry.ts";
+import {
+  markBootstrapComplete,
+  markShuttingDown,
+  checkApiReadiness,
+} from "./utilities/readiness.ts";
 import fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
@@ -322,78 +327,84 @@ app.register(dpdpRoutes);
 app.register(scheduleH1Routes);
 app.register(outboxOperationsRoutes);
 
-// ─── Health-checks & Probes (SRE-001, SRE-002, SRE-003) ─────────
+// ─── Health-checks & Probes (SRE-001, SRE-002, SRE-003, Step 4.2) ─────────
 const healthCheckHandler = async () => {
   return { status: "ok", timestamp: new Date().toISOString() };
 };
 
-const livenessHandler = async () => {
-  return { status: "ok" };
+const livenessHandler = async (_request: FastifyRequest, reply: FastifyReply) => {
+  // Liveness indicates process responsiveness only. It intentionally does NOT fail
+  // if downstream DB or Redis are temporarily degraded, preventing crash-restart thrash.
+  return reply.code(200).send({
+    status: "ok",
+    process: {
+      pid: process.pid,
+      uptime: Math.floor(process.uptime()),
+      memoryUsageMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+    },
+    timestamp: new Date().toISOString(),
+  });
 };
 
-const readinessHandler = async (request: FastifyRequest, reply: FastifyReply) => {
-  const dbState = mongoose.connection.readyState;
-  const isDbReady = dbState === 1; // 1 = connected
-
-  const isRedisReady = redisClient ? redisClient.status === "ready" : false;
-  const isDegradedSingleNode = process.env.ALLOW_SINGLE_NODE_IN_PRODUCTION === "true" && !redisClient;
-  const isReady = isDbReady;
-  const statusCode = isReady ? 200 : 503;
-
-  return reply.code(statusCode).send({
-    status: isReady ? "ready" : "unhealthy",
-    database: isDbReady ? "connected" : "disconnected",
-    redis: redisClient ? (isRedisReady ? "ready" : redisClient.status) : "not_configured",
-    cluster: {
-      degraded: isDegradedSingleNode,
-      mode: redisClient ? "multi_replica_pubsub" : (isDegradedSingleNode ? "single_node_override" : "in_memory"),
-      ...(isDegradedSingleNode ? { warning: "ALLOW_SINGLE_NODE_IN_PRODUCTION=true is active. Cross-pod panic alert fan-out is DISABLED." } : {}),
-    },
-    timestamp: new Date().toISOString()
-  });
+const readinessHandler = async (_request: FastifyRequest, reply: FastifyReply) => {
+  const report = await checkApiReadiness();
+  return reply.code(report.statusCode).send(report.data);
 };
 
 app.get("/api/health", healthCheckHandler);
 app.get("/api/health/liveness", livenessHandler);
 app.get("/api/health/readiness", readinessHandler);
 
-
-
 // ─── Graceful Shutdown & Server Startup ──────────────────────────
 const PORT = Number(process.env.PORT) || 5000;
 
 async function startServer() {
   try {
-    const address = await app.listen({ port: PORT, host: "0.0.0.0" });
-    app.log.info(`🚀 HealthOS Fastify Server running at ${address}`);
-
-    // ── One-time migration guard ──────────────────────────────────
-    // Seed all built-in system role documents so checkPermission() works
-    // for every role type even on databases created before this was added.
-    // Uses $setOnInsert — safe to run on every startup; never overwrites
-    // custom permission edits made through the Role admin UI.
+    // 1. One-time migration guard & bootstrap work
     await seedDefaultRoles();
     app.log.info("✓ Default system roles verified / seeded.");
 
     await syncOrganizationPlanQuotas();
     app.log.info("✓ Tenant plan resource quotas verified / synchronized.");
 
+    // 2. Mark bootstrap complete so readiness becomes true
+    markBootstrapComplete();
+    app.log.info("✓ Application bootstrap completed successfully.");
+
+    // 3. Bind HTTP listener to begin receiving traffic
+    const address = await app.listen({ port: PORT, host: "0.0.0.0" });
+    app.log.info(`🚀 HealthOS Fastify Server running at ${address}`);
   } catch (err) {
-    app.log.error(err);
+    app.log.error(err, "Fatal error during startup / bootstrap:");
     process.exit(1);
   }
 }
 
 const gracefulShutdown = async (signal: string) => {
-  app.log.info(`Received ${signal}. Shutting down gracefully...`);
+  app.log.info(`Received ${signal}. Initiating graceful traffic drain and shutdown...`);
   try {
+    // Step 1: Remove server from traffic by failing readiness probes immediately
+    markShuttingDown();
+    const drainMs = process.env.NODE_ENV === "test" ? 0 : Number(process.env.SHUTDOWN_DRAIN_MS) || 2000;
+    if (drainMs > 0) {
+      app.log.info(`Draining inbound traffic for ${drainMs}ms before closing listeners...`);
+      await new Promise((resolve) => setTimeout(resolve, drainMs));
+    }
+
+    // Step 2: Stop accepting new HTTP connections and wait for in-flight requests
     await app.close();
+    app.log.info("HTTP listener closed, in-flight requests completed.");
+
+    // Step 3: Disconnect database and cache
     if (mongoose.connection.readyState !== 0) {
       await mongoose.disconnect();
+      app.log.info("MongoDB disconnected.");
     }
     if (redisClient) {
       await redisClient.quit();
+      app.log.info("Redis disconnected.");
     }
+
     app.log.info("Server closed successfully.");
     process.exit(0);
   } catch (err) {

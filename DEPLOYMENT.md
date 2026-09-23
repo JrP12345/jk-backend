@@ -84,11 +84,19 @@ docker build -t ananta-frontend:latest --build-arg NEXT_PUBLIC_API_URL=https://a
 docker run -d -p 3000:3000 --name ananta-frontend ananta-frontend:latest
 ```
 
-### Health & Readiness Probes
-- **Liveness probe:** `GET /api/health/liveness` (HTTP 200)
-- **Readiness probe:** `GET /api/health/readiness` (HTTP 200 when MongoDB is connected and Redis is ready; HTTP 503 if disconnected; HTTP 200 with `cluster_mode: "degraded_single_node"` if `ALLOW_SINGLE_NODE_IN_PRODUCTION=true`)
-- **Synthetic Canary probe:** `GET /api/health/synthetic` (HTTP 200 with full end-to-end verification: dedicated `_canary_probes` collection write/read/delete, diagnostic engine panic threshold test on Potassium 6.9, and Redis WebSocket fan-out test on isolated test channel)
-- **System metrics:** `GET /api/health` (HTTP 200 with ISO timestamp)
+### Health & Readiness Probes (Step 4.2 Hardened)
+- **Liveness probe (`GET /api/health/liveness`):** HTTP 200 process-level check reporting PID, process uptime, and memory RSS. It intentionally ignores temporary downstream database/Redis degradation to prevent Kubernetes restart thrashing.
+- **Readiness probe (`GET /api/health/readiness`):**
+  Returns HTTP 200 only when ALL of the following are satisfied:
+  1. MongoDB is open (`readyState === 1`) and responds to an admin ping within 1500ms.
+  2. Redis is reachable and responds to `PING` with `PONG` within 1500ms (or `ALLOW_SINGLE_NODE_IN_PRODUCTION=true` is explicitly set).
+  3. Environment configuration is fully valid (`validateConfig()`).
+  4. Server startup/bootstrap is finished (`seedDefaultRoles` and `syncOrganizationPlanQuotas` completed).
+  5. The server is not shutting down.
+  *Note:* On `SIGTERM` / `SIGINT`, readiness returns HTTP 503 immediately while traffic is drained for `SHUTDOWN_DRAIN_MS` (default 2000ms) before HTTP listeners close.
+- **Worker Health & Readiness:** Background workers expose independent health and readiness endpoints (`/health` and `/ready`) on configurable ports (e.g. port 5004 for `domain-event-worker`). Worker readiness checks DB connectivity and worker loop state independently from HTTP routing.
+- **Synthetic Canary probe (`GET /api/health/synthetic`):** HTTP 200 with full end-to-end verification: dedicated `_canary_probes` collection write/read/delete, diagnostic engine panic threshold test on Potassium 6.9, and Redis WebSocket fan-out test on isolated test channel.
+- **System metrics (`GET /api/health`):** HTTP 200 with ISO timestamp.
 
 ---
 
