@@ -72,6 +72,7 @@ import fastifySwaggerUi from "@fastify/swagger-ui";
 import { apiV1VersioningPlugin } from "./utilities/versioningPlugin.ts";
 import { csrfProtection } from "./middleware/csrf.ts";
 import { sanitizeMiddleware } from "./middleware/sanitize.ts";
+import { registerProfilingHooks, getHandlerProfilingMetrics } from "./utilities/profiling.ts";
 
 const app = fastify({
   logger: {
@@ -172,6 +173,9 @@ if (process.env.NODE_ENV !== "production") {
 
 // Register API Versioning plugin (/api/v1/*)
 app.register(apiV1VersioningPlugin);
+
+// Register latency and slow-query profiling hooks (Step 5.5)
+registerProfilingHooks(app);
 
 // Setup global async context for request-scoped state
 app.addHook("onRequest", (request, reply, done) => {
@@ -355,6 +359,9 @@ const readinessHandler = async (_request: FastifyRequest, reply: FastifyReply) =
 app.get("/api/health", healthCheckHandler);
 app.get("/api/health/liveness", livenessHandler);
 app.get("/api/health/readiness", readinessHandler);
+app.get("/api/admin/operations/profiling", async (_req, reply) => {
+  return reply.code(200).send(getHandlerProfilingMetrics());
+});
 
 // ─── Graceful Shutdown & Server Startup ──────────────────────────
 const PORT = Number(process.env.PORT) || 5000;
