@@ -2,10 +2,14 @@ import type { FastifyInstance } from "fastify";
 import mongoose from "mongoose";
 import { authenticate, checkAnyPermission } from "../middleware/auth.ts";
 import { TaskModel } from "../models/Task.ts";
+import { OrgMember } from "../models/OrgMember.ts";
+import { createTenantRepository } from "../platform/TenantRepository.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { createTaskSchema, updateTaskStatusSchema } from "../schemas/operations.ts";
+
+const taskRepo = createTenantRepository(TaskModel);
 
 export default async function taskRoutes(app: FastifyInstance) {
   const createTaskAccess = { preHandler: [authenticate, checkAnyPermission("MANAGE_ORGANIZATION", "MANAGE_STAFF", "MANAGE_APPOINTMENTS")] };
@@ -16,6 +20,10 @@ export default async function taskRoutes(app: FastifyInstance) {
     try {
       const createdBy = req.user!.id;
       const organizationId = req.user?.organization_id;
+      if (!organizationId) {
+        return reply.code(400).send(errorResponse("Organization ID context is missing"));
+      }
+
       const { title, description, assignedTo, priority, dueDate } = req.body as any;
 
       if (!title || !assignedTo) {
@@ -25,15 +33,24 @@ export default async function taskRoutes(app: FastifyInstance) {
         return reply.code(400).send(errorResponse("Invalid assignedTo user ID"));
       }
 
-      const task = await TaskModel.create({
-        organizationId: organizationId ? new mongoose.Types.ObjectId(organizationId) : undefined,
+      // Validate task assignees belong to the caller's organization (Finding: Step 2.2 / Step 2.8)
+      const assigneeMember = await OrgMember.findOne({
+        userId: new mongoose.Types.ObjectId(assignedTo),
+        organizationId: new mongoose.Types.ObjectId(organizationId),
+      });
+      if (!assigneeMember) {
+        return reply.code(400).send(errorResponse("Task assignee does not belong to your organization"));
+      }
+
+      const task = await taskRepo.create({
+        organizationId: new mongoose.Types.ObjectId(organizationId),
         title,
         description: description || null,
         assignedTo: new mongoose.Types.ObjectId(assignedTo),
         createdBy: new mongoose.Types.ObjectId(createdBy),
         priority: priority || "medium",
         dueDate: dueDate ? new Date(dueDate) : undefined,
-      });
+      }, { organizationId });
 
       // Emit TASK_ASSIGNED domain event
       await eventBus.publishDurable({
@@ -60,9 +77,17 @@ export default async function taskRoutes(app: FastifyInstance) {
   app.get("/api/tasks", authenticated, async (req, reply) => {
     try {
       const userId = req.user!.id;
-      const tasks = await TaskModel.find({ assignedTo: new mongoose.Types.ObjectId(userId) })
-        .sort({ createdAt: -1 })
-        .lean();
+      const organizationId = req.user?.organization_id;
+      if (!organizationId) {
+        return reply.code(400).send(errorResponse("Organization ID context is missing"));
+      }
+
+      const tasks = await taskRepo.find({
+        assignedTo: new mongoose.Types.ObjectId(userId),
+      }, undefined, {
+        organizationId,
+        sort: { createdAt: -1 },
+      });
 
       return reply.code(200).send(successResponse(tasks));
     } catch (err) {
@@ -85,17 +110,20 @@ export default async function taskRoutes(app: FastifyInstance) {
         return reply.code(400).send(errorResponse("Invalid task status"));
       }
 
-      const task = await TaskModel.findById(id);
+      const organizationId = req.user?.organization_id;
+      if (!organizationId) {
+        return reply.code(400).send(errorResponse("Organization ID context is missing"));
+      }
+
+      const task = await taskRepo.findById(id, undefined, { organizationId });
       if (!task) {
         return reply.code(404).send(errorResponse("Task not found"));
       }
       const userId = req.user!.id;
-      const organizationId = req.user?.organization_id;
       const isAssignee = task.assignedTo.toString() === userId;
       const isCreator = task.createdBy.toString() === userId;
-      const sameOrganization = !task.organizationId || !organizationId || task.organizationId.toString() === organizationId;
-      if (!sameOrganization || (!isAssignee && !isCreator)) {
-        return reply.code(404).send(errorResponse("Task not found"));
+      if (!isAssignee && !isCreator && req.user?.role !== "root") {
+        return reply.code(403).send(errorResponse("Forbidden: not authorized to update this task"));
       }
 
       task.status = status as any;

@@ -7,6 +7,7 @@
     "test": "vitest run",
     "check:fast": "node ../scripts/dev_check.js",
     "check:feature": "node ../scripts/feature_check.js",
+    "check:tenants": "node --experimental-strip-types scripts/check-tenant-scoping.ts",
     "audit:release": "node ../scripts/repo_auditor.js",
     "audit": "node ../scripts/repo_auditor.js",
     "seed": "node --env-file=.env --experimental-strip-types scripts/seedDatabase.ts",

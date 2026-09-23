@@ -1,11 +1,15 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import mongoose from "mongoose";
 import { DocumentUpload } from "../models/DocumentUpload.ts";
 import { Patient } from "../models/Patient.ts";
+import { createTenantRepository } from "../platform/TenantRepository.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { logger } from "../utilities/logger.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { checkPatientAccess } from "../utilities/tenant.ts";
+
+const documentRepo = createTenantRepository(DocumentUpload);
 
 export const uploadDocument = async (req: FastifyRequest, reply: FastifyReply) => {
   try {
@@ -30,7 +34,7 @@ export const uploadDocument = async (req: FastifyRequest, reply: FastifyReply) =
       return reply.code(409).send(errorResponse("Patient organization context is required"));
     }
 
-    const doc = await DocumentUpload.create({
+    const doc = await documentRepo.create({
       patientId,
       organizationId,
       uploadedByUserId: userId,
@@ -41,7 +45,7 @@ export const uploadDocument = async (req: FastifyRequest, reply: FastifyReply) =
       category: category || "OTHER",
       ocrStatus: "pending",
       uploadedAt: new Date(),
-    });
+    }, { organizationId });
 
     // Emit domain event for asynchronous OCR & vision extraction pipeline
     await eventBus.publishDurable({
@@ -85,12 +89,17 @@ export const getPatientDocuments = async (req: FastifyRequest, reply: FastifyRep
       return reply.code(404).send(errorResponse("Patient not found"));
     }
 
-    const documentScope = patient.organizationId
-      ? { patientId, organizationId: patient.organizationId }
-      : tenantCheck.organizationId
-        ? { patientId, organizationId: tenantCheck.organizationId }
-        : { _id: null };
-    const docs = await DocumentUpload.find(documentScope).sort({ uploadedAt: -1 }).lean();
+    const orgId = patient.organizationId || tenantCheck.organizationId;
+    if (!orgId) {
+      return reply.code(409).send(errorResponse("Organization context missing"));
+    }
+
+    const docs = await documentRepo.find({
+      patientId: new mongoose.Types.ObjectId(patientId),
+    }, undefined, {
+      organizationId: orgId,
+      sort: { uploadedAt: -1 },
+    });
 
     return reply.code(200).send(successResponse(docs));
   } catch (err: any) {

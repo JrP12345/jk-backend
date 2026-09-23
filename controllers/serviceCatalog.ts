@@ -1,9 +1,12 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { ServiceCatalog } from "../models/ServiceCatalog.ts";
-import { AuditLog } from "../models/AuditLog.ts";
+import { Clinic } from "../models/Clinic.ts";
+import { createTenantRepository } from "../platform/TenantRepository.ts";
 import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+
+const serviceCatalogRepo = createTenantRepository(ServiceCatalog);
 
 export async function createService(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -33,18 +36,30 @@ export async function createService(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse("code, name, department, and price are required"));
     }
 
-    const existing = await ServiceCatalog.findOne({
-      organizationId: orgId,
+    // Validate referenced clinic belongs to the same organization
+    let validatedClinicId: mongoose.Types.ObjectId | undefined = undefined;
+    if (clinicId) {
+      if (!mongoose.Types.ObjectId.isValid(clinicId)) {
+        return reply.code(400).send(errorResponse("Invalid clinic ID format"));
+      }
+      const clinicExists = await Clinic.findOne({ _id: clinicId, organizationId: orgId });
+      if (!clinicExists) {
+        return reply.code(400).send(errorResponse("Referenced clinic does not belong to your organization"));
+      }
+      validatedClinicId = new mongoose.Types.ObjectId(clinicId);
+    }
+
+    const existing = await serviceCatalogRepo.findOne({
       code: code.trim().toUpperCase(),
-    });
+    }, undefined, { organizationId: orgId });
 
     if (existing) {
       return reply.code(409).send(errorResponse(`Service code '${code.toUpperCase()}' already exists in your organization`));
     }
 
-    const service = await ServiceCatalog.create({
-      organizationId: orgId,
-      clinicId: clinicId && mongoose.Types.ObjectId.isValid(clinicId) ? clinicId : undefined,
+    const service = await serviceCatalogRepo.create({
+      organizationId: new mongoose.Types.ObjectId(orgId),
+      clinicId: validatedClinicId,
       code: code.trim().toUpperCase(),
       name: name.trim(),
       department: department.trim(),
@@ -54,7 +69,7 @@ export async function createService(req: FastifyRequest, reply: FastifyReply) {
       gstRate: gstRate !== undefined ? gstRate : 0,
       description: description?.trim(),
       isActive: isActive !== undefined ? isActive : true,
-    });
+    }, { organizationId: orgId });
 
     return reply.code(201).send(successResponse(service, "Service catalog item created successfully"));
   } catch (err) {
@@ -68,14 +83,14 @@ export async function getServices(req: FastifyRequest, reply: FastifyReply) {
     const scope = resolveAuthorizedOrganizationScope(req);
     if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
     const orgId = scope.organizationId;
-    const { search, category, department, clinicId, isActive, page, limit } = req.query as any;
+    if (!orgId) {
+      return reply.code(400).send(errorResponse("Organization ID context is missing"));
+    }
 
+    const { search, category, department, clinicId, isActive, page, limit } = req.query as any;
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
 
     const andConditions: any[] = [];
-    if (orgId && req.user?.role !== "root") {
-      andConditions.push({ organizationId: orgId });
-    }
 
     if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
       andConditions.push({
@@ -98,13 +113,15 @@ export async function getServices(req: FastifyRequest, reply: FastifyReply) {
 
     const filter = andConditions.length > 0 ? { $and: andConditions } : {};
 
-    const totalCount = await ServiceCatalog.countDocuments(filter);
+    const totalCount = await serviceCatalogRepo.countDocuments(filter, { organizationId: orgId });
     const totalPages = Math.ceil(totalCount / pageSize);
 
-    const services = await ServiceCatalog.find(filter)
-      .sort({ category: 1, name: 1 })
-      .skip(skip)
-      .limit(pageSize);
+    const services = await serviceCatalogRepo.find(filter, undefined, {
+      organizationId: orgId,
+      sort: { category: 1, name: 1 },
+      skip,
+      limit: pageSize,
+    });
 
     setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
 
@@ -117,12 +134,19 @@ export async function getServices(req: FastifyRequest, reply: FastifyReply) {
 
 export async function getServiceById(req: FastifyRequest, reply: FastifyReply) {
   try {
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
+    if (!orgId) {
+      return reply.code(400).send(errorResponse("Organization ID context is missing"));
+    }
+
     const { id } = req.params as { id: string };
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return reply.code(400).send(errorResponse("Invalid service ID"));
     }
 
-    const service = await ServiceCatalog.findById(id);
+    const service = await serviceCatalogRepo.findById(id, undefined, { organizationId: orgId });
     if (!service) {
       return reply.code(404).send(errorResponse("Service catalog item not found"));
     }
@@ -136,19 +160,38 @@ export async function getServiceById(req: FastifyRequest, reply: FastifyReply) {
 
 export async function updateService(req: FastifyRequest, reply: FastifyReply) {
   try {
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
+    if (!orgId) {
+      return reply.code(400).send(errorResponse("Organization ID context is missing"));
+    }
+
     const { id } = req.params as { id: string };
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return reply.code(400).send(errorResponse("Invalid service ID"));
     }
 
-    const service = await ServiceCatalog.findById(id);
+    const service = await serviceCatalogRepo.findById(id, undefined, { organizationId: orgId });
     if (!service) {
       return reply.code(404).send(errorResponse("Service catalog item not found"));
     }
 
     const {
-      name, department, category, price, hsnSacCode, gstRate, description, isActive
+      clinicId, name, department, category, price, hsnSacCode, gstRate, description, isActive
     } = req.body as any;
+
+    if (clinicId !== undefined) {
+      if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
+        const clinicExists = await Clinic.findOne({ _id: clinicId, organizationId: orgId });
+        if (!clinicExists) {
+          return reply.code(400).send(errorResponse("Referenced clinic does not belong to your organization"));
+        }
+        service.clinicId = new mongoose.Types.ObjectId(clinicId);
+      } else {
+        service.clinicId = undefined;
+      }
+    }
 
     if (name) service.name = name.trim();
     if (department) service.department = department.trim();
@@ -170,12 +213,19 @@ export async function updateService(req: FastifyRequest, reply: FastifyReply) {
 
 export async function deleteService(req: FastifyRequest, reply: FastifyReply) {
   try {
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
+    if (!orgId) {
+      return reply.code(400).send(errorResponse("Organization ID context is missing"));
+    }
+
     const { id } = req.params as { id: string };
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return reply.code(400).send(errorResponse("Invalid service ID"));
     }
 
-    const service = await ServiceCatalog.findById(id);
+    const service = await serviceCatalogRepo.findById(id, undefined, { organizationId: orgId });
     if (!service) {
       return reply.code(404).send(errorResponse("Service catalog item not found"));
     }
