@@ -1,0 +1,919 @@
+{
+  "version": "1.0.0",
+  "generatedAt": "2026-09-23T22:15:00Z",
+  "description": "Authoritative machine-readable tenant data ownership matrix and model isolation specification.",
+  "models": {
+    "AIChatSession": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["AIAnalyticsWorker", "RetentionCleanupWorker"],
+      "accessingControllers": ["controllers/aiAssistant.ts", "controllers/aiChat.ts"],
+      "queryMethods": ["find", "findOne", "findById", "updateOne", "deleteOne"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "AIObservabilityMetric": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["AIAnalyticsWorker", "ObservabilityAggregator"],
+      "accessingControllers": ["controllers/aiAssistant.ts", "controllers/aiObservability.ts"],
+      "queryMethods": ["find", "aggregate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "AIOrganizationConfig": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["SystemStartupSync"],
+      "accessingControllers": ["controllers/aiAssistant.ts", "controllers/organization.ts"],
+      "queryMethods": ["findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "AIPromptTemplate": {
+      "classification": "platform",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["SystemPromptSeeder"],
+      "accessingControllers": ["controllers/aiAssistant.ts"],
+      "queryMethods": ["find", "findOne"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "AIToolExecutionLog": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["AIAuditWorker"],
+      "accessingControllers": ["controllers/aiAssistant.ts"],
+      "queryMethods": ["find", "create", "aggregate"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "Appointment": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["NoShowDetectionJob", "ReminderWorker", "QueueSyncWorker"],
+      "accessingControllers": ["controllers/appointment.ts", "controllers/queue.ts", "controllers/public.ts", "controllers/doctor.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "updateOne", "updateMany", "aggregate"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "AppointmentPayment": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["PaymentReconciliationWorker"],
+      "accessingControllers": ["controllers/billing.ts", "controllers/appointment.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "AuditCheckpoint": {
+      "classification": "platform",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["AuditCheckpointWorker"],
+      "accessingControllers": ["controllers/audit.ts"],
+      "queryMethods": ["find", "findOne", "create"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "AuditLog": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["AuditArchivalWorker", "ComplianceReportingWorker"],
+      "accessingControllers": ["controllers/audit.ts", "utilities/auditPlugin.ts"],
+      "queryMethods": ["find", "aggregate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "CDSEvaluation": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["CDSEngineWorker"],
+      "accessingControllers": ["controllers/cds.ts", "controllers/encounter.ts"],
+      "queryMethods": ["find", "findOne", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "CashierShift": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["ShiftAutoCloseWorker"],
+      "accessingControllers": ["controllers/cashier.ts", "controllers/billing.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "ChainTransitionRecord": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["ChainVerificationWorker"],
+      "accessingControllers": ["controllers/audit.ts"],
+      "queryMethods": ["find", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "Claim": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["InsuranceClaimSyncWorker"],
+      "accessingControllers": ["controllers/insurance.ts", "controllers/claims.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create", "aggregate"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "Clinic": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["ClinicCleanupWorker", "PublicClinicSync"],
+      "accessingControllers": ["controllers/clinic.ts", "controllers/public.ts", "controllers/onboarding.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "updateOne", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "ClinicalNote": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["ClinicalSummaryWorker"],
+      "accessingControllers": ["controllers/clinicalNote.ts", "controllers/encounter.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "updateOne", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "Consent": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["ConsentExpiryWorker"],
+      "accessingControllers": ["controllers/consent.ts", "controllers/patient.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "Counter": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["CounterResetWorker"],
+      "accessingControllers": ["controllers/sequence.ts", "controllers/billing.ts"],
+      "queryMethods": ["findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "DPDPConsent": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["DPDPComplianceWorker"],
+      "accessingControllers": ["controllers/dpdp.ts", "controllers/consent.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "DataBreachIncident": {
+      "classification": "platform",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["IncidentNotificationWorker"],
+      "accessingControllers": ["controllers/security.ts", "controllers/compliance.ts"],
+      "queryMethods": ["find", "findOne", "create", "findOneAndUpdate"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "Department": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["DepartmentSyncWorker"],
+      "accessingControllers": ["controllers/department.ts", "controllers/clinic.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "create", "deleteOne"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "Doctor": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["DoctorRosterSyncWorker"],
+      "accessingControllers": ["controllers/doctor.ts", "controllers/appointment.ts", "controllers/public.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "DoctorAssignment": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["AssignmentExpiryWorker"],
+      "accessingControllers": ["controllers/doctor.ts", "controllers/clinic.ts"],
+      "queryMethods": ["find", "findOne", "create", "deleteMany"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "DoctorDayOverride": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["RosterCalculationWorker"],
+      "accessingControllers": ["controllers/doctor.ts", "controllers/roster.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create", "deleteOne"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "DocumentUpload": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["OCRProcessingWorker", "MalwareScanWorker", "UploadOrphanCleanupWorker"],
+      "accessingControllers": ["controllers/document.ts", "controllers/patient.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "create", "deleteOne"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "DomainEventOutbox": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["OutboxDispatcherWorker", "OutboxCleanupWorker"],
+      "accessingControllers": ["platform/events/outbox.ts"],
+      "queryMethods": ["find", "findOneAndUpdate", "updateMany", "create", "deleteMany"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "Encounter": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["EncounterTimeoutWorker", "AnalyticsAggregator"],
+      "accessingControllers": ["controllers/encounter.ts", "controllers/doctor.ts", "controllers/reportExport.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "updateOne", "create", "aggregate"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "FamilyRelationship": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": [],
+      "accessingControllers": ["controllers/patient.ts"],
+      "queryMethods": ["find", "findOne", "create", "deleteOne"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "ImagingStudy": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["DICOMSyncWorker"],
+      "accessingControllers": ["controllers/imaging.ts", "controllers/encounter.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "InsuranceTariff": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["TariffImportWorker"],
+      "accessingControllers": ["controllers/insurance.ts", "controllers/billing.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "Invoice": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["InvoiceAgingWorker", "FinancialReportWorker"],
+      "accessingControllers": ["controllers/billing.ts", "controllers/invoice.ts", "controllers/reportExport.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "updateOne", "create", "aggregate"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "LabOrder": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["LabSyncWorker"],
+      "accessingControllers": ["controllers/lab.ts", "controllers/encounter.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "updateOne", "create", "aggregate"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "LabTest": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": [],
+      "accessingControllers": ["controllers/lab.ts", "controllers/serviceCatalog.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "Medicine": {
+      "classification": "tenant",
+      "ownershipField": "clinicId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["LowStockAlertWorker"],
+      "accessingControllers": ["controllers/pharmacy.ts", "controllers/medicine.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "updateOne", "create"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": true
+      }
+    },
+    "MedicineBatch": {
+      "classification": "tenant",
+      "ownershipField": "clinicId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["BatchExpiryNotificationWorker"],
+      "accessingControllers": ["controllers/pharmacy.ts", "controllers/medicine.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "updateOne", "create"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": true
+      }
+    },
+    "ModuleRegistry": {
+      "classification": "platform",
+      "ownershipField": null,
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["ModuleSyncWorker"],
+      "accessingControllers": ["controllers/modules.ts", "middleware/moduleGuard.ts"],
+      "queryMethods": ["find", "findOne", "create"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "Notification": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["NotificationDispatcherWorker"],
+      "accessingControllers": ["controllers/notification.ts"],
+      "queryMethods": ["find", "findOne", "updateMany", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "NotificationDelivery": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["NotificationRetryWorker"],
+      "accessingControllers": ["controllers/notification.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "NotificationLog": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["LogArchivalWorker"],
+      "accessingControllers": ["controllers/notification.ts"],
+      "queryMethods": ["find", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "NotificationPreference": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": [],
+      "accessingControllers": ["controllers/notification.ts", "controllers/user.ts"],
+      "queryMethods": ["findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "NotificationTemplate": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["TemplateSyncWorker"],
+      "accessingControllers": ["controllers/notification.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "Observation": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["EWSScoreWorker"],
+      "accessingControllers": ["controllers/observation.ts", "controllers/encounter.ts"],
+      "queryMethods": ["find", "findOne", "create", "aggregate"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "ObservationAlert": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["AlertEscalationWorker"],
+      "accessingControllers": ["controllers/observation.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "ObservationScore": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["ScoreAggregatorWorker"],
+      "accessingControllers": ["controllers/observation.ts"],
+      "queryMethods": ["find", "findOne", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "OnboardingDraft": {
+      "classification": "public",
+      "ownershipField": null,
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["DraftCleanupWorker"],
+      "accessingControllers": ["controllers/onboarding.ts"],
+      "queryMethods": ["findOne", "findOneAndUpdate", "create", "deleteOne"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "OpdSession": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["OpdAutoCloseWorker"],
+      "accessingControllers": ["controllers/opd.ts", "controllers/doctor.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "OpdTemplate": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": [],
+      "accessingControllers": ["controllers/opd.ts", "controllers/doctor.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create", "deleteOne"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "OrgInvite": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["InviteExpiryWorker"],
+      "accessingControllers": ["controllers/organization.ts", "controllers/auth.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create", "deleteOne"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "OrgMember": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["MembershipSyncWorker"],
+      "accessingControllers": ["controllers/organization.ts", "controllers/role.ts", "controllers/auth.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create", "deleteOne"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "Organization": {
+      "classification": "platform",
+      "ownershipField": "_id",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["SubscriptionStatusWorker", "TenantLifecycleWorker"],
+      "accessingControllers": ["controllers/organization.ts", "controllers/public.ts", "controllers/auth.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "OtpVerification": {
+      "classification": "public",
+      "ownershipField": null,
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["OtpCleanupWorker"],
+      "accessingControllers": ["controllers/auth.ts", "controllers/public.ts"],
+      "queryMethods": ["findOne", "findOneAndUpdate", "create", "deleteMany"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "OutboundMessage": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["MessageQueueWorker"],
+      "accessingControllers": ["controllers/notification.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "Patient": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "primaryClinicId",
+      "allowedPrivilegedJobs": ["PatientMergeWorker", "DPDPExportWorker"],
+      "accessingControllers": ["controllers/patient.ts", "controllers/appointment.ts", "controllers/encounter.ts", "controllers/reportExport.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "updateOne", "create", "countDocuments", "aggregate"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "PatientFeedback": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["NPSReportWorker"],
+      "accessingControllers": ["controllers/feedback.ts", "controllers/public.ts"],
+      "queryMethods": ["find", "findOne", "create", "aggregate"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "PendingTwoFactorSetup": {
+      "classification": "auth_ephemeral",
+      "ownershipField": "userId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["TwoFactorExpiryWorker"],
+      "accessingControllers": ["controllers/auth.ts"],
+      "queryMethods": ["findOne", "create", "deleteOne"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "Permission": {
+      "classification": "platform",
+      "ownershipField": null,
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["PermissionSeedWorker"],
+      "accessingControllers": ["controllers/role.ts", "utilities/permissions.ts"],
+      "queryMethods": ["find", "findOne", "create"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "PreAuthorization": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["PreAuthSyncWorker"],
+      "accessingControllers": ["controllers/insurance.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "Prescription": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["PrescriptionAuditWorker", "H1RegisterSyncWorker"],
+      "accessingControllers": ["controllers/prescription.ts", "controllers/encounter.ts", "controllers/pharmacy.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "updateOne", "create", "aggregate"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "Receptionist": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": [],
+      "accessingControllers": ["controllers/clinic.ts", "controllers/user.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "RefillRequest": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["RefillReminderWorker"],
+      "accessingControllers": ["controllers/pharmacy.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "RefreshToken": {
+      "classification": "auth_ephemeral",
+      "ownershipField": "userId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["ExpiredTokenPurgeWorker"],
+      "accessingControllers": ["controllers/auth.ts", "utilities/helpers.ts"],
+      "queryMethods": ["findOne", "findOneAndUpdate", "create", "deleteMany", "updateMany"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "Role": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["RoleSeedWorker"],
+      "accessingControllers": ["controllers/role.ts", "utilities/permissions.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "create", "deleteOne"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "SaaSConfig": {
+      "classification": "platform",
+      "ownershipField": null,
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["SaaSConfigSyncWorker"],
+      "accessingControllers": ["controllers/admin.ts"],
+      "queryMethods": ["findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "SaaSInvoice": {
+      "classification": "platform",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["SaaSBillingWorker"],
+      "accessingControllers": ["controllers/admin.ts", "controllers/subscription.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "SaaSPlan": {
+      "classification": "platform",
+      "ownershipField": null,
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["PlanSyncWorker"],
+      "accessingControllers": ["controllers/admin.ts", "controllers/subscription.ts"],
+      "queryMethods": ["find", "findOne", "create"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "ScheduleH1Register": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["DrugInspectorExportWorker"],
+      "accessingControllers": ["controllers/pharmacy.ts"],
+      "queryMethods": ["find", "findOne", "create", "aggregate"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "ServiceCatalog": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["CatalogSyncWorker"],
+      "accessingControllers": ["controllers/serviceCatalog.ts", "controllers/billing.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "updateOne", "create", "countDocuments"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "ShiftRoster": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["RosterNotificationWorker"],
+      "accessingControllers": ["controllers/roster.ts", "controllers/clinic.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create", "deleteOne"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "SiteVisit": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": [],
+      "accessingControllers": ["controllers/siteVisit.ts"],
+      "queryMethods": ["find", "findOne", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "SoapTemplate": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": [],
+      "accessingControllers": ["controllers/clinicalNote.ts", "controllers/doctor.ts"],
+      "queryMethods": ["find", "findOne", "create", "deleteOne"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "Subscription": {
+      "classification": "platform",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["SubscriptionRenewalWorker"],
+      "accessingControllers": ["controllers/subscription.ts", "controllers/organization.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "SubscriptionPayment": {
+      "classification": "platform",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["PaymentWebhookWorker"],
+      "accessingControllers": ["controllers/subscription.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "Task": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["TaskEscalationWorker", "TaskDueReminderWorker"],
+      "accessingControllers": ["controllers/task.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "updateOne", "create", "deleteOne"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": false
+      }
+    },
+    "TeleconsultationSession": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "clinicField": "clinicId",
+      "allowedPrivilegedJobs": ["TeleconsultExpiryWorker"],
+      "accessingControllers": ["controllers/teleconsultation.ts", "controllers/appointment.ts"],
+      "queryMethods": ["find", "findOne", "findOneAndUpdate", "create"],
+      "requiredConstraints": {
+        "organizationId": true,
+        "clinicId": true
+      }
+    },
+    "UsageRecord": {
+      "classification": "platform",
+      "ownershipField": "organizationId",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["MeteredBillingWorker"],
+      "accessingControllers": ["controllers/admin.ts", "controllers/subscription.ts"],
+      "queryMethods": ["find", "create", "aggregate"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "User": {
+      "classification": "user_cross_tenant",
+      "ownershipField": "_id",
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["UserDeactivationWorker", "AccountPurgeWorker"],
+      "accessingControllers": ["controllers/user.ts", "controllers/auth.ts", "controllers/role.ts", "controllers/doctor.ts"],
+      "queryMethods": ["find", "findOne", "findById", "findOneAndUpdate", "updateOne", "create"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    },
+    "WorkerLease": {
+      "classification": "platform",
+      "ownershipField": null,
+      "clinicField": null,
+      "allowedPrivilegedJobs": ["*"],
+      "accessingControllers": ["workers/scheduler.ts"],
+      "queryMethods": ["findOneAndUpdate", "create", "deleteOne"],
+      "requiredConstraints": {
+        "organizationId": false,
+        "clinicId": false
+      }
+    }
+  }
+}
