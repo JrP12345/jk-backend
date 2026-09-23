@@ -753,12 +753,19 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
     const docProfile = await Doctor.findOne({ userId: doctorId }).lean();
     const doctorSpecialization = docProfile?.specialization || (appointment.doctorId as any)?.specialization || "General Physician";
 
-    const apptDate = new Date(appointment.appointmentTime);
-    const startOfDay = new Date(apptDate.getFullYear(), apptDate.getMonth(), apptDate.getDate(), 0, 0, 0, 0);
-    const endOfDay = new Date(apptDate.getFullYear(), apptDate.getMonth(), apptDate.getDate(), 23, 59, 59, 999);
+    // Safely establish appointmentTime validity before toISOString() (Finding: Step 3.4)
+    const rawApptTime = appointment.appointmentTime;
+    const apptDate = rawApptTime ? new Date(rawApptTime) : new Date();
+    const isValidApptDate = !isNaN(apptDate.getTime());
+    if (!isValidApptDate) {
+      console.warn(`[PublicTracker] Corrupt historical appointmentTime detected for appointment ${appointment._id}`);
+    }
+    const safeDate = isValidApptDate ? apptDate : new Date();
+    const startOfDay = new Date(safeDate.getFullYear(), safeDate.getMonth(), safeDate.getDate(), 0, 0, 0, 0);
+    const endOfDay = new Date(safeDate.getFullYear(), safeDate.getMonth(), safeDate.getDate(), 23, 59, 59, 999);
 
-    // Check same-day DoctorDayOverride
-    const dateStr = apptDate.toISOString().slice(0, 10);
+    // Check same-day DoctorDayOverride safely
+    const dateStr = safeDate.toISOString().slice(0, 10);
     const dayOverride = await DoctorDayOverride.findOne({
       doctorId,
       clinicId,

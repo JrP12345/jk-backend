@@ -15,7 +15,15 @@ const AppointmentSchema = new Schema({
   checkInTokenHash: { type: String, select: false, index: true },
   checkInTokenExpiresAt: { type: Date, index: true },
   checkInTokenUsedAt: { type: Date },
-  appointmentTime: { type: Date, required: true, index: true },
+  appointmentTime: {
+    type: Date,
+    required: true,
+    index: true,
+    validate: {
+      validator: (v: any) => v instanceof Date && !isNaN(v.getTime()),
+      message: "appointmentTime must be a valid date"
+    }
+  },
   appointmentType: { type: String, enum: ["walk-in", "online", "reception", "qr"], required: true },
   status: { 
     type: String, 
@@ -236,6 +244,10 @@ AppointmentSchema.set("toJSON", {
     ret.id = ret._id.toString();
     delete ret._id;
     delete ret.__v;
+    if (ret.appointmentTime) {
+      const d = new Date(ret.appointmentTime);
+      ret.appointmentTime = !isNaN(d.getTime()) ? d.toISOString() : null;
+    }
     return ret;
   }
 });

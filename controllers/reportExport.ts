@@ -9,10 +9,11 @@ import {
 
 export async function exportReport(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { reportType, clinicId, organizationId: queryOrgId } = req.query as {
+    const { reportType, clinicId, organizationId: queryOrgId, version } = req.query as {
       reportType: "billing" | "clinical" | "pharmacy";
       clinicId?: string;
       organizationId?: string;
+      version?: "v1" | "v2";
     };
 
     const isRoot = isRootRequest(req);
@@ -35,7 +36,8 @@ export async function exportReport(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const type = reportType || "billing";
-    const csvContent = await generateCsvReport(type, targetOrgId, clinicId);
+    const reportVersion = version === "v2" ? "v2" : "v1";
+    const csvContent = await generateCsvReport(type, targetOrgId, clinicId, reportVersion);
 
     const filename = `ananta_${type}_report_${new Date().toISOString().split("T")[0]}.csv`;
 

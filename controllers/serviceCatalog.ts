@@ -90,7 +90,9 @@ export async function getServices(req: FastifyRequest, reply: FastifyReply) {
     const { search, category, department, clinicId, isActive, page, limit } = req.query as any;
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
 
-    const andConditions: any[] = [];
+    const andConditions: any[] = [
+      { organizationId: new mongoose.Types.ObjectId(orgId) }
+    ];
 
     if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
       andConditions.push({
@@ -98,20 +100,26 @@ export async function getServices(req: FastifyRequest, reply: FastifyReply) {
       });
     }
 
-    if (category) andConditions.push({ category });
-    if (department) andConditions.push({ department });
+    if (category && typeof category === "string" && category.trim()) {
+      andConditions.push({ category: category.trim() });
+    }
+    if (department && typeof department === "string" && department.trim()) {
+      andConditions.push({ department: department.trim() });
+    }
     if (isActive !== undefined && isActive !== "") {
       andConditions.push({ isActive: isActive === "true" || isActive === true });
     }
 
-    if (search) {
-      const reg = new RegExp(escapeRegex(search), "i");
+    if (search && typeof search === "string" && search.trim().length > 0) {
+      // Capped and escaped search pattern to prevent regex DoS (Finding: Step 3.3)
+      const sanitized = escapeRegex(search.trim().slice(0, 100));
+      const reg = new RegExp(sanitized, "i");
       andConditions.push({
         $or: [{ name: reg }, { code: reg }, { department: reg }, { hsnSacCode: reg }],
       });
     }
 
-    const filter = andConditions.length > 0 ? { $and: andConditions } : {};
+    const filter = { $and: andConditions };
 
     const totalCount = await serviceCatalogRepo.countDocuments(filter, { organizationId: orgId });
     const totalPages = Math.ceil(totalCount / pageSize);
