@@ -6,9 +6,19 @@ import {
   replayDeadLetter,
   type DeadLetterKind,
 } from "../services/deadLetterReplay.ts";
+import { domainEventDeliveryWorker } from "../services/DomainEventDeliveryWorker.ts";
 
 export default async function outboxOperationsRoutes(app: FastifyInstance) {
   const rootOnly = { preHandler: [authenticate, requirePlatformRoot()] };
+
+  app.get("/api/admin/operations/domain-events/metrics", rootOnly, async (_req, reply) => {
+    try {
+      const metrics = await domainEventDeliveryWorker.getMetrics();
+      return reply.send({ success: true, data: metrics });
+    } catch (err: any) {
+      return reply.code(500).send({ success: false, message: err?.message || "Failed to retrieve domain event metrics" });
+    }
+  });
 
   app.get("/api/admin/operations/dead-letters", rootOnly, async (req, reply) => {
     const { kind = "notification_delivery", limit } = req.query as { kind?: string; limit?: string };

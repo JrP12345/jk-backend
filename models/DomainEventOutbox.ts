@@ -7,7 +7,7 @@ export interface IDomainEventOutbox extends mongoose.Document {
   organizationId?: mongoose.Types.ObjectId;
   // Encrypted serialized DomainEventPayload — only the worker decrypts
   payloadCiphertext: string;
-  status: "pending" | "processing" | "retrying" | "sent" | "failed";
+  status: "pending" | "processing" | "retrying" | "sent" | "failed" | "dead_letter";
   attempts: number;
   maxAttempts: number;
   nextAttemptAt?: Date;
@@ -32,7 +32,7 @@ const DomainEventOutboxSchema = new Schema<IDomainEventOutbox>(
     payloadCiphertext: { type: String, required: true, select: false },
     status: {
       type: String,
-      enum: ["pending", "processing", "retrying", "sent", "failed"],
+      enum: ["pending", "processing", "retrying", "sent", "failed", "dead_letter"],
       default: "pending",
       index: true,
     },

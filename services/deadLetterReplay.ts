@@ -27,7 +27,7 @@ function getModel(kind: DeadLetterKind): DeadLetterModel {
  */
 export async function listDeadLetters(kind: DeadLetterKind, limit = 50) {
   const rows = await getModel(kind)
-    .find({ status: "failed" })
+    .find({ status: { $in: ["failed", "dead_letter"] } })
     .select("_id kind channel eventType status attempts maxAttempts replayCount error sentAt createdAt lastReplayedAt")
     .sort({ sentAt: -1, createdAt: -1 })
     .limit(Math.min(Math.max(limit, 1), 100))
@@ -74,7 +74,7 @@ export async function replayDeadLetter(
   const replayed = await Model.findOneAndUpdate(
     {
       _id: id,
-      status: "failed",
+      status: { $in: ["failed", "dead_letter"] },
       replayCount: { $lt: MAX_MANUAL_REPLAYS },
     },
     {
@@ -100,14 +100,22 @@ export async function replayDeadLetter(
 
   // The outbox row itself records who requeued it. Audit is an additional,
   // immutable operator trail and deliberately excludes payload/recipient data.
+  const targetModel =
+    kind === "notification_delivery"
+      ? "NotificationDelivery"
+      : kind === "outbound_message"
+      ? "OutboundMessage"
+      : "DomainEventOutbox";
+
   await AuditLog.create({
     userId: new mongoose.Types.ObjectId(actorUserId),
     action: "OUTBOX_DEAD_LETTER_REPLAYED",
     targetId: replayed._id,
-    targetModel: kind === "notification_delivery" ? "NotificationDelivery" : "OutboundMessage",
+    targetModel,
     category: "ADMIN",
     details: {
       deadLetterKind: kind,
+      previousStatus: (replayed as any).status,
       attemptsBeforeReplay: (replayed as any).attempts || 0,
       replayCount: ((replayed as any).replayCount || 0) + 1,
       manualReplayLimit: MAX_MANUAL_REPLAYS,

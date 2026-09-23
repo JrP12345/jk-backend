@@ -5,17 +5,34 @@ import { eventBus } from "../events/eventBus.ts";
 import { domainEventBus } from "../platform/events/DomainEventBus.ts";
 import type { DomainEventPayload } from "../events/types.ts";
 
-const LOCK_DURATION_MS = 60_000;
+const LOCK_DURATION_MS = Number(process.env.DOMAIN_EVENT_LOCK_MS) || 60_000;
+const DEFAULT_POLL_INTERVAL_MS = Number(process.env.DOMAIN_EVENT_WORKER_POLL_MS) || 500;
+const DEFAULT_BATCH_SIZE = Number(process.env.DOMAIN_EVENT_WORKER_BATCH_SIZE) || 10;
+const BASE_RETRY_DELAY_MS = 1_000;
+const MAX_RETRY_DELAY_MS = 300_000; // 5 minutes ceiling
+
+export interface DomainEventMetrics {
+  oldestEventAgeMs: number | null;
+  pendingCount: number;
+  retryingCount: number;
+  processingCount: number;
+  failures: number;
+  deadLetterCount: number;
+  sentCount: number;
+  totalAttempts: number;
+}
 
 export class DomainEventDeliveryWorker {
   private timer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
 
-  public start(intervalMs = 500) {
+  public start(intervalMs = DEFAULT_POLL_INTERVAL_MS) {
     if (this.timer) return;
     this.stopped = false;
     this.timer = setInterval(() => {
-      this.processBatch().catch((error) => console.error("[DomainEventWorker] Batch failed:", error));
+      this.processBatch(DEFAULT_BATCH_SIZE).catch((error) =>
+        console.error("[DomainEventWorker] Batch failed:", error),
+      );
     }, intervalMs);
     this.timer.unref?.();
   }
@@ -26,7 +43,7 @@ export class DomainEventDeliveryWorker {
     this.timer = null;
   }
 
-  public async processBatch(batchSize = 10) {
+  public async processBatch(batchSize = DEFAULT_BATCH_SIZE) {
     if (this.stopped) return { processed: 0 };
     const results = await Promise.allSettled(Array.from({ length: batchSize }, () => this.processOne()));
     return { processed: results.filter((result) => result.status === "fulfilled" && result.value).length };
@@ -54,9 +71,30 @@ export class DomainEventDeliveryWorker {
 
     if (!eventRow) return false;
 
+    // Guard: Poison event detection during deserialization
+    let payload: DomainEventPayload;
     try {
-      const payload = readEncryptedDomainEvent<DomainEventPayload>(eventRow);
+      payload = readEncryptedDomainEvent<DomainEventPayload>(eventRow);
+      if (!payload || !payload.eventType) {
+        throw new Error("Poison event: missing deserialized payload or eventType");
+      }
+    } catch (deserializationError: any) {
+      // Poison event: unparseable or corrupted payload ciphertext. Retries will never succeed.
+      await DomainEventOutbox.updateOne(
+        { _id: eventRow._id, status: "processing", lockedBy },
+        {
+          $set: {
+            status: "dead_letter",
+            error: `Poison event deserialization failure: ${deserializationError?.message || "Corrupted payload"}`,
+            sentAt: new Date(),
+          },
+          $unset: { lockedAt: 1, lockedUntil: 1, lockedBy: 1, nextAttemptAt: 1 },
+        },
+      );
+      return true;
+    }
 
+    try {
       // Dispatch to in-process eventBus (notification listeners, audit, etc.)
       eventBus.emit("notification_event", payload);
       eventBus.emit(payload.eventType, payload);
@@ -77,28 +115,96 @@ export class DomainEventDeliveryWorker {
       );
     } catch (error: any) {
       const retry = eventRow.attempts < eventRow.maxAttempts;
-      await DomainEventOutbox.updateOne(
-        { _id: eventRow._id, status: "processing", lockedBy },
-        retry
-          ? {
-              $set: {
-                status: "retrying",
-                error: error?.message || "Domain event dispatch failed",
-                nextAttemptAt: new Date(Date.now() + Math.pow(2, Math.max(0, eventRow.attempts - 1)) * 1000),
-              },
-              $unset: { lockedAt: 1, lockedUntil: 1, lockedBy: 1 },
-            }
-          : {
-              $set: {
-                status: "failed",
-                error: error?.message || "Domain event dispatch failed",
-                sentAt: new Date(),
-              },
-              $unset: { lockedAt: 1, lockedUntil: 1, lockedBy: 1, nextAttemptAt: 1 },
+      if (retry) {
+        // Bounded exponential backoff with full jitter (min: 1s, max: 300s)
+        const exponentialDelay = Math.min(
+          MAX_RETRY_DELAY_MS,
+          BASE_RETRY_DELAY_MS * Math.pow(2, Math.max(0, eventRow.attempts - 1)),
+        );
+        const jitter = Math.floor(Math.random() * (exponentialDelay * 0.25));
+        const delayMs = Math.min(MAX_RETRY_DELAY_MS, exponentialDelay + jitter);
+
+        await DomainEventOutbox.updateOne(
+          { _id: eventRow._id, status: "processing", lockedBy },
+          {
+            $set: {
+              status: "retrying",
+              error: error?.message || "Domain event dispatch failed",
+              nextAttemptAt: new Date(Date.now() + delayMs),
             },
-      );
+            $unset: { lockedAt: 1, lockedUntil: 1, lockedBy: 1 },
+          },
+        );
+      } else {
+        // Reached terminal max attempts: transition to dead_letter for operator inspection
+        await DomainEventOutbox.updateOne(
+          { _id: eventRow._id, status: "processing", lockedBy },
+          {
+            $set: {
+              status: "dead_letter",
+              error: `Max retry attempts (${eventRow.maxAttempts}) exceeded: ${error?.message || "Dispatch failed"}`,
+              sentAt: new Date(),
+            },
+            $unset: { lockedAt: 1, lockedUntil: 1, lockedBy: 1, nextAttemptAt: 1 },
+          },
+        );
+      }
     }
     return true;
+  }
+
+  /**
+   * Real-time metrics for monitoring queue depth, age, and dead letters.
+   */
+  public async getMetrics(): Promise<DomainEventMetrics> {
+    const stats = await DomainEventOutbox.aggregate([
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+          totalAttempts: { $sum: "$attempts" },
+        },
+      },
+    ]);
+
+    const counts: Record<string, number> = {
+      pending: 0,
+      retrying: 0,
+      processing: 0,
+      failed: 0,
+      dead_letter: 0,
+      sent: 0,
+    };
+    let totalAttempts = 0;
+
+    for (const item of stats) {
+      if (item._id && typeof counts[item._id] === "number") {
+        counts[item._id] = item.count;
+      }
+      totalAttempts += item.totalAttempts || 0;
+    }
+
+    const oldestEvent = await DomainEventOutbox.findOne(
+      { status: { $in: ["pending", "retrying"] } },
+      { createdAt: 1 },
+    )
+      .sort({ createdAt: 1 })
+      .lean();
+
+    const oldestEventAgeMs = oldestEvent?.createdAt
+      ? Math.max(0, Date.now() - new Date(oldestEvent.createdAt).getTime())
+      : null;
+
+    return {
+      oldestEventAgeMs,
+      pendingCount: counts.pending,
+      retryingCount: counts.retrying,
+      processingCount: counts.processing,
+      failures: counts.failed,
+      deadLetterCount: counts.dead_letter,
+      sentCount: counts.sent,
+      totalAttempts,
+    };
   }
 }
 
