@@ -503,13 +503,18 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
 
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) {
-      // Increment failed attempts & lockout if >= 5
-      const failedCount = ((user as any).failedLoginAttempts || 0) + 1;
-      const updateData: any = { failedLoginAttempts: failedCount };
-      if (failedCount >= 5) {
-        updateData.lockoutUntil = new Date(Date.now() + 15 * 60 * 1000); // 15-minute lock out
+      // Increment failed attempts & lockout if >= 5 atomically (Finding: Step 2.8)
+      const updatedUser = await User.findOneAndUpdate(
+        { _id: user._id },
+        { $inc: { failedLoginAttempts: 1 } },
+        { new: true, returnDocument: "after" }
+      );
+      if (updatedUser && (updatedUser.failedLoginAttempts || 0) >= 5) {
+        await User.updateOne(
+          { _id: user._id },
+          { $set: { lockoutUntil: new Date(Date.now() + 15 * 60 * 1000) } }
+        );
       }
-      await User.updateOne({ _id: user._id }, updateData);
 
       return reply.code(401).send(errorResponse("Invalid credentials"));
     }
@@ -679,8 +684,12 @@ export async function verifyEmail(req: FastifyRequest, reply: FastifyReply) {
     const { token } = req.body as { token: string };
     if (!token) return reply.code(400).send(errorResponse("Verification token is required"));
 
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
     const user = await User.findOne({
-      emailVerificationToken: token,
+      $or: [
+        { emailVerificationToken: tokenHash },
+        { emailVerificationToken: token }, // backwards-compatible with legacy unhashed tokens
+      ],
       emailVerificationExpires: { $gt: new Date() },
     });
 
@@ -712,19 +721,22 @@ export async function forgotPassword(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const resetToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(resetToken).digest("hex");
     const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
-    user.set("passwordResetToken", resetToken);
+    // Store token hashed at rest (Finding: Step 2.8)
+    user.set("passwordResetToken", tokenHash);
     user.set("passwordResetExpires", expires);
     await user.save();
 
-    const resetUrl = `${getFrontendBaseUrl()}/reset-password?token=${resetToken}`;
+    // Use URL fragment to prevent token leakage in Referer headers & server logs
+    const resetUrl = `${getFrontendBaseUrl()}/reset-password#token=${resetToken}`;
     await enqueueTransactionalEmail({
       to: user.email!,
       subject: "ANANT Account Password Reset",
       text: `Reset your ANANT password using this link (valid for 1 hour): ${resetUrl}`,
       html: `<p>Click here to reset your ANANT password: <a href="${resetUrl}">${resetUrl}</a></p>`,
-      idempotencyKey: `transactional-email:password-reset:${user._id}:${crypto.createHash("sha256").update(resetToken).digest("hex")}`,
+      idempotencyKey: `transactional-email:password-reset:${user._id}:${tokenHash}`,
     });
 
     return reply.send(successResponse(null, "If an account exists with that email, a password reset request was received."));
@@ -747,8 +759,12 @@ export async function resetPassword(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse(strength.reason || "Password does not meet complexity requirements"));
     }
 
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
     const user = await User.findOne({
-      passwordResetToken: token,
+      $or: [
+        { passwordResetToken: tokenHash },
+        { passwordResetToken: token }, // backwards-compatible with legacy unhashed tokens
+      ],
       passwordResetExpires: { $gt: new Date() },
     });
 
@@ -1177,6 +1193,7 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const emailVerificationToken = crypto.randomBytes(32).toString("hex");
+    const emailVerificationTokenHash = crypto.createHash("sha256").update(emailVerificationToken).digest("hex");
 
     const newUser = await User.create({
       name: name.trim(),
@@ -1185,7 +1202,7 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
       phone: phone || null,
       role: "patient",
       isEmailVerified: false,
-      emailVerificationToken,
+      emailVerificationToken: emailVerificationTokenHash,
       emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000),
     });
 
@@ -1209,13 +1226,13 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
       throw err;
     }
 
-    const verificationUrl = `${getFrontendBaseUrl()}/verify-email?token=${emailVerificationToken}`;
+    const verificationUrl = `${getFrontendBaseUrl()}/verify-email#token=${emailVerificationToken}`;
     await enqueueTransactionalEmail({
       to: normalizedEmail,
       subject: "Verify your ANANTA account",
       text: `Verify your account using this link (valid for 24 hours): ${verificationUrl}`,
       html: `<p>Verify your ANANTA account: <a href="${verificationUrl}">${verificationUrl}</a></p>`,
-      idempotencyKey: `transactional-email:email-verification:${newUser._id}:${crypto.createHash("sha256").update(emailVerificationToken).digest("hex")}`,
+      idempotencyKey: `transactional-email:email-verification:${newUser._id}:${emailVerificationTokenHash}`,
     });
 
     const roleConfig = await Role.findOne({ name: "patient" }).lean() as any;

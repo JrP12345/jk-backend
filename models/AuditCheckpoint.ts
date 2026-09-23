@@ -8,6 +8,10 @@ const AuditCheckpointSchema = new Schema({
   archiveFilePath: { type: String },
   archiveFileChecksum: { type: String },
   cutoffDate: { type: Date, required: true },
+  previousCheckpointHash: { type: String, default: null },
+  checkpointHash: { type: String, required: true },
+  signature: { type: String, required: true },
+  externalAnchor: { type: String, default: null },
   createdAt: { type: Date, default: Date.now, index: true },
 });
 

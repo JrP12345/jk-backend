@@ -79,7 +79,11 @@ const app = fastify({
     ],
   },
   bodyLimit: 10485760, // 10MB, reverse-proxy aware
-  trustProxy: true,
+  trustProxy: process.env.TRUSTED_PROXY_HOPS
+    ? parseInt(process.env.TRUSTED_PROXY_HOPS, 10)
+    : (process.env.TRUSTED_PROXY_CIDRS
+        ? process.env.TRUSTED_PROXY_CIDRS.split(",").map(c => c.trim())
+        : ["127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]),
   connectionTimeout: 30000, // 30s socket timeout
   keepAliveTimeout: 5000,   // 5s keep-alive timeout
   rewriteUrl: (req) => {
@@ -88,6 +92,25 @@ const app = fastify({
     }
     return req.url || "/";
   },
+});
+
+// Enforce edge proxy origin protection & Referrer-Policy
+app.addHook("onRequest", (req, reply, done) => {
+  reply.header("Referrer-Policy", "no-referrer");
+  reply.header("X-Content-Type-Options", "nosniff");
+  reply.header("X-Frame-Options", "DENY");
+
+  // Verify origin cannot be reached around trusted edge proxy when origin protection is enabled
+  if (process.env.REQUIRE_TRUSTED_PROXY === "true" || process.env.ORIGIN_VERIFY_TOKEN) {
+    const originVerifyToken = req.headers["x-origin-verify-token"];
+    const expectedToken = process.env.ORIGIN_VERIFY_TOKEN;
+    if (expectedToken && originVerifyToken !== expectedToken) {
+      reply.code(403).send({ error: "Direct access to origin server is blocked. Requests must transit the trusted edge proxy." });
+      return;
+    }
+  }
+
+  done();
 });
 
 // Preserve raw body buffer string on incoming JSON for authentic HMAC webhook validation

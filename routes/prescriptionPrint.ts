@@ -75,7 +75,12 @@ export default async function prescriptionPrintRoutes(fastify: FastifyInstance) 
           })),
         });
 
-        reply.type("text/html").send(html);
+        reply
+          .type("text/html; charset=utf-8")
+          .header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data: https:; script-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none';")
+          .header("X-Content-Type-Options", "nosniff")
+          .header("Referrer-Policy", "no-referrer")
+          .send(html);
       } catch (err: any) {
         fastify.log.error("Failed to generate printable prescription HTML:", err);
         return reply.code(500).send({ error: "Internal server error generating prescription PDF" });

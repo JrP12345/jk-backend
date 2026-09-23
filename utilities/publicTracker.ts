@@ -30,13 +30,19 @@ export async function issueAppointmentTrackerLink(
   }
 
   const pathPrefix = options.pathPrefix || "/track";
-  const url = `${pathPrefix}/${appointment._id}?t=${encodeURIComponent(capability.token)}`;
+  // Use URL fragment #t= to prevent leaking capability token in Referer headers and web logs (Finding: Step 2.8)
+  const url = `${pathPrefix}/${appointment._id}#t=${encodeURIComponent(capability.token)}`;
   return { token: capability.token, url };
 }
 
 export function appendTrackerCapability(url: string, token: string): string {
-  const separator = url.includes("?") ? "&" : "?";
-  return `${url}${separator}trackerToken=${encodeURIComponent(token)}`;
+  // If the target is an API endpoint, pass as query/header; for UI, prefer fragment
+  const isApi = url.includes("/api/");
+  if (isApi) {
+    const separator = url.includes("?") ? "&" : "?";
+    return `${url}${separator}trackerToken=${encodeURIComponent(token)}`;
+  }
+  return `${url}#t=${encodeURIComponent(token)}`;
 }
 
 export function hashTrackerCapability(token: string): string {
@@ -46,7 +52,8 @@ export function hashTrackerCapability(token: string): string {
 export function getTrackerCapability(req: FastifyRequest): string | undefined {
   const header = req.headers["x-tracker-token"];
   const fromHeader = Array.isArray(header) ? header[0] : header;
-  const query = (req.query as { trackerToken?: unknown } | undefined)?.trackerToken;
+  const q = req.query as { trackerToken?: unknown; t?: unknown } | undefined;
+  const query = q?.trackerToken || q?.t;
   const body = (req.body as { trackerToken?: unknown } | undefined)?.trackerToken;
   const candidate = fromHeader || (typeof query === "string" ? query : undefined) || (typeof body === "string" ? body : undefined);
   return candidate && candidate.length <= 256 ? candidate : undefined;

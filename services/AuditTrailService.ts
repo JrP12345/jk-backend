@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import crypto from "node:crypto";
 import { AuditLog } from "../models/AuditLog.ts";
 import { AuditCheckpoint } from "../models/AuditCheckpoint.ts";
 import { computeAuditHash, GENESIS_HASH } from "../utilities/auditCrypto.ts";
@@ -139,6 +140,17 @@ export async function verifyAuditChainIntegrity(
       .lean();
 
     if (checkpoint) {
+      if (checkpoint.signature && checkpoint.checkpointHash) {
+        const secretKey = process.env.ENCRYPTION_SECRET || process.env.JWT_SECRET || "ananta-audit-anchor-secret";
+        const expectedSig = crypto.createHmac("sha256", secretKey).update(checkpoint.checkpointHash).digest("hex");
+        if (expectedSig !== checkpoint.signature) {
+          await reportCriticalError(
+            "AUDIT_CHECKPOINT_TAMPERED",
+            `Audit checkpoint signature mismatch for org ${organizationId || "system"}!`,
+            { component: "AuditTrailService", checkpointId: String(checkpoint._id) }
+          );
+        }
+      }
       expectedSeq = checkpoint.archivedUpToSequence + 1;
       expectedPrevHash = checkpoint.archivedUpToHash;
     }

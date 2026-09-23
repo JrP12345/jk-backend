@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import crypto from "node:crypto";
 import mongoose from "mongoose";
 import { AuditLog } from "../models/AuditLog.ts";
 import { AuditCheckpoint } from "../models/AuditCheckpoint.ts";
@@ -107,13 +108,29 @@ export async function archiveAuditLogs(options: ArchiveOptions = {}): Promise<Ar
 
   // Create cryptographic anchor checkpoint if records were deleted and had valid sequences
   if (deleteArchived && deletedCount > 0 && maxArchivedSequence > 0 && maxArchivedHash) {
+    const targetOrgId = options.organizationId ? new mongoose.Types.ObjectId(options.organizationId) : maxArchivedOrgId;
+    const prevCheckpoint: any = await AuditCheckpoint.findOne({ organizationId: targetOrgId })
+      .sort({ archivedUpToSequence: -1 })
+      .lean();
+
+    const previousCheckpointHash = prevCheckpoint?.checkpointHash || null;
+    const payload = `${targetOrgId?.toString() || "system"}:${maxArchivedSequence}:${maxArchivedHash}:${deletedCount}:${cutoffDate.toISOString()}:${previousCheckpointHash || "genesis"}`;
+    const checkpointHash = crypto.createHash("sha256").update(payload).digest("hex");
+    const secretKey = process.env.ENCRYPTION_SECRET || process.env.JWT_SECRET || "ananta-audit-anchor-secret";
+    const signature = crypto.createHmac("sha256", secretKey).update(checkpointHash).digest("hex");
+    const externalAnchor = `urn:anchor:sha256:${checkpointHash}:${Date.now()}`;
+
     await AuditCheckpoint.create({
-      organizationId: options.organizationId ? new mongoose.Types.ObjectId(options.organizationId) : maxArchivedOrgId,
+      organizationId: targetOrgId,
       archivedUpToSequence: maxArchivedSequence,
       archivedUpToHash: maxArchivedHash,
       archivedCount: deletedCount,
       archiveFilePath: filePath,
       cutoffDate,
+      previousCheckpointHash,
+      checkpointHash,
+      signature,
+      externalAnchor,
     });
   }
 
