@@ -28,7 +28,12 @@ const PrescriptionSchema = new Schema({
   isSealed: { type: Boolean, default: false, index: true },
   sealedAt: { type: Date },
 
-  status: { type: String, enum: ["active", "dispensed", "discontinued"], default: "active", index: true },
+  // Amendment & Supersession tracking
+  supersedesPrescriptionId: { type: Schema.Types.ObjectId, ref: "Prescription", default: null, index: true },
+  supersededByPrescriptionId: { type: Schema.Types.ObjectId, ref: "Prescription", default: null },
+  amendmentReason: { type: String, trim: true },
+
+  status: { type: String, enum: ["active", "dispensed", "discontinued", "superseded"], default: "active", index: true },
   deletedAt: { type: Date, default: null, index: true },
   createdAt: { type: Date, default: Date.now },
 }, { timestamps: true });
@@ -52,6 +57,8 @@ PrescriptionSchema.pre("save", function () {
       "doctorRegistrationNumber",
       "doctorCouncil",
       "status",
+      "supersededByPrescriptionId",
+      "amendmentReason",
       "updatedAt",
     ];
     const illegalModifications = modifiedPaths.filter((p) => !allowedSealingPaths.includes(p));
@@ -60,6 +67,49 @@ PrescriptionSchema.pre("save", function () {
         `Prescription is cryptographically sealed and immutable under NMC regulations. Cannot modify: ${illegalModifications.join(
           ", "
         )}`
+      );
+    }
+  }
+});
+
+// Query-update guard: prevent bypassing pre('save') immutability via findOneAndUpdate, updateOne, or updateMany
+PrescriptionSchema.pre(["findOneAndUpdate", "updateOne", "updateMany"], async function () {
+  const update = this.getUpdate() as any;
+  if (!update) return;
+
+  const modifiedKeys = new Set<string>();
+  const extractKeys = (obj: any) => {
+    if (!obj || typeof obj !== "object") return;
+    for (const [k, v] of Object.entries(obj)) {
+      if (k.startsWith("$")) {
+        extractKeys(v);
+      } else {
+        modifiedKeys.add(k);
+      }
+    }
+  };
+  extractKeys(update);
+
+  const protectedFields = [
+    "medicineName",
+    "genericName",
+    "dosage",
+    "frequency",
+    "duration",
+    "instructions",
+    "doctorRegistrationNumber",
+    "doctorCouncil",
+    "prescriptionHash",
+    "digitalSignature",
+  ];
+
+  const touchesProtected = protectedFields.some((f) => modifiedKeys.has(f));
+  if (touchesProtected) {
+    const query = this.getQuery();
+    const docs = await this.model.find(query).select("isSealed").lean();
+    if (docs.some((d: any) => d.isSealed)) {
+      throw new Error(
+        "Prescription is cryptographically sealed and immutable under NMC regulations. Cannot modify clinical details via query update."
       );
     }
   }

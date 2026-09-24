@@ -14,15 +14,20 @@ class CircuitBreaker {
   public failures = 0;
   public successes = 0;
   public lastFailureTime = 0;
+  public readonly name: string;
+  public readonly options: Required<CircuitBreakerOptions>;
 
   constructor(
-    public readonly name: string,
-    public readonly options: Required<CircuitBreakerOptions> = {
+    name: string,
+    options: Required<CircuitBreakerOptions> = {
       failureThreshold: 5,
       resetTimeoutMs: 20_000,
       halfOpenSuccessThreshold: 2,
     },
-  ) {}
+  ) {
+    this.name = name;
+    this.options = options;
+  }
 
   public canExecute(): boolean {
     const now = Date.now();
@@ -70,22 +75,32 @@ export interface ProviderMetrics {
 }
 
 export class CircuitBreakerOpenError extends Error {
-  constructor(public readonly provider: string) {
+  public readonly provider: string;
+
+  constructor(provider: string) {
     super(`Circuit breaker is OPEN for provider '${provider}'. Request rejected to prevent amplification.`);
     this.name = "CircuitBreakerOpenError";
+    this.provider = provider;
   }
 }
 
 export class AmbiguousOutcomeError extends Error {
+  public readonly provider: string;
+  public readonly idempotencyKey?: string;
+  public readonly originalError?: any;
+
   constructor(
-    public readonly provider: string,
-    public readonly idempotencyKey?: string,
-    public readonly originalError?: any,
+    provider: string,
+    idempotencyKey?: string,
+    originalError?: any,
   ) {
     super(
       `Ambiguous outcome for provider '${provider}' with idempotency key '${idempotencyKey || "none"}'. Mutation state cannot be confirmed. Manual or automated reconciliation required.`,
     );
     this.name = "AmbiguousOutcomeError";
+    this.provider = provider;
+    this.idempotencyKey = idempotencyKey;
+    this.originalError = originalError;
   }
 }
 

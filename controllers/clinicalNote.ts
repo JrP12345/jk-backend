@@ -285,6 +285,25 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
     };
     await note.save();
 
+    // NMC RMP 2023 Medico-Legal Cryptographic Sealing of Encounter Prescriptions
+    try {
+      const { PrescriptionSealingService } = await import("../services/PrescriptionSealingService.ts");
+      const unsealedPrescriptions = await Prescription.find({
+        encounterId: note.encounterId,
+        isSealed: { $ne: true },
+        deletedAt: null,
+      });
+
+      for (const rx of unsealedPrescriptions) {
+        await PrescriptionSealingService.sealPrescription(rx._id.toString(), userId, {
+          diagnosisCode: (note.assessment?.diagnoses as any)?.[0]?.code,
+          diagnosisDescription: (note.assessment?.diagnoses as any)?.[0]?.description,
+        });
+      }
+    } catch (sealErr) {
+      console.error("Prescription sealing on clinical note sign failed:", sealErr);
+    }
+
     // Complete Encounter and linked Appointment
     const updatedEncounter = await Encounter.findOneAndUpdate(
       { _id: note.encounterId, organizationId: note.organizationId, clinicId: note.clinicId },

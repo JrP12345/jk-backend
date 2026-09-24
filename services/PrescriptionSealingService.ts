@@ -203,4 +203,101 @@ export class PrescriptionSealingService {
       doctorRegistrationNumber: prescription.doctorRegistrationNumber,
     };
   }
+
+  /**
+   * Amends a sealed prescription under NMC RMP 2023 regulations.
+   * Marks the predecessor as superseded (immutable transition), links the new
+   * prescription to the predecessor via supersedesPrescriptionId and amendmentReason,
+   * and cryptographically seals the new prescription.
+   */
+  static async amendPrescription(
+    originalPrescriptionId: string,
+    doctorUserId: string,
+    amendment: {
+      medicineName?: string;
+      dosage?: string;
+      frequency?: string;
+      duration?: string;
+      instructions?: string;
+      amendmentReason: string;
+      registrationNumber?: string;
+      council?: string;
+      diagnosisCode?: string;
+      diagnosisDescription?: string;
+    }
+  ): Promise<any> {
+    if (!amendment.amendmentReason || !amendment.amendmentReason.trim()) {
+      throw new Error("amendmentReason is required to amend a sealed prescription");
+    }
+
+    const original = await Prescription.findById(originalPrescriptionId);
+    if (!original) {
+      throw new Error(`Prescription ${originalPrescriptionId} not found`);
+    }
+
+    if (!original.isSealed) {
+      throw new Error("Cannot amend an unsealed prescription; only cryptographically sealed prescriptions can be amended");
+    }
+
+    if (original.status === "superseded") {
+      throw new Error("Prescription has already been superseded by another revision");
+    }
+
+    // Create the superseding prescription
+    const newPrescription = new Prescription({
+      organizationId: original.organizationId,
+      clinicId: original.clinicId,
+      encounterId: original.encounterId,
+      patientId: original.patientId,
+      doctorId: original.doctorId,
+      medicineId: original.medicineId,
+      medicineName: amendment.medicineName || original.medicineName,
+      genericName: original.genericName,
+      dosage: amendment.dosage || original.dosage,
+      frequency: amendment.frequency || original.frequency,
+      duration: amendment.duration || original.duration,
+      instructions: amendment.instructions !== undefined ? amendment.instructions : original.instructions,
+      diagnosisCode: amendment.diagnosisCode || original.diagnosisCode,
+      diagnosisDescription: amendment.diagnosisDescription || original.diagnosisDescription,
+      supersedesPrescriptionId: original._id,
+      amendmentReason: amendment.amendmentReason.trim(),
+      status: "active",
+    });
+
+    await newPrescription.save();
+
+    // Seal the new prescription
+    const sealedNew = await this.sealPrescription(
+      newPrescription._id.toString(),
+      doctorUserId,
+      {
+        registrationNumber: amendment.registrationNumber || original.doctorRegistrationNumber,
+        council: amendment.council || original.doctorCouncil,
+        diagnosisCode: newPrescription.diagnosisCode,
+        diagnosisDescription: newPrescription.diagnosisDescription,
+      }
+    );
+
+    // Transition original prescription status to superseded
+    original.status = "superseded";
+    original.supersededByPrescriptionId = newPrescription._id;
+    await original.save();
+
+    await AuditLog.create({
+      userId: doctorUserId,
+      organizationId: original.organizationId,
+      action: "PRESCRIPTION_AMENDED_SUPERSEDED",
+      targetId: original._id,
+      targetModel: "Prescription",
+      category: "CLINICAL_WRITE",
+      details: {
+        originalPrescriptionId: original._id.toString(),
+        newPrescriptionId: newPrescription._id.toString(),
+        amendmentReason: amendment.amendmentReason,
+      },
+    });
+
+    return sealedNew;
+  }
 }
+

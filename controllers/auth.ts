@@ -12,7 +12,6 @@ import {
   createRefreshTokenDetails,
   validateRefreshToken,
   revokeAllRefreshTokens,
-  revokeSessionCache,
   successResponse,
   errorResponse,
   generateTwoFactorChallenge,
@@ -20,7 +19,7 @@ import {
   normalizePhone,
 } from "../utilities/helpers.ts";
 import { setAuthCookies, clearAuthCookies, type JwtPayload } from "../utilities/types.ts";
-import { resolveSession, revokeSession, revokeUserSessions, revokeTokenFamily } from "../utilities/sessionResolver.ts";
+import { resolveSession, revokeSession as revokeSessionInternal, revokeUserSessions, revokeTokenFamily } from "../utilities/sessionResolver.ts";
 import { disconnectUserWebSockets } from "../notifications/websocket.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
@@ -815,9 +814,7 @@ export async function revokeSession(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(404).send(errorResponse("Session not found"));
     }
 
-    record.set("revoked", true);
-    await record.save();
-    revokeSessionCache(sessionId);
+    await revokeSessionInternal(sessionId, "user_revoked");
 
     return reply.send(successResponse(null, "Session revoked successfully"));
   } catch (err: any) {
@@ -919,7 +916,7 @@ export async function getAdminAllSessions(req: FastifyRequest, reply: FastifyRep
 export async function adminRevokeSession(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { sessionId } = req.params as { sessionId: string };
-    await revokeSession(sessionId, "admin_revocation");
+    await revokeSessionInternal(sessionId, "admin_revocation");
     return reply.send(successResponse(null, "Session terminated successfully"));
   } catch (err: any) {
     console.error("adminRevokeSession error:", err);
@@ -1131,12 +1128,12 @@ export async function logout(req: FastifyRequest, reply: FastifyReply) {
         if (record.familyId) {
           await revokeTokenFamily(record.familyId, "logout");
         }
-        await revokeSession(record._id.toString(), "logout");
+        await revokeSessionInternal(record._id.toString(), "logout");
       }
     }
 
     if (sessionId) {
-      await revokeSession(sessionId, "logout");
+      await revokeSessionInternal(sessionId, "logout");
     }
 
     if (userId) {

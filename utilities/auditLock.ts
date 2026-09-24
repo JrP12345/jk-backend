@@ -1,4 +1,8 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { redisClient } from "./redis.ts";
+
+// Context to track locks held by the current asynchronous execution flow (re-entrancy support)
+const activeLocks = new AsyncLocalStorage<Set<string>>();
 
 // Per-organization in-memory async lock queue to guarantee serial execution in single-node / test mode
 const inMemoryChainLocks = new Map<string, Promise<any>>();
@@ -28,11 +32,25 @@ async function withInMemoryQueue<T>(key: string, operation: () => Promise<T>): P
 
 /**
  * Distributed + In-Memory lock for audit chain serialization.
+ * Fully re-entrant: if the current async context already holds the lock for `key`,
+ * it executes immediately without re-acquiring, preventing recursive deadlocks.
  * If Redis is connected and ready, acquires a distributed lock (SETNX with TTL).
  * Always wraps the operation in an in-process serialized queue to prevent concurrent
  * hash generation within the same Node.js process as well as across cluster nodes.
  */
 export async function withChainLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  const heldLocks = activeLocks.getStore();
+  if (heldLocks && heldLocks.has(key)) {
+    // Re-entrant execution: this async execution path already holds the lock for `key`
+    return await operation();
+  }
+
+  const runWithContext = async (): Promise<T> => {
+    const nextLocks = new Set(heldLocks || []);
+    nextLocks.add(key);
+    return await activeLocks.run(nextLocks, operation);
+  };
+
   const isRedisReady = redisClient && redisClient.status === "ready";
   const lockKey = `lock:audit_chain:${key}`;
   const lockToken = `tok_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
@@ -59,7 +77,7 @@ export async function withChainLock<T>(key: string, operation: () => Promise<T>)
 
     if (acquired) {
       try {
-        return await withInMemoryQueue(key, operation);
+        return await withInMemoryQueue(key, runWithContext);
       } finally {
         const unlockScript = `
           if redis.call("get", KEYS[1]) == ARGV[1] then
@@ -78,5 +96,5 @@ export async function withChainLock<T>(key: string, operation: () => Promise<T>)
   }
 
   // Fallback to in-memory serialized queue
-  return withInMemoryQueue(key, operation);
+  return withInMemoryQueue(key, runWithContext);
 }

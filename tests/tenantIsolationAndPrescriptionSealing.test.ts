@@ -175,6 +175,72 @@ describe("Automated ORM Tenant Isolation & Prescription Sealing Suite", () => {
       );
     });
 
+    it("prevents query-update bypass: rejects Mongoose updateOne on sealed prescription", async () => {
+      // Create and seal a dedicated test prescription
+      const sealedRx = await Prescription.create({
+        organizationId: new mongoose.Types.ObjectId(orgAId),
+        clinicId: new mongoose.Types.ObjectId(),
+        encounterId: new mongoose.Types.ObjectId(),
+        patientId: patientA._id,
+        doctorId: doctorUser._id,
+        medicineName: "Metformin",
+        dosage: "500mg",
+        frequency: "0-0-1",
+        duration: "30 days",
+      });
+
+      await PrescriptionSealingService.sealPrescription(sealedRx._id.toString(), doctorUser._id.toString());
+
+      // Attempt to bypass immutability via Mongoose updateOne
+      await expect(
+        Prescription.updateOne({ _id: sealedRx._id }, { dosage: "1000mg" })
+      ).rejects.toThrow(/Cannot modify clinical details via query update/);
+
+      // Clean up
+      await Prescription.collection.deleteOne({ _id: sealedRx._id });
+    });
+
+    it("allows regulated amendment and marks predecessor as superseded", async () => {
+      const originalRx = await Prescription.create({
+        organizationId: new mongoose.Types.ObjectId(orgAId),
+        clinicId: new mongoose.Types.ObjectId(),
+        encounterId: new mongoose.Types.ObjectId(),
+        patientId: patientA._id,
+        doctorId: doctorUser._id,
+        medicineName: "Paracetamol",
+        dosage: "500mg",
+        frequency: "1-1-1",
+        duration: "3 days",
+      });
+
+      await PrescriptionSealingService.sealPrescription(originalRx._id.toString(), doctorUser._id.toString());
+
+      // Amend the prescription with clinically justified amendmentReason
+      const amendedRx = await PrescriptionSealingService.amendPrescription(
+        originalRx._id.toString(),
+        doctorUser._id.toString(),
+        {
+          dosage: "650mg",
+          amendmentReason: "Persistent fever above 102F requiring higher dose",
+        }
+      );
+
+      expect(amendedRx.isSealed).toBe(true);
+      expect(amendedRx.dosage).toBe("650mg");
+      expect(amendedRx.supersedesPrescriptionId.toString()).toBe(originalRx._id.toString());
+      expect(amendedRx.amendmentReason).toContain("Persistent fever");
+
+      // Verify the predecessor is superseded
+      const updatedOriginal: any = await Prescription.findById(originalRx._id, null, {
+        bypassTenantFilter: true,
+      });
+      expect(updatedOriginal.status).toBe("superseded");
+      expect(updatedOriginal.supersededByPrescriptionId.toString()).toBe(amendedRx._id.toString());
+
+      // Clean up
+      await Prescription.collection.deleteMany({ _id: { $in: [originalRx._id, amendedRx._id] } });
+    });
+
     it("detects tampering if database is altered directly via out-of-band write", async () => {
       // Malicious attacker or direct database modification
       await Prescription.collection.updateOne(

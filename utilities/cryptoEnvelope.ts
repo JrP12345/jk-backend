@@ -150,3 +150,6 @@ export function computeBlindIndex(value: string | null | undefined): string {
   const normalized = String(value).trim().toLowerCase();
   return crypto.createHmac("sha256", BLIND_INDEX_KEY).update(normalized).digest("hex");
 }
+
+export const encrypt = encryptField;
+export const decrypt = decryptField;

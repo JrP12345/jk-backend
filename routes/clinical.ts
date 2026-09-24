@@ -12,6 +12,8 @@ import {
 import {
   evaluatePrescriptionSafetyController,
   overrideCDSEvaluationController,
+  verifyPrescriptionIntegrityController,
+  amendPrescriptionController,
 } from "../controllers/prescriptionSafety.ts";
 import {
   evaluateEncounterScoreController,
@@ -43,6 +45,10 @@ export default async function clinicalRoutes(app: FastifyInstance) {
   // CDS Evaluation & Safety
   app.post("/api/prescriptions/evaluate-safety", manageNotes, evaluatePrescriptionSafetyController);
   app.post("/api/prescriptions/override-evaluation", manageNotes, overrideCDSEvaluationController);
+
+  // Prescription Sealing, Verification & Regulated Amendments (NMC RMP 2023)
+  app.get("/api/prescriptions/:id/verify-integrity", viewEhr, verifyPrescriptionIntegrityController);
+  app.post("/api/prescriptions/:id/amend", manageNotes, amendPrescriptionController);
 
   // Vital Signs & NEWS2 Observation Analytics
   app.post("/api/encounters/:id/evaluate-score", viewEhr, evaluateEncounterScoreController);

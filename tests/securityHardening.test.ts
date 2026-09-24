@@ -14,7 +14,7 @@ describe("Production Security Hardening Tests", () => {
 
     expect(isEncrypted(encrypted)).toBe(true);
     expect(encrypted).not.toBe(rawSecret);
-    expect(encrypted.split(":").length).toBe(3);
+    expect(encrypted.startsWith("enc:v1:")).toBe(true);
 
     const decrypted = decrypt(encrypted);
     expect(decrypted).toBe(rawSecret);
@@ -112,6 +112,9 @@ describe("Production Security Hardening Tests", () => {
     expect(newRefreshCookie?.value).not.toBe(initialRawToken);
 
     // 3. Attempting to use the OLD (initial) token again must be detected as reuse and rejected
+    // Expire the concurrency grace window to test reuse outside the grace window
+    await RefreshToken.updateMany({ userId: user._id, revoked: true }, { graceExpiresAt: new Date(Date.now() - 1000) });
+
     const reuseRes = await app.inject({
       method: "POST",
       url: "/api/auth/refresh",

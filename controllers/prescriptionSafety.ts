@@ -135,3 +135,78 @@ export async function recordSafetyDecisionController(req: FastifyRequest, reply:
 }
 
 export const overrideCDSEvaluationController = recordSafetyDecisionController;
+
+export async function verifyPrescriptionIntegrityController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id } = req.params as { id: string };
+    if (!mongoose.isValidObjectId(id)) return reply.code(400).send(errorResponse("Invalid prescription ID"));
+
+    const prescription = await Prescription.findById(id).lean();
+    if (!prescription) return reply.code(404).send(errorResponse("Prescription not found"));
+
+    const access = await checkOperationalRecordAccess(req, prescription);
+    if (!access.allowed) return sendTenantError(reply, access);
+
+    const { PrescriptionSealingService } = await import("../services/PrescriptionSealingService.ts");
+    const result = await PrescriptionSealingService.verifyPrescriptionIntegrity(id);
+    return reply.code(200).send(successResponse(result, "Prescription integrity verified"));
+  } catch (err: any) {
+    console.error("verifyPrescriptionIntegrityController error:", err);
+    return reply.code(500).send(errorResponse(err.message || "Failed to verify prescription integrity"));
+  }
+}
+
+export async function amendPrescriptionController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { id } = req.params as { id: string };
+    const userId = req.user?.id;
+    if (!userId) return reply.code(401).send(errorResponse("Authentication required"));
+    if (!mongoose.isValidObjectId(id)) return reply.code(400).send(errorResponse("Invalid prescription ID"));
+
+    const prescription = await Prescription.findById(id);
+    if (!prescription) return reply.code(404).send(errorResponse("Prescription not found"));
+
+    const access = await checkOperationalRecordAccess(req, prescription);
+    if (!access.allowed) return sendTenantError(reply, access);
+
+    if (req.user?.role === "doctor" && prescription.doctorId.toString() !== userId) {
+      return reply.code(403).send(errorResponse("Only the prescribing doctor can amend this prescription"));
+    }
+
+    const {
+      medicineName,
+      dosage,
+      frequency,
+      duration,
+      instructions,
+      amendmentReason,
+      registrationNumber,
+      council,
+      diagnosisCode,
+      diagnosisDescription,
+    } = req.body as any;
+
+    if (!amendmentReason || !amendmentReason.trim()) {
+      return reply.code(400).send(errorResponse("amendmentReason is required to amend a sealed prescription"));
+    }
+
+    const { PrescriptionSealingService } = await import("../services/PrescriptionSealingService.ts");
+    const newSealed = await PrescriptionSealingService.amendPrescription(id, userId, {
+      medicineName,
+      dosage,
+      frequency,
+      duration,
+      instructions,
+      amendmentReason,
+      registrationNumber,
+      council,
+      diagnosisCode,
+      diagnosisDescription,
+    });
+
+    return reply.code(201).send(successResponse(newSealed, "Prescription successfully amended and cryptographically sealed"));
+  } catch (err: any) {
+    console.error("amendPrescriptionController error:", err);
+    return reply.code(500).send(errorResponse(err.message || "Failed to amend prescription"));
+  }
+}

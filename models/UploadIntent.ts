@@ -51,7 +51,7 @@ const UploadIntentSchema = new Schema<IUploadIntent>(
     rejectionReason: { type: String },
     magicBytesVerified: { type: Boolean, default: false },
     malwareClean: { type: Boolean, default: false },
-    expiresAt: { type: Date, required: true, index: true },
+    expiresAt: { type: Date, required: true },
     registeredDocumentId: { type: Schema.Types.ObjectId, ref: "DocumentUpload" },
   },
   { timestamps: true }

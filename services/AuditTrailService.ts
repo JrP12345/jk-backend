@@ -241,3 +241,50 @@ export async function verifyAuditChainIntegrity(
     lastHash: logs[logs.length - 1].hash,
   };
 }
+
+/**
+ * Anchors the current audit chain state for an organization (or global) by generating a
+ * cryptographically signed external checkpoint. Can be called periodically or after critical clinical milestones.
+ */
+export async function createSignedAuditCheckpoint(organizationId?: string | null): Promise<any> {
+  const orgFilter = organizationId
+    ? { organizationId: new mongoose.Types.ObjectId(organizationId) }
+    : { organizationId: null };
+
+  const lastLog: any = await AuditLog.findOne(orgFilter)
+    .sort({ sequence: -1 })
+    .select("sequence hash organizationId createdAt")
+    .lean();
+
+  if (!lastLog || !lastLog.sequence || !lastLog.hash) {
+    return null;
+  }
+
+  const prevCheckpoint: any = await AuditCheckpoint.findOne(orgFilter)
+    .sort({ archivedUpToSequence: -1 })
+    .lean();
+
+  const previousCheckpointHash = prevCheckpoint?.checkpointHash || null;
+  const targetOrgId = organizationId ? new mongoose.Types.ObjectId(organizationId) : null;
+  const count = await AuditLog.countDocuments(orgFilter);
+  const cutoffDate = lastLog.createdAt || new Date();
+
+  const payload = `${targetOrgId?.toString() || "system"}:${lastLog.sequence}:${lastLog.hash}:${count}:${cutoffDate.toISOString()}:${previousCheckpointHash || "genesis"}`;
+  const checkpointHash = crypto.createHash("sha256").update(payload).digest("hex");
+  const secretKey = process.env.ENCRYPTION_SECRET || process.env.JWT_SECRET || "ananta-audit-anchor-secret";
+  const signature = crypto.createHmac("sha256", secretKey).update(checkpointHash).digest("hex");
+  const externalAnchor = `urn:anchor:sha256:${checkpointHash}:${Date.now()}`;
+
+  return await AuditCheckpoint.create({
+    organizationId: targetOrgId,
+    archivedUpToSequence: lastLog.sequence,
+    archivedUpToHash: lastLog.hash,
+    archivedCount: count,
+    cutoffDate,
+    previousCheckpointHash,
+    checkpointHash,
+    signature,
+    externalAnchor,
+  });
+}
+

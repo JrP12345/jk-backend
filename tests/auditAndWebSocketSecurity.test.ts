@@ -328,8 +328,8 @@ describe("Cryptographic Audit Trail & WebSocket Channel Segregation Suite", () =
     expect(sentToLobby.data.testName).toBeUndefined();
     expect(sentToLobby.data.resultValue).toBeUndefined();
     expect(sentToLobby.data.panicReason).toBeUndefined();
-    expect(sentToLobby.message).not.toContain("Troponin");
-    expect(sentToLobby.message).not.toContain("INFARCTION");
+    expect(sentToLobby.message || "").not.toContain("Troponin");
+    expect(sentToLobby.message || "").not.toContain("INFARCTION");
     expect(sentToLobby.data.tokenNumber).toBe(42);
   });
 
@@ -375,7 +375,7 @@ describe("Cryptographic Audit Trail & WebSocket Channel Segregation Suite", () =
   });
 
   // ─── Test 7: Clinical WebSocket Endpoint Access Enforcement ────────────────
-  it("should reject non-staff users from connecting to /api/clinical/ws", () => {
+  it("should reject non-staff users from connecting to /api/clinical/ws", async () => {
     const closedSockets: { code: number; reason: string }[] = [];
     const sentErrors: any[] = [];
 
@@ -391,9 +391,9 @@ describe("Cryptographic Audit Trail & WebSocket Channel Segregation Suite", () =
       query: { clinicId: "6aa03a085a3bdf2bee3c5e5a" },
     };
 
-    handleClinicalWebSocket(mockSocket, fakePatientReq);
+    await handleClinicalWebSocket(mockSocket, fakePatientReq);
 
-    expect(mockSocket.close).toHaveBeenCalledWith(1008, "Forbidden");
+    expect(mockSocket.close).toHaveBeenCalledWith(4003, "Forbidden");
     expect(sentErrors[0].type).toBe("ERROR");
     expect(sentErrors[0].message).toContain("Clinical staff role required");
   });
