@@ -260,7 +260,7 @@ export class AppointmentService {
       }
     }
 
-    return await withTransaction(async (session) => {
+    const { booking, lockKey, appointmentId, trackerToken } = await withTransaction(async (session) => {
       const option = session ? { session } : {};
       let finalPatientId: string;
 
@@ -595,7 +595,6 @@ export class AppointmentService {
       };
     });
 
-    // 10. Post-Commit External Side Effects: Release slot lock & dispatch notifications
     if (lockKey) {
       forceReleaseSlotLock(lockKey).catch((err) =>
         console.error("Slot lock release failed (non-critical):", err),

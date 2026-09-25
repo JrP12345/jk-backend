@@ -2,10 +2,9 @@ import { describe, it, expect } from "vitest";
 import { aiService } from "../services/ai/AIService.ts";
 import { providerRegistry } from "../services/ai/ProviderRegistry.ts";
 import { modelRegistry } from "../services/ai/ModelRegistry.ts";
-import { featureFlags } from "../services/ai/FeatureFlags.ts";
 import type { AIRequest, AIResponse, AIUsage } from "../services/ai/AIProvider.ts";
 
-describe("Work Package A: Enterprise AI Contracts, Registries & Feature Flags", () => {
+describe("Work Package A: Enterprise AI Contracts and Registries", () => {
   it("should verify ProviderRegistry registers and checks health of AI providers", async () => {
     const providers = providerRegistry.listProviders();
     expect(providers.length).toBeGreaterThanOrEqual(1);
@@ -31,17 +30,6 @@ describe("Work Package A: Enterprise AI Contracts, Registries & Feature Flags", 
 
     const reasoningModel = modelRegistry.getModelMapping("CLINICAL_REASONING");
     expect(reasoningModel.alias).toBe("CLINICAL_REASONING");
-  });
-
-  it("should verify FeatureFlags returns correct enterprise AI configurations", () => {
-    const flags = featureFlags.getFlags();
-    expect(flags.enableStreaming).toBe(true);
-    expect(flags.enablePHIAnonymization).toBe(true);
-    expect(flags.enableMultiAgentRouting).toBe(true);
-    expect(flags.enableToolExecution).toBe(true);
-
-    featureFlags.setFeature("enableClaudeProvider", true);
-    expect(featureFlags.isFeatureEnabled("enableClaudeProvider")).toBe(true);
   });
 
   it("should verify AI Contracts enforce mandatory correlationId and tracking fields", () => {

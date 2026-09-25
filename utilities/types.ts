@@ -10,6 +10,7 @@ export interface JwtPayload {
   role: string;
   organization_id?: string;
   sessionId?: string;
+  authVersion?: number;
   impersonatedBy?: {
     id: string;
     email: string;
@@ -79,4 +80,3 @@ export function clearAuthCookies(reply: FastifyReply) {
     .clearCookie("ananta_session", clearOptions)
     .clearCookie("sse_access_token", clearOptions);
 }
-

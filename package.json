@@ -27,7 +27,7 @@
     "worker:domain-events": "node --env-file=.env --experimental-strip-types workers/domainEventWorker.ts",
     "replay:dead-letters": "node --env-file=.env --experimental-strip-types scripts/operator-replay.ts",
     "audit:scan": "node --env-file=.env --experimental-strip-types scripts/audit-remediation.ts",
-    "build": "npx esbuild index.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/index.js --target=node20",
+    "build": "node node_modules/esbuild/bin/esbuild index.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/index.js --target=node20",
     "start": "node dist/index.js",
     "start:ts": "node --experimental-strip-types index.ts",
     "dev": "nodemon -e js,ts,json,env --exec \"node --env-file=.env --experimental-strip-types\" index.ts"
@@ -71,7 +71,9 @@
     "@types/qrcode": "^1.5.6",
     "@types/speakeasy": "^2.0.10",
     "@types/ws": "^8.18.1",
+    "esbuild": "0.25.12",
     "mongodb-memory-server": "^11.2.0",
+    "typescript": "5.9.3",
     "vitest": "^5.0.0"
   }
 }

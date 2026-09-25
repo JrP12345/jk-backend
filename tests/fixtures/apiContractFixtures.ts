@@ -1,3 +1,5 @@
+import { expect } from "vitest";
+
 /**
  * Immutable API Contract Fixtures for /api/v1 supported clients.
  * These fixtures verify that core endpoints maintain stable response shapes.

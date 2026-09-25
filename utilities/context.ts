@@ -6,6 +6,7 @@ export interface RequestContext {
   isRoot?: boolean;
   ipAddress?: string;
   userAgent?: string;
+  correlationId?: string;
 }
 
 export const requestContextStore = new AsyncLocalStorage<RequestContext>();
@@ -17,4 +18,3 @@ export const requestContextStore = new AsyncLocalStorage<RequestContext>();
 export function runWithContext<T>(context: RequestContext, fn: () => Promise<T>): Promise<T> {
   return requestContextStore.run(context, fn);
 }
-

@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { verifyEnv } from "../utilities/config.ts";
 import { startNoShowSweepJob, stopNoShowSweepJob } from "../jobs/noShowSweepJob.ts";
 import { acquireOrRenewWorkerLease, releaseWorkerLease } from "../utilities/workerLease.ts";
-import { startWorkerHealthServer } from "./workerHealthServer.ts";
+import { startWorkerHealthServer } from "../utilities/workerHealthServer.ts";
 
 verifyEnv();
 await import("../db.ts");
@@ -75,9 +75,9 @@ async function main() {
 
   const healthPort = Number(process.env.WORKER_HEALTH_PORT) || 5005;
   startWorkerHealthServer({
-    port: healthPort,
+    defaultPort: healthPort,
     workerName: "noShowSweepWorker",
-    getExtraMetrics: () => ({
+    onMetrics: () => ({
       leader,
       leaseName,
       sweepIntervalMs,

@@ -109,7 +109,7 @@ export async function runNoShowSweep(options: NoShowSweepOptions = {}): Promise<
         for (const appt of appts) {
           eventBus
             .publishDurable({
-              eventType: EVENT_TYPES.APPOINTMENT_CANCELLED,
+              eventType: EVENT_TYPES.PATIENT_APPOINTMENT_CANCELLED,
               category: "clinical",
               targetUserId: appt.patientId?.toString() || "",
               title: "Appointment Marked No-Show",

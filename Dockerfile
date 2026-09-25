@@ -10,7 +10,7 @@ RUN npm ci
 
 # Copy source code and build bundle
 COPY . .
-RUN npx esbuild index.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/index.js --target=node20
+RUN npm run build
 
 # Prune devDependencies to keep final image minimal
 RUN npm prune --omit=dev
@@ -37,6 +37,6 @@ EXPOSE 5000
 
 # Healthcheck — periodically polls liveness probe
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD wget -qO- http://localhost:5000/api/health/live || exit 1
+  CMD wget -qO- http://localhost:5000/api/health/liveness || exit 1
 
 CMD ["node", "dist/index.js"]
