@@ -28,6 +28,8 @@
     "replay:dead-letters": "node --env-file=.env --experimental-strip-types scripts/operator-replay.ts",
     "audit:scan": "node --env-file=.env --experimental-strip-types scripts/audit-remediation.ts",
     "build": "node node_modules/esbuild/bin/esbuild index.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/index.js --target=node20",
+    "postinstall": "npm run build",
+    "prestart": "npm run build",
     "start": "node dist/index.js",
     "start:ts": "node --experimental-strip-types index.ts",
     "dev": "nodemon -e js,ts,json,env --exec \"node --env-file=.env --experimental-strip-types\" index.ts"
@@ -56,6 +58,7 @@
     "@fastify/websocket": "^11.3.0",
     "@sentry/node": "^10.73.0",
     "bcryptjs": "^3.0.3",
+    "esbuild": "^0.28.0",
     "fastify": "^5.12.3",
     "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
@@ -71,7 +74,6 @@
     "@types/qrcode": "^1.5.6",
     "@types/speakeasy": "^2.0.10",
     "@types/ws": "^8.18.1",
-    "esbuild": "^0.28.0",
     "mongodb-memory-server": "^11.2.0",
     "typescript": "5.9.3",
     "vitest": "^5.0.0"
