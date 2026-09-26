@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate, checkPermission } from "../middleware/auth.ts";
+import { authenticate, checkPermission, checkAnyPermissionOrRoles } from "../middleware/auth.ts";
+import { getDailyDashboard } from "../controllers/dailyDashboard.ts";
 import {
   getExecutiveAnalytics,
   getClinicalSummaryAnalyticsController,
@@ -11,6 +12,7 @@ import { getOrganizationQualityMetricsController } from "../controllers/search.t
 export default async function analyticsRoutes(app: FastifyInstance) {
   const viewAnalytics = { preHandler: [authenticate, checkPermission("VIEW_ANALYTICS")] };
   const auth = { preHandler: [authenticate] };
+  app.get("/api/analytics/daily-summary", { preHandler: [authenticate, checkAnyPermissionOrRoles([], "VIEW_APPOINTMENTS", "MANAGE_APPOINTMENTS", "VIEW_EHR", "VIEW_BILLING", "MANAGE_BILLING")] }, getDailyDashboard);
 
   // Executive & Quality Metrics Dashboard
   app.get("/api/analytics/executive", viewAnalytics, getExecutiveAnalytics);

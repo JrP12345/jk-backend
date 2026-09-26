@@ -163,7 +163,7 @@ describe("Auth API Integration Tests", () => {
       method: "POST",
       url: "/api/auth/refresh",
       headers: {
-        cookie: Array.isArray(setCookies) ? setCookies.join("; ") : setCookies,
+        cookie: Array.isArray(setCookies) ? setCookies.map((cookie) => cookie.split(";")[0]).join("; ") : setCookies?.split(";")[0],
       },
     });
 
@@ -189,14 +189,17 @@ describe("Auth API Integration Tests", () => {
       method: "POST",
       url: "/api/auth/logout",
       headers: {
-        cookie: Array.isArray(setCookies) ? setCookies.join("; ") : setCookies,
+        cookie: Array.isArray(setCookies) ? setCookies.map((cookie) => cookie.split(";")[0]).join("; ") : setCookies?.split(";")[0],
       },
     });
 
     expect(response.statusCode).toBe(200);
 
     const user = await User.findOne({ email: patientEmail });
-    const count = await RefreshToken.countDocuments({ userId: user!._id, revoked: false });
-    expect(count).toBe(0);
+    const refreshCookie = loginRes.cookies.find((cookie) => cookie.name === "refresh_token")!;
+    const tokenHash = (await import("node:crypto")).createHash("sha256").update(refreshCookie.value).digest("hex");
+    const session = await RefreshToken.findOne({ userId: user!._id, tokenHash });
+    expect(session?.revoked).toBe(true);
+    expect(session?.revocationReason).toBe("logout");
   });
 });

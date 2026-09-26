@@ -24,11 +24,20 @@ import {
 } from "../controllers/auth.ts";
 import { loginSchema, registerPatientSchema } from "../schemas/auth.ts";
 import { getJwks } from "../utilities/keys.ts";
+import { listPasskeys, registrationOptions, registrationVerify, authenticationOptions, authenticationVerify, deletePasskey } from "../controllers/passkeys.ts";
+import { listOwnerSessionPolicies, updateOwnerSessionPolicy } from "../controllers/sessionPolicy.ts";
 
 export default async function authRoutes(app: FastifyInstance) {
   const isTest = process.env.NODE_ENV === "test";
   const platformRoot = { preHandler: [authenticate, requirePlatformRoot()] };
   const objectIdPattern = "^[0-9a-fA-F]{24}$";
+  const passkeyRateLimit = { config: { rateLimit: { max: isTest ? 1000 : 10, timeWindow: "1 minute" } } };
+  app.get("/api/auth/passkeys", { preHandler: [authenticate] }, listPasskeys);
+  app.post("/api/auth/passkeys/register/options", { ...passkeyRateLimit, preHandler: [authenticate] }, registrationOptions);
+  app.post("/api/auth/passkeys/register/verify", { ...passkeyRateLimit, preHandler: [authenticate] }, registrationVerify);
+  app.post("/api/auth/passkeys/login/options", passkeyRateLimit, authenticationOptions);
+  app.post("/api/auth/passkeys/login/verify", passkeyRateLimit, authenticationVerify);
+  app.delete("/api/auth/passkeys/:id", { preHandler: [authenticate] }, deletePasskey);
 
   // GET /.well-known/jwks.json — Public JWKS endpoint
   app.get("/.well-known/jwks.json", async (req, reply) => {
@@ -117,6 +126,11 @@ export default async function authRoutes(app: FastifyInstance) {
 
   // Root Superadmin Session Supervision & Forced Logout
   app.get("/api/auth/admin/sessions", platformRoot, getAdminAllSessions);
+  app.get("/api/auth/admin/owner-session-policies", platformRoot, listOwnerSessionPolicies);
+  app.patch("/api/auth/admin/owner-session-policies/:userId", {
+    ...platformRoot,
+    schema: { body: { type: "object", required: ["limit"], additionalProperties: false, properties: { limit: { anyOf: [{ type: "integer", minimum: 1, maximum: 1000 }, { type: "null" }] } } } },
+  }, updateOwnerSessionPolicy);
   app.delete("/api/auth/admin/sessions/:sessionId", platformRoot, adminRevokeSession);
   app.post("/api/auth/admin/sessions/revoke-user/:userId", platformRoot, adminRevokeUserSessions);
 

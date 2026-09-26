@@ -7,7 +7,7 @@ import { normalizePhone } from "../utilities/helpers.ts";
 
 export type OtpTarget = string | { phone?: string; email?: string };
 
-export type OtpPurpose = "authentication" | "phone_verification" | "email_verification" | "record_claim";
+export type OtpPurpose = "authentication" | "phone_verification" | "email_verification" | "record_claim" | "record_access";
 
 export interface RequestOtpResult {
   success: boolean;
@@ -49,7 +49,8 @@ export class OtpService {
    */
   async requestOtp(
     target: OtpTarget,
-    purpose: OtpPurpose = "authentication"
+    purpose: OtpPurpose = "authentication",
+    context = ""
   ): Promise<RequestOtpResult> {
     const { phone, email } = parseTarget(target);
 
@@ -93,6 +94,7 @@ export class OtpService {
       email: email || undefined,
       otpHash,
       purpose,
+      context,
       expiresAt,
       attempts: 0,
       verified: false,
@@ -108,8 +110,8 @@ export class OtpService {
       }
       emailProvider.sendEmail({
         to: email,
-        subject: "ANANTA Security Verification OTP Code",
-        text: `Your ANANTA verification code is: ${otpCode}. Valid for 5 minutes.`,
+        subject: purpose === "record_access" ? "Approve access to your full patient history" : "ANANTA Security Verification OTP Code",
+        text: purpose === "record_access" ? `Share this code only to approve viewing your records from all organizations for 10 minutes: ${otpCode}. Code valid for 5 minutes.` : `Your ANANTA verification code is: ${otpCode}. Valid for 5 minutes.`,
         html: `
           <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff;">
             <div style="margin-bottom: 20px;">
@@ -117,7 +119,7 @@ export class OtpService {
               <p style="color: #475569; font-size: 14px; margin: 0;">Security Verification Code</p>
             </div>
             <p style="color: #334155; font-size: 14px; line-height: 1.5; margin-bottom: 16px;">
-              Use the one-time verification code below to sign in to your patient portal:
+              ${purpose === "record_access" ? "Share this code only if you approve the requesting clinic viewing your full history from all organizations for 10 minutes:" : "Use the one-time verification code below to sign in to your patient portal:"}
             </p>
             <div style="background-color: #f0fdfa; border: 1.5px dashed #0d9488; border-radius: 12px; padding: 16px; text-align: center; margin-bottom: 20px;">
               <span style="font-size: 32px; font-weight: 800; letter-spacing: 6px; color: #0f766e; font-family: monospace;">${otpCode}</span>
@@ -168,7 +170,8 @@ export class OtpService {
   async verifyOtp(
     target: OtpTarget,
     otp: string,
-    purpose: OtpPurpose = "authentication"
+    purpose: OtpPurpose = "authentication",
+    context = ""
   ): Promise<VerifyOtpResult> {
     const { phone, email } = parseTarget(target);
     const cleanOtp = otp ? otp.trim() : "";
@@ -181,7 +184,7 @@ export class OtpService {
       ? { email, purpose, verified: false, expiresAt: { $gt: new Date() } }
       : { phone, purpose, verified: false, expiresAt: { $gt: new Date() } };
 
-    const record = await OtpVerification.findOne(query).sort({ createdAt: -1 });
+    const record = await OtpVerification.findOne({ ...query, ...(purpose === "record_access" ? { context } : {}) }).sort({ createdAt: -1 });
 
     if (!record) {
       return { success: false, message: "Expired or invalid OTP code. Please request a new code.", phone, email, verified: false };
@@ -194,18 +197,17 @@ export class OtpService {
 
     const isValid = await bcrypt.compare(cleanOtp, record.otpHash);
     if (!isValid) {
+      await OtpVerification.updateOne({ _id: record._id, verified: false }, { $inc: { attempts: 1 } });
       record.attempts += 1;
-      await record.save();
       return { success: false, message: `Invalid OTP code (${5 - record.attempts} attempts remaining)`, phone, email, verified: false };
     }
 
     // Mark as verified
-    record.verified = true;
-    await record.save();
+    const consumed = await OtpVerification.findOneAndUpdate({ _id: record._id, verified: false, attempts: { $lt: 5 }, expiresAt: { $gt: new Date() } }, { $set: { verified: true } });
+    if (!consumed) return { success: false, message: "OTP already used or expired", phone, email, verified: false };
 
     return { success: true, message: "OTP verified successfully", phone, email, verified: true };
   }
 }
 
 export const otpService = new OtpService();
-

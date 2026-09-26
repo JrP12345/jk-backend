@@ -23,6 +23,7 @@ const RefreshTokenSchema = new Schema({
   userAgent: { type: String, default: "" },
   deviceName: { type: String, default: "Browser Session" },
   isGuest: { type: Boolean, default: false },
+  bookingPatientId: { type: Schema.Types.ObjectId, ref: "Patient" },
   impersonatedBy: { type: ImpersonationSchema, default: undefined, required: false },
   lastActiveAt: { type: Date, default: Date.now },
   createdAt: { type: Date, default: Date.now }

@@ -16,7 +16,8 @@ export class DocumentUploadProvider implements TimelineProvider {
   async fetch(query: TimelineQueryOptions): Promise<TimelineEvent[]> {
     const docs = await DocumentUpload.find({
       patientId: query.patientId,
-    })
+      ...(query.organizationId && !query.isCrossOrgAllowed ? { organizationId: query.organizationId } : {}),
+    }).setOptions({ bypassTenantFilter: query.isCrossOrgAllowed === true })
       .populate("uploadedByUserId", "name role")
       .lean();
 

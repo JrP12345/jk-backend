@@ -33,7 +33,7 @@ export class PatientMatchingService {
 
     // 1. Direct MRN match (High Confidence)
     if (criteria.mrn && criteria.mrn.trim()) {
-      const mrnMatch = await Patient.findOne({ mrn: criteria.mrn.trim() })
+      const mrnMatch = await Patient.findOne({ mrn: criteria.mrn.trim(), ...(criteria.organizationId ? { organizationId: criteria.organizationId } : {}) })
         .populate("userId", "name email phone")
         .lean();
       if (mrnMatch) {
@@ -43,7 +43,7 @@ export class PatientMatchingService {
     }
 
     // Find candidate patients by phone, email, or name
-    const filter: any = {};
+    const filter: any = criteria.organizationId ? { organizationId: criteria.organizationId } : {};
     const orConditions: any[] = [];
 
     if (normPhone) {

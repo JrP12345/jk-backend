@@ -277,7 +277,7 @@ app.register(cors, {
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
   allowedHeaders: [
     "Content-Type", "Authorization", "X-Requested-With", "Accept",
-    "Cache-Control", "cache-control", "Pragma", "Expires"
+    "Cache-Control", "cache-control", "Pragma", "Expires", "X-Patient-Record-Access"
   ],
 });
 

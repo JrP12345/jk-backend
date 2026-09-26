@@ -22,6 +22,7 @@ const UserSchema = new Schema({
   image_url: { type: String, default: null },
   isActive: { type: Boolean, default: true },
   authVersion: { type: Number, default: 1 },
+  adminSessionLimit: { type: Number, default: null, min: 1, max: 1000 },
 }, { timestamps: true });
 
 UserSchema.virtual("id").get(function() {

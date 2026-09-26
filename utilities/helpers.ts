@@ -68,6 +68,7 @@ export async function createRefreshTokenDetails(
     deviceName?: string;
     organizationId?: string;
     isGuest?: boolean;
+    bookingPatientId?: string;
     isRoot?: boolean;
     familyId?: string;
     generation?: number;
@@ -82,13 +83,15 @@ export async function createRefreshTokenDetails(
   let isRoot = meta?.isRoot;
   let userAuthVersion = meta?.authVersion;
   let userRole = "patient";
+  let sessionLimit: number | null = 5;
 
   try {
-    const user = await User.findById(userId).select("role authVersion").lean();
+    const user = await User.findById(userId).select("role authVersion adminSessionLimit").lean();
     if (user) {
       if (isRoot === undefined) isRoot = user.role === "root";
       if (userAuthVersion === undefined) userAuthVersion = (user as any).authVersion || 1;
       userRole = user.role;
+      if (user.role === "admin" && !meta?.isGuest) sessionLimit = (user as any).adminSessionLimit ?? null;
     }
   } catch {
     if (isRoot === undefined) isRoot = false;
@@ -105,14 +108,14 @@ export async function createRefreshTokenDetails(
         await revokeSession(s._id.toString(), "displaced");
       }
     }
-  } else {
-    // Standard user: Evict oldest session if active sessions count >= 5
-    const activeSessions = await RefreshToken.find({ userId, revoked: false, expiresAt: { $gt: new Date() } })
+  } else if (sessionLimit !== null) {
+    // Evict oldest sessions when the configured limit is reached.
+    const activeSessions = await RefreshToken.find({ userId, isGuest: meta?.isGuest ? true : { $ne: true }, revoked: false, expiresAt: { $gt: new Date() } })
       .sort({ createdAt: 1 })
       .lean();
 
-    if (activeSessions.length >= 5) {
-      const oldestToEvictCount = activeSessions.length - 4; // leave room for 1 new session
+    if (activeSessions.length >= sessionLimit) {
+      const oldestToEvictCount = activeSessions.length - sessionLimit + 1;
       const toEvict = activeSessions.slice(0, oldestToEvictCount);
       for (const s of toEvict) {
         await revokeSession(s._id.toString(), "displaced");
@@ -136,6 +139,7 @@ export async function createRefreshTokenDetails(
     userAgent: meta?.userAgent || "",
     deviceName: meta?.deviceName || "Browser Session",
     isGuest: meta?.isGuest ?? false,
+    bookingPatientId: meta?.bookingPatientId,
     impersonatedBy: meta?.impersonatedBy || undefined,
     lastActiveAt: new Date(),
   });
@@ -147,12 +151,17 @@ export async function createRefreshTokenDetails(
     sessionId,
     userId,
     organizationId: meta?.organizationId,
-    role: userRole,
+    role: meta?.isGuest ? "guest" : userRole,
     authVersion: effectiveAuthVersion,
     status: "active",
     expiresAt: expiresAt.getTime(),
   });
 
+  // Recheck owner limits after creating a session so simultaneous logins cannot leave excess sessions active.
+  if (userRole === "admin" && sessionLimit !== null && !meta?.isGuest) {
+    const sessions = await RefreshToken.find({ userId, revoked: false, expiresAt: { $gt: new Date() } }).sort({ createdAt: -1, _id: -1 }).select("_id").lean();
+    for (const session of sessions.slice(sessionLimit)) await revokeSession(session._id.toString(), "displaced");
+  }
   return { rawToken, sessionId, familyId, generation };
 }
 
@@ -164,6 +173,7 @@ export async function createRefreshToken(
     deviceName?: string;
     organizationId?: string;
     isGuest?: boolean;
+    bookingPatientId?: string;
     isRoot?: boolean;
     familyId?: string;
     generation?: number;

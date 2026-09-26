@@ -55,6 +55,7 @@ export interface BookingActor {
   id: string;
   role: string;
   organizationId?: string;
+  bookingPatientId?: string;
 }
 
 export class AppointmentService {
@@ -266,7 +267,8 @@ export class AppointmentService {
 
       // 3. Identify or Create Patient Profile
       if (actor.role === "patient" || actor.role === "guest") {
-        const targetPatientId = patientId;
+        if (actor.role === "guest" && actor.bookingPatientId && patientId && patientId !== actor.bookingPatientId) throw new AppointmentDomainError("This booking session belongs to another patient", 403);
+        const targetPatientId = actor.role === "guest" ? actor.bookingPatientId || patientId : patientId;
 
         if (targetPatientId) {
           let isAuthorized = await FamilyRelationship.findOne(

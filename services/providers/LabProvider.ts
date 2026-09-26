@@ -30,7 +30,8 @@ export class LabProvider implements TimelineProvider {
   async fetch(query: TimelineQueryOptions): Promise<TimelineEvent[]> {
     const orders = await LabOrder.find({
       patientId: query.patientId,
-    })
+      ...(query.organizationId && !query.isCrossOrgAllowed ? { organizationId: query.organizationId } : {}),
+    }).setOptions({ bypassTenantFilter: query.isCrossOrgAllowed === true })
       .populate("testId", "name code department sampleType normalRange")
       .populate("orderedBy", "name")
       .populate("doctorId", "name")
@@ -83,7 +84,7 @@ export class LabProvider implements TimelineProvider {
         type: "lab_result",
         occurredAt: order.resultedAt || order.completedDate || order.orderDate || order.createdAt,
         patientId: query.patientId,
-        organizationId: query.organizationId,
+        organizationId: order.organizationId?.toString() || query.organizationId,
         title: `Lab: ${testName} (${dept})${order.priority !== "routine" ? " [" + order.priority!.toUpperCase() + "]" : ""}`,
         summary: resultValue
           ? `Result: ${resultDisplay}${interpretationLabel}`

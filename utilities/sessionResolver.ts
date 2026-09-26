@@ -176,7 +176,7 @@ export async function resolveSession(
       sessionId,
       userId: sessionDoc.userId.toString(),
       organizationId: sessionDoc.organizationId?.toString(),
-      role: (userDoc as any).role || "patient",
+      role: sessionDoc.isGuest ? "guest" : (userDoc as any).role || "patient",
       authVersion: currentAuthVersion,
       status: "active",
       expiresAt: new Date(sessionDoc.expiresAt).getTime(),

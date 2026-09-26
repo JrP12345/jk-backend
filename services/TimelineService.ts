@@ -1,4 +1,5 @@
 import { Patient } from "../models/Patient.ts";
+import { getOrganizationPatient, hasPatientRecordAccess } from "./PatientRecordAccessService.ts";
 import type {
   TimelineEvent,
   TimelineProvider,
@@ -72,48 +73,14 @@ export class TimelineService {
       return null; // Controller will return 404
     }
 
-    let isCrossOrgAccess = false;
-    if (query.organizationId && patient.organizationId && patient.organizationId.toString() !== query.organizationId) {
-      // Check for active episode / appointment today at the requesting organization
-      const startOfDay = new Date();
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date();
-      endOfDay.setHours(23, 59, 59, 999);
-
-      const { Appointment } = await import("../models/Appointment.ts");
-      const activeAppt = await Appointment.findOne({
-        patientId: patient._id,
-        organizationId: query.organizationId,
-        appointmentTime: { $gte: startOfDay, $lte: endOfDay },
-        status: { $in: ["confirmed", "checked-in", "in-consultation", "completed"] },
-      }).lean();
-
-      if (!activeAppt) {
-        return null; // 404 Masking for multi-tenancy cross-tenant security
-      }
-
-      isCrossOrgAccess = true;
+    // An organization sees its own events; a visit never grants access to another organization's history.
+    query.isCrossOrgAllowed = false;
+    if (query.organizationId && !await getOrganizationPatient(query.patientId, query.organizationId)) return null;
+    if (query.includeAllRecords) {
+      if (!await hasPatientRecordAccess(query.recordAccessToken, query.patientId, query.userId, query.organizationId, query.sessionId)) return null;
       query.isCrossOrgAllowed = true;
-
-      // Immutable Audit Log: CROSS_ORG_PHI_READ
-      if (query.userId) {
-        const { AuditLog } = await import("../models/AuditLog.ts");
-        await AuditLog.create({
-          userId: query.userId,
-          organizationId: query.organizationId,
-          action: "CROSS_ORG_PHI_READ",
-          targetId: patient._id,
-          targetModel: "Patient",
-          category: "CLINICAL_READ",
-          details: {
-            patientGlobalId: patient.globalPatientId,
-            patientMrn: patient.mrn,
-            sourceOrgId: patient.organizationId?.toString(),
-            requestingOrgId: query.organizationId,
-            reason: "Active Outpatient Consultation Episode",
-          },
-        }).catch((e) => console.error("Failed to log CROSS_ORG_PHI_READ:", e));
-      }
+      const { AuditLog } = await import("../models/AuditLog.ts");
+      await AuditLog.create({ userId: query.userId, organizationId: query.organizationId, action: "CROSS_ORG_PHI_READ", targetId: patient._id, targetModel: "Patient", category: "CLINICAL_READ", details: { reason: "Patient OTP approval" } });
     }
 
     // 2. Select matching providers from registry (skip disabled P3/P2 modules)

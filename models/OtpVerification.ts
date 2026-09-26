@@ -4,7 +4,8 @@ export interface IOtpVerification extends Document {
   phone?: string;
   email?: string;
   otpHash: string;
-  purpose: "authentication" | "phone_verification" | "email_verification" | "record_claim";
+  purpose: "authentication" | "phone_verification" | "email_verification" | "record_claim" | "record_access";
+  context?: string;
   expiresAt: Date;
   attempts: number;
   verified: boolean;
@@ -21,10 +22,11 @@ const OtpVerificationSchema = new Schema<IOtpVerification>(
     otpHash: { type: String, required: true },
     purpose: {
       type: String,
-      enum: ["authentication", "phone_verification", "email_verification", "record_claim"],
+      enum: ["authentication", "phone_verification", "email_verification", "record_claim", "record_access"],
       required: true,
     },
     expiresAt: { type: Date, required: true, expires: 0 }, // TTL index
+    context: { type: String, default: "" },
     attempts: { type: Number, default: 0 },
     verified: { type: Boolean, default: false },
     requestCount: { type: Number, default: 1 },

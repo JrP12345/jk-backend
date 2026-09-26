@@ -129,7 +129,7 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
     if (!orgId && clinicAccess.organizationId) orgId = clinicAccess.organizationId;
 
     const appointment = await appointmentService.book(
-      { id: userId, role: userRole, organizationId: orgId },
+      { id: userId, role: userRole, organizationId: orgId, bookingPatientId: req.user?.bookingPatientId },
       body,
       orgId
     );
@@ -222,11 +222,13 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
       filter.appointmentTime = {};
       if (startDate) {
         const sDate = new Date(startDate);
-        filter.appointmentTime.$gte = new Date(sDate.getFullYear(), sDate.getMonth(), sDate.getDate(), 0, 0, 0, 0);
+        if (Number.isNaN(sDate.getTime())) return reply.code(400).send(errorResponse("Invalid start date"));
+        filter.appointmentTime.$gte = String(startDate).includes("T") ? sDate : new Date(sDate.getFullYear(), sDate.getMonth(), sDate.getDate(), 0, 0, 0, 0);
       }
       if (endDate) {
         const eDate = new Date(endDate);
-        filter.appointmentTime.$lte = new Date(eDate.getFullYear(), eDate.getMonth(), eDate.getDate(), 23, 59, 59, 999);
+        if (Number.isNaN(eDate.getTime())) return reply.code(400).send(errorResponse("Invalid end date"));
+        filter.appointmentTime.$lte = String(endDate).includes("T") ? eDate : new Date(eDate.getFullYear(), eDate.getMonth(), eDate.getDate(), 23, 59, 59, 999);
       }
     } else if (date) {
       const targetDate = new Date(date);

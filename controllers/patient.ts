@@ -5,6 +5,8 @@ import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { OrgMember } from "../models/OrgMember.ts";
+import { getOrganizationPatient, hasPatientRecordAccess } from "../services/PatientRecordAccessService.ts";
+import { AuditLog } from "../models/AuditLog.ts";
 import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
@@ -40,7 +42,7 @@ export async function searchPatients(req: FastifyRequest, reply: FastifyReply) {
       andConditions.push({
         $or: [
           { organizationId: orgId },
-          { createdBy: new mongoose.Types.ObjectId(req.user!.id) },
+          { createdBy: new mongoose.Types.ObjectId(req.user!.id), organizationId: { $exists: false } },
         ],
       });
     }
@@ -112,7 +114,7 @@ export async function getPatientDetails(req: FastifyRequest, reply: FastifyReply
     if (!scope.allowed && req.user?.role !== "patient" && req.user?.role !== "family_member") {
       return reply.code(scope.statusCode).send(errorResponse(scope.message));
     }
-    const requesterOrgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
+    let requesterOrgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
     const requesterRole = req.user?.role;
     const requesterUserId = req.user?.id;
 
@@ -120,7 +122,7 @@ export async function getPatientDetails(req: FastifyRequest, reply: FastifyReply
       return reply.code(400).send(errorResponse("Invalid patient ID"));
     }
     
-    const patient = await Patient.findById(id).populate("userId", "name email phone");
+    const patient = await Patient.findById(id).setOptions({ bypassTenantFilter: true }).populate("userId", "name email phone");
     if (!patient) {
       return reply.code(404).send(errorResponse("Patient not found"));
     }
@@ -135,35 +137,37 @@ export async function getPatientDetails(req: FastifyRequest, reply: FastifyReply
       return reply.code(403).send(errorResponse("Forbidden: You do not have permission to view other patients' records"));
     }
 
+    if (requesterRole === "family_member" && !isSelfAccess && !await FamilyRelationship.exists({ userId: requesterUserId, patientId: id, status: "active" })) return reply.code(404).send(errorResponse("Patient not found"));
+    if (!["patient", "family_member"].includes(requesterRole || "") && !requesterOrgId) requesterOrgId = patient.organizationId?.toString();
+    if (!["patient", "family_member"].includes(requesterRole || "") && !requesterOrgId) return reply.code(403).send(errorResponse("Organization context required"));
     if (!isSelfAccess && requesterOrgId) {
-      let isOrgMember = false;
-      if (patient.organizationId && patient.organizationId.toString() === requesterOrgId) {
-        isOrgMember = true;
-      } else if (patient.userId) {
-        const targetUserObjId = (patient.userId as any)._id || patient.userId;
-        const member = await OrgMember.findOne({ userId: targetUserObjId, organizationId: requesterOrgId });
-        if (member) isOrgMember = true;
-      }
-
-      if (!isOrgMember) {
-        // Return 404 to prevent cross-tenant resource enumeration
-        return reply.code(404).send(errorResponse("Patient not found"));
-      }
+      if (!await getOrganizationPatient(id, requesterOrgId)) return reply.code(404).send(errorResponse("Patient not found"));
     }
+    const allRecordsRequested = (req.query as any)?.scope === "all";
+    const recordAccessToken = req.headers["x-patient-record-access"] as string | undefined;
+    const approved = allRecordsRequested && await hasPatientRecordAccess(recordAccessToken, id, requesterUserId, requesterOrgId || "", req.user?.sessionId);
+    if (allRecordsRequested && !isSelfAccess && !approved) return reply.code(403).send(errorResponse("Patient OTP approval is required to view full history"));
 
     const appointmentFilter: Record<string, unknown> = { patientId: id };
-    if (requesterOrgId && requesterRole !== "root") {
+    if (requesterOrgId && !approved && !isSelfAccess) {
       appointmentFilter.organizationId = requesterOrgId;
     }
 
+    if (approved) await AuditLog.create({ userId: requesterUserId, organizationId: requesterOrgId, action: "CROSS_ORG_RECORD_READ", targetId: id, targetModel: "Patient", category: "CLINICAL_READ", details: { method: "patient_otp", resource: "patient_details" } });
     const appointments = await Appointment.find(appointmentFilter)
+      .setOptions({ bypassTenantFilter: Boolean(approved || isSelfAccess) })
       .populate("doctorId", "name email")
       .populate("clinicId", "name city")
       .sort({ appointmentTime: -1 })
       .limit(50);
 
+    const patientResponse: any = patient.toJSON();
+    if (!isSelfAccess && !approved && requesterOrgId && patient.organizationId && patient.organizationId.toString() !== requesterOrgId) {
+      for (const field of ["allergies", "conditions", "medicalNotes", "insurancePolicies", "careContexts", "activeConsentGrants"]) delete patientResponse[field];
+      patientResponse.clinicalProfileRestricted = true;
+    }
     return reply.code(200).send(successResponse({
-      patient,
+      patient: patientResponse,
       appointments
     }));
   } catch (err) {
@@ -285,11 +289,15 @@ export async function getPatientTimelineController(req: FastifyRequest, reply: F
     const isFinancialRequested = includeFinancial === true || includeFinancial === "true";
     const numericLimit = limit ? Number(limit) : 20;
 
+    const includeAllRecords = !isPatientSelf && (req.query as any)?.scope === "all";
+    const recordAccessToken = req.headers["x-patient-record-access"] as string | undefined;
+    if (includeAllRecords && !await hasPatientRecordAccess(recordAccessToken, id, req.user?.id, orgId, req.user?.sessionId)) return reply.code(403).send(errorResponse("Patient OTP approval is required to view full history"));
     const { timelineService } = await import("../services/TimelineService.ts");
     const timelineData = await timelineService.getPatientTimeline({
       patientId: id,
       organizationId: orgId,
       userId: req.user?.id,
+      includeAllRecords, recordAccessToken, sessionId: req.user?.sessionId,
       category,
       includeFinancial: isFinancialRequested,
       q,

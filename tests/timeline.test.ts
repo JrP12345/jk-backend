@@ -24,6 +24,7 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
       url: "/api/onboarding/organization",
       payload: {
         org_name: "EHR Test General Hospital",
+        plan: "enterprise",
         city: "Mumbai",
         admin_name: "EHR Admin",
         admin_email: "ehr-admin@test.com",
@@ -31,7 +32,7 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
       },
     });
     expect(orgRes.statusCode).toBe(201);
-    adminCookies = orgRes.headers["set-cookie"] as string[];
+    adminCookies = (orgRes.headers["set-cookie"] as string[]).map((cookie) => cookie.split(";")[0]);
     orgId = JSON.parse(orgRes.body).data.organization.id;
 
     // Enable all modules for the test organization so Lab & Admission timeline providers run
@@ -40,6 +41,8 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
       { $set: { enabled: true } },
       { upsert: true }
     );
+
+    for (const moduleKey of ["clinics", "consultations"]) await ModuleRegistry.findOneAndUpdate({ organizationId: orgId, moduleKey }, { $set: { enabled: true } }, { upsert: true });
 
     // 2. Create Clinic
     const clinicRes = await app.inject({
@@ -84,7 +87,7 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
       },
     });
     expect(doctorLogin.statusCode).toBe(200);
-    doctorCookies = doctorLogin.headers["set-cookie"] as string[];
+    doctorCookies = (doctorLogin.headers["set-cookie"] as string[]).map((cookie) => cookie.split(";")[0]);
 
     // 4. Register Patient
     const patientReg = await app.inject({

@@ -18,7 +18,7 @@ import {
   verifyTwoFactorChallenge,
   normalizePhone,
 } from "../utilities/helpers.ts";
-import { setAuthCookies, clearAuthCookies, type JwtPayload } from "../utilities/types.ts";
+import { setAuthCookies, setAccessCookie, clearAuthCookies, type JwtPayload } from "../utilities/types.ts";
 import { resolveSession, revokeSession as revokeSessionInternal, revokeUserSessions, revokeTokenFamily } from "../utilities/sessionResolver.ts";
 import { disconnectUserWebSockets } from "../notifications/websocket.ts";
 import { eventBus } from "../events/eventBus.ts";
@@ -46,6 +46,7 @@ export async function requestOtpController(req: FastifyRequest, reply: FastifyRe
       purpose?: "authentication" | "phone_verification" | "email_verification" | "record_claim";
     };
 
+    if (purpose && !["authentication", "phone_verification", "email_verification", "record_claim"].includes(purpose)) return reply.code(400).send(errorResponse("Invalid OTP purpose"));
     const trimmedPhone = phone?.trim();
     const trimmedEmail = email?.trim();
 
@@ -91,6 +92,7 @@ export async function createPublicBookingSession(req: FastifyRequest, reply: Fas
     if (!user) {
       user = await User.findOne({ phone: { $in: [`+91${normPhone}`, `91${normPhone}`] } });
     }
+    if (user && !["patient", "family_member"].includes(user.role)) return reply.code(400).send(errorResponse("This phone number belongs to a staff account. Use the patient's phone number to book."));
     let isNewUser = false;
 
     if (user && user.phone !== normPhone) {
@@ -158,10 +160,6 @@ export async function createPublicBookingSession(req: FastifyRequest, reply: Fas
       patient = await Patient.findOne({ userId: user._id, name: new RegExp(`^${nameInput.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, "i") });
     }
 
-    if (!patient) {
-      let selfRelationship = await FamilyRelationship.findOne({ userId: user._id, relationship: "self", status: "active" }).populate("patientId");
-      patient = selfRelationship ? (selfRelationship.patientId as any) : await Patient.findOne({ userId: user._id });
-    }
 
     if (patient && patient.name.startsWith("Patient ")) {
       patient.name = nameInput;
@@ -172,7 +170,7 @@ export async function createPublicBookingSession(req: FastifyRequest, reply: Fas
     if (!patient) {
       const isFirstPatient = !(await Patient.exists({ userId: user._id }));
       patient = await Patient.create({
-        userId: user._id,
+        userId: isFirstPatient ? user._id : undefined,
         name: nameInput,
         phone: user.phone,
         email: emailInput || user.email || undefined,
@@ -182,7 +180,7 @@ export async function createPublicBookingSession(req: FastifyRequest, reply: Fas
 
       await FamilyRelationship.findOneAndUpdate(
         { userId: user._id, patientId: patient._id },
-        { relationship: isFirstPatient ? "self" : "dependent", status: "active" },
+        { relationship: isFirstPatient ? "self" : "other", status: "active" },
         { upsert: true }
       );
     }
@@ -199,18 +197,19 @@ export async function createPublicBookingSession(req: FastifyRequest, reply: Fas
       organization_id: (user as any).organization_id,
       permissions: guestPermissions,
     };
-    const accessToken = generateAccessToken(payload);
     const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
     const userAgent = (req.headers["user-agent"] as string) || "";
     const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
 
-    const refreshToken = await createRefreshToken(user.id, {
+    const { rawToken: refreshToken, sessionId } = await createRefreshTokenDetails(user.id, {
       ipAddress,
       userAgent,
       deviceName,
       isGuest: true,
+      bookingPatientId: patient._id.toString(),
     });
-    setAuthCookies(reply, accessToken, refreshToken);
+    const accessToken = generateAccessToken({ ...payload, sessionId, bookingPatientId: patient._id.toString(), authVersion: user.authVersion || 1 });
+    setAuthCookies(reply, accessToken, refreshToken, true);
 
     return reply.code(200).send(
       successResponse(
@@ -249,6 +248,7 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
       dateOfBirth?: string;
     };
 
+    if (purpose && !["authentication", "phone_verification", "email_verification", "record_claim"].includes(purpose)) return reply.code(400).send(errorResponse("Invalid OTP purpose"));
     const trimmedPhone = phone?.trim();
     const trimmedEmail = email?.trim();
 
@@ -528,73 +528,7 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(403).send(errorResponse("Email verification required. Please check your inbox or resend verification email."));
     }
 
-    const orgMember = await OrgMember.findOne({ userId: user._id });
-    const organization_id = orgMember?.organizationId?.toString() || (user as any).organization_id?.toString();
-
-    // Enforce Organization Status Lockdown
-    if (organization_id && user.role !== "root") {
-      const org = await Organization.findById(organization_id).select("status isActive").lean();
-      if (org && (org.status === "inactive" || org.isActive === false)) {
-        return reply.code(403).send(errorResponse("Organization workspace is inactive or suspended. Access revoked."));
-      }
-    }
-
-    const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
-    const permissions = roleConfig ? roleConfig.permissions : [];
-
-    if (user.twoFactorEnabled && user.twoFactorSecret) {
-      clearAuthCookies(reply);
-      const twoFactorToken = generateTwoFactorChallenge(user.id);
-      return reply.code(200).send(
-        successResponse(
-          {
-            twoFactorRequired: true,
-            twoFactorToken,
-            user: { id: user.id, name: user.name, email: user.email, role: user.role, organization_id, permissions },
-          },
-          "Two-factor verification required"
-        )
-      );
-    }
-
-    // Extract device metadata for session tracking
-    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
-    const userAgent = (req.headers["user-agent"] as string) || "";
-    const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
-
-    const { rawToken: refreshToken, sessionId } = await createRefreshTokenDetails(user.id, {
-      ipAddress,
-      userAgent,
-      deviceName,
-      organizationId: organization_id,
-      isRoot: user.role === "root",
-    });
-
-    const payload = { id: user.id, email: user.email || "", role: user.role, organization_id, sessionId };
-    const accessToken = generateAccessToken(payload);
-
-    // Set httpOnly cookies
-    setAuthCookies(reply, accessToken, refreshToken);
-
-    // Emit authentication notification event
-    await eventBus.publishDurable({
-      eventType: EVENT_TYPES.AUTH_LOGIN_NEW_DEVICE,
-      category: "auth",
-      targetUserId: user.id,
-      title: "New Account Login",
-      message: `Successful login to Anant account (${user.email || user.name}).`,
-      severity: "info",
-      organizationId: organization_id,
-    });
-
-    return reply.code(200).send(
-      successResponse(
-        {
-          user: { id: user.id, name: user.name, email: user.email || null, role: user.role, image_url: user.image_url || null, organization_id, permissions },
-        },
-        "Login successful"
-      )
-    );
+    return await completeVerifiedLogin(req, reply, user);
   } catch (err) {
     console.error("login error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -632,6 +566,7 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
       return reply.code(401).send(errorResponse("Invalid two-factor code"));
     }
 
+    if (process.env.NODE_ENV === "production" && user.email && !user.isEmailVerified) return reply.code(403).send(errorResponse("Please verify your email address before signing in."));
     const orgMember = await OrgMember.findOne({ userId: user._id });
     const organization_id = orgMember?.organizationId?.toString() || (user as any).organization_id?.toString();
     if (organization_id && user.role !== "root") {
@@ -957,24 +892,8 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
     if (currentRecord.revoked) {
       const now = Date.now();
       // Concurrency grace window check (10 seconds)
-      if (currentRecord.graceExpiresAt && new Date(currentRecord.graceExpiresAt).getTime() > now) {
-        const user = await User.findById(currentRecord.userId).select("role authVersion isActive email").lean();
-        if (!user || !user.isActive) {
-          clearAuthCookies(reply);
-          return reply.code(401).send(errorResponse("User account deactivated"));
-        }
-        const authVersion = (user as any).authVersion || 1;
-        const payload: JwtPayload = {
-          id: user._id.toString(),
-          email: user.email || "",
-          role: user.role,
-          organization_id: currentRecord.organizationId?.toString(),
-          sessionId: currentRecord._id.toString(),
-          authVersion,
-        };
-        const accessToken = generateAccessToken(payload);
-        reply.header("X-Concurrency-Grace", "true");
-        return reply.code(200).send(successResponse(null, "Token refreshed within concurrency grace window"));
+      if (currentRecord.revocationReason === "rotated" && currentRecord.graceExpiresAt && new Date(currentRecord.graceExpiresAt).getTime() > now) {
+        return await replyWithRotationGrace(reply, currentRecord);
       }
 
       // Suspicious Reuse Outside Grace Window! Revoke entire token family
@@ -1032,17 +951,8 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
     if (!consumed) {
       // Race condition or concurrent update occurred
       const recheck = await RefreshToken.findById(currentRecord._id);
-      if (recheck?.graceExpiresAt && new Date(recheck.graceExpiresAt).getTime() > Date.now()) {
-        const payload: JwtPayload = {
-          id: user._id.toString(),
-          email: user.email || "",
-          role: user.role,
-          organization_id,
-          sessionId: currentRecord._id.toString(),
-          authVersion: (user as any).authVersion || 1,
-        };
-        const accessToken = generateAccessToken(payload);
-        return reply.code(200).send(successResponse(null, "Token refreshed within concurrency grace window"));
+      if (recheck?.revocationReason === "rotated" && recheck.graceExpiresAt && new Date(recheck.graceExpiresAt).getTime() > Date.now()) {
+        return await replyWithRotationGrace(reply, recheck);
       }
       clearAuthCookies(reply);
       return reply.code(401).send(errorResponse("Token rotation collision. Please sign in again."));
@@ -1073,6 +983,7 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
       deviceName,
       organizationId: organization_id,
       isGuest: isGuestToken,
+      bookingPatientId: currentRecord.bookingPatientId?.toString(),
       isRoot: user.role === "root",
       familyId: currentRecord.familyId || crypto.randomUUID(),
       generation: nextGeneration,
@@ -1087,6 +998,7 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
       id: user.id,
       email: user.email || "",
       role: targetRole,
+      bookingPatientId: currentRecord.bookingPatientId?.toString(),
       organization_id,
       sessionId,
       authVersion,
@@ -1096,7 +1008,7 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
     }
     const accessToken = generateAccessToken(payload);
 
-    setAuthCookies(reply, accessToken, newRefreshToken);
+    setAuthCookies(reply, accessToken, newRefreshToken, isGuestToken);
     return reply.code(200).send(successResponse(null, "Token refreshed"));
   } catch (err) {
     console.error("refreshAccessToken error:", err);
@@ -1646,4 +1558,103 @@ export async function googleLoginController(req: FastifyRequest, reply: FastifyR
     console.error("googleLoginController error:", err);
     return reply.code(400).send(errorResponse(err.message || "Failed to authenticate with Google"));
   }
+}
+
+
+// Shared session issuance for verified passwords and passkeys; existing 2FA remains required.
+export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyReply, user: any) {
+    if (!user.isActive) return reply.code(403).send(errorResponse("Account is deactivated"));
+    const orgMember = await OrgMember.findOne({ userId: user._id });
+    const organization_id = orgMember?.organizationId?.toString() || (user as any).organization_id?.toString();
+
+    // Enforce Organization Status Lockdown
+    if (organization_id && user.role !== "root") {
+      const org = await Organization.findById(organization_id).select("status isActive").lean();
+      if (!org || (org.status === "inactive" || org.isActive === false)) {
+        return reply.code(403).send(errorResponse("Organization workspace is inactive or suspended. Access revoked."));
+      }
+    }
+
+    const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
+    const permissions = roleConfig ? roleConfig.permissions : [];
+
+    if (user.twoFactorEnabled && user.twoFactorSecret) {
+      clearAuthCookies(reply);
+      const twoFactorToken = generateTwoFactorChallenge(user.id);
+      return reply.code(200).send(
+        successResponse(
+          {
+            twoFactorRequired: true,
+            twoFactorToken,
+            user: { id: user.id, name: user.name, email: user.email, role: user.role, organization_id, permissions },
+          },
+          "Two-factor verification required"
+        )
+      );
+    }
+
+    // Extract device metadata for session tracking
+    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
+    const userAgent = (req.headers["user-agent"] as string) || "";
+    const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
+
+    const { rawToken: refreshToken, sessionId } = await createRefreshTokenDetails(user.id, {
+      ipAddress,
+      userAgent,
+      deviceName,
+      organizationId: organization_id,
+      isRoot: user.role === "root",
+    });
+
+    const payload = { id: user.id, email: user.email || "", role: user.role, organization_id, sessionId };
+    const accessToken = generateAccessToken(payload);
+
+    // Set httpOnly cookies
+    setAuthCookies(reply, accessToken, refreshToken);
+
+    // Emit authentication notification event
+    await eventBus.publishDurable({
+      eventType: EVENT_TYPES.AUTH_LOGIN_NEW_DEVICE,
+      category: "auth",
+      targetUserId: user.id,
+      title: "New Account Login",
+      message: `Successful login to Anant account (${user.email || user.name}).`,
+      severity: "info",
+      organizationId: organization_id,
+    });
+
+    return reply.code(200).send(
+      successResponse(
+        {
+          user: { id: user.id, name: user.name, email: user.email || null, role: user.role, image_url: user.image_url || null, organization_id, permissions },
+        },
+        "Login successful"
+      )
+    );
+}
+
+
+async function replyWithRotationGrace(reply: FastifyReply, previous: any) {
+  // A concurrent refresh must use the live successor, never the revoked session.
+  let successor: any = null;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    successor = await RefreshToken.findOne({ userId: previous.userId, familyId: previous.familyId, generation: { $gt: previous.generation || 1 }, revoked: false, expiresAt: { $gt: new Date() } }).sort({ generation: -1 }).lean();
+    if (successor) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const user = await User.findById(previous.userId).select("role email isActive authVersion").lean();
+  if (!successor || !user?.isActive || successor.authVersion !== (user.authVersion || 1)) {
+    return reply.code(401).send(errorResponse("Session has expired or been terminated"));
+  }
+  const organization_id = successor.organizationId?.toString();
+  if (organization_id && user.role !== "root") {
+    const organization = await Organization.findById(organization_id).select("status isActive").lean();
+    if (!organization || organization.status === "inactive" || organization.isActive === false) return reply.code(403).send(errorResponse("Organization workspace is inactive or suspended"));
+  }
+  const payload: JwtPayload = { id: user._id.toString(), email: user.email || "", role: successor.isGuest ? "guest" : user.role,
+    organization_id, sessionId: successor._id.toString(), authVersion: user.authVersion || 1, bookingPatientId: successor.bookingPatientId?.toString() };
+  if (successor.impersonatedBy?.id) payload.impersonatedBy = { ...successor.impersonatedBy, id: successor.impersonatedBy.id.toString() };
+  setAccessCookie(reply, generateAccessToken(payload));
+  reply.header("X-Concurrency-Grace", "true");
+  return reply.send(successResponse(null, "Token refreshed within concurrency grace window"));
 }

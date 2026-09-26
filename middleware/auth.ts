@@ -41,6 +41,9 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
       if (!resolution.valid) {
         return reply.code(401).send({ error: resolution.reason || "Session has been terminated or logged in from another device" });
       }
+      if (resolution.session?.userId !== decoded.id || (resolution.session?.role === "guest" && decoded.role !== "guest")) {
+        return reply.code(401).send({ error: "Session identity mismatch" });
+      }
     }
 
     req.user = decoded;

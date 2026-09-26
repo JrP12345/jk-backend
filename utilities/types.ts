@@ -10,6 +10,7 @@ export interface JwtPayload {
   role: string;
   organization_id?: string;
   sessionId?: string;
+  bookingPatientId?: string;
   authVersion?: number;
   impersonatedBy?: {
     id: string;
@@ -59,11 +60,11 @@ const SESSION_INDICATOR_OPTIONS = {
 /**
  * Set access + refresh token cookies on the reply.
  */
-export function setAuthCookies(reply: FastifyReply, accessToken: string, refreshToken: string) {
+export function setAuthCookies(reply: FastifyReply, accessToken: string, refreshToken: string, isGuest = false) {
   reply
     .setCookie("access_token", accessToken, ACCESS_COOKIE_OPTIONS)
     .setCookie("refresh_token", refreshToken, REFRESH_COOKIE_OPTIONS)
-    .setCookie("ananta_session", "1", SESSION_INDICATOR_OPTIONS);
+    .setCookie("ananta_session", isGuest ? "guest" : "1", SESSION_INDICATOR_OPTIONS);
 }
 
 /**
@@ -79,4 +80,8 @@ export function clearAuthCookies(reply: FastifyReply) {
     .clearCookie("refresh_token", clearOptions)
     .clearCookie("ananta_session", clearOptions)
     .clearCookie("sse_access_token", clearOptions);
+}
+
+export function setAccessCookie(reply: FastifyReply, accessToken: string) {
+  reply.setCookie("access_token", accessToken, ACCESS_COOKIE_OPTIONS);
 }

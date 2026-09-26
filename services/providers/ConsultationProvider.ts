@@ -109,8 +109,9 @@ export class ConsultationProvider implements TimelineProvider {
     // 2. Fetch Appointments without a Clinical Note
     const appointments = await Appointment.find({
       patientId: query.patientId,
+      ...(query.organizationId && !query.isCrossOrgAllowed ? { organizationId: query.organizationId } : {}),
       status: { $in: ["completed", "in-consultation", "checked-in"] },
-    })
+    }).setOptions({ bypassTenantFilter: query.isCrossOrgAllowed === true })
       .populate("doctorId", "name email")
       .lean();
 
@@ -129,7 +130,7 @@ export class ConsultationProvider implements TimelineProvider {
         type: "consultation",
         occurredAt: appt.appointmentTime || appt.createdAt,
         patientId: query.patientId,
-        organizationId: query.organizationId,
+        organizationId: appt.organizationId?.toString() || query.organizationId,
         title: appt.diagnosis ? `OPD Consultation: ${appt.diagnosis}` : "Outpatient Consultation",
         summary: appt.symptoms ? `Symptoms: ${appt.symptoms}` : "Outpatient clinical consultation completed.",
         actor: {

@@ -199,7 +199,7 @@ describe("Universal Patient Record & Cross-Facility Access Tests", () => {
     expect(timelineRes.statusCode).toBe(404);
   });
 
-  it("Step 3: When patient has active appointment at Clinic B today, cross-facility clinical history is accessible", async () => {
+  it("Step 3: An appointment at Clinic B does not unlock records from Clinic A without patient OTP", async () => {
     // Book appointment for patient at Clinic B today
     await Appointment.create({
       organizationId: orgBId,
@@ -224,25 +224,12 @@ describe("Universal Patient Record & Cross-Facility Access Tests", () => {
     expect(body.success).toBe(true);
 
     const events = body.data.events;
-    // Must contain the clinical note from Clinic A!
-    const noteEvent = events.find((e: any) => e.type === "consultation");
-    expect(noteEvent).toBeDefined();
-    expect(noteEvent.title).toContain("Apollo Mumbai Central");
-    expect(noteEvent.clinicalMetadata.diagnoses).toContain("Essential Hypertension (I10)");
+    expect(events.every((event: any) => event.organizationId === orgBId)).toBe(true);
+    expect(events.find((event: any) => event.title.includes("Apollo Mumbai Central"))).toBeUndefined();
+    const fullHistory = await app.inject({ method: "GET", url: `/api/patients/${patient._id}/timeline?scope=all`, headers: { cookie: adminCookiesOrgB.join("; ") } });
+    expect(fullHistory.statusCode).toBe(403);
+    expect(await AuditLog.findOne({ action: "CROSS_ORG_PHI_READ", targetId: patient._id })).toBeNull();
 
-    // Strict Financial Isolation: Org B MUST NOT see Org A's billing invoice
-    const billingEvents = events.filter((e: any) => e.type === "billing");
-    expect(billingEvents.length).toBe(0);
-
-    // Audit Verification: Immutable CROSS_ORG_PHI_READ record logged
-    const auditRecord = await AuditLog.findOne({
-      action: "CROSS_ORG_PHI_READ",
-      targetId: patient._id,
-    });
-    expect(auditRecord).toBeDefined();
-    expect(auditRecord?.organizationId?.toString()).toBe(orgBId);
-    expect(auditRecord?.details.sourceOrgId).toBe(orgAId);
-    expect(auditRecord?.details.patientGlobalId).toBe(patient.globalPatientId);
   });
 
   it("Step 4: Third-party Clinic C without active appointment is still blocked with 404", async () => {

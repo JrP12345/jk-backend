@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { authenticate, checkPermission, checkAnyPermissionOrRoles } from "../middleware/auth.ts";
 import { requireModule } from "../middleware/moduleGuard.ts";
 import { getPatientTimelineController } from "../controllers/patient.ts";
+import { requestPatientRecordOtp, verifyPatientRecordOtp } from "../controllers/patientRecordAccess.ts";
 import {
   createEncounterController,
   saveDraftClinicalNoteController,
@@ -34,6 +35,9 @@ export default async function clinicalRoutes(app: FastifyInstance) {
 
   // Longitudinal EHR Timeline
   app.get("/api/patients/:id/timeline", viewEhr, getPatientTimelineController);
+  const recordAccess = { preHandler: [authenticate, requireModule("consultations"), checkPermission("VIEW_EHR")], config: { rateLimit: { max: process.env.NODE_ENV === "test" ? 1000 : 5, timeWindow: "1 minute" } } };
+  app.post("/api/patients/:id/record-access/request", recordAccess, requestPatientRecordOtp);
+  app.post("/api/patients/:id/record-access/verify", recordAccess, verifyPatientRecordOtp);
 
   // Encounters & Clinical Notes Workspace
   app.post("/api/encounters", manageNotes, createEncounterController);

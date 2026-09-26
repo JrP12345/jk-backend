@@ -6,6 +6,9 @@ import { Observation } from "../models/Observation.ts";
 import { Prescription } from "../models/Prescription.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Patient } from "../models/Patient.ts";
+import { getOrganizationPatient, hasPatientRecordAccess } from "../services/PatientRecordAccessService.ts";
+import { FamilyRelationship } from "../models/FamilyRelationship.ts";
+import { AuditLog } from "../models/AuditLog.ts";
 import { createTenantRepository } from "../platform/TenantRepository.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { checkClinicAccess, checkOperationalRecordAccess, resolveTargetOrganizationId } from "../utilities/tenant.ts";
@@ -466,21 +469,22 @@ export async function getClinicalNoteHistoryController(req: FastifyRequest, repl
     if (!mongoose.Types.ObjectId.isValid(id)) return reply.code(400).send(errorResponse("Invalid patient ID"));
     const patient = (await Patient.findOne({
       $or: [{ _id: id }, { userId: id }],
-    }).lean()) as any;
+    }).setOptions({ bypassTenantFilter: true }).lean()) as any;
     if (!patient) return reply.code(404).send(errorResponse("Patient not found"));
     if (req.user?.role === "patient" && patient.userId?.toString() !== req.user.id) {
       return reply.code(404).send(errorResponse("Patient not found"));
     }
-    if (req.user?.role !== "patient" && req.user?.role !== "family_member" && req.user?.role !== "root") {
-      if (!orgId && patient.organizationId) {
-        orgId = patient.organizationId.toString();
-      }
-      if (patient.organizationId && orgId && patient.organizationId.toString() !== orgId) {
-        return reply.code(404).send(errorResponse("Patient not found"));
-      }
-      if (!orgId) {
-        return reply.code(403).send(errorResponse("Organization context required"));
-      }
+    const isPortal = req.user?.role === "patient" || req.user?.role === "family_member";
+    if (req.user?.role === "family_member" && patient.userId?.toString() !== req.user.id && !await FamilyRelationship.exists({ userId: req.user.id, patientId: patient._id, status: "active" })) return reply.code(404).send(errorResponse("Patient not found"));
+    if (!isPortal) {
+      orgId = orgId || patient.organizationId?.toString();
+      if (!orgId) return reply.code(403).send(errorResponse("Organization context required"));
+      if (!await getOrganizationPatient(patient._id.toString(), orgId)) return reply.code(404).send(errorResponse("Patient not found"));
+    }
+    const fullHistory = !isPortal && (req.query as any)?.scope === "all";
+    if (fullHistory) {
+      if (!await hasPatientRecordAccess(req.headers["x-patient-record-access"] as string | undefined, patient._id.toString(), req.user?.id, orgId || "", req.user?.sessionId)) return reply.code(403).send(errorResponse("Patient OTP approval is required to view full history"));
+      await AuditLog.create({ userId: req.user!.id, organizationId: orgId, action: "CROSS_ORG_PHI_READ", targetId: patient._id, targetModel: "Patient", category: "CLINICAL_READ", details: { method: "patient_otp", resource: "clinical_note_history" } });
     }
 
     // Step 5.3: Cursor pagination with deterministic compound sorting and hard maximum limits
@@ -489,11 +493,12 @@ export async function getClinicalNoteHistoryController(req: FastifyRequest, repl
     const cursorFilter = buildCursorFilter(decoded, { timeField: "createdAt", sortDirection: "desc" });
 
     const query: any = { patientId: patient._id, ...cursorFilter };
-    if (orgId && req.user?.role !== "root" && req.user?.role !== "patient" && req.user?.role !== "family_member") {
+    if (orgId && !isPortal && !fullHistory) {
       query.organizationId = orgId;
     }
 
     const rawNotes = await ClinicalNote.find(query)
+      .setOptions({ bypassTenantFilter: Boolean(fullHistory || isPortal) })
       .populate("doctorId", "name email")
       .populate("objective.observationIds")
       .populate("plan.prescriptionIds")

@@ -89,6 +89,9 @@ export interface TimelineQueryOptions {
   limit?: number;
   cursor?: string;
   isCrossOrgAllowed?: boolean;
+  includeAllRecords?: boolean;
+  recordAccessToken?: string;
+  sessionId?: string;
 }
 
 export interface TimelineProvider {

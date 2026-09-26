@@ -20,10 +20,10 @@ export class BillingProvider implements TimelineProvider {
     const invQuery: any = {
       patientId: query.patientId,
     };
-    if (query.organizationId) {
+    if (query.organizationId && !query.isCrossOrgAllowed) {
       invQuery.organizationId = query.organizationId;
     }
-    const invoices = await Invoice.find(invQuery).lean();
+    const invoices = await Invoice.find(invQuery).setOptions({ bypassTenantFilter: query.isCrossOrgAllowed === true }).lean();
 
     const events: TimelineEvent[] = [];
 
@@ -33,7 +33,7 @@ export class BillingProvider implements TimelineProvider {
         type: "billing",
         occurredAt: inv.paidAt || inv.createdAt,
         patientId: query.patientId,
-        organizationId: query.organizationId,
+        organizationId: inv.organizationId?.toString() || query.organizationId,
         title: `Invoice #${inv.invoiceNumber || inv._id.toString().slice(-6)}`,
         summary: `Amount: ₹${inv.totalAmount || 0} — Status: ${inv.status || "unpaid"}`,
         actor: {

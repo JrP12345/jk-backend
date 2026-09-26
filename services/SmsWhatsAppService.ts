@@ -445,7 +445,7 @@ function buildPlainMessageContent(options: SendMessageOptions): string {
   const v = options.variables;
   switch (options.templateId) {
     case "OTP_VERIFICATION":
-      return `Your ANANTA verification code is ${v.otpCode}. Valid for 5 minutes.`;
+      return v.purpose === "record_access" ? `Your ANANTA approval code is ${v.otpCode}. Share it with your clinician only if you agree to let them view your medical history from other organizations for 10 minutes. This code expires in 5 minutes.` : `Your ANANTA verification code is ${v.otpCode}. Valid for 5 minutes.`;
     case "BOOKING_CONFIRMATION":
       return `Appointment with Dr. ${v.doctorName} at ${v.clinicName} confirmed for ${v.appointmentTime}. Token #${v.tokenNumber}.`;
     case "APPOINTMENT_REMINDER":
