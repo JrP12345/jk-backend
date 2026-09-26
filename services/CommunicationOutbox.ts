@@ -7,6 +7,7 @@ import type { EmailOptions, SmtpConfig } from "../notifications/providers/emailP
 
 export interface WhatsAppDocumentMessage {
   to: string;
+  organizationId?: string;
   documentUrl: string;
   filename: string;
   caption?: string;
@@ -70,6 +71,7 @@ export async function enqueueCommunicationTemplate(options: SendMessageOptions) 
             channel: normalized.channel,
             templateId: normalized.templateId,
             appointmentId: normalized.appointmentId || null,
+            organizationId: normalized.organizationId || null,
           },
           sensitivePayloadCiphertext: encrypt(JSON.stringify(normalized)),
           status: "pending",
@@ -131,7 +133,7 @@ export async function enqueueWhatsAppDocument(options: WhatsAppDocumentMessage) 
     "whatsapp_document",
     idempotencyKey,
     { ...options, to: options.to.trim(), idempotencyKey },
-    { deliveryType: "document" },
+    { deliveryType: "document", organizationId: options.organizationId || null },
   );
 }
 
@@ -144,7 +146,7 @@ export async function enqueueWhatsAppFreeform(options: WhatsAppFreeformMessage) 
     "whatsapp_freeform",
     idempotencyKey,
     { ...options, to: options.to.trim(), idempotencyKey },
-    { deliveryType: "freeform" },
+    { deliveryType: "freeform", organizationId: options.organizationId || null },
   );
 }
 

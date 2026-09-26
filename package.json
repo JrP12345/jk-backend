@@ -20,6 +20,7 @@
     "migrate:tenant": "node --env-file=.env --experimental-strip-types scripts/migrateTenantScoping.ts",
     "migrate:active-consultation-lock": "node --env-file=.env --experimental-strip-types scripts/migrate-active-consultation-lock.ts",
     "migrate:outbox-indexes": "node --env-file=.env --experimental-strip-types scripts/migrate-outbox-indexes.ts",
+    "migrate:whatsapp": "node --env-file=.env --experimental-strip-types scripts/migrate-whatsapp-storage.ts",
     "migrate:domain-event-indexes": "node --env-file=.env --experimental-strip-types scripts/migrate-domain-event-indexes.ts",
     "worker:notifications": "node --env-file=.env --experimental-strip-types workers/notificationDeliveryWorker.ts",
     "worker:disruption-timeouts": "node --env-file=.env --experimental-strip-types workers/disruptionTimeoutWorker.ts",

@@ -3,6 +3,9 @@ import { Organization } from "../models/Organization.ts";
 import { SaaSInvoice } from "../models/SaaSInvoice.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { resolveAuthorizedOrganizationScope, isRootRequest } from "../utilities/tenant.ts";
+import crypto from "node:crypto";
+import { encrypt } from "../utilities/encryption.ts";
+import { getPlatformAccount, publicAccount, resolveWhatsAppAccount, secretProjection } from "../services/WhatsAppAccountService.ts";
 
 export const WHATSAPP_CREDIT_PACKS = {
   bronze: {
@@ -32,7 +35,7 @@ export const WHATSAPP_CREDIT_PACKS = {
   },
 } as const;
 
-async function resolveOrganizationIdOrReply(req: FastifyRequest, reply: FastifyReply): Promise<string | undefined> {
+export async function resolveOrganizationIdOrReply(req: FastifyRequest, reply: FastifyReply): Promise<string | undefined> {
   const scope = resolveAuthorizedOrganizationScope(req);
   if (!scope.allowed) {
     reply.code(scope.statusCode).send({ success: false, message: scope.message });
@@ -58,7 +61,7 @@ export async function getOrganizationWhatsAppConfig(req: FastifyRequest, reply: 
   const orgId = await resolveOrganizationIdOrReply(req, reply);
   if (!orgId) return;
 
-  const org = await Organization.findById(orgId);
+  const org = await Organization.findById(orgId).select(secretProjection);
   if (!org) {
     return reply.code(404).send({ success: false, message: "Organization not found" });
   }
@@ -72,7 +75,7 @@ export async function getOrganizationWhatsAppConfig(req: FastifyRequest, reply: 
     const monthlyQuota = config.monthlyQuota || 500;
     // Add monthly quota refresh and update reset month
     await Organization.updateOne(
-      { _id: org._id },
+      { _id: org._id, "whatsappConfig.quotaResetMonth": { $ne: currentMonthStr } },
       {
         $set: {
           "whatsappConfig.creditsUsedThisMonth": 0,
@@ -107,6 +110,7 @@ export async function getOrganizationWhatsAppConfig(req: FastifyRequest, reply: 
       hasDedicatedCredentials: !!(config.wabaId && config.phoneNumberId),
       wabaId: config.wabaId || null,
       phoneNumberId: config.phoneNumberId || null,
+      connection: publicAccount(config.mode === "dedicated" ? await resolveWhatsAppAccount(orgId) : await getPlatformAccount()),
       notifications: config.notifications || {
         sendBookingConfirmation: true,
         sendConsultationComplete: true,
@@ -130,6 +134,13 @@ export async function updateOrganizationWhatsAppConfig(req: FastifyRequest, repl
   if (!orgId) return;
 
   const updateFields: Record<string, any> = {};
+  const current = await Organization.findById(orgId).select(secretProjection);
+  if (!current) return reply.code(404).send({ success: false, message: "Organization not found" });
+  if (body.wabaId) {
+    const platform = await getPlatformAccount();
+    const clash = await Organization.exists({ _id: { $ne: orgId }, "whatsappConfig.wabaId": body.wabaId.trim() });
+    if (clash || platform.wabaId === body.wabaId.trim()) return reply.code(409).send({ success: false, message: "This WABA is already assigned to another sender" });
+  }
 
   if (body.mode && ["disabled", "shared", "dedicated"].includes(body.mode)) {
     updateFields["whatsappConfig.mode"] = body.mode;
@@ -145,9 +156,16 @@ export async function updateOrganizationWhatsAppConfig(req: FastifyRequest, repl
   }
 
   // Dedicated enterprise WABA credentials
-  if (body.wabaId !== undefined) updateFields["whatsappConfig.wabaId"] = body.wabaId;
-  if (body.phoneNumberId !== undefined) updateFields["whatsappConfig.phoneNumberId"] = body.phoneNumberId;
-  if (body.accessToken) updateFields["whatsappConfig.accessToken"] = body.accessToken;
+  if (body.wabaId?.trim()) updateFields["whatsappConfig.wabaId"] = body.wabaId.trim();
+  if (body.phoneNumberId?.trim()) updateFields["whatsappConfig.phoneNumberId"] = body.phoneNumberId.trim();
+  if (body.accessToken?.trim()) updateFields["whatsappConfig.accessToken"] = encrypt(body.accessToken.replace(/\s/g, ""));
+  if (body.appSecret?.trim()) updateFields["whatsappConfig.appSecret"] = encrypt(body.appSecret.trim());
+  if (body.accessToken?.trim() || body.appSecret?.trim() || (body.wabaId && body.wabaId !== current.whatsappConfig?.wabaId) || (body.phoneNumberId && body.phoneNumberId !== current.whatsappConfig?.phoneNumberId)) {
+    updateFields["whatsappConfig.connectionStatus"] = "pending";
+    updateFields["whatsappConfig.lastError"] = "";
+    updateFields["whatsappConfig.verifiedAt"] = null;
+  }
+  if (!current.whatsappConfig?.verifyToken) updateFields["whatsappConfig.verifyToken"] = encrypt(`ananta_${crypto.randomBytes(24).toString("base64url")}`);
 
   // Granular notification toggles
   if (body.notifications) {
@@ -176,6 +194,7 @@ export async function updateOrganizationWhatsAppConfig(req: FastifyRequest, repl
     { $set: updateFields },
     { new: true }
   );
+  await AuditLog.create({ userId: (req as any).user?.id, organizationId: orgId, action: "WHATSAPP_SETTINGS_UPDATE", targetId: orgId, targetModel: "Organization", details: { mode: updatedOrg?.whatsappConfig?.mode, credentialsChanged: !!(body.accessToken || body.appSecret) } });
 
   return reply.code(200).send({
     success: true,

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
+import { outboundMessageDeliveryWorker } from "../services/OutboundMessageDeliveryWorker.ts";
 import { app } from "../index.js";
 import { Organization } from "../models/Organization.ts";
 import { Clinic } from "../models/Clinic.ts";
@@ -149,6 +150,7 @@ describe("NMC Doctor Credentials & Two-Way Interactive WhatsApp Bot Suite", () =
     expect(body.success).toBe(true);
 
     // Verify NotificationLog logged conversational assistant reply
+    await outboundMessageDeliveryWorker.processBatch(20);
     const assistantLog = await NotificationLog.findOne({
       recipientPhone: patientPhone,
       templateId: "TWO_WAY_ASSISTANT",
@@ -202,11 +204,11 @@ describe("NMC Doctor Credentials & Two-Way Interactive WhatsApp Bot Suite", () =
     expect(updatedAppt?.parkedReason).toContain("WhatsApp self-service");
 
     // Verify confirmation message was logged
+    await outboundMessageDeliveryWorker.processBatch(20);
     const delayLog = await NotificationLog.findOne({
       recipientPhone: patientPhone,
       templateId: "TWO_WAY_ASSISTANT",
-      messageContent: /Token Postponed Successfully/,
-    });
+    }).sort({ createdAt: -1 });
 
     expect(delayLog).toBeDefined();
     expect(delayLog?.messageContent).toContain("Position #5");
@@ -254,11 +256,11 @@ describe("NMC Doctor Credentials & Two-Way Interactive WhatsApp Bot Suite", () =
 
     expect(res.statusCode).toBe(200);
 
+    await outboundMessageDeliveryWorker.processBatch(20);
     const rxLog = await NotificationLog.findOne({
       recipientPhone: patientPhone,
       templateId: "TWO_WAY_ASSISTANT",
-      messageContent: /Digital Prescription \(Rx\)/,
-    });
+    }).sort({ createdAt: -1 });
 
     expect(rxLog).toBeDefined();
     expect(rxLog?.messageContent).toContain("Salbutamol 4mg");

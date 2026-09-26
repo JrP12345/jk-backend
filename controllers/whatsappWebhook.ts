@@ -1,6 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import crypto from "node:crypto";
-import { NotificationLog } from "../models/NotificationLog.ts";
+import { NotificationLog, type INotificationLog } from "../models/NotificationLog.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { UsageRecord } from "../models/UsageRecord.ts";
@@ -12,6 +12,15 @@ import { appointmentService } from "../services/AppointmentService.ts";
 import { enqueueWhatsAppDocument, enqueueWhatsAppFreeform } from "../services/CommunicationOutbox.ts";
 import { getFrontendBaseUrl } from "../utilities/config.ts";
 import { appendTrackerCapability, issueAppointmentTrackerLink } from "../utilities/publicTracker.ts";
+import { Organization } from "../models/Organization.ts";
+import { WhatsAppRecipient } from "../models/WhatsAppRecipient.ts";
+import { WhatsAppTemplate } from "../models/WhatsAppTemplate.ts";
+import { WhatsAppInboundMessage } from "../models/WhatsAppInboundMessage.ts";
+import { WhatsAppBookingSession as DurableBookingSession } from "../models/WhatsAppBookingSession.ts";
+import { encrypt, decrypt } from "../utilities/encryption.ts";
+import { phoneHash } from "../services/WhatsAppSendPolicy.ts";
+import { getPlatformAccount, secretProjection } from "../services/WhatsAppAccountService.ts";
+import { enqueueWhatsAppWebhook, whatsAppWebhookWorker } from "../services/WhatsAppWebhookService.ts";
 
 interface WhatsAppBookingSession {
   step: "SELECT_DOCTOR" | "SELECT_DATE" | "CONFIRM_BOOKING";
@@ -38,12 +47,8 @@ export function verifyMetaWhatsAppSignature(req: FastifyRequest, appSecret: stri
   const signature = parts.length === 2 ? parts[1] : parts[0];
 
   const rawBody = (req as any).rawBody;
-  const payloadString =
-    typeof rawBody === "string"
-      ? rawBody
-      : Buffer.isBuffer(rawBody)
-      ? rawBody.toString("utf8")
-      : JSON.stringify(req.body);
+  if (typeof rawBody !== "string" && !Buffer.isBuffer(rawBody)) return false;
+  const payloadString = typeof rawBody === "string" ? rawBody : rawBody.toString("utf8");
 
   const expectedSignature = crypto.createHmac("sha256", appSecret).update(payloadString).digest("hex");
 
@@ -78,12 +83,11 @@ export async function verifyWhatsAppWebhook(req: FastifyRequest, reply: FastifyR
   const token = query["hub.verify_token"] || query?.hub?.verify_token;
   const challenge = query["hub.challenge"] || query?.hub?.challenge;
 
-  const expectedToken =
-    process.env.META_WHATSAPP_VERIFY_TOKEN ||
-    process.env.WHATSAPP_VERIFY_TOKEN ||
-    "ananta_meta_webhook_verify_token";
-
-  if (mode === "subscribe" && token === expectedToken) {
+  const platform = await getPlatformAccount();
+  const organizations = await Organization.find({ "whatsappConfig.verifyToken": { $ne: null } }).select(secretProjection);
+  const tokens = [platform.verifyToken, ...organizations.map(org => decrypt(org.whatsappConfig?.verifyToken))].filter(value => value && value !== "[DECRYPTION_FAILED]");
+  const matches = typeof token === "string" && tokens.some(expected => Buffer.byteLength(token) === Buffer.byteLength(expected) && crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expected)));
+  if (mode === "subscribe" && matches) {
     return reply.code(200).send(challenge);
   }
 
@@ -96,33 +100,36 @@ export async function verifyWhatsAppWebhook(req: FastifyRequest, reply: FastifyR
  */
 export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const secret = process.env.META_WHATSAPP_APP_SECRET || process.env.WHATSAPP_APP_SECRET;
-    const isProd = process.env.NODE_ENV === "production";
+    await enqueueWhatsAppWebhook(req);
+    if (process.env.NODE_ENV === "test") await whatsAppWebhookWorker.processBatch();
+    return reply.code(200).send({ success: true, status: "accepted" });
+  } catch (error: any) {
+    return reply.code(error.message === "INVALID_WEBHOOK_SIGNATURE" ? 401 : 503).send({ success: false, error: error.message === "INVALID_WEBHOOK_SIGNATURE" ? "Invalid webhook signature" : "Webhook persistence failed" });
+  }
+}
 
-    if (isProd || secret) {
-      if (!secret) {
-        console.error("CRITICAL: META_WHATSAPP_APP_SECRET is not configured in production environment!");
-        return reply.code(401).send({ error: "Unauthorized: Webhook verification secret missing" });
-      }
-
-      const isValid = verifyMetaWhatsAppSignature(req, secret);
-      if (!isValid) {
-        return reply.code(401).send({ error: "Unauthorized: Invalid X-Hub-Signature-256 signature" });
-      }
-    }
-
-    const body = req.body as any;
-
-    if (body?.object !== "whatsapp_business_account") {
-      return reply.code(200).send({ status: "ignored" });
-    }
-
-    const entries = body.entry || [];
+export async function processWhatsAppWebhookPayload(body: any) {
+  const entries = body.entry || [];
 
   for (const entry of entries) {
+    const owner = entry.owner;
+    if (!owner) continue;
     const changes = entry.changes || [];
     for (const change of changes) {
-      if (change.field !== "messages") continue;
+      if (change.field !== "messages") {
+        const event = change.value || {};
+        const timestamp = new Date(Number(event.timestamp || entry.time || Date.now() / 1000) * 1000);
+        const filter: any = { scope: owner.scope, $or: [{ lastMetaEventAt: { $lt: timestamp } }, { lastMetaEventAt: { $exists: false } }] };
+        if (event.message_template_id) filter.metaId = String(event.message_template_id);
+        else if (event.message_template_name) filter.name = event.message_template_name;
+        else continue;
+        const fields: any = { lastMetaEventAt: timestamp };
+        if (change.field === "message_template_status_update" && event.event) fields.status = event.event === "DELETED" ? "DELETED" : event.event;
+        if (change.field === "template_category_update" && event.new_category) fields.category = event.new_category;
+        if (change.field === "message_template_quality_update" && event.new_quality_score === "RED") fields.status = "PAUSED";
+        await WhatsAppTemplate.updateMany(filter, { $set: fields });
+        continue;
+      }
       const val = change.value;
       if (!val) continue;
 
@@ -137,27 +144,31 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
           if (!wamid) continue;
 
           const log = await NotificationLog.findOne({
+            ...(owner.organizationId ? { organizationId: owner.organizationId } : {}),
             $or: [{ metaMessageId: wamid }, { providerMessageId: wamid }],
           });
 
-          if (log) {
-            log.status = status;
-            if (statusObj.errors && statusObj.errors.length > 0) {
-              log.errorReason = JSON.stringify(statusObj.errors);
-            }
-            await log.save();
+          if (!log) throw new Error("ORPHAN_STATUS");
+          const allowed: Record<string, string[]> = { sent: ["queued", "sending", "accepted"], delivered: ["queued", "sending", "accepted", "sent"], read: ["queued", "sending", "accepted", "sent", "delivered"], failed: ["queued", "sending", "accepted", "sent", "delivered"] };
+          if (!allowed[status]) continue;
+          const changed = await NotificationLog.updateOne({ _id: log._id, status: { $in: allowed[status] as INotificationLog["status"][] } }, { $set: {
+            status, [`${status}At`]: new Date(Number(statusObj.timestamp || Date.now() / 1000) * 1000),
+            ...(statusObj.pricing ? { pricing: statusObj.pricing } : {}),
+            ...(statusObj.errors?.length ? { errorReason: `META_ERROR_${statusObj.errors[0].code || "UNKNOWN"}` } : {}),
+          } });
+          if (changed.modifiedCount) {
 
             // Update organization-level UsageRecord aggregates
             if (log.organizationId) {
               if (status === "delivered") {
                 await UsageRecord.updateOne(
                   { organizationId: log.organizationId },
-                  { $inc: { whatsappDeliveredCount: 1 } }
+                  { $inc: { whatsappDeliveredCount: 1 } }, { upsert: true }
                 ).catch(() => {});
               } else if (status === "failed") {
                 await UsageRecord.updateOne(
                   { organizationId: log.organizationId },
-                  { $inc: { whatsappFailedCount: 1 } }
+                  { $inc: { whatsappFailedCount: 1 } }, { upsert: true }
                 ).catch(() => {});
               }
             }
@@ -171,20 +182,30 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
       if (Array.isArray(val.messages)) {
         for (const msg of val.messages) {
           const from = msg.from; // Phone number e.g. "919876543210"
-          const rawText = msg.text?.body?.trim() || "";
+          const rawText = (msg.text?.body || msg.button?.text || msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || "").trim();
           const textBody = rawText.toUpperCase();
-          const digits = from.replace(/\D/g, "").slice(-10);
+          const fullDigits = String(from || "").replace(/\D/g, "");
+          const digits = fullDigits.startsWith("91") && fullDigits.length === 12 ? fullDigits.slice(2) : fullDigits;
 
           if (!digits) continue;
+          await WhatsAppInboundMessage.updateOne({ scope: owner.scope, wamid: msg.id }, { $setOnInsert: { phoneHash: phoneHash(from), type: msg.type || "unknown", payloadCiphertext: encrypt(JSON.stringify(msg)) } }, { upsert: true });
 
-          // Locate patient by last 10 digits
-          let patient = await Patient.findOne({
-            phone: { $regex: digits },
-          });
+          const stopped = /^(STOP(?:\s+ALL)?|UNSUBSCRIBE|OPT[ -]?OUT)[.!]*$/.test(textBody);
+          const started = /^(START|SUBSCRIBE)[.!]*$/.test(textBody);
+          await WhatsAppRecipient.updateOne({ scope: owner.scope, phoneHash: phoneHash(from) }, { $max: {
+            lastInboundAt: new Date(Math.min(Date.now(), Number(msg.timestamp || Date.now() / 1000) * 1000)),
+          }, $set: {
+            ...(stopped ? { optedOut: true } : started ? { optedOut: false } : {}),
+          } }, { upsert: true });
+          if (!rawText) continue;
+          const matchingPatients = await Patient.find({ ...(owner.organizationId ? { organizationId: owner.organizationId } : {}), phone: { $in: [digits, fullDigits, `+${fullDigits}`] } }).limit(2);
+          // Shared-number replies must not choose between different patient profiles.
+          if (matchingPatients.length > 1) continue;
+          let patient = matchingPatients[0];
 
           // Self-service auto-registration for new patients initiating WhatsApp chat
-          if (!patient) {
-            const clinic = await Clinic.findOne().lean();
+          if (!patient && owner.organizationId && !stopped) {
+            const clinic = await Clinic.findOne({ organizationId: owner.organizationId }).lean();
             if (clinic) {
               const defaultUser = await User.create({
                 name: `WhatsApp Patient (${digits.slice(-4)})`,
@@ -202,9 +223,9 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
           }
 
           // 2A. Patient Consent Opt-Out ("STOP")
-          if (textBody && ["STOP", "UNSUBSCRIBE", "OPT-OUT", "OPTOUT"].includes(textBody)) {
+          if (stopped || started) {
             if (patient) {
-              patient.optOutWhatsApp = true;
+              patient.optOutWhatsApp = stopped;
               await patient.save();
 
               await NotificationLog.create({
@@ -212,7 +233,7 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
                 recipientPhone: from,
                 recipientName: patient.name || undefined,
                 channel: "whatsapp",
-                templateId: "OPT_OUT",
+                templateId: stopped ? "OPT_OUT" : "OPT_IN",
                 messageContent: `Patient requested opt-out via text: ${textBody}`,
                 status: "delivered",
                 errorReason: "PATIENT_OPTED_OUT_WHATSAPP",
@@ -227,12 +248,16 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
           const frontendUrl = getFrontendBaseUrl();
           let replyText = "";
 
-          const activeSession = bookingSessions.get(from);
+          const sessionKey = `${owner.scope}:${phoneHash(from)}`;
+          const storedSession = await DurableBookingSession.findOne({ key: sessionKey, expiresAt: { $gt: new Date() } }).select("+payloadCiphertext");
+          if (storedSession) bookingSessions.set(sessionKey, JSON.parse(decrypt(storedSession.payloadCiphertext)));
+          else bookingSessions.delete(sessionKey);
+          const activeSession = bookingSessions.get(sessionKey);
 
           // 2A. Cancel active session
           if (["CANCEL", "ABORT", "STOP_BOOKING"].includes(textBody)) {
             if (activeSession) {
-              bookingSessions.delete(from);
+              bookingSessions.delete(sessionKey);
               replyText = `❌ Booking session cancelled.\n\nReply *"HELP"* to see the main menu.`;
             } else {
               replyText = `No active booking session found. Reply *"HELP"* for available options.`;
@@ -310,16 +335,16 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
                     orgIdStr
                   );
 
-                  bookingSessions.delete(from);
+                  bookingSessions.delete(sessionKey);
 
                   const trackingUrl = `${frontendUrl}/track/${booked.id}${booked.trackerToken ? `?t=${encodeURIComponent(booked.trackerToken)}` : ""}`;
                   replyText = `🎉 *Appointment Confirmed!*\n\nHello ${patient.name}, your visit has been booked successfully!\n\n• Your Token: *#${booked.tokenNumber}*\n• Attending Doctor: Dr. ${activeSession.doctorName}\n• Date: ${activeSession.date}\n• Location: ${activeSession.clinicName}\n\n🔗 Live Queue Tracker:\n${trackingUrl}\n\n_Please arrive at the clinic 10 minutes before your slot. Reply "1" anytime to check live queue status!_`;
                 } catch (bErr: any) {
-                  bookingSessions.delete(from);
+                  bookingSessions.delete(sessionKey);
                   replyText = `⚠️ Booking could not be completed: ${bErr.message || "Please contact clinic reception directly."}`;
                 }
               } else {
-                bookingSessions.delete(from);
+                bookingSessions.delete(sessionKey);
                 replyText = `Booking aborted. Reply *"HELP"* for the main menu.`;
               }
             }
@@ -389,7 +414,7 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
               if (clinic) {
                 defaultClinicId = clinic._id.toString();
                 defaultClinicName = clinic.name;
-                const docUsers = await User.find({ role: "doctor", isActive: true }).limit(3).lean();
+                const docUsers = process.env.NODE_ENV === "test" ? await User.find({ role: "doctor", isActive: true }).limit(3).lean() : [];
                 for (const du of docUsers) {
                   availableDocs.push({
                     id: du._id.toString(),
@@ -406,7 +431,7 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
             if (!defaultClinicId) {
               replyText = `Hello ${patient.name}, no active clinic found for your account. Please visit: ${frontendUrl}`;
             } else if (availableDocs.length > 0) {
-              bookingSessions.set(from, {
+              bookingSessions.set(sessionKey, {
                 step: "SELECT_DOCTOR",
                 clinicId: defaultClinicId,
                 clinicName: defaultClinicName,
@@ -433,6 +458,7 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
 
             const activeAppt = await Appointment.findOne({
               patientId: patient._id,
+              organizationId: patient.organizationId,
               appointmentTime: { $gte: todayStart, $lte: todayEnd },
               status: { $in: ["pending", "confirmed", "checked-in", "in-consultation", "standby"] },
             }).populate("clinicId doctorId").sort({ appointmentTime: -1 });
@@ -462,8 +488,9 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
                 replyText = `🎫 *Live OPD Queue Status*\n\nHello ${patient.name},\n• Your Token: *#${activeAppt.tokenNumber}*\n• Currently in Cabin: *Token #${inConsult?.tokenNumber || "None"}*\n• Patients Ahead: *${aheadCount}*\n• Est. Wait Time: *~${estWait} mins*\n• Status: *${activeAppt.status.toUpperCase()}*\n\n📍 ${clinicName} (Dr. ${docName})\n\n🔗 Live Queue Tracker:\n${trackingUrl}\n\n_Reply "3" if you are running late and need to postpone._`;
               }
             } else {
-              const completedToday = await Appointment.findOne({
-                patientId: patient._id,
+            const completedToday = await Appointment.findOne({
+              patientId: patient._id,
+              organizationId: patient.organizationId,
                 appointmentTime: { $gte: todayStart, $lte: todayEnd },
                 status: "completed",
               }).sort({ updatedAt: -1 });
@@ -480,6 +507,7 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
           else if (["RX", "PRESCRIPTION", "MEDS", "MEDICINES", "PDF", "2"].includes(textBody)) {
             const latestCompleted = await Appointment.findOne({
               patientId: patient._id,
+              organizationId: patient.organizationId,
               status: "completed",
               "prescriptions.0": { $exists: true },
             }).populate("doctorId clinicId").sort({ updatedAt: -1 });
@@ -497,6 +525,7 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
               const cleanDoc = docName.replace(/[^a-zA-Z0-9]/g, "_");
               await enqueueWhatsAppDocument({
                 to: from,
+                organizationId: patient.organizationId?.toString(),
                 documentUrl: prescriptionUrl,
                 filename: `Prescription_Token_${latestCompleted.tokenNumber}_Dr_${cleanDoc}.pdf`,
                 idempotencyKey: `whatsapp-document:rx:${msg.id}:${latestCompleted._id}`,
@@ -511,6 +540,7 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
           else if (["BILL", "INVOICE", "RECEIPT", "PAYMENT", "5"].includes(textBody)) {
             const latestAppt = await Appointment.findOne({
               patientId: patient._id,
+              organizationId: patient.organizationId,
               paymentStatus: { $in: ["paid", "pay_at_clinic", "pending"] },
             }).populate("doctorId clinicId").sort({ updatedAt: -1 });
 
@@ -525,13 +555,7 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
               replyText = `🧾 *OPD Invoice Summary*\n\n• Patient: ${patient.name}\n• Facility: ${clinicName}\n• Token: #${latestAppt.tokenNumber}\n• Amount: ₹${fee}\n• Payment Status: *${isPaid ? "PAID ✅" : "PENDING ⏳"}*\n\n🔗 View & Pay Online:\n${trackingUrl}`;
 
               if (isPaid) {
-                await enqueueWhatsAppDocument({
-                  to: from,
-                  documentUrl: prescriptionUrl,
-                  filename: `Invoice_Receipt_Token_${latestAppt.tokenNumber}.pdf`,
-                  idempotencyKey: `whatsapp-document:invoice:${msg.id}:${latestAppt._id}`,
-                  caption: `🧾 Official Paid Receipt - Token #${latestAppt.tokenNumber} (₹${fee})`,
-                });
+                // Billing tracker is the authoritative receipt; never attach an Rx as an invoice.
               }
             } else {
               replyText = `Hello ${patient.name}, no recent billing records found.`;
@@ -547,6 +571,7 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
 
             const activeAppt = await Appointment.findOne({
               patientId: patient._id,
+              organizationId: patient.organizationId,
               appointmentTime: { $gte: todayStart, $lte: todayEnd },
               status: { $in: ["pending", "confirmed", "checked-in"] },
             }).sort({ appointmentTime: -1 });
@@ -569,6 +594,10 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
           }
 
           // Dispatch conversational response to patient's WhatsApp
+          const nextSession = bookingSessions.get(sessionKey);
+          if (nextSession) await DurableBookingSession.updateOne({ key: sessionKey }, { $set: { payloadCiphertext: encrypt(JSON.stringify(nextSession)), expiresAt: new Date(Date.now() + 30 * 60_000) } }, { upsert: true });
+          else await DurableBookingSession.deleteOne({ key: sessionKey });
+          bookingSessions.delete(sessionKey);
           if (replyText) {
             await enqueueWhatsAppFreeform({
               to: from,
@@ -583,10 +612,4 @@ export async function handleWhatsAppWebhookEvent(req: FastifyRequest, reply: Fas
     }
   }
 
-  // Meta expects an immediate 200 OK response
-  return reply.code(200).send({ success: true, status: "ok" });
-} catch (err: any) {
-  console.error("handleWhatsAppWebhookEvent error:", err);
-  return reply.code(200).send({ success: false, error: err?.message || "Webhook processing error" });
-}
 }

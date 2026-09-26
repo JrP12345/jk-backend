@@ -1,11 +1,14 @@
 import { NotificationLog } from "../models/NotificationLog.ts";
+import crypto from "node:crypto";
 import { Organization } from "../models/Organization.ts";
-import { Patient } from "../models/Patient.ts";
 import { UsageRecord } from "../models/UsageRecord.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { issueAppointmentTrackerLink } from "../utilities/publicTracker.ts";
 import { whatsAppCloudApiService } from "./WhatsAppCloudApiService.ts";
 import { enqueueCommunicationTemplate } from "./CommunicationOutbox.ts";
+import { resolveWhatsAppAccount, recordWhatsAppCredentialError } from "./WhatsAppAccountService.ts";
+import { assertWhatsAppConsent, assertApprovedTemplate } from "./WhatsAppSendPolicy.ts";
+import { claimWhatsAppIntent } from "./WhatsAppLedger.ts";
 
 export type SupportedTemplateId =
   | "OTP_VERIFICATION"
@@ -62,191 +65,65 @@ export async function dispatchSmsWhatsAppNotification(options: SendMessageOption
   // 1. WhatsApp Channel Processing (Meta Cloud API & Credit System)
   // ───────────────────────────────────────────────────────────────────────────
   if (channel === "whatsapp") {
-    const idempotencyKey =
-      options.idempotencyKey ||
-      (appointmentId ? `whatsapp_${appointmentId}_${templateId}` : undefined);
-
-    // Idempotency Guard: Prevent duplicate sends and duplicate credit deductions
-    if (idempotencyKey) {
-      const existing = await NotificationLog.findOne({
-        idempotencyKey,
-        status: { $in: ["queued", "sent", "delivered", "read"] },
-      });
-      if (existing) {
-        const obj = (existing as any).toObject ? (existing as any).toObject() : existing;
-        return { ...obj, isDuplicate: true, creditsDeducted: 0 };
-      }
-    }
-
-    // Patient Privacy & Consent Guard: Verify patient has not opted out
-    const cleanPhone = whatsAppCloudApiService.formatPhoneNumber(phone);
-    const patient = await Patient.findOne({
-      phone: { $regex: cleanPhone.slice(-10) },
-      optOutWhatsApp: true,
-    });
-    if (patient) {
-      return await NotificationLog.create({
-        organizationId: options.organizationId,
-        recipientPhone: phone,
-        recipientName: options.patientName || options.variables.patientName,
-        channel: "whatsapp",
-        templateId,
-        messageContent: `[SUPPRESSED] Patient opted out of WhatsApp communications`,
-        status: "failed",
-        errorReason: "PATIENT_OPTED_OUT_WHATSAPP",
-        idempotencyKey,
-      });
-    }
-
-    // Organization Configuration & Credit Verification
-    let org: any = null;
-    let didDeductCredit = false;
-
-    if (options.organizationId) {
-      org = await Organization.findById(options.organizationId).select("+whatsappConfig.accessToken");
-    }
-
-    if (org?.whatsappConfig) {
-      // Check if WhatsApp is explicitly disabled for this clinic
-      if (org.whatsappConfig.mode === "disabled") {
-        return await NotificationLog.create({
-          organizationId: options.organizationId,
-          recipientPhone: phone,
-          recipientName: options.patientName || options.variables.patientName,
-          channel: "whatsapp",
-          templateId,
-          messageContent: `[SUPPRESSED] WhatsApp notifications are disabled for organization`,
-          status: "failed",
-          errorReason: "WHATSAPP_DISABLED_FOR_ORGANIZATION",
-          idempotencyKey,
-        });
-      }
-
-      // Check granular notification toggles
-      const notifs = org.whatsappConfig.notifications || {};
-      if (templateId === "BOOKING_CONFIRMATION" && notifs.sendBookingConfirmation === false) {
-        return null;
-      }
-      if (templateId === "CONSULTATION_COMPLETED" && notifs.sendConsultationComplete === false) {
-        return null;
-      }
-      if (templateId === "APPOINTMENT_CANCELLED" && notifs.sendAppointmentCancellation === false) {
-        return null;
-      }
-      if (templateId === "QUEUE_UPDATE" && notifs.sendTurnApproaching === false) {
-        return null;
-      }
-      if (templateId === "QUEUE_DELAY_ALERT" && notifs.sendQueueDelayAlert === false) {
-        return null;
-      }
-      if (
-        (templateId === "DOCTOR_DISRUPTION" || templateId === "DISRUPTION_TRANSFER" || templateId === "DISRUPTION_REFUND_CONFIRMATION") &&
-        notifs.sendDisruptionAlert === false
-      ) {
-        return null;
-      }
-
-      // Shared gateway: perform atomic credit deduction
-      if (org.whatsappConfig.mode === "shared") {
-        const updatedOrg = await Organization.findOneAndUpdate(
-          {
-            _id: org._id,
-            "whatsappConfig.creditsBalance": { $gte: 1 },
-          },
-          {
-            $inc: {
-              "whatsappConfig.creditsBalance": -1,
-              "whatsappConfig.creditsUsedThisMonth": 1,
-            },
-          },
-          { new: true }
-        );
-
-        if (!updatedOrg) {
-          // Credits exhausted: do NOT crash booking/queue/consultation.
-          // Fall back gracefully by recording an exhausted log.
-          console.warn(`[WhatsApp Notice] Organization ${org._id} has 0 WhatsApp credits. Notification skipped.`);
-          return await NotificationLog.create({
-            organizationId: options.organizationId,
-            recipientPhone: phone,
-            recipientName: options.patientName || options.variables.patientName,
-            channel: "whatsapp",
-            templateId,
-            messageContent: `[INSUFFICIENT_CREDITS] Balance exhausted. Fallback to web/email active.`,
-            status: "failed",
-            errorReason: "INSUFFICIENT_CREDITS",
-            idempotencyKey,
-          });
-        }
-
-        didDeductCredit = true;
-      }
-    }
-
-    // Format Meta approved template parameters
+    const key = options.idempotencyKey || (appointmentId ? `whatsapp_${appointmentId}_${templateId}` : `immediate:${crypto.randomUUID()}`);
+    const existing = await NotificationLog.findOne({ idempotencyKey: key });
+    if (existing && ["accepted", "sent", "delivered", "read"].includes(existing.status)) return { ...existing.toObject(), isDuplicate: true, creditsDeducted: 0 };
+    if (existing?.status === "sending" || existing?.errorReason === "AMBIGUOUS_NETWORK") throw new Error("AMBIGUOUS_NETWORK");
+    const fields = { organizationId: options.organizationId, recipientPhone: phone, recipientName: options.patientName,
+      channel: "whatsapp", templateId, messageContent: "[WhatsApp notification]" };
+    const suppress = (reason: string) => NotificationLog.findOneAndUpdate({ idempotencyKey: key },
+      { $set: { ...fields, status: "failed", errorReason: reason } }, { upsert: true, returnDocument: "after" });
+    const org = options.organizationId ? await Organization.findById(options.organizationId) : null;
+    if (org?.whatsappConfig?.mode === "disabled") return suppress("WHATSAPP_DISABLED_FOR_ORGANIZATION");
+    const toggles: Partial<Record<SupportedTemplateId, string>> = {
+      BOOKING_CONFIRMATION: "sendBookingConfirmation", CONSULTATION_COMPLETED: "sendConsultationComplete",
+      APPOINTMENT_CANCELLED: "sendAppointmentCancellation", QUEUE_UPDATE: "sendTurnApproaching", QUEUE_DELAY_ALERT: "sendQueueDelayAlert",
+      DOCTOR_DISRUPTION: "sendDisruptionAlert", DISRUPTION_TRANSFER: "sendDisruptionAlert", DISRUPTION_REFUND_CONFIRMATION: "sendDisruptionAlert",
+    };
+    if (toggles[templateId] && (org?.whatsappConfig?.notifications as any)?.[toggles[templateId]!] === false) return null;
+    let account: any;
+    let windowOpen: boolean;
     const { templateName, parameters, messageContent } = buildMetaTemplateParams(options);
-
-    // Meta API credentials (dedicated enterprise WABA vs shared platform)
-    const customCreds =
-      org?.whatsappConfig?.mode === "dedicated"
-        ? {
-            phoneNumberId: org.whatsappConfig.phoneNumberId,
-            accessToken: org.whatsappConfig.accessToken,
-          }
-        : undefined;
-
-    const metaResponse = await whatsAppCloudApiService.sendTemplateMessage({
-      to: phone,
-      templateName,
-      parameters,
-      credentials: customCreds,
-    });
-
-    // If dispatch failed and we deducted a credit, refund it atomically
-    if (!metaResponse.success && didDeductCredit && org?._id) {
-      await Organization.updateOne(
-        { _id: org._id },
-        {
-          $inc: {
-            "whatsappConfig.creditsBalance": 1,
-            "whatsappConfig.creditsUsedThisMonth": -1,
-          },
-        }
-      );
+    const language = process.env.META_WHATSAPP_LANG || "en";
+    try {
+      account = await resolveWhatsAppAccount(options.organizationId);
+      windowOpen = await assertWhatsAppConsent(account, phone);
+      if (!windowOpen || templateId === "OTP_VERIFICATION") await assertApprovedTemplate(account, templateName, language, parameters.length);
+    } catch (error: any) { return suppress(error.message); }
+    const claim = await claimWhatsAppIntent(key, fields);
+    if (!claim.claimed) return { ...claim.log!.toObject(), isDuplicate: true, creditsDeducted: 0 };
+    const intent = claim.log!;
+    let charged = false;
+    if (org?.whatsappConfig?.mode === "shared") {
+      const reserved = await Organization.updateOne({ _id: org._id, "whatsappConfig.creditsBalance": { $gte: 1 } },
+        { $inc: { "whatsappConfig.creditsBalance": -1, "whatsappConfig.creditsUsedThisMonth": 1 } });
+      if (!reserved.modifiedCount) return suppress("INSUFFICIENT_CREDITS");
+      charged = true;
     }
-
-    // Update organization UsageRecord counters
-    if (options.organizationId) {
-      const updateField = metaResponse.success ? "whatsappSentCount" : "whatsappFailedCount";
-      await UsageRecord.findOneAndUpdate(
-        { organizationId: options.organizationId },
-        { $inc: { [updateField]: 1 } },
-        { upsert: true }
-      ).catch(() => {});
-    }
-
-    const log = await NotificationLog.create({
-      organizationId: options.organizationId,
-      recipientPhone: phone,
-      recipientName: options.patientName || options.variables.patientName,
-      channel: "whatsapp",
-      templateId,
-      messageContent,
-      status: metaResponse.status,
-      providerMessageId: metaResponse.providerMessageId,
-      metaMessageId: metaResponse.providerMessageId,
-      idempotencyKey,
-      creditsDeducted: metaResponse.success && didDeductCredit ? 1 : 0,
-      rawResponse: metaResponse.rawResponse,
-      errorReason: metaResponse.errorReason,
+    const sendTemplate = () => whatsAppCloudApiService.sendTemplateMessage({
+      to: phone, templateName, parameters, languageCode: language, credentials: account,
+      ...(templateId === "OTP_VERIFICATION" ? { buttonUrlParam: options.variables.otpCode } : {}),
     });
-
+    let response = windowOpen && templateId !== "OTP_VERIFICATION"
+      ? await whatsAppCloudApiService.sendFreeformTextMessage({ to: phone, text: messageContent, credentials: account })
+      : await sendTemplate();
+    if (!response.success && [131047, 131051].includes(response.errorCode || 0)) {
+      try { await assertApprovedTemplate(account, templateName, language, parameters.length); response = await sendTemplate(); }
+      catch { response = { success: false, status: "failed", errorReason: "TEMPLATES_NOT_READY" }; }
+    }
+    await recordWhatsAppCredentialError(account, response.errorCode);
+    const log = await NotificationLog.findByIdAndUpdate(intent._id, { $set: {
+      status: response.status, providerMessageId: response.providerMessageId, metaMessageId: response.providerMessageId,
+      errorReason: response.errorReason, creditsDeducted: charged && (response.success || response.errorReason === "AMBIGUOUS_NETWORK") ? 1 : 0,
+    } }, { returnDocument: "after" });
+    if (!response.success && response.errorReason !== "AMBIGUOUS_NETWORK" && charged) {
+      await Organization.updateOne({ _id: org!._id }, { $inc: { "whatsappConfig.creditsBalance": 1, "whatsappConfig.creditsUsedThisMonth": -1 } });
+    }
+    if (options.organizationId) await UsageRecord.findOneAndUpdate({ organizationId: options.organizationId },
+      { $inc: { [response.success ? "whatsappSentCount" : "whatsappFailedCount"]: 1 } }, { upsert: true });
     return log;
   }
 
-  // ───────────────────────────────────────────────────────────────────────────
-  // 2. SMS Channel Processing (MSG91 & Console Fallback)
-  // ───────────────────────────────────────────────────────────────────────────
   const messageContent = buildPlainMessageContent(options);
   const smsProvider = process.env.SMS_PROVIDER || "console";
   const msg91AuthKey = process.env.MSG91_AUTH_KEY || process.env.SMS_PROVIDER_API_KEY;
@@ -319,11 +196,19 @@ async function issueTrackerUrlForAppointment(appointmentId: string): Promise<str
 /**
  * Maps templateId and variables to Meta WhatsApp template format
  */
-function buildMetaTemplateParams(options: SendMessageOptions) {
+export function buildMetaTemplateParams(options: SendMessageOptions) {
   const v = options.variables;
   const patientName = options.patientName || v.patientName || "Patient";
 
   switch (options.templateId) {
+    case "OTP_VERIFICATION":
+      return { templateName: process.env.META_WHATSAPP_OTP_TEMPLATE || "otp_verification", parameters: [v.otpCode || ""], messageContent: "Your verification code is " + (v.otpCode || "") };
+    case "LAB_RESULTS_READY":
+      return { templateName: process.env.META_WHATSAPP_LAB_TEMPLATE || "lab_results_ready", parameters: [patientName, v.testName || "Lab test", v.trackingUrl || ""], messageContent: `Your ${v.testName || "lab"} results are ready. ${v.trackingUrl || ""}` };
+    case "BILLING_RECEIPT":
+      return { templateName: process.env.META_WHATSAPP_RECEIPT_TEMPLATE || "billing_receipt", parameters: [patientName, v.invoiceNumber || "", v.amount || "0", v.trackingUrl || ""], messageContent: `Payment received for invoice ${v.invoiceNumber}. Amount: ${v.amount}. ${v.trackingUrl || ""}` };
+    case "QUEUE_DELAY_ALERT":
+      return { templateName: process.env.META_WHATSAPP_DELAY_TEMPLATE || "queue_delay_alert", parameters: [patientName, v.doctorName || "Doctor", v.delayMinutes || "15", v.trackingUrl || v.trackerUrl || ""], messageContent: `Your visit with Dr. ${v.doctorName} is delayed by approximately ${v.delayMinutes || "15"} minutes. ${v.trackingUrl || v.trackerUrl || ""}` };
     case "BOOKING_CONFIRMATION":
       return {
         templateName: process.env.META_WHATSAPP_BOOKING_TEMPLATE || "appointment_booking_confirmation",
@@ -507,7 +392,7 @@ export const SmsWhatsAppService = {
 
     const isSuccess =
       log?.status === "pending" || log?.status === "processing" || log?.status === "retrying" ||
-      log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
+      log?.status === "accepted" || log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
     return {
       success: isSuccess,
       log,
@@ -553,7 +438,7 @@ export const SmsWhatsAppService = {
 
     const isSuccess =
       log?.status === "pending" || log?.status === "processing" || log?.status === "retrying" ||
-      log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
+      log?.status === "accepted" || log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
     return {
       success: isSuccess,
       log,
@@ -599,7 +484,7 @@ export const SmsWhatsAppService = {
     });
 
     const isSuccess = log?.status === "pending" || log?.status === "processing" || log?.status === "retrying" ||
-      log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
+      log?.status === "accepted" || log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
     return {
       success: isSuccess,
       log,
@@ -642,7 +527,7 @@ export const SmsWhatsAppService = {
     });
 
     const isSuccess = log?.status === "pending" || log?.status === "processing" || log?.status === "retrying" ||
-      log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
+      log?.status === "accepted" || log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
     return {
       success: isSuccess,
       log,
@@ -682,7 +567,7 @@ export const SmsWhatsAppService = {
     });
 
     const isSuccess = log?.status === "pending" || log?.status === "processing" || log?.status === "retrying" ||
-      log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
+      log?.status === "accepted" || log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
     return {
       success: isSuccess,
       log,
@@ -724,7 +609,7 @@ export const SmsWhatsAppService = {
     });
 
     const isSuccess = log?.status === "pending" || log?.status === "processing" || log?.status === "retrying" ||
-      log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
+      log?.status === "accepted" || log?.status === "sent" || log?.status === "delivered" || log?.status === "queued";
     return {
       success: isSuccess,
       log,

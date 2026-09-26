@@ -12,6 +12,9 @@ import { dispatchSmsWhatsAppNotification } from "./SmsWhatsAppService.ts";
 import { whatsAppCloudApiService } from "./WhatsAppCloudApiService.ts";
 import { NotificationLog } from "../models/NotificationLog.ts";
 import { emailProvider } from "../notifications/providers/emailProvider.ts";
+import { resolveWhatsAppAccount, recordWhatsAppCredentialError } from "./WhatsAppAccountService.ts";
+import { assertWhatsAppConsent, assertApprovedTemplate, isPermanentWhatsAppFailure } from "./WhatsAppSendPolicy.ts";
+import { claimWhatsAppIntent } from "./WhatsAppLedger.ts";
 
 import {
   OUTBOUND_MESSAGE_WORKER_BATCH_SIZE,
@@ -47,6 +50,7 @@ export class OutboundMessageDeliveryWorker {
   private timer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
   private inBackpressure = false;
+  private busy = false;
 
   public start(intervalMs = OUTBOUND_MESSAGE_WORKER_POLL_MS) {
     if (this.timer) return;
@@ -68,9 +72,45 @@ export class OutboundMessageDeliveryWorker {
   }
 
   public async processBatch(batchSize = OUTBOUND_MESSAGE_WORKER_BATCH_SIZE) {
-    if (this.stopped) return { processed: 0 };
-    const results = await Promise.allSettled(Array.from({ length: batchSize }, () => this.processOne()));
-    return { processed: results.filter((result) => result.status === "fulfilled" && result.value).length };
+    if (this.stopped || this.busy) return { processed: 0 };
+    this.busy = true;
+    try {
+      const results = await Promise.allSettled(Array.from({ length: batchSize }, () => this.processOne()));
+      return { processed: results.filter((result) => result.status === "fulfilled" && result.value).length };
+    } finally { this.busy = false; }
+  }
+
+  private async dispatchDirectWhatsApp(message: any) {
+    const payload = readEncryptedOutboundPayload<WhatsAppDocumentMessage & WhatsAppFreeformMessage>(message);
+    const key = `outbound:${message.idempotencyKey}`;
+    const existing = await NotificationLog.findOne({ idempotencyKey: key });
+    if (existing && ["accepted", "sent", "delivered", "read"].includes(existing.status)) return;
+    if (existing?.status === "sending" || existing?.errorReason === "AMBIGUOUS_NETWORK") throw new PermanentDeliveryError("AMBIGUOUS_NETWORK");
+    const account = await resolveWhatsAppAccount(payload.organizationId);
+    const windowOpen = await assertWhatsAppConsent(account, payload.to);
+    const document = message.kind === "whatsapp_document";
+    const sandbox = process.env.NODE_ENV === "test";
+    if (!document && !windowOpen && !sandbox) throw new PermanentDeliveryError("SESSION_WINDOW_CLOSED");
+    if (document && !windowOpen && !sandbox) await assertApprovedTemplate(account, "document_ready", process.env.META_WHATSAPP_LANG || "en");
+    const claim = await claimWhatsAppIntent(key, {
+      organizationId: payload.organizationId, recipientPhone: payload.to, channel: "whatsapp", templateId: document ? "DOCUMENT_READY" : "TWO_WAY_ASSISTANT",
+      messageContent: document ? "[Document notification]" : payload.text, status: "sending",
+    });
+    if (!claim.claimed) return;
+    const intent = claim.log!;
+    let result = document
+      ? (!windowOpen && !sandbox
+        ? await whatsAppCloudApiService.sendTemplateMessage({ to: payload.to, templateName: "document_ready", parameters: [payload.filename, payload.documentUrl], credentials: account })
+        : (/\.pdf(?:\?|$)/i.test(payload.documentUrl) || sandbox
+          ? await whatsAppCloudApiService.sendDocumentMessage({ ...payload, credentials: account })
+          : await whatsAppCloudApiService.sendFreeformTextMessage({ to: payload.to, text: `${payload.caption || payload.filename}\n${payload.documentUrl}`, credentials: account })))
+      : await whatsAppCloudApiService.sendFreeformTextMessage({ ...payload, credentials: account });
+    if (!result.success && result.errorReason === "MEDIA_UPLOAD_FAILED") {
+      result = await whatsAppCloudApiService.sendFreeformTextMessage({ to: payload.to, text: `${payload.caption || payload.filename}\n${payload.documentUrl}`, credentials: account });
+    }
+    await recordWhatsAppCredentialError(account, result.errorCode);
+    await NotificationLog.updateOne({ _id: intent._id }, { $set: { status: result.status, providerMessageId: result.providerMessageId, metaMessageId: result.providerMessageId, errorReason: result.errorReason } });
+    if (!result.success) throw isPermanentWhatsAppFailure(result.errorReason) ? new PermanentDeliveryError(result.errorReason) : new Error(result.errorReason);
   }
 
   private async processOne(): Promise<boolean> {
@@ -93,6 +133,10 @@ export class OutboundMessageDeliveryWorker {
       { sort: { nextAttemptAt: 1, createdAt: 1 }, returnDocument: "after" },
     ).select("+sensitivePayloadCiphertext");
     if (!message) return false;
+    const heartbeat = setInterval(() => {
+      void OutboundMessage.updateOne({ _id: message._id, status: "processing", lockedBy }, { $set: { lockedUntil: new Date(Date.now() + LOCK_DURATION_MS) } }).catch(() => {});
+    }, 20_000);
+    heartbeat.unref?.();
 
     try {
       if (message.kind === "payment_receipt") {
@@ -103,43 +147,13 @@ export class OutboundMessageDeliveryWorker {
         // provider failure. Failed provider/consent outcomes carry a log reason.
         if (delivery?.status === "failed") {
           const failure = new Error(delivery.errorReason || "Communication provider rejected delivery");
-          if (PERMANENT_COMMUNICATION_FAILURES.has(delivery.errorReason || "")) {
+          if (PERMANENT_COMMUNICATION_FAILURES.has(delivery.errorReason || "") || isPermanentWhatsAppFailure(delivery.errorReason)) {
             throw new PermanentDeliveryError(failure.message);
           }
           throw failure;
         }
-      } else if (message.kind === "whatsapp_document") {
-        const document = readEncryptedOutboundPayload<WhatsAppDocumentMessage>(message);
-        const result = await whatsAppCloudApiService.sendDocumentMessage(document);
-        if (!result.success) {
-          const failure = new Error(result.errorReason || "WhatsApp document delivery failed");
-          if (PERMANENT_COMMUNICATION_FAILURES.has(result.errorReason || "") || result.errorCode === 131026) {
-            throw new PermanentDeliveryError(failure.message);
-          }
-          throw failure;
-        }
-      } else if (message.kind === "whatsapp_freeform") {
-        const reply = readEncryptedOutboundPayload<WhatsAppFreeformMessage>(message);
-        const result = await whatsAppCloudApiService.sendFreeformTextMessage(reply);
-        if (!result.success) {
-          const failure = new Error(result.errorReason || "WhatsApp reply delivery failed");
-          if (PERMANENT_COMMUNICATION_FAILURES.has(result.errorReason || "")) {
-            throw new PermanentDeliveryError(failure.message);
-          }
-          throw failure;
-        }
-        await NotificationLog.create({
-          organizationId: reply.organizationId || undefined,
-          recipientPhone: reply.to,
-          recipientName: reply.recipientName || undefined,
-          channel: "whatsapp",
-          templateId: "TWO_WAY_ASSISTANT",
-          messageContent: reply.text,
-          status: "sent",
-          providerMessageId: result.providerMessageId,
-          metaMessageId: result.providerMessageId,
-          idempotencyKey: `outbound:${message.idempotencyKey}`,
-        });
+      } else if (message.kind === "whatsapp_document" || message.kind === "whatsapp_freeform") {
+        await this.dispatchDirectWhatsApp(message);
       } else if (message.kind === "transactional_email") {
         const email = readEncryptedOutboundPayload<TransactionalEmailMessage>(message);
         const sent = await emailProvider.sendEmail(email, email.orgSmtp);
@@ -153,7 +167,7 @@ export class OutboundMessageDeliveryWorker {
         { $set: { status: "sent", sentAt: new Date() }, $unset: { lockedAt: 1, lockedUntil: 1, lockedBy: 1, nextAttemptAt: 1 } },
       );
     } catch (error: any) {
-      const retry = !(error instanceof PermanentDeliveryError) && message.attempts < message.maxAttempts;
+      const retry = !(error instanceof PermanentDeliveryError) && !isPermanentWhatsAppFailure(error.message) && message.attempts < message.maxAttempts;
       await OutboundMessage.updateOne(
         { _id: message._id, status: "processing", lockedBy },
         retry
@@ -170,7 +184,7 @@ export class OutboundMessageDeliveryWorker {
               $unset: { lockedAt: 1, lockedUntil: 1, lockedBy: 1, nextAttemptAt: 1 },
             },
       );
-    }
+    } finally { clearInterval(heartbeat); }
     return true;
   }
 

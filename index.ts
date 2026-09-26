@@ -57,6 +57,8 @@ import platformGatewayRoutes from "./platform/gateway.ts";
 import moduleRegistryRoutes from "./routes/moduleRegistry.ts";
 import doctorAvailabilityRoutes from "./routes/doctorAvailability.ts";
 import whatsappWebhookRoutes from "./routes/whatsappWebhook.ts";
+import { whatsAppWebhookWorker } from "./services/WhatsAppWebhookService.ts";
+import { outboundMessageDeliveryWorker } from "./services/OutboundMessageDeliveryWorker.ts";
 import whatsappCreditsRoutes from "./routes/whatsappCredits.ts";
 import { startNoShowSweepJob, stopNoShowSweepJob } from "./jobs/noShowSweepJob.ts";
 import upiWebhookRoutes from "./routes/upiWebhook.ts";
@@ -396,6 +398,8 @@ async function startServer() {
     // 3. Start scheduled no-show sweeper if running inline background jobs
     if (process.env.RUN_INLINE_JOBS === "true" || process.env.NODE_ENV !== "production") {
       startNoShowSweepJob();
+      whatsAppWebhookWorker.start();
+      outboundMessageDeliveryWorker.start();
       app.log.info("✓ Scheduled no-show background sweeper started (inline mode).");
     }
 
@@ -413,6 +417,8 @@ const gracefulShutdown = async (signal: string) => {
   try {
     // Step 0: Stop scheduled background sweepers
     stopNoShowSweepJob();
+    await whatsAppWebhookWorker.stop();
+    await outboundMessageDeliveryWorker.stop();
 
     // Step 1: Remove server from traffic by failing readiness probes immediately
     markShuttingDown();

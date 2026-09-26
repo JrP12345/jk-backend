@@ -275,6 +275,7 @@ export async function sendConsultationCompletedNotification(
 
       if (channel === "whatsapp") await enqueueWhatsAppDocument({
         to: targetPhone,
+        organizationId: appt.organizationId?.toString(),
         documentUrl,
         filename: pdfFilename,
         idempotencyKey: `whatsapp-document:consultation-complete:${appt._id}`,

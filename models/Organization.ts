@@ -45,7 +45,13 @@ const OrganizationSchema = new Schema({
     mode: { type: String, enum: ["disabled", "shared", "dedicated"], default: "shared" },
     wabaId: { type: String, default: null },
     phoneNumberId: { type: String, default: null },
-    accessToken: { type: String, default: null, select: false }, // secret credential, never selected by default
+    accessToken: { type: String, default: null, select: false }, // encrypted by configuration controller
+    appSecret: { type: String, default: null, select: false },
+    verifyToken: { type: String, default: null, select: false },
+    connectionStatus: { type: String, enum: ["disconnected", "pending", "connected", "error"], default: "disconnected" },
+    verifiedAt: Date,
+    lastError: String,
+    phoneDisplay: String,
     monthlyQuota: { type: Number, default: 500 },
     creditsBalance: { type: Number, default: 500 },
     creditsUsedThisMonth: { type: Number, default: 0 },
@@ -82,8 +88,13 @@ OrganizationSchema.set("toJSON", {
     if (ret.whatsappConfig && "accessToken" in ret.whatsappConfig) {
       delete ret.whatsappConfig.accessToken;
     }
+    if (ret.whatsappConfig) {
+      delete ret.whatsappConfig.appSecret;
+      delete ret.whatsappConfig.verifyToken;
+    }
     return ret;
   }
 });
 
+OrganizationSchema.index({ "whatsappConfig.wabaId": 1 }, { unique: true, partialFilterExpression: { "whatsappConfig.wabaId": { $type: "string" } } });
 export const Organization = mongoose.model("Organization", OrganizationSchema);

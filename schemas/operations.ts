@@ -22,9 +22,10 @@ export const updateWhatsappConfigSchema = {
       lowBalanceThreshold: { type: "number", minimum: 10 },
       autoRechargeEnabled: { type: "boolean" },
       autoRechargePack: { type: "string", enum: ["bronze", "silver", "gold"] },
-      wabaId: { type: "string", maxLength: 200 },
-      phoneNumberId: { type: "string", maxLength: 200 },
+      wabaId: { type: "string", maxLength: 200, pattern: "^[0-9]*$" },
+      phoneNumberId: { type: "string", maxLength: 200, pattern: "^[0-9]*$" },
       accessToken: { type: "string", maxLength: 4096 },
+      appSecret: { type: "string", maxLength: 4096 },
       notifications: {
         type: "object",
         properties: {

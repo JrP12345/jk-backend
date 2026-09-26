@@ -144,7 +144,7 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
     expect(log).not.toBeNull();
     expect(log?.creditsDeducted).toBe(1);
     expect(log?.channel).toBe("whatsapp");
-    expect(log?.status).toBe("sent");
+    expect(log?.status).toBe("accepted");
     expect(log?.recipientPhone).toBe(testPhone);
   });
 
@@ -178,12 +178,12 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
   it("persists WhatsApp documents and two-way replies before the worker calls Meta", async () => {
     const documentSpy = vi.spyOn(whatsAppCloudApiService, "sendDocumentMessage").mockResolvedValue({
       success: true,
-      status: "sent",
+      status: "accepted",
       providerMessageId: "wamid.document-outbox-test",
     });
     const replySpy = vi.spyOn(whatsAppCloudApiService, "sendFreeformTextMessage").mockResolvedValue({
       success: true,
-      status: "sent",
+      status: "accepted",
       providerMessageId: "wamid.reply-outbox-test",
     });
 

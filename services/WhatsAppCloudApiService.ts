@@ -1,394 +1,128 @@
-/**
- * Meta WhatsApp Business Cloud API Client (Graph API v21.0)
- * Handles sending approved WhatsApp templates, request timeouts, retries, and error handling.
- */
+import crypto from "node:crypto";
+import { getPlatformAccount, type WhatsAppCredentials } from "./WhatsAppAccountService.ts";
 
 export interface MetaWhatsAppMessagePayload {
-  to: string; // Recipient E.164 phone number
+  to: string;
   templateName: string;
   languageCode?: string;
-  parameters: string[]; // Ordered text parameters for {{1}}, {{2}}, etc.
-  buttonUrlParam?: string; // Optional dynamic URL suffix for template buttons
-  credentials?: {
-    phoneNumberId?: string;
-    accessToken?: string;
-  };
+  parameters: string[];
+  buttonUrlParam?: string;
+  credentials?: WhatsAppCredentials;
 }
-
 export interface MetaWhatsAppDocumentPayload {
-  to: string; // Recipient E.164 phone number
-  documentUrl: string; // Public HTTPS or relative URL to the PDF document
-  filename: string; // Display filename e.g. "Prescription_Dr_Sharma.pdf"
-  caption?: string; // Optional message caption
-  credentials?: {
-    phoneNumberId?: string;
-    accessToken?: string;
-  };
+  to: string;
+  documentUrl: string;
+  filename: string;
+  caption?: string;
+  credentials?: WhatsAppCredentials;
 }
-
 export interface MetaWhatsAppResponse {
   success: boolean;
   providerMessageId?: string;
-  status: "sent" | "failed";
+  status: "accepted" | "failed";
   errorReason?: string;
   errorCode?: number;
   rawResponse?: any;
 }
 
 export class WhatsAppCloudApiService {
-  private defaultApiVersion = "v21.0";
-  private timeoutMs = 8000;
-
-  /**
-   * Cleans and formats phone numbers to international standard without '+' prefix.
-   * Defaults 10-digit numbers to India country code (91).
-   */
   public formatPhoneNumber(phone: string): string {
-    let cleaned = phone.replace(/\D/g, "");
-    if (cleaned.length === 10) {
-      cleaned = `91${cleaned}`;
-    }
-    return cleaned;
+    let digits = String(phone || "").replace(/\D/g, "");
+    if (digits.length === 10) digits = `91${digits}`;
+    return digits;
   }
 
-  /**
-   * Resolves the Meta Cloud API credentials (shared SaaS or dedicated organization).
-   */
-  private resolveCredentials(customCreds?: { phoneNumberId?: string; accessToken?: string }) {
-    const phoneNumberId =
-      customCreds?.phoneNumberId ||
-      process.env.META_WHATSAPP_PHONE_NUMBER_ID ||
-      process.env.WHATSAPP_PHONE_NUMBER_ID;
-
-    const accessToken =
-      customCreds?.accessToken ||
-      process.env.META_WHATSAPP_ACCESS_TOKEN ||
-      process.env.WHATSAPP_ACCESS_TOKEN;
-
-    return { phoneNumberId, accessToken };
-  }
-
-  /**
-   * Dispatches a pre-approved template message via Meta WhatsApp Cloud API.
-   */
-  public async sendTemplateMessage(payload: MetaWhatsAppMessagePayload): Promise<MetaWhatsAppResponse> {
-    const { phoneNumberId, accessToken } = this.resolveCredentials(payload.credentials);
-    const recipientPhone = this.formatPhoneNumber(payload.to);
-    const languageCode = payload.languageCode || process.env.META_WHATSAPP_LANG || "en";
-
-    // Build components array for Meta Graph API
-    const components: any[] = [];
-
-    if (payload.parameters && payload.parameters.length > 0) {
-      components.push({
-        type: "body",
-        parameters: payload.parameters.map((text) => ({
-          type: "text",
-          text: String(text ?? "").slice(0, 1024), // Meta max string limit per variable
-        })),
-      });
-    }
-
-    if (payload.buttonUrlParam) {
-      components.push({
-        type: "button",
-        sub_type: "url",
-        index: "0",
-        parameters: [
-          {
-            type: "text",
-            text: payload.buttonUrlParam,
-          },
-        ],
-      });
-    }
-
-    const requestBody = {
-      messaging_product: "whatsapp",
-      recipient_type: "individual",
-      to: recipientPhone,
-      type: "template",
-      template: {
-        name: payload.templateName,
-        language: {
-          code: languageCode,
-        },
-        components: components.length > 0 ? components : undefined,
-      },
-    };
-
-    // Sandbox / Development / Test Mock Mode
-    const isSandbox =
-      process.env.WHATSAPP_SANDBOX_MODE === "true" ||
-      !phoneNumberId ||
-      !accessToken ||
-      process.env.NODE_ENV === "test";
-
-    if (isSandbox) {
-      const syntheticWamid = `wamid.HBgM${Date.now()}${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-      return {
-        success: true,
-        providerMessageId: syntheticWamid,
-        status: "sent",
-        rawResponse: {
-          messaging_product: "whatsapp",
-          contacts: [{ input: recipientPhone, wa_id: recipientPhone }],
-          messages: [{ id: syntheticWamid, message_status: "accepted" }],
-          mode: "sandbox",
-        },
-      };
-    }
-
-    // Live Meta Graph API Call
-    const endpoint = `https://graph.facebook.com/${this.defaultApiVersion}/${phoneNumberId}/messages`;
-
-    let attempts = 0;
-    const maxAttempts = 2; // 1 retry on transient network issues
-
-    while (attempts < maxAttempts) {
-      attempts++;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-
-      try {
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(requestBody),
-          signal: controller.signal,
-        });
-
-        clearTimeout(timeout);
-        const data: any = await response.json();
-
-        if (response.ok && data?.messages?.[0]?.id) {
-          return {
-            success: true,
-            providerMessageId: data.messages[0].id,
-            status: "sent",
-            rawResponse: data,
-          };
-        }
-
-        // Handle specific Meta error codes
-        const metaError = data?.error;
-        const errorCode = metaError?.code;
-        const errorMessage = metaError?.message || metaError?.error_data?.details || response.statusText;
-
-        // Meta Error 131026: Message undeliverable / user is not on WhatsApp
-        if (errorCode === 131026) {
-          return {
-            success: false,
-            status: "failed",
-            errorCode,
-            errorReason: "RECIPIENT_NOT_ON_WHATSAPP",
-            rawResponse: data,
-          };
-        }
-
-        // Meta Error 130429: Rate limit hit
-        if (errorCode === 130429 && attempts < maxAttempts) {
-          await new Promise((res) => setTimeout(res, 1000));
-          continue;
-        }
-
-        return {
-          success: false,
-          status: "failed",
-          errorCode,
-          errorReason: `Meta API Error (${errorCode || response.status}): ${errorMessage}`,
-          rawResponse: data,
-        };
-      } catch (err: any) {
-        clearTimeout(timeout);
-        const isAbort = err.name === "AbortError";
-        if (attempts < maxAttempts) {
-          await new Promise((res) => setTimeout(res, 800));
-          continue;
-        }
-
-        return {
-          success: false,
-          status: "failed",
-          errorReason: isAbort ? "Meta API request timed out (8s)" : err.message || "Network error",
-        };
-      }
-    }
-
-    return {
-      success: false,
-      status: "failed",
-      errorReason: "Maximum delivery attempts exceeded",
-    };
-  }
-
-  /**
-   * Sends a freeform conversational text reply (for 24h patient-initiated sessions)
-   */
-  public async sendFreeformTextMessage(params: {
-    to: string;
-    text: string;
-    credentials?: { phoneNumberId?: string; accessToken?: string };
-  }): Promise<MetaWhatsAppResponse> {
-    const { phoneNumberId, accessToken } = this.resolveCredentials(params.credentials);
-    const recipientPhone = this.formatPhoneNumber(params.to);
-
-    if (!phoneNumberId || !accessToken) {
-      return {
-        success: true,
-        providerMessageId: `mock_text_${Date.now()}_${Math.random().toString(36).substring(7)}`,
-        status: "sent",
-        rawResponse: { mock: true, text: params.text },
-      };
-    }
-
+  public async request(path: string, credentials: WhatsAppCredentials, method = "GET", body?: unknown): Promise<any> {
+    if (!/^[A-Za-z0-9_/?=&%,.-]+$/.test(path) || path.includes("..")) throw new Error("INVALID_GRAPH_PATH");
+    const version = process.env.WHATSAPP_API_VERSION || "v25.0";
+    if (!/^v\d+\.\d+$/.test(version)) throw new Error("INVALID_GRAPH_VERSION");
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
     try {
-      const endpoint = `https://graph.facebook.com/${this.defaultApiVersion}/${phoneNumberId}/messages`;
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          recipient_type: "individual",
-          to: recipientPhone,
-          type: "text",
-          text: { preview_url: true, body: params.text },
-        }),
+      const response = await fetch(`https://graph.facebook.com/${version}/${path}`, {
+        method, headers: { Authorization: `Bearer ${credentials.accessToken}`, "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal,
       });
-      const data: any = await response.json();
-      if (response.ok && data?.messages?.[0]?.id) {
-        return {
-          success: true,
-          providerMessageId: data.messages[0].id,
-          status: "sent",
-          rawResponse: data,
-        };
+      const data = await response.json() as any;
+      if (!response.ok) {
+        const error: any = new Error(`META_ERROR_${data?.error?.code || response.status}`);
+        error.code = data?.error?.code || response.status;
+        throw error;
       }
-      return {
-        success: false,
-        status: "failed",
-        errorReason: data?.error?.message || "Failed to send text message",
-      };
-    } catch (err: any) {
-      return {
-        success: false,
-        status: "failed",
-        errorReason: err.message || "Network error",
-      };
+      return data;
+    } finally { clearTimeout(timeout); }
+  }
+
+  private async send(to: string, content: Record<string, unknown>, credentials?: WhatsAppCredentials): Promise<MetaWhatsAppResponse> {
+    const phone = this.formatPhoneNumber(to);
+    if (!/^[1-9]\d{7,14}$/.test(phone)) return { success: false, status: "failed", errorReason: "INVALID_PHONE" };
+    const account: any = credentials || await getPlatformAccount();
+    if (process.env.NODE_ENV === "test" || (process.env.WHATSAPP_SANDBOX_MODE === "true" && process.env.NODE_ENV !== "production")) {
+      return { success: true, status: "accepted", providerMessageId: `wamid.sandbox.${crypto.randomUUID()}`, rawResponse: { mode: "sandbox" } };
+    }
+    if (account.enabled === false || !account.phoneNumberId || !account.accessToken || !account.appSecret || account.accessToken === "[DECRYPTION_FAILED]" || account.appSecret === "[DECRYPTION_FAILED]") {
+      return { success: false, status: "failed", errorReason: "WHATSAPP_NOT_CONFIGURED" };
+    }
+    try {
+      // Never repeat a POST after an uncertain network outcome.
+      const data = await this.request(`${account.phoneNumberId}/messages`, account, "POST", {
+        messaging_product: "whatsapp", recipient_type: "individual", to: phone, ...content,
+      });
+      if (!data?.messages?.[0]?.id) return { success: false, status: "failed", errorReason: "AMBIGUOUS_NETWORK" };
+      return { success: true, status: "accepted", providerMessageId: data.messages[0].id };
+    } catch (error: any) {
+      return { success: false, status: "failed", errorCode: error.code,
+        errorReason: error.code === 131026 ? "RECIPIENT_NOT_ON_WHATSAPP" : error.code ? `META_ERROR_${error.code}` : "AMBIGUOUS_NETWORK" };
     }
   }
 
-  /**
-   * Dispatches a direct document (e.g. PDF prescription, invoice) via Meta WhatsApp Cloud API.
-   */
+  public sendTemplateMessage(payload: MetaWhatsAppMessagePayload) {
+    const components: any[] = [];
+    if (payload.parameters.length) components.push({ type: "body", parameters: payload.parameters.map(text => ({ type: "text", text: String(text ?? "").slice(0, 1024) })) });
+    if (payload.buttonUrlParam) components.push({ type: "button", sub_type: "url", index: "0", parameters: [{ type: "text", text: payload.buttonUrlParam }] });
+    return this.send(payload.to, { type: "template", template: { name: payload.templateName, language: { code: payload.languageCode || process.env.META_WHATSAPP_LANG || "en" }, components } }, payload.credentials);
+  }
+  public sendFreeformTextMessage(params: { to: string; text: string; credentials?: WhatsAppCredentials }) {
+    return this.send(params.to, { type: "text", text: { preview_url: true, body: params.text.slice(0, 4096) } }, params.credentials);
+  }
   public async sendDocumentMessage(payload: MetaWhatsAppDocumentPayload): Promise<MetaWhatsAppResponse> {
-    const { phoneNumberId, accessToken } = this.resolveCredentials(payload.credentials);
-    const recipientPhone = this.formatPhoneNumber(payload.to);
-
-    const requestBody = {
-      messaging_product: "whatsapp",
-      recipient_type: "individual",
-      to: recipientPhone,
-      type: "document",
-      document: {
-        link: payload.documentUrl,
-        filename: payload.filename,
-        caption: payload.caption || undefined,
-      },
-    };
-
-    const isSandbox =
-      process.env.WHATSAPP_SANDBOX_MODE === "true" ||
-      !phoneNumberId ||
-      !accessToken ||
-      process.env.NODE_ENV === "test";
-
-    if (isSandbox) {
-      const syntheticWamid = `wamid.HBgM${Date.now()}${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-      return {
-        success: true,
-        providerMessageId: syntheticWamid,
-        status: "sent",
-        rawResponse: {
-          messaging_product: "whatsapp",
-          contacts: [{ input: recipientPhone, wa_id: recipientPhone }],
-          messages: [{ id: syntheticWamid, message_status: "accepted" }],
-          mode: "sandbox",
-          documentSent: {
-            filename: payload.filename,
-            link: payload.documentUrl,
-          },
-        },
-      };
+    if (!/^https:\/\//i.test(payload.documentUrl) && process.env.NODE_ENV !== "test") {
+      return { success: false, status: "failed", errorReason: "DOCUMENT_REQUIRES_PUBLIC_HTTPS" };
     }
-
-    const endpoint = `https://graph.facebook.com/${this.defaultApiVersion}/${phoneNumberId}/messages`;
-    let attempts = 0;
-    const maxAttempts = 2;
-
-    while (attempts < maxAttempts) {
-      attempts++;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-
-      try {
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(requestBody),
-          signal: controller.signal,
-        });
-
-        clearTimeout(timeout);
-        const data: any = await response.json();
-
-        if (!response.ok) {
-          const errMessage = data?.error?.message || "Unknown Meta Cloud API error";
-          const errCode = data?.error?.code || response.status;
-          if (response.status >= 500 && attempts < maxAttempts) {
-            await new Promise((resolve) => setTimeout(resolve, 500));
-            continue;
-          }
-          return {
-            success: false,
-            status: "failed",
-            errorReason: errMessage,
-            errorCode: errCode,
-            rawResponse: data,
-          };
-        }
-
-        const msgId = data?.messages?.[0]?.id;
-        return {
-          success: true,
-          providerMessageId: msgId,
-          status: "sent",
-          rawResponse: data,
-        };
-      } catch (err: any) {
-        clearTimeout(timeout);
-        if (attempts >= maxAttempts) {
-          return {
-            success: false,
-            status: "failed",
-            errorReason: err.name === "AbortError" ? "Request timeout to Meta WhatsApp API" : err.message,
-          };
-        }
-        await new Promise((resolve) => setTimeout(resolve, 500));
+    if (process.env.NODE_ENV === "test" || (process.env.WHATSAPP_SANDBOX_MODE === "true" && process.env.NODE_ENV !== "production")) {
+      return this.send(payload.to, { type: "document", document: { link: payload.documentUrl, filename: payload.filename, caption: payload.caption } }, payload.credentials);
+    }
+    const account = payload.credentials || await getPlatformAccount();
+    if (!account.phoneNumberId || !account.accessToken || !account.appSecret) return { success: false, status: "failed", errorReason: "WHATSAPP_NOT_CONFIGURED" };
+    try {
+      const documentUrl = new URL(payload.documentUrl);
+      const allowedOrigins = [process.env.PUBLIC_API_BASE_URL, process.env.API_BASE_URL, process.env.R2_CUSTOM_DOMAIN].filter(Boolean).map(value => new URL(value!).origin);
+      if (!allowedOrigins.includes(documentUrl.origin)) throw new Error("UNTRUSTED_DOCUMENT_ORIGIN");
+      const file = await fetch(documentUrl, { redirect: "error", signal: AbortSignal.timeout(15_000) });
+      if (!file.ok || !file.headers.get("content-type")?.includes("application/pdf") || !file.body) throw new Error("INVALID_PDF_RESPONSE");
+      const reader = file.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        size += value.length;
+        if (size > 10 * 1024 * 1024) { await reader.cancel(); throw new Error("PDF_TOO_LARGE"); }
+        chunks.push(value);
       }
+      const buffer = Buffer.concat(chunks);
+      if (!buffer.subarray(0, 5).equals(Buffer.from("%PDF-"))) throw new Error("INVALID_PDF");
+      const form = new FormData();
+      form.append("messaging_product", "whatsapp");
+      form.append("file", new Blob([buffer], { type: "application/pdf" }), payload.filename);
+      const version = process.env.WHATSAPP_API_VERSION || "v25.0";
+      const uploaded = await fetch(`https://graph.facebook.com/${version}/${account.phoneNumberId}/media`, { method: "POST", headers: { Authorization: `Bearer ${account.accessToken}` }, body: form, signal: AbortSignal.timeout(15_000) });
+      const media = await uploaded.json() as any;
+      if (!uploaded.ok || !media.id) throw new Error("MEDIA_UPLOAD_FAILED");
+      return this.send(payload.to, { type: "document", document: { id: media.id, filename: payload.filename, caption: payload.caption } }, account);
+    } catch {
+      return { success: false, status: "failed", errorReason: "MEDIA_UPLOAD_FAILED" };
     }
-
-    return { success: false, status: "failed", errorReason: "Max attempts exceeded" };
   }
 }
-
 export const whatsAppCloudApiService = new WhatsAppCloudApiService();
