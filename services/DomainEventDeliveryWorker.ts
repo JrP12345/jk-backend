@@ -2,7 +2,6 @@ import crypto from "node:crypto";
 import { DomainEventOutbox } from "../models/DomainEventOutbox.ts";
 import { readEncryptedDomainEvent } from "./DomainEventOutboxService.ts";
 import { eventBus } from "../events/eventBus.ts";
-import { domainEventBus } from "../platform/events/DomainEventBus.ts";
 import type { DomainEventPayload } from "../events/types.ts";
 import {
   DOMAIN_EVENT_WORKER_BATCH_SIZE,
@@ -106,16 +105,7 @@ export class DomainEventDeliveryWorker {
     }
 
     try {
-      // Dispatch to in-process eventBus (notification listeners, audit, etc.)
-      eventBus.emit("notification_event", payload);
-      eventBus.emit(payload.eventType, payload);
-
-      // Dispatch to platform domainEventBus
-      try {
-        await domainEventBus.publishEvent(payload.eventType, payload);
-      } catch (busError) {
-        console.error(`[DomainEventWorker] platform domainEventBus handler error for ${payload.eventType}:`, busError);
-      }
+      await eventBus.dispatch({ ...payload, eventId: payload.eventId || eventRow.idempotencyKey });
 
       await DomainEventOutbox.updateOne(
         { _id: eventRow._id, status: "processing", lockedBy },

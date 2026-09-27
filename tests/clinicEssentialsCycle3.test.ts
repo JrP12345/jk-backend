@@ -1,6 +1,7 @@
+import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
 import crypto from "node:crypto";
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { AppointmentPayment } from "../models/AppointmentPayment.ts";
 import { Invoice } from "../models/Invoice.ts";
@@ -33,12 +34,7 @@ describe("Clinic Essentials Cycle 3 — Patient Self Check-In", () => {
     });
     const adminCookies = (orgRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
 
-    const clinicRes = await app.inject({
-      method: "POST",
-      url: "/api/onboarding/clinics",
-      headers: { cookie: adminCookies.join("; ") },
-      payload: { name: "CheckIn Clinic", city: "Mumbai" },
-    });
+    const clinicRes = await reuseOnboardingClinic(app, { headers: { cookie: adminCookies.join("; ") }, payload: { name: "CheckIn Clinic", city: "Mumbai" } });
     const clinicId = JSON.parse(clinicRes.body).data.id;
 
     const docRes = await app.inject({
@@ -136,12 +132,7 @@ describe("Clinic Essentials Cycle 3 — clinic_manager Desk Workflows", () => {
     });
     const adminCookies = (orgRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
 
-    const clinicRes = await app.inject({
-      method: "POST",
-      url: "/api/onboarding/clinics",
-      headers: { cookie: adminCookies.join("; ") },
-      payload: { name: "CM Desk Clinic", city: "Delhi" },
-    });
+    const clinicRes = await reuseOnboardingClinic(app, { headers: { cookie: adminCookies.join("; ") }, payload: { name: "CM Desk Clinic", city: "Delhi" } });
     clinicId = JSON.parse(clinicRes.body).data.id;
 
     const managerEmail = `cm-desk-mgr-${Date.now()}@test.com`;
@@ -225,12 +216,7 @@ describe("Clinic Essentials Cycle 3 — Payment Verify IDOR", () => {
     const orgId = JSON.parse(orgRes.body).data.organization.id;
     const adminCookies = (orgRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
 
-    const clinicRes = await app.inject({
-      method: "POST",
-      url: "/api/onboarding/clinics",
-      headers: { cookie: adminCookies.join("; ") },
-      payload: { name: "Pay Clinic", city: "Chennai" },
-    });
+    const clinicRes = await reuseOnboardingClinic(app, { headers: { cookie: adminCookies.join("; ") }, payload: { name: "Pay Clinic", city: "Chennai" } });
     const clinicId = JSON.parse(clinicRes.body).data.id;
 
     const docRes = await app.inject({

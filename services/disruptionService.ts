@@ -314,9 +314,6 @@ export const disruptionService = {
       checkedInTriageCount,
       remoteNotifiedCount,
       triagedAppointmentsCount: triagedAppointments.length,
-      // Backward compatibility aliases
-      checkedInAtRisk: checkedInTriageCount,
-      autoCancelled: remoteNotifiedCount,
     };
   },
 

@@ -52,11 +52,11 @@ export function validateHealthQueryResponse(raw: any): HealthQueryResponse {
 
   const citations: string[] = Array.isArray(raw.citations)
     ? raw.citations.filter((c: any) => typeof c === "string" && c.trim().length > 0).map((c: string) => c.trim())
-    : ["ANANT Clinical Registry"];
+    : ["Ekavyu Clinical Registry"];
 
   const disclaimer = typeof raw.disclaimer === "string" && raw.disclaimer.trim()
     ? raw.disclaimer.trim()
-    : "ANANTA AI Health Assistant provides grounded administrative & clinical copilot guidance.";
+    : "Ekavyu AI Health Assistant provides grounded administrative & clinical copilot guidance.";
 
   const suggestedActions: AISuggestedAction[] = [];
   if (Array.isArray(raw.suggestedActions)) {

@@ -45,7 +45,7 @@ export class KnowledgeRetrievalEngine {
 
     return {
       matchedEntries: matches,
-      citations: citations.length > 0 ? citations : ["ANANTA Clinical Guidelines"],
+      citations: citations.length > 0 ? citations : ["Ekavyu Clinical Guidelines"],
       evidenceText
     };
   }

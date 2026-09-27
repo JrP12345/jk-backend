@@ -24,7 +24,7 @@ export class OutboundPipeline {
     const rehydratedText = PHIAnonymizer.rehydrateText(rawResponseText, tokenMap);
 
     // 3. Citation Formatting & Safety Verification
-    const finalCitations = citations && citations.length > 0 ? citations : ["ANANTA Clinical Registry"];
+    const finalCitations = citations && citations.length > 0 ? citations : ["Ekavyu Clinical Registry"];
 
     return {
       correlationId,

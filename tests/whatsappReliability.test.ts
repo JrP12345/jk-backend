@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { NotificationLog } from "../models/NotificationLog.ts";
 import { OutboundMessage } from "../models/OutboundMessage.ts";

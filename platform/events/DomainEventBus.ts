@@ -38,25 +38,28 @@ export class DomainEventBus {
    * Subscribers run in isolated try-catch blocks so errors in one handler
    * do not interrupt execution of other handlers or throw back to the publisher.
    */
-  public async publish<T = any>(event: DomainEvent<T>): Promise<void> {
+  public async publish<T = any>(event: DomainEvent<T>, strict = false): Promise<void> {
     const handlers = this.subscribers.get(event.eventType);
     if (!handlers || handlers.size === 0) return;
 
+    const failures: unknown[] = [];
     for (const handler of Array.from(handlers)) {
       try {
         await handler(event);
       } catch (err) {
+        failures.push(err);
         console.error(`[DomainEventBus] Error executing subscriber for '${event.eventType}' (eventId: ${event.eventId}):`, err);
       }
     }
+    if (strict && failures.length) throw failures[0];
   }
 
   /**
    * Convenient helper: constructs a DomainEvent envelope and publishes it.
    */
-  public async publishEvent<T = any>(eventType: string, payload: T, version: number = 1): Promise<void> {
+  public async publishEvent<T = any>(eventType: string, payload: T, version: number = 1, strict = false): Promise<void> {
     const event = createDomainEvent(eventType, payload, version);
-    await this.publish(event);
+    await this.publish(event, strict);
   }
 
   /**

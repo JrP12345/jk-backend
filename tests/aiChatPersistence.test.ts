@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import bcrypt from "bcryptjs";
-import app from "../index.js";
+import app from "../index.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { AIChatSession } from "../models/AIChatSession.ts";
+import { AIChatMessage } from "../models/AIChatMessage.ts";
 
 describe("Milestone 5: Enterprise DB-Backed AI Chat Persistence Tests", () => {
   let accessToken: string;
@@ -47,6 +48,7 @@ describe("Milestone 5: Enterprise DB-Backed AI Chat Persistence Tests", () => {
   });
 
   afterAll(async () => {
+    await AIChatMessage.deleteMany({ userId: testUserId });
     await AIChatSession.deleteMany({ userId: testUserId });
     await OrgMember.deleteMany({ userId: testUserId, organizationId: testOrgId });
     await User.deleteMany({ _id: testUserId });
@@ -108,7 +110,8 @@ describe("Milestone 5: Enterprise DB-Backed AI Chat Persistence Tests", () => {
     // Verify directly in MongoDB
     const sessionInDb = await AIChatSession.findById(testSessionId);
     expect(sessionInDb).not.toBeNull();
-    expect(sessionInDb?.messages.length).toBe(3);
+    expect(sessionInDb?.toObject()).not.toHaveProperty("messages");
+    expect(await AIChatMessage.countDocuments({ sessionId: testSessionId })).toBe(3);
   });
 
   it("should retrieve full session trajectory (GET /api/ai/chat/sessions/:id)", async () => {

@@ -18,7 +18,7 @@ export default async function prescriptionPrintRoutes(fastify: FastifyInstance) 
   };
 
   fastify.get(
-    "/api/v1/encounters/:encounterId/prescription/print",
+    "/api/encounters/:encounterId/prescription/print",
     printPrescription,
     async (request, reply) => {
       const { encounterId } = request.params as { encounterId: string };

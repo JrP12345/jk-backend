@@ -11,26 +11,6 @@ export type NotificationCategory =
   | "security"
   | "system";
 
-export interface AnantaCloudEvent<T = any> {
-  specversion: "1.0";
-  id: string;
-  source: string;
-  type: string;
-  subject: string; // Patient ID or Resource ID
-  time: string;
-  datacontenttype: "application/json";
-  metadata: {
-    tenantId: string;
-    facilityId?: string;
-    correlationId: string;
-    actor: {
-      userId: string;
-      role: string;
-    };
-  };
-  data: T;
-}
-
 export interface DomainEventPayload {
   eventId?: string;
   eventType: string;
@@ -56,7 +36,7 @@ export interface DomainEventPayload {
 }
 
 export const EVENT_TYPES = {
-  // ANANTA Architecture Domain Events
+  // Ekavyu Architecture Domain Events
   PATIENT_REGISTERED: "ananta.patient.registered",
   CONSENT_GRANTED: "ananta.consent.granted",
   CONSENT_REVOKED: "ananta.consent.revoked",

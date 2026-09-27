@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
@@ -126,7 +126,7 @@ describe("Dynamic Capacity & Damped Hybrid Duration Tests", () => {
     const endM = String(endMinutesTotal % 60).padStart(2, "0");
 
     const { DoctorDayOverride } = await import("../models/DoctorDayOverride.ts");
-    const todayStr = now.toISOString().slice(0, 10);
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
     await DoctorDayOverride.create({
       doctorId,
       clinicId,

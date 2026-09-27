@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
 import crypto from "node:crypto";
-import app from "../index.js";
+import app from "../index.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { RefreshToken } from "../models/RefreshToken.ts";
+import { OutboundMessage } from "../models/OutboundMessage.ts";
+import { readEncryptedOutboundPayload } from "../services/CommunicationOutbox.ts";
 import { OrgInvite } from "../models/OrgInvite.ts";
 import { Role } from "../models/Role.ts";
 import bcrypt from "bcryptjs";
@@ -106,7 +108,20 @@ describe("Milestone 2: Identity & Authorization Hardening Tests", () => {
     const updatedUser = await User.findById(user._id);
     expect(updatedUser?.passwordResetToken).toBeDefined();
 
-    const token = updatedUser!.passwordResetToken!;
+    const delivery = await OutboundMessage.findOne({
+      idempotencyKey: `transactional-email:password-reset:${user._id}:${updatedUser!.passwordResetToken}`
+    }).select("+sensitivePayloadCiphertext").lean();
+    expect(delivery).not.toBeNull();
+    const emailPayload = readEncryptedOutboundPayload<{ text: string }>(delivery!);
+    const token = emailPayload.text.match(/#token=([a-f0-9]+)/)?.[1];
+    expect(token).toBeDefined();
+    expect(updatedUser!.passwordResetToken).toBe(crypto.createHash("sha256").update(token!).digest("hex"));
+
+    const storedHashRes = await app.inject({
+      method: "POST", url: "/api/auth/reset-password", remoteAddress: "10.2.0.4",
+      payload: { token: updatedUser!.passwordResetToken, newPassword }
+    });
+    expect(storedHashRes.statusCode).toBe(400);
 
     // 2. Reset password
     const resetRes = await app.inject({

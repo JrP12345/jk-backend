@@ -34,25 +34,6 @@ const userWebSocketsMap = new Map<string, Set<WebSocket>>();
 const clinicQueueWebSocketsMap = new Map<string, Set<WebSocket>>();
 const clinicClinicalWebSocketsMap = new Map<string, Set<WebSocket>>();
 
-/**
- * Total active connection stats
- */
-export function getActiveConnectionsStats(): { sseCount: number; wsUserCount: number; wsQueueCount: number; wsClinicalCount: number } {
-  let sseCount = 0;
-  sseStreamsMap.forEach((streams) => { sseCount += streams.size; });
-
-  let wsUserCount = 0;
-  userWebSocketsMap.forEach((sockets) => { wsUserCount += sockets.size; });
-
-  let wsQueueCount = 0;
-  clinicQueueWebSocketsMap.forEach((sockets) => { wsQueueCount += sockets.size; });
-
-  let wsClinicalCount = 0;
-  clinicClinicalWebSocketsMap.forEach((sockets) => { wsClinicalCount += sockets.size; });
-
-  return { sseCount, wsUserCount, wsQueueCount, wsClinicalCount };
-}
-
 export function getActiveSseConnectionsCount(): number {
   let count = 0;
   sseStreamsMap.forEach((streams) => { count += streams.size; });
@@ -366,6 +347,22 @@ export function initRedisSubscriber() {
 }
 
 initRedisSubscriber();
+
+/** Release long-lived transports before closing the HTTP listener on restart. */
+export function closeRealtimeTransports(): void {
+  for (const streams of sseStreamsMap.values()) {
+    for (const reply of streams) reply.raw.end();
+  }
+  sseStreamsMap.clear();
+  const sockets = new Set<WebSocket>();
+  for (const registry of [userWebSocketsMap, clinicQueueWebSocketsMap, clinicClinicalWebSocketsMap]) {
+    for (const connections of registry.values()) for (const socket of connections) sockets.add(socket);
+    registry.clear();
+  }
+  for (const socket of sockets) socket.terminate();
+  redisSubscriber?.disconnect();
+  redisSubscriber = null;
+}
 
 // ─── Global Broadcast (Local Node + Redis Cluster Fan-Out) ───────────
 

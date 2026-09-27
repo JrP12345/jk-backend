@@ -1,5 +1,6 @@
+import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
 import { describe, it, expect } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
 import { Medicine } from "../models/Medicine.ts";
@@ -30,9 +31,7 @@ describe("Clinical Modules API Integration Tests (Pharmacy, Lab)", () => {
     adminCookies = bootstrapRes.headers["set-cookie"] as string[];
 
     // 2. Create clinic
-    const clinicRes = await app.inject({
-      method: "POST",
-      url: "/api/onboarding/clinics",
+    const clinicRes = await reuseOnboardingClinic(app, {
       headers: { cookie: adminCookies.join("; ") },
       payload: { name: "Pharmacy & Lab Branch", city: "Surat" },
     });
@@ -42,7 +41,7 @@ describe("Clinical Modules API Integration Tests (Pharmacy, Lab)", () => {
     const patRes = await app.inject({
       method: "POST",
       url: "/api/auth/register",
-      payload: { name: "Kishore Kumar", email: "kishore@test.com", password: "Password123" },
+      payload: { clinicId: clinicId,  name: "Kishore Kumar", email: "kishore@test.com", password: "Password123" },
     });
     const patUser = await User.findOne({ email: "kishore@test.com" });
     const patProfile = await Patient.findOne({ userId: patUser!._id });

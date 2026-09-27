@@ -1,13 +1,11 @@
 import { verifyEnv } from "../utilities/config.ts";
 import { domainEventDeliveryWorker } from "../services/DomainEventDeliveryWorker.ts";
 import "../notifications/services/NotificationService.ts";
-import { ClinicalSearchService } from "../services/ClinicalSearchService.ts";
 import { startWorkerHealthServer } from "../utilities/workerHealthServer.ts";
 
 verifyEnv();
 await import("../db.ts");
 
-ClinicalSearchService.registerEventListeners();
 domainEventDeliveryWorker.start();
 console.log("[DomainEventWorker] Worker started successfully");
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * HealthOS Automated Disaster Recovery & Restore Drill Runner
+ * Ekavyu Automated Disaster Recovery & Restore Drill Runner
  *
  * Non-destructive verification test:
  * 1. Locates the most recent encrypted backup archive
@@ -132,7 +132,7 @@ async function runRestoreDrill() {
   }
 
   console.log("================================================================================");
-  console.log("             HealthOS Disaster Recovery Verification Drill                     ");
+  console.log("             Ekavyu Disaster Recovery Verification Drill                     ");
   console.log("================================================================================");
   console.log(`⏱  Timestamp   : ${new Date().toISOString()}`);
   console.log(`📦 Target File : ${targetFileLabel}`);

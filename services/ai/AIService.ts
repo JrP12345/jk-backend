@@ -39,7 +39,7 @@ class FallbackAIProvider implements AIProvider {
     return {
       answer: `Based on the patient health record summary:\n\n${input.patientRecordSummary}\n\nQuery Analysis: "${input.query}" — The record shows active health history. Consult the attending physician for definitive clinical management.`,
       citations: ["Longitudinal PHR Record", "Patient Encounter Summaries"],
-      disclaimer: "ANANTA AI Health Assistant provides administrative & clinical copilot guidance.",
+      disclaimer: "Ekavyu AI Health Assistant provides administrative & clinical copilot guidance.",
       suggestedActions: actions
     };
   }
@@ -84,9 +84,11 @@ class GeminiAIProvider implements AIProvider {
     return !!this.apiKey && this.apiKey.length > 10;
   }
 
-  private async callGemini(prompt: string, schemaConfig?: any): Promise<any> {
-    const primaryModel = process.env.GEMINI_MODEL || "gemini-1.5-flash";
-    const modelsToTry = [primaryModel, "gemini-2.0-flash", "gemini-1.5-pro"];
+  get defaultModel() { return process.env.GEMINI_MODEL || "gemini-1.5-flash"; }
+
+  private async callGemini(prompt: string, schemaConfig?: any, requestedModel?: string): Promise<any> {
+    const primaryModel = requestedModel || this.defaultModel;
+    const modelsToTry = requestedModel ? [primaryModel] : [primaryModel, "gemini-2.0-flash", "gemini-1.5-pro"];
     let lastError: Error | null = null;
 
     for (let i = 0; i < modelsToTry.length; i++) {
@@ -115,6 +117,7 @@ class GeminiAIProvider implements AIProvider {
           if (rawText) {
             const cleaned = rawText.replace(/^```json\s*/i, "").replace(/\s*```$/i, "").trim();
             return {
+              modelEndpoint: model,
               data: JSON.parse(cleaned),
               usage: {
                 inputTokens: data?.usageMetadata?.promptTokenCount,
@@ -193,14 +196,14 @@ Return ONLY a JSON object matching this schema:
 
     const systemDirective = input.systemPrompt
       ? `${input.systemPrompt}\n\nStrict JSON formatting rules apply.`
-      : `You are ANANT AI Healthcare Assistant, an enterprise-grade clinical physician and hospital management copilot for the ANANT Health Platform.
+      : `You are Ekavyu AI Healthcare Assistant, an enterprise-grade clinical physician and hospital management copilot for the Ekavyu Health Platform.
 
 Role & Behavioral Rules:
 1. Provide concise, articulate, and medically sound responses focused strictly on what the user wants to know.
 2. Structure your answer using clean Markdown: use bold text for key figures/names/codes, bullet points for lists, and distinct section headers where appropriate.
 3. Keep the language natural, professional, and patient/clinician-oriented. NEVER include internal technical jargon, raw database ObjectIDs, MongoDB terms, Fastify routes, or internal system hex IDs in your answer or citations.
 4. If the user asks about patient counts, rosters, or specific clinical problems, list them cleanly with human-readable MRNs and conditions.
-5. Format citations using clean, human-friendly labels (e.g. "ANANT Hospital Registry", "Patient Clinical Directory", "Active Prescriptions Registry").
+5. Format citations using clean, human-friendly labels (e.g. "Ekavyu Hospital Registry", "Patient Clinical Directory", "Active Prescriptions Registry").
 6. Recommend relevant interactive UI actions ("suggestedActions") to help the user navigate the platform. Choose relevant URLs from the following application routes:
    - Patient Directory: "/dashboard/patients"
    - Patient EHR & Timeline: "/dashboard/patients/[patient_id]" (if a specific patient ID is known)
@@ -219,7 +222,7 @@ Return ONLY a JSON object matching this schema:
 {
   "answer": "Clean, highly professional Markdown response providing clear answers without technical clutter",
   "citations": ["Clean Human-Readable Source 1", "Clean Human-Readable Source 2"],
-  "disclaimer": "ANANTA AI Health Assistant provides grounded administrative & clinical copilot guidance.",
+  "disclaimer": "Ekavyu AI Health Assistant provides grounded administrative & clinical copilot guidance.",
   "suggestedActions": [
     {
       "type": "VIEW_PATIENT | SCHEDULE_APPOINTMENT | PRESCRIBE_MEDICATION | VIEW_TIMELINE | ANALYTICS",
@@ -251,10 +254,11 @@ Return ONLY a JSON object matching this schema:
       required: ["answer"]
     };
 
-    const raw = await this.callGemini(prompt, schemaConfig);
+    const raw = await this.callGemini(prompt, schemaConfig, input.modelEndpoint);
     const validated = validateHealthQueryResponse(raw.data || raw);
     return {
       ...validated,
+      modelEndpoint: raw.modelEndpoint,
       rawUsage: raw.usage
     };
   }
@@ -264,12 +268,12 @@ Return ONLY a JSON object matching this schema:
       ? `\n\nRecent Conversation History:\n` + input.chatHistory.map(t => `${t.sender.toUpperCase()}: ${t.text}`).join("\n")
       : "";
 
-    const systemDirective = input.systemPrompt || "You are ANANT AI Healthcare Assistant, an enterprise-grade clinical physician and hospital management copilot for the ANANT Health Platform.";
+    const systemDirective = input.systemPrompt || "You are Ekavyu AI Healthcare Assistant, an enterprise-grade clinical physician and hospital management copilot for the Ekavyu Health Platform.";
     const contentBody = input.compiledPromptText || `Context:\n${input.patientRecordSummary}${historyText}\n\nUser Query:\n${input.query}`;
 
     const prompt = `${systemDirective}\n\n${contentBody}\n\nRespond in concise, articulate, and clear professional Markdown.`;
 
-    const model = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+    const model = input.modelEndpoint || this.defaultModel;
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`;
     const res = await fetch(url, {
       method: "POST",
@@ -316,9 +320,10 @@ Return ONLY a JSON object matching this schema:
     }
 
     return {
+      modelEndpoint: input.modelEndpoint || this.defaultModel,
       answer: fullAnswer || "Response generated.",
-      citations: ["ANANT Clinical Registry"],
-      disclaimer: "ANANTA AI Health Assistant provides grounded administrative & clinical copilot guidance.",
+      citations: ["Ekavyu Clinical Registry"],
+      disclaimer: "Ekavyu AI Health Assistant provides grounded administrative & clinical copilot guidance.",
       suggestedActions: []
     };
   }
@@ -336,6 +341,8 @@ class OpenAICompatibleProvider implements AIProvider {
     this.baseURL = baseURL;
     this.model = model;
   }
+
+  get defaultModel() { return this.model; }
 
   async isHealthy(): Promise<boolean> {
     return !!this.apiKey && this.apiKey.length > 5;
@@ -384,7 +391,7 @@ JSON Keys: subjective, objective, assessment, plan, suggestedICD10 (array of cod
       ? `\n\nRecent Conversation History:\n` + input.chatHistory.map(t => `${t.sender.toUpperCase()}: ${t.text}`).join("\n")
       : "";
 
-    const systemContent = input.systemPrompt || "You are ANANTA AI Healthcare Assistant. You respond strictly in valid JSON format conforming to the requested schema.";
+    const systemContent = input.systemPrompt || "You are Ekavyu AI Healthcare Assistant. You respond strictly in valid JSON format conforming to the requested schema.";
     const userPrompt = input.compiledPromptText || `Context:\n${input.patientRecordSummary}${historyText}\n\nUser Query:\n${input.query}\n\nReturn JSON matching schema: { "answer": "text", "citations": ["src"], "disclaimer": "text", "suggestedActions": [] }`;
 
     const res = await fetch(`${this.baseURL}/chat/completions`, {
@@ -394,7 +401,7 @@ JSON Keys: subjective, objective, assessment, plan, suggestedICD10 (array of cod
         "Authorization": `Bearer ${this.apiKey}`
       },
       body: JSON.stringify({
-        model: this.model,
+        model: input.modelEndpoint || this.model,
         messages: [
           { role: "system", content: systemContent },
           { role: "user", content: userPrompt }
@@ -416,6 +423,7 @@ JSON Keys: subjective, objective, assessment, plan, suggestedICD10 (array of cod
     const validated = validateHealthQueryResponse(raw);
     return {
       ...validated,
+      modelEndpoint: input.modelEndpoint || this.model,
       rawUsage: {
         inputTokens: data?.usage?.prompt_tokens,
         outputTokens: data?.usage?.completion_tokens
@@ -438,7 +446,7 @@ JSON Keys: subjective, objective, assessment, plan, suggestedICD10 (array of cod
         "Authorization": `Bearer ${this.apiKey}`
       },
       body: JSON.stringify({
-        model: this.model,
+        model: input.modelEndpoint || this.model,
         messages: [
           { role: "system", content: systemContent },
           { role: "user", content: userPrompt }
@@ -481,20 +489,21 @@ JSON Keys: subjective, objective, assessment, plan, suggestedICD10 (array of cod
     }
 
     return {
+      modelEndpoint: input.modelEndpoint || this.defaultModel,
       answer: fullAnswer || "Response generated.",
-      citations: ["ANANT Clinical Registry"],
-      disclaimer: "ANANTA AI Health Assistant provides grounded administrative & clinical copilot guidance.",
+      citations: ["Ekavyu Clinical Registry"],
+      disclaimer: "Ekavyu AI Health Assistant provides grounded administrative & clinical copilot guidance.",
       suggestedActions: []
     };
   }
 }
 
-export class AIService {
-  private fallbackProvider = new FallbackAIProvider();
-  private primaryProvider: AIProvider = this.fallbackProvider;
+// Initialize the providers consumed by AIGateway.
+{
+  const fallbackProvider = new FallbackAIProvider();
+  let primaryProvider: AIProvider = fallbackProvider;
 
-  constructor() {
-    providerRegistry.registerProvider(this.fallbackProvider);
+    providerRegistry.registerProvider(fallbackProvider);
 
     let hasRealProvider = false;
 
@@ -503,7 +512,7 @@ export class AIService {
       const gemini = new GeminiAIProvider(process.env.GEMINI_API_KEY);
       providerRegistry.registerProvider(gemini);
       if (!hasRealProvider) {
-        this.primaryProvider = gemini;
+        primaryProvider = gemini;
         providerRegistry.setPrimaryProvider(gemini.name);
         hasRealProvider = true;
       }
@@ -514,7 +523,7 @@ export class AIService {
       const openai = new OpenAICompatibleProvider("OpenAI", process.env.OPENAI_API_KEY, "https://api.openai.com/v1", process.env.OPENAI_MODEL || "gpt-4o-mini");
       providerRegistry.registerProvider(openai);
       if (!hasRealProvider) {
-        this.primaryProvider = openai;
+        primaryProvider = openai;
         providerRegistry.setPrimaryProvider(openai.name);
         hasRealProvider = true;
       }
@@ -525,7 +534,7 @@ export class AIService {
       const groq = new OpenAICompatibleProvider("GroqAI", process.env.GROQ_API_KEY, "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile");
       providerRegistry.registerProvider(groq);
       if (!hasRealProvider) {
-        this.primaryProvider = groq;
+        primaryProvider = groq;
         providerRegistry.setPrimaryProvider(groq.name);
         hasRealProvider = true;
       }
@@ -534,83 +543,17 @@ export class AIService {
     if (!hasRealProvider) {
       if (process.env.NODE_ENV === "test") {
         console.log("[AIService] No API Key detected in test environment; using test-only fallback provider");
-        this.primaryProvider = this.fallbackProvider;
-        providerRegistry.setPrimaryProvider(this.fallbackProvider.name);
+        primaryProvider = fallbackProvider;
+        providerRegistry.setPrimaryProvider(fallbackProvider.name);
       } else if (process.env.NODE_ENV === "production") {
         console.error("[AIService] No AI provider credentials configured in production; clinical AI provider set to unavailable");
-        this.primaryProvider = new UnavailableAIProvider();
-        providerRegistry.setPrimaryProvider(this.primaryProvider.name);
+        primaryProvider = new UnavailableAIProvider();
+        providerRegistry.setPrimaryProvider(primaryProvider.name);
       } else {
         console.warn("[AIService] No AI provider credentials configured; non-production environment using local fallback copilot");
-        this.primaryProvider = this.fallbackProvider;
-        providerRegistry.setPrimaryProvider(this.primaryProvider.name);
+        primaryProvider = fallbackProvider;
+        providerRegistry.setPrimaryProvider(primaryProvider.name);
       }
     }
-  }
-
-  public setProvider(provider: AIProvider) {
-    this.primaryProvider = provider;
-  }
-
-  public getProviderName(): string {
-    return this.primaryProvider.name;
-  }
-
-  public async generateSOAPNote(input: SOAPGenerationInput): Promise<SOAPNoteDraft> {
-    try {
-      return await this.primaryProvider.generateSOAPNote(input);
-    } catch (err: any) {
-      // Attempt real failover to other registered production providers first
-      const allProviders = providerRegistry.listProviders().filter(
-        name => name !== this.primaryProvider.name && name !== "FallbackSimulationAI" && name !== "AIProviderUnavailable"
-      );
-      for (const backupName of allProviders) {
-        const backup = providerRegistry.getProvider(backupName);
-        if (backup) {
-          try {
-            console.log(`[AIService] Failing over generateSOAPNote to ${backupName}`);
-            return await backup.generateSOAPNote(input);
-          } catch (backupErr: any) {
-            console.warn(`[AIService] Backup provider ${backupName} failed:`, backupErr.message);
-          }
-        }
-      }
-
-      if (process.env.NODE_ENV === "production") {
-        throw new AIServiceUnavailableError(`AI documentation service temporarily unavailable: ${err?.message || "Generation error"}`);
-      }
-      console.warn(`[AIService] ${this.primaryProvider.name} failed (${err.message}); falling back to local clinical copilot engine.`);
-      return await this.fallbackProvider.generateSOAPNote(input);
-    }
-  }
-
-  public async queryPatientHealthAssistant(input: HealthQueryInput): Promise<HealthQueryResponse> {
-    try {
-      return await this.primaryProvider.queryPatientHealthAssistant(input);
-    } catch (err: any) {
-      // Attempt real failover to other registered production providers first
-      const allProviders = providerRegistry.listProviders().filter(
-        name => name !== this.primaryProvider.name && name !== "FallbackSimulationAI" && name !== "AIProviderUnavailable"
-      );
-      for (const backupName of allProviders) {
-        const backup = providerRegistry.getProvider(backupName);
-        if (backup) {
-          try {
-            console.log(`[AIService] Failing over queryPatientHealthAssistant to ${backupName}`);
-            return await backup.queryPatientHealthAssistant(input);
-          } catch (backupErr: any) {
-            console.warn(`[AIService] Backup provider ${backupName} failed:`, backupErr.message);
-          }
-        }
-      }
-
-      if (process.env.NODE_ENV === "production") {
-        throw new AIServiceUnavailableError(`AI health assistant query temporarily unavailable: ${err?.message || "Gateway error"}`);
-      }
-      console.warn(`[AIService] ${this.primaryProvider.name} failed (${err.message}); falling back to local clinical copilot engine.`);
-      return await this.fallbackProvider.queryPatientHealthAssistant(input);
-    }
-  }
+  
 }
-
-export const aiService = new AIService();

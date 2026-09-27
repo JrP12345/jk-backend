@@ -179,7 +179,7 @@ export function generatePrintablePrescriptionHtml(data: PrintPrescriptionData): 
 
   <div class="footer">
     <div style="font-size: 11px; color: #6b7280;">
-      ANANT Digital Health Record &bull; Official Digital Prescription Slip &bull; Generated on ${escapeHtml(new Date().toLocaleString())}
+      Ekavyu Digital Health Record &bull; Official Digital Prescription Slip &bull; Generated on ${escapeHtml(new Date().toLocaleString())}
     </div>
     <div class="signature-box">
       ${safeSignatureUrl ? `<img src="${safeSignatureUrl}" alt="Doctor Signature" style="max-height: 40px; margin-bottom: 4px;">` : ""}

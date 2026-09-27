@@ -1,9 +1,4 @@
-export interface PatientMapEntry {
-  token: string;
-  realName: string;
-  realMrn?: string;
-  realEmail?: string;
-}
+
 
 export interface PHICandidate {
   value: string;

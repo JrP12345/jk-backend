@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import crypto from "node:crypto";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { Clinic } from "../models/Clinic.ts";
 import { Patient } from "../models/Patient.ts";
@@ -16,7 +17,10 @@ describe("Patient Mobile Tracker 1-Tap UPI, Inbound Webhook & Digital Receipts T
   let doctorId: string;
   let patient: any;
 
+  const webhookSecret = "test-upi-settlement-signing-secret";
+  afterAll(() => vi.unstubAllEnvs());
   beforeAll(async () => {
+    vi.stubEnv("UPI_WEBHOOK_SECRET", webhookSecret);
     // 1. Setup Organization & Admin
     const bootstrapRes = await app.inject({
       method: "POST",
@@ -130,68 +134,6 @@ describe("Patient Mobile Tracker 1-Tap UPI, Inbound Webhook & Digital Receipts T
     expect(body.data.clinic.merchantName).toBe("Max Saket Healthcare Ltd");
   });
 
-  it("Pillar 2: Patient self-service payment on live tracker settles bill and marks appointment paid", async () => {
-    const appt = await Appointment.create({
-      organizationId: orgId,
-      clinicId,
-      doctorId,
-      patientId: patient._id,
-      appointmentTime: new Date().toISOString(),
-      appointmentType: "walk-in",
-      status: "completed",
-      tokenNumber: 52,
-      queuePosition: 2,
-      paymentStatus: "unpaid",
-      paymentAmount: 850,
-    });
-
-    const invoice = await Invoice.create({
-      organizationId: orgId,
-      clinicId,
-      patientId: patient._id,
-      doctorId,
-      appointmentId: appt._id,
-      invoiceNumber: `INV-TEST-${Date.now().toString().slice(-6)}`,
-      dueDate: new Date(),
-      subtotal: 850,
-      totalAmount: 850,
-      amountPaid: 0,
-      balanceDue: 850,
-      status: "unpaid",
-      items: [
-        {
-          description: "Consultation + ECG Cardio Diagnostic",
-          quantity: 1,
-          amount: 850,
-          totalItemAmount: 850,
-        },
-      ],
-    });
-
-    // Patient clicks "Confirm & Pay" on Mobile Live Tracker
-    const payRes = await app.inject({
-      method: "POST",
-      url: `/api/public/track/${appt._id}/pay`,
-      payload: { paymentMethod: "upi" },
-    });
-
-    expect(payRes.statusCode).toBe(200);
-    const body = JSON.parse(payRes.body);
-    expect(body.success).toBe(true);
-    expect(body.data.status).toBe("paid");
-    expect(body.data.balanceDue).toBe(0);
-
-    // Verify DB update
-    const settledAppt = await Appointment.findById(appt._id);
-    expect(settledAppt?.paymentStatus).toBe("paid");
-
-    const settledInv = await Invoice.findById(invoice._id);
-    expect(settledInv?.status).toBe("paid");
-    expect(settledInv?.amountPaid).toBe(850);
-    expect(settledInv?.balanceDue).toBe(0);
-    expect(settledInv?.paymentMethod).toBe("upi");
-  });
-
   it("Pillar 3: Autonomous inbound UPI bank webhook (/api/webhooks/upi) processes zero-touch settlement", async () => {
     const apptWeb = await Appointment.create({
       organizationId: orgId,
@@ -207,19 +149,22 @@ describe("Patient Mobile Tracker 1-Tap UPI, Inbound Webhook & Digital Receipts T
       paymentAmount: 600,
     });
 
-    const txnId = `NPCI-UPI-${Date.now()}`;
-    const webhookRes = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/upi",
-      payload: {
-        transactionId: txnId,
-        appointmentId: apptWeb._id.toString(),
-        amount: 600,
-        status: "SUCCESS",
-        paymentMethod: "upi",
-        payerVpa: "sunil.verma@okhdfcbank",
-      },
+    const invoice = await Invoice.create({
+      organizationId: orgId, clinicId, doctorId, patientId: patient._id,
+      appointmentId: apptWeb._id, invoiceNumber: `INV-UPI-${apptWeb._id}`,
+      items: [{ description: "Consultation", amount: 600, quantity: 1, totalItemAmount: 600 }],
+      subtotal: 600, totalAmount: 600, amountPaid: 0, balanceDue: 600, status: "unpaid"
     });
+    const orderId = `order_upi_${apptWeb._id}`;
+    await AppointmentPayment.create({ appointmentId: apptWeb._id, invoiceId: invoice._id,
+      patientId: patient._id, amount: 600, paymentMethod: "razorpay", razorpayOrderId: orderId,
+      status: "created", idempotencyKey: `upi-order:${apptWeb._id}` });
+    const txnId = `NPCI-UPI-${Date.now()}`;
+    const payload = { transactionId: txnId, orderId, invoiceId: invoice._id.toString(),
+      appointmentId: apptWeb._id.toString(), amount: 600, status: "SUCCESS", paymentMethod: "upi" };
+    const signature = crypto.createHmac("sha256", webhookSecret).update(JSON.stringify(payload)).digest("hex");
+    const webhookRes = await app.inject({ method: "POST", url: "/api/webhooks/upi",
+      headers: { "x-webhook-signature": signature }, payload });
 
     expect(webhookRes.statusCode).toBe(200);
     const body = JSON.parse(webhookRes.body);

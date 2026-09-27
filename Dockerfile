@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ─── Stage 1: Build & Bundle with esbuild ────────────────────────────────────
-FROM node:20-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 
 # Install build dependencies
@@ -16,7 +16,7 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 # ─── Stage 2: Hardened Production Runner ──────────────────────────────────────
-FROM node:20-alpine AS runner
+FROM node:24-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -37,6 +37,6 @@ EXPOSE 5000
 
 # Healthcheck — periodically polls liveness probe
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD wget -qO- http://localhost:5000/api/health/liveness || exit 1
+  CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 5000) + '/api/health/liveness', {headers: {Connection: 'close'}, signal: AbortSignal.timeout(4000)}).then(async r => {await r.arrayBuffer(); if (!r.ok) process.exitCode = 1;}).catch(() => {process.exitCode = 1;})"
 
 CMD ["node", "dist/index.js"]

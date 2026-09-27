@@ -1,5 +1,6 @@
+import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { PatientFeedback } from "../models/PatientFeedback.ts";
 import { Appointment } from "../models/Appointment.ts";
 
@@ -27,19 +28,14 @@ describe("Patient Experience (PEC) & NPS Feedback Integration Tests", () => {
     adminCookies = orgRes.headers["set-cookie"] as string[];
 
     // 2. Create Clinic
-    const clinicRes = await app.inject({
-      method: "POST",
-      url: "/api/onboarding/clinics",
-      headers: { cookie: adminCookies.join("; ") },
-      payload: {
+    const clinicRes = await reuseOnboardingClinic(app, { headers: { cookie: adminCookies.join("; ") }, payload: {
         name: "Apollo Specialty OPD Center",
         city: "Hyderabad",
         address: "10 Jubilee Hills",
         phone: "9800044400",
         email: "pec@apollo.internal",
-      },
-    });
-    expect(clinicRes.statusCode).toBe(201);
+      } });
+    expect(clinicRes.statusCode).toBe(200);
     clinicId = JSON.parse(clinicRes.body).data.id;
 
     // 3. Register Patient
@@ -48,6 +44,7 @@ describe("Patient Experience (PEC) & NPS Feedback Integration Tests", () => {
       url: "/api/auth/register",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
+        clinicId,
         name: "Anish Feedback Patient",
         email: `anish_pec_${Date.now()}@patient.com`,
         phone: "9876541100",

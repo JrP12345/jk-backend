@@ -2,10 +2,10 @@
  * Operator CLI command for dead-letter inspection and replay with audit logging.
  *
  * Usage:
- *   npx tsx scripts/operator-replay.ts --metrics
- *   npx tsx scripts/operator-replay.ts --list --kind=domain_event
- *   npx tsx scripts/operator-replay.ts --replay --kind=domain_event --id=<ID> --actor=<USER_ID>
- *   npx tsx scripts/operator-replay.ts --replay-all --kind=domain_event --actor=<USER_ID>
+ *   npm run replay:dead-letters -- --metrics
+ *   npm run replay:dead-letters -- --list --kind=domain_event
+ *   npm run replay:dead-letters -- --replay --kind=domain_event --id=<ID> --actor=<USER_ID>
+ *   npm run replay:dead-letters -- --replay-all --kind=domain_event --actor=<USER_ID>
  */
 import mongoose from "mongoose";
 import { verifyEnv } from "../utilities/config.ts";

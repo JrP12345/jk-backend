@@ -1,7 +1,9 @@
-import { describe, it, expect } from "vitest";
-import app from "../index.js";
+import { markBootstrapComplete } from "../utilities/readiness.ts";
+import { describe, it, expect, beforeAll } from "vitest";
+import app from "../index.ts";
 
 describe("Milestone 9: Infrastructure & DevOps Hardening Tests", () => {
+  beforeAll(async () => { await app.ready(); markBootstrapComplete(); });
   it("should respond cleanly to SRE health probe endpoints", async () => {
     // Liveness Probe
     const liveRes = await app.inject({
@@ -19,7 +21,7 @@ describe("Milestone 9: Infrastructure & DevOps Hardening Tests", () => {
     expect(readyRes.statusCode).toBe(200);
     const readyBody = JSON.parse(readyRes.body);
     expect(readyBody.status).toBe("ready");
-    expect(readyBody.database).toBe("connected");
+    expect(readyBody.database.status).toBe("connected");
 
     // General Health
     const healthRes = await app.inject({

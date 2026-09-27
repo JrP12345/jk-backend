@@ -1,5 +1,6 @@
+import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Prescription } from "../models/Prescription.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { setupCeOrgFixture, bookWalkInAppointment, cookieHeader } from "./helpers/clinicEssentialsSetup.ts";
@@ -149,12 +150,7 @@ describe("Clinic Essentials Cycle 2 — clinic_manager RBAC", () => {
     });
     const adminCookies = (orgRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
 
-    const clinicRes = await app.inject({
-      method: "POST",
-      url: "/api/onboarding/clinics",
-      headers: { cookie: adminCookies.join("; ") },
-      payload: { name: "CM Clinic", city: "Pune" },
-    });
+    const clinicRes = await reuseOnboardingClinic(app, { headers: { cookie: adminCookies.join("; ") }, payload: { name: "CM Clinic", city: "Pune" } });
     clinicId = JSON.parse(clinicRes.body).data.id;
 
     const docRes = await app.inject({
@@ -242,12 +238,7 @@ describe("Clinic Essentials Cycle 2 — Encounter Billing Tenant Isolation", () 
     const orgACookies = (orgARes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
     const orgAId = JSON.parse(orgARes.body).data.organization.id;
 
-    const clinicARes = await app.inject({
-      method: "POST",
-      url: "/api/onboarding/clinics",
-      headers: { cookie: orgACookies.join("; ") },
-      payload: { name: "Enc Clinic A", city: "Mumbai" },
-    });
+    const clinicARes = await reuseOnboardingClinic(app, { headers: { cookie: orgACookies.join("; ") }, payload: { name: "Enc Clinic A", city: "Mumbai" } });
     const clinicAId = JSON.parse(clinicARes.body).data.id;
 
     const docARes = await app.inject({

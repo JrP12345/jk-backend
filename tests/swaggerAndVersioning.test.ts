@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import app from "../index.js";
+import app from "../index.ts";
 
 describe("Milestone 4: API Versioning & OpenAPI Documentation Tests", () => {
   it("should serve OpenAPI 3.0 JSON specification at /documentation/json", async () => {
@@ -11,7 +11,7 @@ describe("Milestone 4: API Versioning & OpenAPI Documentation Tests", () => {
 
     const spec = JSON.parse(res.body);
     expect(spec.openapi).toContain("3.");
-    expect(spec.info.title).toContain("ANANTA Healthcare Infrastructure Platform API");
+    expect(spec.info.title).toContain("Ekavyu Healthcare Infrastructure Platform API");
     expect(spec.info.version).toBe("1.0.0");
   });
 

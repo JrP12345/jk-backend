@@ -202,7 +202,7 @@ export async function verifyAppointmentPayment(req: FastifyRequest, reply: Fasti
             paymentDate: new Date(),
           },
         },
-        { session },
+        { session: session || undefined },
       );
     });
 
@@ -492,7 +492,7 @@ export async function reconcileAppointmentPayment(req: FastifyRequest, reply: Fa
               paymentDate: new Date(),
             },
           },
-          { session },
+          { session: session || undefined },
         );
 
         await AuditLog.create(
@@ -512,7 +512,7 @@ export async function reconcileAppointmentPayment(req: FastifyRequest, reply: Fa
               },
             },
           ],
-          { session },
+          { session: session || undefined },
         );
       });
 

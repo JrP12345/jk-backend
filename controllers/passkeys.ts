@@ -54,7 +54,7 @@ export async function registrationOptions(req: FastifyRequest, reply: FastifyRep
     const keys = await Passkey.find({ userId: user._id }).lean();
     if (keys.length >= 10) return reply.code(400).send(errorResponse("Remove an existing passkey before adding another"));
     const { rpID } = relyingParty();
-    const options = await generateRegistrationOptions({ rpName: "ANANTA Healthcare", rpID,
+    const options = await generateRegistrationOptions({ rpName: "Ekavyu Healthcare", rpID,
       userID: new TextEncoder().encode(user.id), userName: user.email || user.phone || user.id, userDisplayName: user.name,
       attestationType: "none", excludeCredentials: keys.map((key: any) => ({ id: key.credentialId, transports: key.transports })),
       authenticatorSelection: { residentKey: "required", userVerification: "required" } });

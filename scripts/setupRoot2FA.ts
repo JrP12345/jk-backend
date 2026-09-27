@@ -40,7 +40,7 @@ async function setupRootTwoFactor(): Promise<void> {
     throw new Error(`No active root user was found for ${rootEmail}.`);
   }
 
-  const secret = TwoFactorService.generateSecret(user.email || rootEmail, "ANANTA");
+  const secret = TwoFactorService.generateSecret(user.email || rootEmail, "Ekavyu");
   if (!secret.base32 || !secret.otpauthUrl) {
     throw new Error("Could not generate a TOTP secret.");
   }

@@ -72,7 +72,13 @@ export class EmailProvider {
    */
   public async sendEmail(options: EmailOptions, orgSmtp?: SmtpConfig | null): Promise<boolean> {
     const fromEmail = orgSmtp?.fromEmail || options.from || process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER || "noreply@anant.health";
-    const fromName = orgSmtp?.fromName || process.env.SMTP_FROM_NAME || "Anant Health";
+    // Old platform SMTP display names can survive in deployed environment
+    // settings. Normalize only those labels; preserve tenant names and addresses.
+    const configuredName = process.env.SMTP_FROM_NAME?.trim();
+    const platformName = !configuredName || /^(?:ananta?|health\s?os|clinic\s?os)(?:\s+health(?:care)?)?$/i.test(configuredName)
+      ? "Ekavyu"
+      : configuredName;
+    const fromName = orgSmtp?.fromName || platformName;
     const formattedFrom = fromEmail.includes("<") ? fromEmail : `"${fromName}" <${fromEmail}>`;
 
     // Use org-level SMTP if fully configured

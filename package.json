@@ -5,11 +5,10 @@
   "main": "index.ts",
   "scripts": {
     "test": "vitest run",
-    "check:fast": "node ../scripts/dev_check.js",
-    "check:feature": "node ../scripts/feature_check.js",
+    "check:fast": "node node_modules/typescript/bin/tsc --noEmit",
+    "check:startup": "node scripts/check-startup.mjs",
     "check:tenants": "node --experimental-strip-types scripts/check-tenant-scoping.ts",
     "audit:release": "node ../scripts/repo_auditor.js",
-    "audit": "node ../scripts/repo_auditor.js",
     "seed": "node --env-file=.env --experimental-strip-types scripts/seedDatabase.ts",
     "seed:clean": "node --env-file=.env --experimental-strip-types scripts/seedFreshCleanDB.ts",
     "setup:root-2fa": "node --env-file=.env --experimental-strip-types scripts/setupRoot2FA.ts",
@@ -22,18 +21,16 @@
     "migrate:outbox-indexes": "node --env-file=.env --experimental-strip-types scripts/migrate-outbox-indexes.ts",
     "migrate:whatsapp": "node --env-file=.env --experimental-strip-types scripts/migrate-whatsapp-storage.ts",
     "migrate:domain-event-indexes": "node --env-file=.env --experimental-strip-types scripts/migrate-domain-event-indexes.ts",
-    "worker:notifications": "node --env-file=.env --experimental-strip-types workers/notificationDeliveryWorker.ts",
-    "worker:disruption-timeouts": "node --env-file=.env --experimental-strip-types workers/disruptionTimeoutWorker.ts",
-    "worker:outbound-messages": "node --env-file=.env --experimental-strip-types workers/outboundMessageWorker.ts",
-    "worker:domain-events": "node --env-file=.env --experimental-strip-types workers/domainEventWorker.ts",
+    "worker:notifications": "node --env-file-if-exists=.env dist/workers/notificationDeliveryWorker.js",
+    "worker:disruption-timeouts": "node --env-file-if-exists=.env dist/workers/disruptionTimeoutWorker.js",
+    "worker:outbound-messages": "node --env-file-if-exists=.env dist/workers/outboundMessageWorker.js",
+    "worker:domain-events": "node --env-file-if-exists=.env dist/workers/domainEventWorker.js",
     "replay:dead-letters": "node --env-file=.env --experimental-strip-types scripts/operator-replay.ts",
     "audit:scan": "node --env-file=.env --experimental-strip-types scripts/audit-remediation.ts",
-    "build": "esbuild index.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/index.js --target=node20",
-    "postinstall": "npm run build",
-    "prestart": "npm run build",
+    "build": "node scripts/build.mjs",
     "start": "node dist/index.js",
-    "start:ts": "node --experimental-strip-types index.ts",
-    "dev": "nodemon -e js,ts,json,env --exec \"node --env-file=.env --experimental-strip-types\" index.ts"
+    "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
+    "worker:no-show": "node --env-file-if-exists=.env dist/workers/noShowSweepWorker.js"
   },
   "repository": {
     "type": "git",
@@ -60,14 +57,14 @@
     "@sentry/node": "^10.73.0",
     "@simplewebauthn/server": "^14.0.3",
     "bcryptjs": "^3.0.3",
-    "esbuild": "^0.28.0",
     "fastify": "^5.12.3",
     "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.9.5",
     "nodemailer": "^10.0.1",
     "qrcode": "^1.5.4",
-    "speakeasy": "^2.0.0"
+    "speakeasy": "^2.0.0",
+    "fastify-plugin": "^6.0.0"
   },
   "devDependencies": {
     "@types/jsonwebtoken": "^9.0.8",
@@ -78,6 +75,10 @@
     "@types/ws": "^8.18.1",
     "mongodb-memory-server": "^11.2.0",
     "typescript": "5.9.3",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.0",
+    "esbuild": "^0.28.0"
+  },
+  "engines": {
+    "node": ">=24 <25"
   }
 }

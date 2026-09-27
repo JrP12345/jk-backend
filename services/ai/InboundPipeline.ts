@@ -10,6 +10,8 @@ import { AIServiceUnavailableError } from "./AIService.ts";
 
 export interface InboundPipelineContext {
   request: AIRequest;
+  enableStreaming: boolean;
+  allowedProviders: string[];
   anonymizedPrompt: string;
   anonymizedContext: string;
   compiledPrompt: CompiledPrompt;
@@ -60,6 +62,8 @@ export class InboundPipeline {
       throw new AIServiceUnavailableError("External AI is disabled for this organization by tenant policy.");
     }
 
+    if (!request.modelAlias) request.modelAlias = orgConfig?.defaultModelAlias as AIRequest["modelAlias"] || "CLINICAL_FAST";
+
     // 3. Data Classification Policy Enforcement
     const classification: "nonclinical" | "deidentified_clinical" | "identifiable_clinical" =
       request.dataClassification || (orgConfig as any)?.defaultDataClassification || "deidentified_clinical";
@@ -97,9 +101,11 @@ export class InboundPipeline {
     if (classification === "nonclinical") {
       // For nonclinical queries, do not load clinical/EHR records
       sixDContext = {
-        currentRoute: extraContextInput?.currentRoute || "",
-        activePatientId: undefined,
-        userRole: extraContextInput?.userRole || "",
+        routeContext: extraContextInput?.currentRoute || "",
+        patientRecordContext: "",
+        roleContext: extraContextInput?.userRole || "",
+        encounterContext: "",
+        organizationContext: "",
         fullContextSummary: "Nonclinical administrative context."
       };
     } else {
@@ -198,6 +204,8 @@ export class InboundPipeline {
 
     return {
       request,
+      enableStreaming: orgConfig?.featureFlags?.enableStreaming !== false,
+      allowedProviders: (orgConfig as any)?.allowedProviders || [],
       anonymizedPrompt,
       anonymizedContext,
       compiledPrompt,

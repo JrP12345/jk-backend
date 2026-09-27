@@ -53,7 +53,6 @@ const PatientSchema = new Schema({
 
   mrn: { type: String, unique: true, sparse: true, index: true },
   globalPatientId: { type: String, unique: true, sparse: true, index: true },
-  activeConsentGrants: [{ type: Schema.Types.ObjectId, ref: "Consent" }],
   optOutWhatsApp: { type: Boolean, default: false, index: true },
 
   // ABDM Milestone 3 (M3) HIP Care Contexts & HIU Consent

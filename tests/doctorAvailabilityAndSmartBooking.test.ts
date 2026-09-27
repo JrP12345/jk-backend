@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
@@ -213,7 +213,7 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
     const overrideBody = JSON.parse(overrideRes.body);
     expect(overrideBody.success).toBe(true);
     expect(overrideBody.data.override.status).toBe("unavailable");
-    expect(overrideBody.data.affectedSummary.autoCancelled).toBeGreaterThanOrEqual(1);
+    expect(overrideBody.data.affectedSummary.remoteNotifiedCount).toBeGreaterThanOrEqual(1);
 
     // Verify slot service reflects unavailable override
     const slotsRes = await app.inject({
@@ -273,7 +273,7 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
 
   it("should calculate adaptive EWT using completed encounters", async () => {
     const today = new Date();
-    const todayStr = today.toISOString().slice(0, 10);
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
 
     // Check initial queue status (no completed encounters today -> default duration)
     const initialStatusRes = await app.inject({

@@ -1,5 +1,6 @@
+import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import { User } from "../models/User.ts";
@@ -68,20 +69,15 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
         admin_password: "Password123",
       },
     });
-    expect(orgARes.statusCode).toBe(201);
+    expect(orgARes.statusCode, orgARes.body).toBe(201);
     const orgAData = JSON.parse(orgARes.body);
     orgA = orgAData.data?.organization || orgAData.data;
     adminACookies = (orgARes.headers["set-cookie"] as string[])?.join("; ") || "";
     adminAToken = orgARes.cookies?.find((c: any) => c.name === "access_token")?.value || "";
 
     // Create Clinic A
-    const clinicARes = await app.inject({
-      method: "POST",
-      url: "/api/onboarding/clinics",
-      headers: { cookie: adminACookies },
-      payload: { name: "Break Test Clinic A", city: "Mumbai", address: "100 Test Rd", phone: "9000000001", email: `clinicA_${ts}@test.com` },
-    });
-    expect(clinicARes.statusCode).toBe(201);
+    const clinicARes = await reuseOnboardingClinic(app, { headers: { cookie: adminACookies }, payload: { name: "Break Test Clinic A", city: "Mumbai", address: "100 Test Rd", phone: "9000000001", email: `clinicA_${ts}@test.com` } });
+    expect(clinicARes.statusCode, clinicARes.body).toBe(200);
     clinicA = JSON.parse(clinicARes.body).data;
 
     // Register Patient A
@@ -89,9 +85,9 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       method: "POST",
       url: "/api/auth/register",
       headers: { cookie: adminACookies },
-      payload: { name: "Patient A", email: `patient_a_${ts}@test.com`, phone: "9111111111", password: "Password123", role: "patient" },
+      payload: { clinicId: clinicA.id,  name: "Patient A", email: `patient_a_${ts}@test.com`, phone: "9111111111", password: "Password123", role: "patient" },
     });
-    expect(patARes.statusCode).toBe(201);
+    expect(patARes.statusCode, patARes.body).toBe(201);
     patientAUser = JSON.parse(patARes.body).data.user;
     patientAProfile = await Patient.findOne({ userId: patientAUser.id });
 
@@ -112,7 +108,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       headers: { cookie: adminACookies },
       payload: { name: "Dr. Break Test", email: `dr_break_${ts}@test.com`, specialization: "General", phone: "9222222222", role: "doctor", password: "Password123" },
     });
-    expect(docARes.statusCode).toBe(201);
+    expect(docARes.statusCode, docARes.body).toBe(201);
     doctorAUser = JSON.parse(docARes.body).data;
 
     // Assign Doctor A to Clinic A
@@ -136,7 +132,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
         subtotal: 500, tax: 0, discount: 0, totalAmount: 500,
       },
     });
-    expect(invRes.statusCode).toBe(201);
+    expect(invRes.statusCode, invRes.body).toBe(201);
     invoiceA = JSON.parse(invRes.body).data;
 
     // Create Pre-Auth A (for state machine tests)
@@ -150,7 +146,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
         proposedTreatment: "Tonsillectomy", requestedAmount: 50000,
       },
     });
-    expect(paRes.statusCode).toBe(201);
+    expect(paRes.statusCode, paRes.body).toBe(201);
     preAuthA = JSON.parse(paRes.body).data;
 
     // Create Claim A
@@ -163,7 +159,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
         payerName: "HDFC ERGO", policyNumber: "HDFC-BREAK-001", totalClaimAmount: 25000,
       },
     });
-    expect(claimRes.statusCode).toBe(201);
+    expect(claimRes.statusCode, claimRes.body).toBe(201);
     claimA = JSON.parse(claimRes.body).data;
 
     // Create Lab Test A
@@ -176,7 +172,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
         department: "Hematology", sampleType: "Whole Blood", price: 350, normalRange: "4.5-11.0 x10^9/L",
       },
     });
-    expect(ltRes.statusCode).toBe(201);
+    expect(ltRes.statusCode, ltRes.body).toBe(201);
     labTestA = JSON.parse(ltRes.body).data;
 
     // Create Lab Order A
@@ -186,7 +182,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       headers: { cookie: adminACookies },
       payload: { clinicId: clinicA.id, patientId: patientAProfile!._id.toString(), doctorId: doctorAUser.id, testId: labTestA.id || labTestA._id },
     });
-    expect(loRes.statusCode).toBe(201);
+    expect(loRes.statusCode, loRes.body).toBe(201);
     labOrderA = JSON.parse(loRes.body).data;
 
     // Create Appointment A
@@ -203,7 +199,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
         patientId: patientAProfile!._id.toString(), status: "confirmed", notes: "Break test appointment",
       },
     });
-    expect(apptRes.statusCode).toBe(201);
+    expect(apptRes.statusCode, apptRes.body).toBe(201);
     appointmentA = JSON.parse(apptRes.body).data;
 
     // ═══ ORG B SETUP (ADVERSARY) ═══
@@ -218,20 +214,15 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
         admin_password: "Password123",
       },
     });
-    expect(orgBRes.statusCode).toBe(201);
+    expect(orgBRes.statusCode, orgBRes.body).toBe(201);
     const orgBData = JSON.parse(orgBRes.body);
     orgB = orgBData.data?.organization || orgBData.data;
     adminBCookies = (orgBRes.headers["set-cookie"] as string[])?.join("; ") || "";
     adminBToken = orgBRes.cookies?.find((c: any) => c.name === "access_token")?.value || "";
 
     // Create Clinic B
-    const clinicBRes = await app.inject({
-      method: "POST",
-      url: "/api/onboarding/clinics",
-      headers: { cookie: adminBCookies },
-      payload: { name: "Break Test Clinic B", city: "Delhi", address: "200 Hack St", phone: "9333333333", email: `clinicB_${ts}@test.com` },
-    });
-    expect(clinicBRes.statusCode).toBe(201);
+    const clinicBRes = await reuseOnboardingClinic(app, { headers: { cookie: adminBCookies }, payload: { name: "Break Test Clinic B", city: "Delhi", address: "200 Hack St", phone: "9333333333", email: `clinicB_${ts}@test.com` } });
+    expect(clinicBRes.statusCode, clinicBRes.body).toBe(200);
     clinicB = JSON.parse(clinicBRes.body).data;
 
     // Register Patient B
@@ -239,9 +230,9 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       method: "POST",
       url: "/api/auth/register",
       headers: { cookie: adminBCookies },
-      payload: { name: "Patient B", email: `patient_b_${ts}@test.com`, phone: "9444444444", password: "Password123", role: "patient" },
+      payload: { clinicId: clinicB.id,  name: "Patient B", email: `patient_b_${ts}@test.com`, phone: "9444444444", password: "Password123", role: "patient" },
     });
-    expect(patBRes.statusCode).toBe(201);
+    expect(patBRes.statusCode, patBRes.body).toBe(201);
     patientBUser = JSON.parse(patBRes.body).data.user;
     patientBProfile = await Patient.findOne({ userId: patientBUser.id });
   }, 60000);

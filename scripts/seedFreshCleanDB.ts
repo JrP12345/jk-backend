@@ -27,11 +27,9 @@ import { TaskModel } from "../models/Task.ts";
 import { Notification } from "../models/Notification.ts";
 import { NotificationDelivery } from "../models/NotificationDelivery.ts";
 import { NotificationPreference } from "../models/NotificationPreference.ts";
-import { NotificationTemplate } from "../models/NotificationTemplate.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { Counter } from "../models/Counter.ts";
 import { Role } from "../models/Role.ts";
-import { Permission } from "../models/Permission.ts";
 import { PendingTwoFactorSetup } from "../models/PendingTwoFactorSetup.ts";
 import { OnboardingDraft } from "../models/OnboardingDraft.ts";
 import { RefreshToken } from "../models/RefreshToken.ts";
@@ -47,7 +45,7 @@ async function runPureRootOnlySeed() {
   }
 
   console.log("=======================================================================");
-  console.log("🧹 [ANANTA HEALTHCARE SYSTEM] PURE ROOT-ONLY FRESH SETUP");
+  console.log("🧹 [Ekavyu HEALTHCARE SYSTEM] PURE ROOT-ONLY FRESH SETUP");
   console.log("=======================================================================");
 
   try {
@@ -84,11 +82,9 @@ async function runPureRootOnlySeed() {
       Notification.deleteMany({}),
       NotificationDelivery.deleteMany({}),
       NotificationPreference.deleteMany({}),
-      NotificationTemplate.deleteMany({}),
       AuditLog.deleteMany({}),
       Counter.deleteMany({}),
       Role.deleteMany({}),
-      Permission.deleteMany({}),
       PendingTwoFactorSetup.deleteMany({}),
       OnboardingDraft.deleteMany({}),
       RefreshToken.deleteMany({}),

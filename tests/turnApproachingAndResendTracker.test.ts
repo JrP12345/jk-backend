@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { Clinic } from "../models/Clinic.ts";
 import { Patient } from "../models/Patient.ts";
@@ -264,7 +264,7 @@ describe("P2 Turn Approaching Notification Loop & P3 Resend Tracker Suite", () =
     expect(body.data.tokenNumber).toBe(204);
     expect(body.data.recipientPhone).toBe(patient1.phone);
     expect(body.data.channel).toBe("whatsapp");
-    expect(body.data.trackingUrl).toBe(`/track/${appt._id}`);
+    expect(body.data.trackingUrl).toMatch(new RegExp(`^/track/${appt._id}[?#]t=.+`));
 
     // Verify AuditLog entry was created
     const audit = await AuditLog.findOne({
@@ -272,7 +272,7 @@ describe("P2 Turn Approaching Notification Loop & P3 Resend Tracker Suite", () =
       action: "QUEUE_TRACKER_RESENT",
     });
     expect(audit).toBeDefined();
-    expect(audit?.details.recipientPhone).toBe(patient1.phone);
+    expect(audit?.details.recipientPhone).toBe("[REDACTED]");
   });
 
   it("P3: Receptionist resends tracker link to alternate/attendee phone via SMS", async () => {
@@ -314,6 +314,6 @@ describe("P2 Turn Approaching Notification Loop & P3 Resend Tracker Suite", () =
       "details.channel": "sms",
     });
     expect(audit).toBeDefined();
-    expect(audit?.details.recipientPhone).toBe(customPhone);
+    expect(audit?.details.recipientPhone).toBe("[REDACTED]");
   });
 });

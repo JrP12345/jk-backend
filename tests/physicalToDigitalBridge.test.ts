@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { Clinic } from "../models/Clinic.ts";
 import { User } from "../models/User.ts";
@@ -144,7 +144,7 @@ describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration
     expect(body.data.appointmentId).toBeDefined();
     expect(body.data.tokenNumber).toBeGreaterThanOrEqual(1);
     expect(body.data.isExisting).toBe(false);
-    expect(body.data.trackingUrl).toBe(`/track/${body.data.appointmentId}`);
+    expect(body.data.trackingUrl).toMatch(new RegExp(`^/track/${body.data.appointmentId}[?#]t=.+`));
 
     // Verify appointment was created in DB with status: "checked-in"
     const appt = await Appointment.findById(body.data.appointmentId);

@@ -57,7 +57,7 @@ export async function exportReport(req: FastifyRequest, reply: FastifyReply) {
     const reportVersion = version === "v2" ? "v2" : "v1";
     const csvContent = await generateCsvReport(type, targetOrgId, clinicId, reportVersion, startDate, endDate);
 
-    const filename = `ananta_${type}_report_${new Date().toISOString().split("T")[0]}.csv`;
+    const filename = `ekavyu_${type}_report_${new Date().toISOString().split("T")[0]}.csv`;
 
     reply.header("Content-Type", "text/csv");
     reply.header("Content-Disposition", `attachment; filename="${filename}"`);

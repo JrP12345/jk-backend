@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { Clinic } from "../models/Clinic.ts";
 import { Patient } from "../models/Patient.ts";
@@ -223,6 +223,6 @@ describe("In-Cabin Diagnostic Lab Ordering & Digital Rx WhatsApp Suite", () => {
       targetId: appt._id,
     });
     expect(audit).not.toBeNull();
-    expect(audit?.details?.phone).toBe("+919988776655");
+    expect(audit?.details?.phone).toBe("[REDACTED]");
   });
 });

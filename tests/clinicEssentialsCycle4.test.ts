@@ -1,5 +1,6 @@
+import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Invoice } from "../models/Invoice.ts";
 
 describe("Clinic Essentials Cycle 4 — Payment Tenant Isolation", () => {
@@ -23,12 +24,7 @@ describe("Clinic Essentials Cycle 4 — Payment Tenant Isolation", () => {
     });
     orgACookies = (orgARes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
 
-    const clinicARes = await app.inject({
-      method: "POST",
-      url: "/api/onboarding/clinics",
-      headers: { cookie: orgACookies.join("; ") },
-      payload: { name: "Pay Clinic A", city: "Mumbai" },
-    });
+    const clinicARes = await reuseOnboardingClinic(app, { headers: { cookie: orgACookies.join("; ") }, payload: { name: "Pay Clinic A", city: "Mumbai" } });
     const clinicAId = JSON.parse(clinicARes.body).data.id;
 
     const docARes = await app.inject({
@@ -119,12 +115,7 @@ describe("Clinic Essentials Cycle 4 — clinic_manager Billing", () => {
     });
     const adminCookies = (orgRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
 
-    const clinicRes = await app.inject({
-      method: "POST",
-      url: "/api/onboarding/clinics",
-      headers: { cookie: adminCookies.join("; ") },
-      payload: { name: "CM Bill Clinic", city: "Pune" },
-    });
+    const clinicRes = await reuseOnboardingClinic(app, { headers: { cookie: adminCookies.join("; ") }, payload: { name: "CM Bill Clinic", city: "Pune" } });
     clinicId = JSON.parse(clinicRes.body).data.id;
 
     const docRes = await app.inject({
@@ -212,12 +203,7 @@ describe("Clinic Essentials Cycle 4 — Consult Fee Dedupe", () => {
     });
     adminCookies = (orgRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
 
-    const clinicRes = await app.inject({
-      method: "POST",
-      url: "/api/onboarding/clinics",
-      headers: { cookie: adminCookies.join("; ") },
-      payload: { name: "Dedupe Clinic", city: "Chennai" },
-    });
+    const clinicRes = await reuseOnboardingClinic(app, { headers: { cookie: adminCookies.join("; ") }, payload: { name: "Dedupe Clinic", city: "Chennai" } });
     const clinicId = JSON.parse(clinicRes.body).data.id;
 
     const docRes = await app.inject({
@@ -297,4 +283,41 @@ describe("Clinic Essentials Cycle 4 — Consult Fee Dedupe", () => {
     const duplicateEncounterInvoices = await Invoice.find({ encounterId, appointmentId: { $ne: appointmentId } });
     expect(duplicateEncounterInvoices.length).toBe(0);
   });
+
+  it.each(["unpaid", "partially_paid", "paid"] as const)("does not recapture a consultation already billed on a %s invoice", async (status) => {
+    const bookingInvoice = await Invoice.findOne({ appointmentId });
+    expect(bookingInvoice).toBeTruthy();
+    const originalStatus = bookingInvoice!.status;
+    try {
+      await Invoice.updateOne({ _id: bookingInvoice!._id }, { $set: { status } });
+      const preview = await app.inject({
+        method: "GET",
+        url: `/api/encounters/${encounterId}/charges-preview`,
+        headers: { cookie: adminCookies.join("; ") },
+      });
+      expect(preview.statusCode, preview.body).toBe(200);
+      expect(JSON.parse(preview.body).data.items.some((item: { category: string }) => item.category === "consultation")).toBe(false);
+    } finally {
+      await Invoice.updateOne({ _id: bookingInvoice!._id }, { $set: { status: originalStatus } });
+    }
+  });
+
+  it("still captures consultation when the linked invoice only bills lab services", async () => {
+    const bookingInvoice = await Invoice.findOne({ appointmentId });
+    expect(bookingInvoice).toBeTruthy();
+    const originalItems = bookingInvoice!.items.toObject();
+    try {
+      await Invoice.updateOne({ _id: bookingInvoice!._id }, { $set: { items: [{ description: "Lab Test: CBC", amount: 400, quantity: 1 }] } });
+      const preview = await app.inject({
+        method: "GET",
+        url: `/api/encounters/${encounterId}/charges-preview`,
+        headers: { cookie: adminCookies.join("; ") },
+      });
+      expect(preview.statusCode, preview.body).toBe(200);
+      expect(JSON.parse(preview.body).data.items.filter((item: { category: string }) => item.category === "consultation")).toHaveLength(1);
+    } finally {
+      await Invoice.updateOne({ _id: bookingInvoice!._id }, { $set: { items: originalItems } });
+    }
+  });
+
 });

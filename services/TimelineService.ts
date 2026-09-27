@@ -38,7 +38,7 @@ export class TimelineService {
     this.registry.register(new ConsultationProvider());
     this.registry.register(new LabProvider());
     this.registry.register(new BillingProvider());
-    // ANANTA v1.0: Patient & Clinic Document Upload provider
+    // Ekavyu v1.0: Patient & Clinic Document Upload provider
     this.registry.register(new DocumentUploadProvider());
   }
 

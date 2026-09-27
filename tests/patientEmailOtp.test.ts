@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { User } from "../models/User.ts";
 import { emailProvider } from "../notifications/providers/emailProvider.ts";
 
@@ -25,6 +25,11 @@ describe("Patient Email OTP Sign-In & Registration Tests", () => {
     expect(body.data.email).toBe(patientEmail);
     expect(body.data.devOtp).toBe("123456"); // test environment fixed dev OTP
     expect(sendEmailSpy).toHaveBeenCalled();
+    expect(sendEmailSpy).toHaveBeenCalledWith(expect.objectContaining({
+      subject: "Ekavyu Security Verification OTP Code",
+      text: expect.stringContaining("Your Ekavyu verification code"),
+      html: expect.stringContaining("Ekavyu Healthcare"),
+    }));
   });
 
   it("should reject invalid OTP when verifying email OTP", async () => {

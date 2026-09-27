@@ -163,7 +163,7 @@ export async function getPatientDetails(req: FastifyRequest, reply: FastifyReply
 
     const patientResponse: any = patient.toJSON();
     if (!isSelfAccess && !approved && requesterOrgId && patient.organizationId && patient.organizationId.toString() !== requesterOrgId) {
-      for (const field of ["allergies", "conditions", "medicalNotes", "insurancePolicies", "careContexts", "activeConsentGrants"]) delete patientResponse[field];
+      for (const field of ["allergies", "conditions", "medicalNotes", "insurancePolicies", "careContexts"]) delete patientResponse[field];
       patientResponse.clinicalProfileRestricted = true;
     }
     return reply.code(200).send(successResponse({

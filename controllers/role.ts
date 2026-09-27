@@ -358,7 +358,7 @@ export async function updateUserRole(req: FastifyRequest, reply: FastifyReply) {
     // Create cryptographically signed Audit Log entry
     try {
       await AuditLog.create({
-        userId: req.user.id,
+        userId: req.user!.id,
         organizationId: requesterOrgId || null,
         action: "ROLE_ASSIGNED",
         targetId: user._id,
@@ -372,7 +372,7 @@ export async function updateUserRole(req: FastifyRequest, reply: FastifyReply) {
           targetUserId: id,
           targetUserName: user.name,
           organizationId: requesterOrgId,
-          assignedBy: req.user.id,
+          assignedBy: req.user!.id,
         },
       });
     } catch (auditErr) {

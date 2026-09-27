@@ -11,7 +11,6 @@ export const BREACH_STATUSES = [
   "NOTIFIED_AFFECTED_USERS",
   "RESOLVED",
 ] as const;
-export type BreachStatus = (typeof BREACH_STATUSES)[number];
 
 export const DATA_CATEGORIES = ["PII", "CLINICAL_PHI", "FINANCIAL_BILLING", "CREDENTIALS"] as const;
 export type DataCategory = (typeof DATA_CATEGORIES)[number];

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, vi } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
@@ -22,7 +22,8 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
   let patient3: any;
   let patient4: any;
 
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
 
   beforeAll(async () => {
     // 1. Setup Organization & Admin
@@ -264,7 +265,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
         tokenNumber: 82,
       },
     ]);
-    const publishSpy = vi.spyOn(eventBus, "publish");
+    const publishSpy = vi.spyOn(eventBus, "publishDurable");
 
     try {
       const params = {

@@ -32,6 +32,7 @@ export async function onboardTestOrganization(
     },
   });
 
+  if (orgRes.statusCode !== 201) throw new Error(`Organization fixture failed: ${orgRes.statusCode} ${orgRes.body}`);
   const body = JSON.parse(orgRes.body);
   const adminCookies = (orgRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
   const orgId = body.data.organization.id as string;
@@ -45,11 +46,8 @@ export async function createTestClinic(
   name = "Test Clinic",
   city = "Chennai",
 ) {
-  const res = await app.inject({
-    method: "POST",
-    url: "/api/onboarding/clinics",
-    headers: cookieHeader(adminCookies),
-    payload: { name, city },
+  const res = await reuseOnboardingClinic(app, {
+    headers: cookieHeader(adminCookies), payload: { name, city }
   });
   return JSON.parse(res.body).data.id as string;
 }
@@ -163,4 +161,21 @@ export async function createTestStaffMember(
     payload: { password: "Password123!", ...payload },
   });
   return JSON.parse(res.body).data;
+}
+
+/** Configure the clinic provisioned by onboarding instead of consuming a second branch. */
+export async function reuseOnboardingClinic(
+  app: FastifyInstance,
+  options: { headers: Record<string, string>; payload: Record<string, unknown> }
+) {
+  const listing = await app.inject({ method: "GET", url: "/api/onboarding/clinics", headers: options.headers });
+  if (listing.statusCode !== 200) throw new Error(`Clinic fixture listing failed: ${listing.statusCode} ${listing.body}`);
+  const clinics = JSON.parse(listing.body).data;
+  if (!Array.isArray(clinics) || clinics.length !== 1) throw new Error("Fixture must reuse exactly one onboarding clinic");
+  const response = await app.inject({
+    method: "PUT", url: `/api/onboarding/clinics/${clinics[0].id}`,
+    headers: options.headers, payload: options.payload
+  });
+  if (response.statusCode !== 200) throw new Error(`Clinic fixture update failed: ${response.statusCode} ${response.body}`);
+  return response;
 }

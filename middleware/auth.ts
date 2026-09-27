@@ -66,35 +66,6 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
 }
 
 /**
- * Factory: restrict access to specific roles.
- * Usage: { preHandler: [authenticate, authorize("admin")] }
- */
-export function authorize(...allowedRoles: string[]) {
-  return async (req: FastifyRequest, reply: FastifyReply) => {
-    if (!req.user) {
-      return reply.code(401).send({ error: "Unauthorized" });
-    }
-
-    if (req.user.role === "root" || allowedRoles.includes(req.user.role)) {
-      return;
-    }
-
-    const all = await getEffectivePermissions(req.user.role, req.user.organization_id, req.user.authVersion);
-
-    const hasPermissionMatch = allowedRoles.some((role) => {
-      const permissionName = `MANAGE_${role.toUpperCase()}`;
-      return all.has(permissionName) || all.has("MANAGE_ORGANIZATION");
-    });
-
-    if (hasPermissionMatch) {
-      return;
-    }
-
-    return reply.code(403).send({ error: "Forbidden: insufficient permissions" });
-  };
-}
-
-/**
  * Restrict a route to the platform root operator.
  *
  * Some platform flows intentionally continue to work while root is
@@ -211,30 +182,6 @@ export function checkAnyPermissionOrRoles(
 
     return reply.code(403).send({ error: "Forbidden: insufficient permissions" });
   };
-}
-
-/**
- * Tenant Isolation Guard Middleware.
- * Verifies that requests targeting an organization scope match the authenticated caller's organization_id.
- * Root super-admins bypass tenant checks.
- */
-export async function enforceTenantIsolation(req: FastifyRequest, reply: FastifyReply) {
-  if (!req.user) {
-    return reply.code(401).send({ error: "Unauthorized" });
-  }
-
-  if (req.user.role === "root") {
-    return; // Root admin context bypasses tenant restriction
-  }
-
-  const targetOrgId =
-    (req.body as any)?.organizationId ||
-    (req.query as any)?.organizationId ||
-    (req.params as any)?.organizationId;
-
-  if (targetOrgId && targetOrgId !== req.user.organization_id) {
-    return reply.code(403).send({ error: "Forbidden: Cross-tenant access attempt blocked" });
-  }
 }
 
 /**

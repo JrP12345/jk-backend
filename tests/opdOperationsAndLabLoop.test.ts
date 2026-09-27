@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
@@ -176,7 +176,7 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
       method: "POST",
       url: `/api/public/track/${appt1._id}/return`,
     });
-    expect(returnRes.statusCode).toBe(200);
+    expect(returnRes.statusCode, returnRes.body).toBe(200);
     const returnData = JSON.parse(returnRes.body).data;
     expect(returnData.patientReturned).toBe(true);
     expect(returnData.patientReturnedAt).toBeDefined();

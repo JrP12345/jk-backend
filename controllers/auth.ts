@@ -598,7 +598,7 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
       category: "auth",
       targetUserId: user.id,
       title: "New Account Login",
-      message: `Successful login to Anant account (${user.email || user.name}).`,
+      message: `Successful login to Ekavyu account (${user.email || user.name}).`,
       severity: "info",
       organizationId: organization_id,
     });
@@ -620,10 +620,7 @@ export async function verifyEmail(req: FastifyRequest, reply: FastifyReply) {
 
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
     const user = await User.findOne({
-      $or: [
-        { emailVerificationToken: tokenHash },
-        { emailVerificationToken: token }, // backwards-compatible with legacy unhashed tokens
-      ],
+      emailVerificationToken: tokenHash,
       emailVerificationExpires: { $gt: new Date() },
     });
 
@@ -667,9 +664,9 @@ export async function forgotPassword(req: FastifyRequest, reply: FastifyReply) {
     const resetUrl = `${getFrontendBaseUrl()}/reset-password#token=${resetToken}`;
     await enqueueTransactionalEmail({
       to: user.email!,
-      subject: "ANANT Account Password Reset",
-      text: `Reset your ANANT password using this link (valid for 1 hour): ${resetUrl}`,
-      html: `<p>Click here to reset your ANANT password: <a href="${resetUrl}">${resetUrl}</a></p>`,
+      subject: "Ekavyu Account Password Reset",
+      text: `Reset your Ekavyu password using this link (valid for 1 hour): ${resetUrl}`,
+      html: `<p>Click here to reset your Ekavyu password: <a href="${resetUrl}">${resetUrl}</a></p>`,
       idempotencyKey: `transactional-email:password-reset:${user._id}:${tokenHash}`,
     });
 
@@ -695,10 +692,7 @@ export async function resetPassword(req: FastifyRequest, reply: FastifyReply) {
 
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
     const user = await User.findOne({
-      $or: [
-        { passwordResetToken: tokenHash },
-        { passwordResetToken: token }, // backwards-compatible with legacy unhashed tokens
-      ],
+      passwordResetToken: tokenHash,
       passwordResetExpires: { $gt: new Date() },
     });
 
@@ -1138,9 +1132,9 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
     const verificationUrl = `${getFrontendBaseUrl()}/verify-email#token=${emailVerificationToken}`;
     await enqueueTransactionalEmail({
       to: normalizedEmail,
-      subject: "Verify your ANANTA account",
+      subject: "Verify your Ekavyu account",
       text: `Verify your account using this link (valid for 24 hours): ${verificationUrl}`,
-      html: `<p>Verify your ANANTA account: <a href="${verificationUrl}">${verificationUrl}</a></p>`,
+      html: `<p>Verify your Ekavyu account: <a href="${verificationUrl}">${verificationUrl}</a></p>`,
       idempotencyKey: `transactional-email:email-verification:${newUser._id}:${emailVerificationTokenHash}`,
     });
 
@@ -1618,7 +1612,7 @@ export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyR
       category: "auth",
       targetUserId: user.id,
       title: "New Account Login",
-      message: `Successful login to Anant account (${user.email || user.name}).`,
+      message: `Successful login to Ekavyu account (${user.email || user.name}).`,
       severity: "info",
       organizationId: organization_id,
     });

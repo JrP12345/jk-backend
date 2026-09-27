@@ -66,7 +66,7 @@ export class AIAdminService {
     if (updates.defaultModelAlias) config.defaultModelAlias = updates.defaultModelAlias;
     if (updates.monthlyTokenQuota) config.monthlyTokenQuota = updates.monthlyTokenQuota;
     if (updates.featureFlags) {
-      config.featureFlags = { ...config.featureFlags, ...updates.featureFlags };
+      config.featureFlags = { ...config.featureFlags, ...updates.featureFlags, enablePHIAnonymization: true };
     }
     if (userId && mongoose.Types.ObjectId.isValid(userId)) {
       config.updatedByUserId = userId as any;

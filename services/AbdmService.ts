@@ -36,6 +36,12 @@ export interface AbdmProfile {
 class AbdmService {
   private sessions: Map<string, AbdmOtpSession> = new Map();
 
+  private assertSandbox() {
+    if (process.env.NODE_ENV === "production") {
+      throw Object.assign(new Error("ABHA enrollment and lookup are sandbox-only; live ABDM integration is not configured."), { statusCode: 503 });
+    }
+  }
+
   // Cleanup expired OTP sessions after 10 minutes
   private cleanExpiredSessions() {
     const now = Date.now();
@@ -55,6 +61,7 @@ class AbdmService {
     maskedMobile: string;
     message: string;
   }> {
+    this.assertSandbox();
     this.cleanExpiredSessions();
 
     const cleanAadhaar = aadhaarNumber.replace(/\D/g, "");
@@ -97,6 +104,7 @@ class AbdmService {
       dob?: string;
     }
   ): Promise<AbdmProfile> {
+    this.assertSandbox();
     this.cleanExpiredSessions();
 
     const session = this.sessions.get(txnId);
@@ -143,6 +151,7 @@ class AbdmService {
    * Search for existing ABHA profile by 14-digit ABHA Number or @abdm address
    */
   async searchAbha(query: string): Promise<AbdmProfile | null> {
+    this.assertSandbox();
     const cleanQuery = query.trim();
 
     // 1. Check if patient already exists in local DB with this ABHA

@@ -264,6 +264,7 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
   try {
     const { id } = req.params as { id: string };
     const userId = req.user?.id;
+    if (!userId) return reply.code(401).send(errorResponse("Authentication required"));
     const userName = (req.user as any)?.name || "Attending Physician";
 
     const note = await ClinicalNote.findById(id);

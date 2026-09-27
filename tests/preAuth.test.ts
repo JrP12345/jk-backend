@@ -1,5 +1,6 @@
+import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
 import { PreAuthorization } from "../models/PreAuthorization.ts";
@@ -23,23 +24,18 @@ describe("Insurance Claims & TPA Pre-Authorization Integration Tests", () => {
         admin_password: "Password123",
       },
     });
-    expect(orgRes.statusCode).toBe(201);
+    expect(orgRes.statusCode, orgRes.body).toBe(201);
     adminCookies = orgRes.headers["set-cookie"] as string[];
 
     // 2. Create Clinic
-    const clinicRes = await app.inject({
-      method: "POST",
-      url: "/api/onboarding/clinics",
-      headers: { cookie: adminCookies.join("; ") },
-      payload: {
+    const clinicRes = await reuseOnboardingClinic(app, { headers: { cookie: adminCookies.join("; ") }, payload: {
         name: "Central Insurance Desk Clinic",
         city: "Hyderabad",
         address: "300 Healthcare Park",
         phone: "9700066600",
         email: "tpa-desk@apex.internal",
-      },
-    });
-    expect(clinicRes.statusCode).toBe(201);
+      } });
+    expect(clinicRes.statusCode, clinicRes.body).toBe(200);
     clinicId = JSON.parse(clinicRes.body).data.id;
 
     // 3. Register Patient
@@ -48,6 +44,7 @@ describe("Insurance Claims & TPA Pre-Authorization Integration Tests", () => {
       url: "/api/auth/register",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
+        clinicId,
         name: "Insured Patient Ramesh",
         email: `ramesh_tpa_${Date.now()}@patient.com`,
         phone: "9112233445",
@@ -55,7 +52,7 @@ describe("Insurance Claims & TPA Pre-Authorization Integration Tests", () => {
         role: "patient",
       },
     });
-    expect(patientRes.statusCode).toBe(201);
+    expect(patientRes.statusCode, patientRes.body).toBe(201);
     const patientUserId = JSON.parse(patientRes.body).data.user.id;
     const { Patient: PatientModel } = await import("../models/Patient.ts");
     const patientDoc = await PatientModel.findOne({ userId: patientUserId });
@@ -75,7 +72,7 @@ describe("Insurance Claims & TPA Pre-Authorization Integration Tests", () => {
         password: "Password123",
       },
     });
-    expect(docRes.statusCode).toBe(201);
+    expect(docRes.statusCode, docRes.body).toBe(201);
     doctorUserId = JSON.parse(docRes.body).data.id;
   });
 
@@ -96,7 +93,7 @@ describe("Insurance Claims & TPA Pre-Authorization Integration Tests", () => {
       },
     });
 
-    expect(res.statusCode).toBe(201);
+    expect(res.statusCode, res.body).toBe(201);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
     expect(body.data.preAuthNumber).toMatch(/^PA-2026-\d{5}$/);
@@ -112,7 +109,7 @@ describe("Insurance Claims & TPA Pre-Authorization Integration Tests", () => {
       headers: { cookie: adminCookies.join("; ") },
     });
 
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode, res.body).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
     expect(Array.isArray(body.data)).toBe(true);
@@ -140,7 +137,7 @@ describe("Insurance Claims & TPA Pre-Authorization Integration Tests", () => {
       },
     });
 
-    expect(updateRes.statusCode).toBe(200);
+    expect(updateRes.statusCode, updateRes.body).toBe(200);
     const updated = JSON.parse(updateRes.body).data;
     expect(updated.status).toBe("approved");
     expect(updated.approvedAmount).toBe(75000);

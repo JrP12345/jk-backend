@@ -7,8 +7,6 @@ import { ObservationScore } from "../models/ObservationScore.ts";
 import { Prescription } from "../models/Prescription.ts";
 import { LabOrder } from "../models/LabOrder.ts";
 import { Encounter } from "../models/Encounter.ts";
-import { domainEventBus } from "../platform/events/DomainEventBus.ts";
-import { EventTypes } from "../platform/events/types.ts";
 
 export interface GroupedQualityMetrics {
   medication: {
@@ -56,32 +54,6 @@ export interface EncounterSummaryReport {
 }
 
 export class ClinicalSearchService {
-  private static eventListenerRegistered = false;
-  private static eventCount = 0; // Derived metric counter updated via DomainEventBus
-
-  /**
-   * Initializes event listeners on DomainEventBus for derived metric updates & cache invalidation.
-   * Source of truth ALWAYS remains MongoDB.
-   */
-  public static registerEventListeners(): void {
-    if (this.eventListenerRegistered) return;
-    this.eventListenerRegistered = true;
-
-    domainEventBus.subscribe(EventTypes.MEDICATION_ADMINISTERED, () => {
-      ClinicalSearchService.eventCount++;
-    });
-    domainEventBus.subscribe(EventTypes.RESULT_UPLOADED, () => {
-      ClinicalSearchService.eventCount++;
-    });
-    domainEventBus.subscribe(EventTypes.DISCHARGE_FINALIZED, () => {
-      ClinicalSearchService.eventCount++;
-    });
-  }
-
-  public static getEventCount(): number {
-    return ClinicalSearchService.eventCount;
-  }
-
   /**
    * Cross-engine longitudinal clinical search across a patient's entire EHR.
    */
@@ -89,7 +61,6 @@ export class ClinicalSearchService {
     patientId: string,
     options: SearchQueryOptions = {}
   ): Promise<SearchQueryResponse> {
-    ClinicalSearchService.registerEventListeners();
 
     const queryTokens = SearchEngine.tokenize(options.q || "");
     const rawTerm = options.q ? options.q.trim() : "";
@@ -190,7 +161,6 @@ export class ClinicalSearchService {
    * Generates a patient/clinical story report for a single encounter.
    */
   static async getEncounterSummaryReport(encounterId: string): Promise<EncounterSummaryReport> {
-    ClinicalSearchService.registerEventListeners();
 
     let encounter = mongoose.Types.ObjectId.isValid(encounterId)
       ? (await Encounter.findById(encounterId).lean() as any)
@@ -279,7 +249,6 @@ export class ClinicalSearchService {
    * Always reads directly from MongoDB (single source of truth).
    */
   static async getQualityMetrics(organizationId: string): Promise<GroupedQualityMetrics> {
-    ClinicalSearchService.registerEventListeners();
 
     // Group 1: Medication Quality Metrics
     const totalScheduled = 0;

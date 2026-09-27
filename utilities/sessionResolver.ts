@@ -3,7 +3,6 @@ import { RefreshToken } from "../models/RefreshToken.ts";
 import { User } from "../models/User.ts";
 import { redisClient, publishRedisEvent, createRedisSubscriber } from "./redis.ts";
 import { disconnectUserWebSockets } from "../notifications/websocket.ts";
-import { revokeSessionFamily } from "./replicaCoordination.ts";
 import { logger } from "./logger.ts";
 
 export interface SessionState {
@@ -303,7 +302,6 @@ export async function revokeTokenFamily(familyId: string, reason: string = "reus
   }
 
   // Multi-replica synchronization
-  await revokeSessionFamily(familyId);
   await publishRedisEvent("session:events", {
     type: "REVOKE_FAMILY",
     familyId,

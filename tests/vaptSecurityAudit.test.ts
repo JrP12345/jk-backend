@@ -1,5 +1,6 @@
+import crypto from "node:crypto";
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
 import { Clinic } from "../models/Clinic.ts";
@@ -220,7 +221,7 @@ describe("VAPT Security & Penetration Testing Audit Suite", () => {
 
   // ─── 5. Refresh Token Reuse & Breach Invalidation ───────────────────
   describe("5. Refresh Token Security & Rotation Audit", () => {
-    it("should invalidate all sessions if an already-revoked refresh token is replayed", async () => {
+    it("allows concurrent refresh within grace and rejects replay outside grace", async () => {
       const rawToken1 = await createRefreshToken(userA._id.toString());
       const rawToken2 = await createRefreshToken(userA._id.toString());
 
@@ -234,7 +235,11 @@ describe("VAPT Security & Penetration Testing Audit Suite", () => {
       });
       expect(refreshRes.statusCode).toBe(200);
 
-      // Malicious re-play of the now-revoked rawToken1
+      const graceRes = await app.inject({ method: "POST", url: "/api/auth/refresh", cookies: { refresh_token: rawToken1 } });
+      expect(graceRes.statusCode).toBe(200);
+      await RefreshToken.updateMany({ userId: userA._id, revocationReason: "rotated" }, { $set: { graceExpiresAt: new Date(Date.now() - 1000) } });
+
+      // Replaying after the concurrency window is suspicious
       const replayRes = await app.inject({
         method: "POST",
         url: "/api/auth/refresh",
@@ -245,14 +250,15 @@ describe("VAPT Security & Penetration Testing Audit Suite", () => {
 
       expect(replayRes.statusCode).toBe(401);
       const replayBody = JSON.parse(replayRes.body);
-      expect(replayBody.message).toContain("Revoked session token reuse detected");
+      expect(replayBody.message).toContain("Suspicious refresh token reuse detected");
 
-      // Verify other active sessions were also revoked in response to breach
+      // Revoke the compromised token family while preserving unrelated sessions.
       const activeSessions = await RefreshToken.find({
         userId: userA._id,
         revoked: false,
       });
-      expect(activeSessions.length).toBe(0);
+      const unrelatedHash = crypto.createHash("sha256").update(rawToken2).digest("hex");
+      expect(activeSessions.map(s => s.tokenHash)).toEqual([unrelatedHash]);
     });
   });
 
@@ -296,27 +302,25 @@ describe("VAPT Security & Penetration Testing Audit Suite", () => {
 
   // ─── 7. WebSocket Authentication & Validation ───────────────────────
   describe("7. WebSocket Transport & Authorization", () => {
-    it("should successfully resolve user from valid WebSocket token parameter", () => {
+    it("should resolve a valid WebSocket access-token cookie", async () => {
       const mockReq: any = {
-        query: { token: tokenA },
-        cookies: {},
+        query: {},
+        cookies: { access_token: tokenA },
         headers: {},
       };
 
-      const resolved = resolveWebSocketAuth(mockReq);
-      expect(resolved).not.toBeNull();
+      const resolved = await resolveWebSocketAuth(mockReq);
       expect(resolved?.id).toBe(userA._id.toString());
-      expect(resolved?.role).toBe("admin");
     });
 
-    it("should return null for forged or expired WebSocket token parameter", () => {
+    it("should return null for forged or expired WebSocket token parameter", async () => {
       const mockReq: any = {
         query: { token: "forged.fake.token" },
         cookies: {},
         headers: {},
       };
 
-      const resolved = resolveWebSocketAuth(mockReq);
+      const resolved = await resolveWebSocketAuth(mockReq);
       expect(resolved).toBeNull();
     });
   });

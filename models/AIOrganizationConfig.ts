@@ -7,6 +7,7 @@ const AIOrganizationConfigSchema = new Schema({
     enum: ["CLINICAL_FAST", "CLINICAL_ACCURATE", "CLINICAL_REASONING"],
     default: "CLINICAL_FAST"
   },
+  // Advisory target only; no atomic monthly usage reservation is implemented.
   monthlyTokenQuota: { type: Number, default: 10000000 },
   externalAIKillSwitch: { type: Boolean, default: false, index: true },
   defaultDataClassification: {

@@ -5,7 +5,7 @@ export class TwoFactorService {
   /**
    * Generate a new TOTP secret for a user / organization account
    */
-  public static generateSecret(userEmail: string, issuer: string = "ANANT") {
+  public static generateSecret(userEmail: string, issuer: string = "Ekavyu") {
     const secret = speakeasy.generateSecret({
       length: 20,
       name: `${issuer} (${userEmail})`,

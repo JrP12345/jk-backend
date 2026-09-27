@@ -874,7 +874,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
     let estimatedWaitMinutes = 0;
     let estimatedCallTime: string | null = null;
 
-    const waitingStatuses = ["pending", "confirmed", "checked-in"];
+    const waitingStatuses = ["pending", "confirmed", "checked-in"] as const;
     const myRank = appointment.queuePosition ?? appointment.tokenNumber ?? 999;
 
     if (appointment.status === "in-consultation") {
@@ -885,7 +885,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
       peopleAhead = 0;
       estimatedWaitMinutes = inConsultationRemainingMinutes;
       estimatedCallTime = new Date(Date.now() + estimatedWaitMinutes * 60 * 1000).toISOString();
-    } else if (waitingStatuses.includes(appointment.status)) {
+    } else if (waitingStatuses.some(status => status === appointment.status)) {
       // Indexed count query instead of pulling all appointments into memory
       peopleAhead = await Appointment.countDocuments({
         clinicId,
@@ -1228,7 +1228,7 @@ export async function processPublicTrackerReturn(req: FastifyRequest, reply: Fas
     }
 
     const appointment = await Appointment.findById(appointmentId)
-      .select("+trackerTokenHash trackerTokenExpiresAt")
+      .select("+trackerTokenHash")
       .populate("clinicId", "name")
       .populate("doctorId", "name")
       .populate({
@@ -1530,7 +1530,7 @@ export async function printPublicTrackerPrescription(req: FastifyRequest, reply:
     }
 
     const appointment = await Appointment.findById(appointmentId)
-      .select("+trackerTokenHash trackerTokenExpiresAt")
+      .select("+trackerTokenHash")
       .populate("clinicId", "name address phone city")
       .populate("doctorId", "name")
       .populate({
@@ -1638,12 +1638,6 @@ export async function printPublicTrackerPrescription(req: FastifyRequest, reply:
     console.error("printPublicTrackerPrescription error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
-}
-
-export async function processPublicTrackerPayment(_req: FastifyRequest, reply: FastifyReply) {
-  return reply.code(410).send(
-    errorResponse("Direct public payment settlement has been retired. Create a verified payment order or pay at the clinic.")
-  );
 }
 
 // ─── Public Site Traffic & Visitor Tracking ────────────────────────

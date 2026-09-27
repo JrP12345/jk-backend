@@ -1,6 +1,8 @@
 # MongoDB Index Plan & Validation Audit — Phase 6 Step 6.1
 
-This document provides a comprehensive index specification and audit for all high-volume query paths across HealthOS. Each query profile defines the filter criteria, multi-tenant isolation field, sort specifications, expected cardinality, projections, current index baseline, and proposed compound index. It also catalogs single-field indexes made redundant by compound prefixes.
+This document is a proposed index review checklist, not a report of installed production indexes. Schema declarations must be compared with database listIndexes() and actual executionStats before rollout.
+
+This document provides an index specification for all high-volume query paths across Ekavyu. Each query profile defines the filter criteria, multi-tenant isolation field, sort specifications, expected cardinality, projections, current index baseline, and proposed compound index. It also catalogs single-field indexes made redundant by compound prefixes.
 
 ---
 
@@ -16,11 +18,11 @@ This document provides a comprehensive index specification and audit for all hig
 * **Existing indexes**:
   * `{ clinicId: 1, doctorId: 1, appointmentTime: 1 }` (unique partial: `bookingMode: "time_slot"`)
   * `{ activeConsultationDoctorDayKey: 1 }` (unique sparse)
-* **Compound indexes added**:
+* **Candidate compound indexes (verify before adding)**:
   1. `{ clinicId: 1, doctorId: 1, appointmentTime: 1, queuePosition: 1 }` — Satisfies clinic doctor schedule lookups and queue ordering without in-memory sort.
   2. `{ patientId: 1, organizationId: 1, createdAt: -1 }` — Satisfies patient portal appointment history queries.
   3. `{ status: 1, disruptionResponseDeadline: 1 }` — Supports disruption triage timeout sweep worker.
-* **Write overhead**: Minimal (< 3% increase on insert/update). Indexed fields change only during state transitions.
+* **Write overhead**: Not measured; benchmark representative inserts and updates. Indexed fields change only during state transitions.
 
 ---
 
@@ -34,7 +36,7 @@ This document provides a comprehensive index specification and audit for all hig
 * **Existing indexes**:
   * `{ clinicId: 1, status: 1, appointmentTime: 1 }`
   * `{ organizationId: 1, clinicId: 1, status: 1, appointmentTime: 1 }`
-* **Compound indexes added**:
+* **Candidate compound indexes (verify before adding)**:
   * Covered by `{ clinicId: 1, doctorId: 1, appointmentTime: 1, queuePosition: 1 }` and `{ organizationId: 1, clinicId: 1, status: 1, appointmentTime: 1 }`.
 
 ---
@@ -49,10 +51,10 @@ This document provides a comprehensive index specification and audit for all hig
 * **Existing indexes**:
   * `{ organizationId: 1, appointmentId: 1, status: 1 }`
   * `{ clinicId: 1, status: 1 }`
-* **Compound indexes added**:
+* **Candidate compound indexes (verify before adding)**:
   1. `{ patientId: 1, createdAt: -1 }` — Fast chronological patient encounter timeline.
   2. `{ organizationId: 1, clinicId: 1, status: 1, createdAt: -1 }` — Tenant-scoped clinic encounter dashboard with status filters.
-* **Redundant indexes removed**:
+* **Potentially redundant indexes (verify usage before dropping)**:
   * Single-field `organizationId: 1` (subsumed by `{ organizationId: 1, clinicId: 1, status: 1, createdAt: -1 }`)
   * Single-field `patientId: 1` (subsumed by `{ patientId: 1, createdAt: -1 }`)
 
@@ -67,10 +69,10 @@ This document provides a comprehensive index specification and audit for all hig
 * **Projection**: `_id`, `organizationId`, `clinicId`, `patientId`, `testId`, `status`, `priority`, `orderDate`, `result`, `createdAt`
 * **Existing indexes**:
   * `{ appointmentId: 1, status: 1 }`
-* **Compound indexes added**:
+* **Candidate compound indexes (verify before adding)**:
   1. `{ organizationId: 1, patientId: 1, createdAt: -1 }` — Patient EHR diagnostic history.
   2. `{ organizationId: 1, clinicId: 1, status: 1, createdAt: -1 }` — Clinic laboratory bench worklist (e.g. pending sample collection/processing).
-* **Redundant indexes removed**:
+* **Potentially redundant indexes (verify usage before dropping)**:
   * Single-field `organizationId: 1` (subsumed by compound prefix)
   * Single-field `appointmentId: 1` (subsumed by `{ appointmentId: 1, status: 1 }`)
 
@@ -83,10 +85,10 @@ This document provides a comprehensive index specification and audit for all hig
 * **Sort**: `version: -1`
 * **Expected cardinality**: 100,000–1,000,000 notes per tenant.
 * **Projection**: `_id`, `organizationId`, `clinicId`, `encounterId`, `patientId`, `doctorId`, `version`, `isLatest`, `subjective`, `objective`, `assessment`, `plan`, `status`
-* **Compound indexes added**:
+* **Candidate compound indexes (verify before adding)**:
   1. `{ organizationId: 1, patientId: 1, isLatest: 1 }` — Direct lookup of patient's current active clinical notes.
   2. `{ encounterId: 1, version: -1 }` — Encounter note revision history and latest version resolution.
-* **Redundant indexes removed**:
+* **Potentially redundant indexes (verify usage before dropping)**:
   * Single-field `organizationId: 1` (subsumed by `{ organizationId: 1, patientId: 1, isLatest: 1 }`)
   * Single-field `encounterId: 1` (subsumed by `{ encounterId: 1, version: -1 }`)
 
@@ -99,11 +101,11 @@ This document provides a comprehensive index specification and audit for all hig
 * **Sort**: `uploadedAt: -1`
 * **Expected cardinality**: 20,000–100,000 documents per tenant.
 * **Projection**: `_id`, `patientId`, `organizationId`, `fileName`, `fileUrl`, `fileSizeBytes`, `mimeType`, `category`, `ocrStatus`, `uploadedAt`
-* **Compound indexes added**:
+* **Candidate compound indexes (verify before adding)**:
   1. `{ patientId: 1, uploadedAt: -1 }` — Patient document gallery sorted chronologically.
   2. `{ organizationId: 1, category: 1 }` — Tenant-wide category filtering (e.g., all lab reports).
   3. `{ organizationId: 1, patientId: 1, uploadedAt: -1 }` — Tenant-isolated patient document listing.
-* **Redundant indexes removed**:
+* **Potentially redundant indexes (verify usage before dropping)**:
   * Single-field `organizationId: 1` (subsumed by compound prefix)
   * Single-field `patientId: 1` (subsumed by `{ patientId: 1, uploadedAt: -1 }`)
 
@@ -119,10 +121,10 @@ This document provides a comprehensive index specification and audit for all hig
 * **Existing indexes**:
   * `{ invoiceNumber: 1 }` (unique)
   * `{ clinicId: 1, status: 1 }`
-* **Compound indexes added**:
+* **Candidate compound indexes (verify before adding)**:
   1. `{ organizationId: 1, createdAt: -1 }` — Tenant ledger & date-bounded financial reports.
   2. `{ organizationId: 1, patientId: 1, createdAt: -1 }` — Patient billing and statement history.
-* **Redundant indexes removed**:
+* **Potentially redundant indexes (verify usage before dropping)**:
   * Single-field `organizationId: 1` (subsumed by `{ organizationId: 1, createdAt: -1 }`)
   * Single-field `clinicId: 1` (subsumed by `{ clinicId: 1, status: 1 }`)
 
@@ -137,10 +139,10 @@ This document provides a comprehensive index specification and audit for all hig
 * **Existing indexes**:
   * `{ organizationId: 1, sequence: 1 }` (unique)
   * `{ organizationId: 1, createdAt: -1 }`
-* **Compound indexes added**:
+* **Candidate compound indexes (verify before adding)**:
   1. `{ category: 1, createdAt: -1 }` — System-wide category audit sweeps (root).
   2. `{ organizationId: 1, category: 1, createdAt: -1 }` — Tenant compliance audit filtering by category and date.
-* **Redundant indexes removed**:
+* **Potentially redundant indexes (verify usage before dropping)**:
   * Single-field `organizationId: 1` (subsumed by `{ organizationId: 1, createdAt: -1 }`)
 
 ---
@@ -154,9 +156,9 @@ This document provides a comprehensive index specification and audit for all hig
 * **Existing indexes**:
   * `{ patientId: 1, createdAt: -1 }`
   * `{ clinicId: 1, status: 1 }`
-* **Compound indexes added**:
+* **Candidate compound indexes (verify before adding)**:
   1. `{ encounterId: 1, createdAt: -1 }` — Encounter discharge and medication review.
-* **Redundant indexes removed**:
+* **Potentially redundant indexes (verify usage before dropping)**:
   * Single-field `clinicId: 1` (subsumed by `{ clinicId: 1, status: 1 }`)
   * Single-field `encounterId: 1` (subsumed by `{ encounterId: 1, createdAt: -1 }`)
   * Single-field `patientId: 1` (subsumed by `{ patientId: 1, createdAt: -1 }`)
@@ -182,10 +184,10 @@ This document provides a comprehensive index specification and audit for all hig
 * **Workload**: Token refresh, family reuse detection, logout, session revocation.
 * **Filter fields**: `userId`, `revoked`, `familyId`, `tokenHash`
 * **Sort**: `createdAt: -1`
-* **Compound indexes added**:
+* **Candidate compound indexes (verify before adding)**:
   1. `{ expiresAt: 1 }` (TTL: `expireAfterSeconds: 0`)
   2. `{ userId: 1, revoked: 1, createdAt: -1 }` — Active user session listing and concurrent session enforcement.
-* **Redundant indexes removed**:
+* **Potentially redundant indexes (verify usage before dropping)**:
   * Single-field `userId: 1` (subsumed by `{ userId: 1, revoked: 1, createdAt: -1 }`)
   * Single-field `tokenHash: 1` (subsumed by unique constraint `{ tokenHash: 1, unique: true }`)
 
@@ -220,7 +222,7 @@ Removing redundant single-field indexes reduces write amplification, frees worki
 ## 3. Staging Execution Plan & Validation Guidelines
 
 When applying these indexes to staging or production MongoDB clusters:
-1. **Background Index Creation**: All index creation in production must run in the background (or use Rolling Index Build on replica sets) so read/write availability remains uninterrupted.
+1. **Background Index Creation**: Choose an index-build procedure supported by the deployed database version. Assess disk capacity, locking and replication impact; do not assume uninterrupted availability.
 2. **Execution Plan Inspection**: Run `.explain("executionStats")` on each query path. Verify:
    * `stage: "IXSCAN"` (Index Scan) rather than `"COLLSCAN"` (Collection Scan).
    * `totalDocsExamined` is equal or very close to `nReturned`.

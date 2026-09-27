@@ -6,7 +6,6 @@ tests/
 *.test.ts
 *.log
 keys/
-seed-db.js
 backups/
 *.enc.gz
 *.enc

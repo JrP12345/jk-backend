@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import mongoose from "mongoose";
 import { Notification, type INotification } from "../../models/Notification.ts";
 import { NotificationPreference } from "../../models/NotificationPreference.ts";
@@ -13,11 +14,7 @@ import { eventBus } from "../../events/eventBus.ts";
 export class NotificationService {
   constructor() {
     // Automatically subscribe to the central Event Bus
-    eventBus.subscribeAll((event) => {
-      this.handleDomainEvent(event).catch((err) => {
-        console.error(`[NotificationService Error] Failed handling event ${event.eventType}:`, err);
-      });
-    });
+    eventBus.subscribeAll(event => this.handleDomainEvent(event));
   }
 
   /**
@@ -101,18 +98,10 @@ export class NotificationService {
 
     if (!targetUserId) return;
 
-    // Idempotency Check Guard
     const idempotencyKey = eventId || metadata?.idempotencyKey;
-    if (idempotencyKey) {
-      const existing = await Notification.findOne({
-        targetUser: new mongoose.Types.ObjectId(targetUserId),
-        idempotencyKey,
-      });
-      if (existing) {
-        console.log(`[NotificationService] Suppressed duplicate event ${type} (Idempotency Key: ${idempotencyKey})`);
-        return;
-      }
-    }
+    const existing = idempotencyKey ? await Notification.findOne({
+      targetUser: new mongoose.Types.ObjectId(targetUserId), idempotencyKey,
+    }) : null;
 
     // 1. Fetch user preferences
     const pref = await this.getPreferences(targetUserId, organizationId);
@@ -129,11 +118,12 @@ export class NotificationService {
     // Evaluate Level 4 Rule & Escalation Engine routing
     const effectiveChannels = notificationRuleEngine.evaluateRouting(event, pref.channels);
 
-    let createdNotification: any = null;
+    let createdNotification: any = existing;
+    let inserted = false;
 
     // 2. In-App channel delivery & DB persistence (Synchronous for Zero-Latency Inbox)
-    if (effectiveChannels.inApp) {
-      createdNotification = await Notification.create({
+    if (effectiveChannels.inApp || existing) {
+      const fields = {
         organizationId: organizationId ? new mongoose.Types.ObjectId(organizationId) : undefined,
         createdBy: createdBy ? new mongoose.Types.ObjectId(createdBy) : undefined,
         targetUser: new mongoose.Types.ObjectId(targetUserId),
@@ -151,22 +141,35 @@ export class NotificationService {
         entityId: event.metadata?.entityId,
         groupKey: event.metadata?.groupKey,
         createdAt: new Date(),
-      });
+      };
+      if (!createdNotification) {
+        if (idempotencyKey) {
+          const _id = new mongoose.Types.ObjectId(crypto.createHash("sha256").update(`${targetUserId}:${idempotencyKey}`).digest("hex").slice(0, 24));
+          const result = await Notification.findOneAndUpdate({ _id }, { $setOnInsert: fields }, { upsert: true, returnDocument: "after", includeResultMetadata: true });
+          createdNotification = result.value;
+          inserted = !result.lastErrorObject?.updatedExisting;
+        } else {
+          createdNotification = await Notification.create(fields);
+          inserted = true;
+        }
+      }
 
+      // Retry repairs missing delivery records without creating another inbox item.
       // Record in-app delivery log
-      await NotificationDelivery.create({
+      await NotificationDelivery.findOneAndUpdate({ idempotencyKey: `inApp:${createdNotification._id}` }, { $setOnInsert: {
         notificationId: createdNotification._id,
         channel: "inApp",
         recipient: targetUserId,
         status: "delivered",
         sentAt: new Date(),
-      });
+        idempotencyKey: `inApp:${createdNotification._id}`,
+      } }, { upsert: true });
 
       // Fetch new unread count
       const unreadCount = await this.getUnreadCount(targetUserId, organizationId);
 
       // Broadcast instant real-time notification
-      broadcastRealtimeNotification(targetUserId, {
+      if (inserted) broadcastRealtimeNotification(targetUserId, {
         type: "NOTIFICATION_RECEIVED",
         data: {
           notification: createdNotification.toJSON(),
@@ -181,14 +184,8 @@ export class NotificationService {
 
     if (shouldSendEmail && createdNotification) {
       let recipientEmail: string | undefined;
-      try {
-        const userDoc: any = await User.findById(targetUserId).select("email").lean();
-        if (userDoc?.email) {
-          recipientEmail = userDoc.email;
-        }
-      } catch (err) {
-        console.warn(`[NotificationService Warning] Could not resolve email for user ${targetUserId}`, err);
-      }
+      const userDoc = await User.findById(targetUserId).select("email").lean();
+      recipientEmail = userDoc?.email || undefined;
 
       if (recipientEmail?.trim()) {
         await notificationQueue.enqueue({

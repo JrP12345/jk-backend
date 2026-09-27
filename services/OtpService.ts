@@ -110,12 +110,12 @@ export class OtpService {
       }
       emailProvider.sendEmail({
         to: email,
-        subject: purpose === "record_access" ? "Approve access to your full patient history" : "ANANTA Security Verification OTP Code",
-        text: purpose === "record_access" ? `Share this code only to approve viewing your records from all organizations for 10 minutes: ${otpCode}. Code valid for 5 minutes.` : `Your ANANTA verification code is: ${otpCode}. Valid for 5 minutes.`,
+        subject: purpose === "record_access" ? "Approve access to your full patient history" : "Ekavyu Security Verification OTP Code",
+        text: purpose === "record_access" ? `Share this code only to approve viewing your records from all organizations for 10 minutes: ${otpCode}. Code valid for 5 minutes.` : `Your Ekavyu verification code is: ${otpCode}. Valid for 5 minutes.`,
         html: `
           <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff;">
             <div style="margin-bottom: 20px;">
-              <h2 style="color: #0f766e; margin: 0 0 8px 0; font-size: 20px;">ANANTA Healthcare</h2>
+              <h2 style="color: #0f766e; margin: 0 0 8px 0; font-size: 20px;">Ekavyu Healthcare</h2>
               <p style="color: #475569; font-size: 14px; margin: 0;">Security Verification Code</p>
             </div>
             <p style="color: #334155; font-size: 14px; line-height: 1.5; margin-bottom: 16px;">

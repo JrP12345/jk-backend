@@ -1,12 +1,15 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { Clinic } from "../models/Clinic.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
-import { NotificationLog } from "../models/NotificationLog.ts";
+import { OutboundMessage } from "../models/OutboundMessage.ts";
+import { readEncryptedOutboundPayload } from "../services/CommunicationOutbox.ts";
+import { whatsAppWebhookWorker } from "../services/WhatsAppWebhookService.ts";
+import crypto from "node:crypto";
 
 describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversational Booking Suite", () => {
   let adminCookies: string[] = [];
@@ -33,6 +36,7 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
     expect(bootstrapRes.statusCode).toBe(201);
     adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
+    await Organization.updateOne({ _id: orgId }, { $set: { "whatsappConfig.mode": "dedicated", "whatsappConfig.wabaId": "WABA_ID_TEST", "whatsappConfig.phoneNumberId": "TEST_PHONE_ID" } });
 
     // 2. Setup Clinic
     const clinicRes = await app.inject({
@@ -192,6 +196,7 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
       const res = await app.inject({
         method: "POST",
         url: "/api/abdm/scan-share",
+        headers: { cookie: adminCookies.join("; ") },
         payload: {
           clinicId,
           doctorId: doctor1Id,
@@ -211,7 +216,7 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
       });
 
       if (res.statusCode !== 201) {
-        console.error("DEBUG SCAN-SHARE ERROR:", res.body);
+        throw new Error(`Scan-share failed: ${res.statusCode} ${res.body}`);
       }
 
       expect(res.statusCode).toBe(201);
@@ -260,6 +265,20 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
   });
 
   describe("Pillar 2: 24/7 WhatsApp Conversational Appointment Booking State Machine", () => {
+    let lastInboundId: string;
+    async function sendInbound(text: string) {
+      const payload = makeInbound(text);
+      lastInboundId = payload.entry[0].changes[0].value.messages[0].id;
+      const response = await app.inject({ method: "POST", url: "/api/webhooks/whatsapp", payload });
+      expect(response.statusCode, response.body).toBe(200);
+      await whatsAppWebhookWorker.processBatch();
+      return response;
+    }
+    async function readBotReply() {
+      const row = await OutboundMessage.findOne({ idempotencyKey: `whatsapp-freeform:${lastInboundId}` }).select("+sensitivePayloadCiphertext").lean();
+      expect(row, "Expected a durable bot reply").not.toBeNull();
+      return { messageContent: readEncryptedOutboundPayload<{ text: string }>(row!).text };
+    }
     const makeInbound = (text: string) => ({
       object: "whatsapp_business_account",
       entry: [
@@ -270,10 +289,11 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
               field: "messages",
               value: {
                 messaging_product: "whatsapp",
+                metadata: { phone_number_id: "TEST_PHONE_ID" },
                 messages: [
                   {
                     from: whatsAppPatientPhone,
-                    id: `wamid_inbound_${Date.now()}`,
+                    id: `wamid_inbound_${crypto.randomUUID()}`,
                     timestamp: String(Math.floor(Date.now() / 1000)),
                     text: { body: text },
                     type: "text",
@@ -287,18 +307,11 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
     });
 
     it("Step 1: Patient triggers booking via WhatsApp with 'BOOK'", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/webhooks/whatsapp",
-        payload: makeInbound("BOOK"),
-      });
+      const res = await sendInbound("BOOK");
 
       expect(res.statusCode).toBe(200);
 
-      const log = await NotificationLog.findOne({
-        recipientPhone: whatsAppPatientPhone,
-        templateId: "TWO_WAY_ASSISTANT",
-      }).sort({ createdAt: -1 });
+      const log = await readBotReply();
 
       expect(log).toBeDefined();
       expect(log?.messageContent).toContain("Schedule an OPD Appointment");
@@ -307,18 +320,11 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
     });
 
     it("Step 2: Patient selects Doctor 1", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/webhooks/whatsapp",
-        payload: makeInbound("1"),
-      });
+      const res = await sendInbound("1");
 
       expect(res.statusCode).toBe(200);
 
-      const log = await NotificationLog.findOne({
-        recipientPhone: whatsAppPatientPhone,
-        templateId: "TWO_WAY_ASSISTANT",
-      }).sort({ createdAt: -1 });
+      const log = await readBotReply();
 
       expect(log).toBeDefined();
       expect(log?.messageContent).toContain("Select Consultation Date");
@@ -326,34 +332,20 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
       expect(log?.messageContent).toContain("Tomorrow");
     });
 
-    it("Step 3: Patient selects date '1' (Today) and completes confirmation", async () => {
-      // Step 3a: Select date 1
-      await app.inject({
-        method: "POST",
-        url: "/api/webhooks/whatsapp",
-        payload: makeInbound("1"),
-      });
+    it("Step 3: Patient selects tomorrow and completes confirmation", async () => {
+      // Select tomorrow so the test is independent of today's closing time.
+      await sendInbound("2");
 
-      const confirmPrompt = await NotificationLog.findOne({
-        recipientPhone: whatsAppPatientPhone,
-        templateId: "TWO_WAY_ASSISTANT",
-      }).sort({ createdAt: -1 });
+      const confirmPrompt = await readBotReply();
 
       expect(confirmPrompt?.messageContent).toContain("Confirm Your OPD Appointment");
 
       // Step 3b: Send "YES" to confirm
-      const confirmRes = await app.inject({
-        method: "POST",
-        url: "/api/webhooks/whatsapp",
-        payload: makeInbound("YES"),
-      });
+      const confirmRes = await sendInbound("YES");
 
       expect(confirmRes.statusCode).toBe(200);
 
-      const bookedLog = await NotificationLog.findOne({
-        recipientPhone: whatsAppPatientPhone,
-        templateId: "TWO_WAY_ASSISTANT",
-      }).sort({ createdAt: -1 });
+      const bookedLog = await readBotReply();
 
       expect(bookedLog?.messageContent).toContain("Appointment Confirmed!");
       expect(bookedLog?.messageContent).toContain("Your Token: *#");
@@ -370,25 +362,14 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
 
     it("should allow patient to reset or cancel booking session at any time", async () => {
       // Start session
-      await app.inject({
-        method: "POST",
-        url: "/api/webhooks/whatsapp",
-        payload: makeInbound("4"),
-      });
+      await sendInbound("4");
 
       // Cancel session
-      const cancelRes = await app.inject({
-        method: "POST",
-        url: "/api/webhooks/whatsapp",
-        payload: makeInbound("CANCEL"),
-      });
+      const cancelRes = await sendInbound("CANCEL");
 
       expect(cancelRes.statusCode).toBe(200);
 
-      const cancelLog = await NotificationLog.findOne({
-        recipientPhone: whatsAppPatientPhone,
-        templateId: "TWO_WAY_ASSISTANT",
-      }).sort({ createdAt: -1 });
+      const cancelLog = await readBotReply();
 
       expect(cancelLog?.messageContent).toContain("Booking session cancelled");
     });

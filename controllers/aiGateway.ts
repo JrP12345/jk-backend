@@ -42,7 +42,7 @@ export async function queryAIGatewayController(req: FastifyRequest, reply: Fasti
       sessionId: sessionId || "general",
       requestId: `req_${Date.now()}`,
       userId,
-      modelAlias: modelAlias || "CLINICAL_FAST",
+      modelAlias,
       prompt: query.trim(),
       systemDirective: currentRoute ? `Clinician viewing screen "${currentRoute}".` : "Enterprise Clinical Context"
     }, patientMapList, { currentRoute, activePatientId, userRole: req.user?.role });
@@ -97,7 +97,7 @@ export async function streamAIGatewayController(req: FastifyRequest, reply: Fast
         sessionId: "stream",
         requestId: `req_${Date.now()}`,
         userId,
-        modelAlias: modelAlias || "CLINICAL_FAST",
+        modelAlias,
         prompt: query.trim(),
         systemDirective: currentRoute ? `Clinician viewing screen "${currentRoute}".` : "Enterprise Clinical Context"
       },

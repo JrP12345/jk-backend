@@ -18,13 +18,13 @@ describe("Field-Level Envelope Encryption (FLE) Suite — DPDP & HIPAA Complianc
     expect(decrypted).toBe(secretText);
   });
 
-  it("handles null, undefined, empty, and legacy unencrypted values gracefully", () => {
+  it("handles null, undefined, empty, and plain values gracefully", () => {
     expect(encryptField("")).toBe("");
     expect(encryptField(null as any)).toBeNull();
     expect(encryptField(undefined as any)).toBeUndefined();
 
-    const legacyPlaintext = "Legacy unencrypted patient history from 2024";
-    expect(decryptField(legacyPlaintext)).toBe(legacyPlaintext);
+    const plaintext = "Plain text input";
+    expect(decryptField(plaintext)).toBe(plaintext);
   });
 
   it("detects ciphertext tampering and rejects invalid authentication tags", () => {

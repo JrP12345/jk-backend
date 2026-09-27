@@ -65,6 +65,8 @@ async function reconcileLeadership() {
   }
 }
 
+let healthServer: ReturnType<typeof startWorkerHealthServer> | undefined;
+
 async function main() {
   await reconcileLeadership();
   heartbeat = setInterval(() => {
@@ -74,7 +76,7 @@ async function main() {
   }, heartbeatMs);
 
   const healthPort = Number(process.env.WORKER_HEALTH_PORT) || 5005;
-  startWorkerHealthServer({
+  healthServer = startWorkerHealthServer({
     defaultPort: healthPort,
     workerName: "noShowSweepWorker",
     onMetrics: () => ({
@@ -91,6 +93,7 @@ main().catch((error) => {
 });
 
 async function shutdown() {
+  await healthServer?.stop();
   if (heartbeat) clearInterval(heartbeat);
   stopNoShowSweepJob();
   if (leader) {

@@ -342,7 +342,7 @@ export async function exportAnalyticsReportController(req: FastifyRequest, reply
       exportedAt: new Date().toISOString(),
       organizationId: orgId || "GLOBAL",
       reportType,
-      summary: "ANANT Healthcare Executive & NABH Quality Accreditation Report",
+      summary: "Ekavyu Healthcare Executive & NABH Quality Accreditation Report",
       status: "generated",
       metrics: { invoiceCount, appointmentCount, encounterCount, claimCount },
     };

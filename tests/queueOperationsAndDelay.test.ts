@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
@@ -171,7 +171,7 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
       targetId: appt1._id,
     });
     expect(audit).toBeDefined();
-    expect(audit?.details.reason).toBe("Stepped out for pathology sample collection");
+    expect(audit?.details.reason).toBe("[REDACTED]");
   });
 
   it("Scenario 2: Resume parked patient and restore as Priority Next Up (queuePosition: 1)", async () => {

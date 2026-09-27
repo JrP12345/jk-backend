@@ -1,8 +1,8 @@
 /**
- * Static Analysis & CI Check: Tenant Scoping Enforcement
+ * Advisory Tenant Scoping Scan
  *
- * Scans controllers, routes, and services to verify that all access to
- * tenant-owned models satisfies tenant isolation requirements from
+ * Heuristically scans controllers, routes, and services for access to
+ * tenant-owned models using metadata from
  * the Tenant Ownership Matrix.
  */
 
@@ -73,5 +73,5 @@ function walkDir(dir: string) {
 
 targetDirs.forEach((d) => walkDir(d));
 
-console.log(`[CI/TenantCheck] Verification completed. Warnings: ${warningsCount}`);
+console.log(`[CI/TenantCheck] Advisory scan completed (not an isolation proof). Warnings: ${warningsCount}`);
 process.exit(0);

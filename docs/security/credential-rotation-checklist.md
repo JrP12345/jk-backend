@@ -32,9 +32,9 @@ For any organization configured with `whatsappConfig.mode = "dedicated"`:
 
 ### Step 2.2: Apply New Token to Platform
 1. Log in to the healthcare platform as an authorized Organization Admin or Root Administrator.
-2. Navigate to **Settings** > **WhatsApp Configuration** or execute authorized PUT:
+2. Navigate to **Settings** > **WhatsApp Configuration** or execute an authorized credential update:
    ```http
-   PUT /api/organization/whatsapp
+   PATCH /api/organization/whatsapp
    Authorization: Bearer <AdminJWT>
    Content-Type: application/json
 

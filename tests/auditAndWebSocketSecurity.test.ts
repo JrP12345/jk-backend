@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import mongoose from "mongoose";
-import app from "../index.js";
+import app from "../index.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { Organization } from "../models/Organization.ts";
 import { User } from "../models/User.ts";

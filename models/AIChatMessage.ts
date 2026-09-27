@@ -1,29 +1,5 @@
 import mongoose, { Schema } from "mongoose";
 
-export interface IAIChatMessage {
-  sessionId: mongoose.Types.ObjectId;
-  organizationId: mongoose.Types.ObjectId;
-  userId: mongoose.Types.ObjectId;
-  sender: "user" | "ai";
-  text: string;
-  citations?: string[];
-  suggestedActions?: Array<{
-    type?: string;
-    label?: string;
-    targetUrl?: string;
-    payload?: any;
-  }>;
-  sequence: number;
-  tokens?: {
-    prompt?: number;
-    completion?: number;
-    total?: number;
-  };
-  toolCalls?: any[];
-  timestamp: string;
-  createdAt: Date;
-}
-
 const AIChatMessageSchema = new Schema(
   {
     sessionId: { type: Schema.Types.ObjectId, ref: "AIChatSession", required: true, index: true },

@@ -1,8 +1,8 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { aiAdminService } from "../services/ai/AIAdminService.ts";
 import { AIToolExecutionLog } from "../models/AIToolExecutionLog.ts";
 import { aiToolRouter } from "../services/ai/AIToolRouter.ts";
 import { aiToolRegistry } from "../services/ai/AIToolRegistry.ts";
-import { aiService } from "../services/ai/AIService.ts";
 import { aiGateway } from "../services/ai/AIGateway.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 
@@ -34,6 +34,8 @@ export async function requestToolExecutionController(req: FastifyRequest, reply:
     if (!userId || !orgId) {
       return reply.code(403).send(errorResponse("Authenticated organization context is required"));
     }
+    const config = await aiAdminService.getConfig(orgId);
+    if (config.featureFlags?.enableToolExecution === false) return reply.code(403).send(errorResponse("AI tools are disabled for this organization"));
     const validTools = ["generateSOAPNoteTool", "createAppointmentTool", "prescribeMedicationTool"];
     if (!validTools.includes(toolName)) {
       return reply.code(400).send(errorResponse("Unknown or unsupported AI tool"));
@@ -77,6 +79,8 @@ export async function approveAndExecuteToolController(req: FastifyRequest, reply
       return reply.code(403).send(errorResponse("Authenticated organization context is required"));
     }
 
+    const config = await aiAdminService.getConfig(req.user.organization_id);
+    if (config.featureFlags?.enableToolExecution === false) return reply.code(403).send(errorResponse("AI tools are disabled for this organization"));
     const log = await AIToolExecutionLog.findOne({
       _id: id,
       organizationId: req.user.organization_id,

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Production RS256 Keypair Generator for HealthOS
+ * Production RS256 Keypair Generator for Ekavyu
  *
  * Generates an RSA-2048 keypair suitable for RS256 JWT signing and verification.
  * Outputs both Base64-encoded strings (recommended for K8s / Cloud Secret Managers)
@@ -72,7 +72,7 @@ data:
   }
 
   console.log("================================================================================");
-  console.log("             HealthOS Production RS256 JWT Keypair Generated                  ");
+  console.log("             Ekavyu Production RS256 JWT Keypair Generated                  ");
   console.log("================================================================================");
   console.log("\n🔑 [OPTION 1] BASE64 ENCODED (Recommended for Docker, K8s, AWS Secrets Manager, Doppler):");
   console.log("--------------------------------------------------------------------------------");

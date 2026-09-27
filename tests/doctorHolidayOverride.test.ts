@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
 
 describe("Doctor Holiday & Leave Override Workflow Suite", () => {

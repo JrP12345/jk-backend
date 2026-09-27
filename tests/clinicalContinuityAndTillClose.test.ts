@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { Clinic } from "../models/Clinic.ts";
 import { Patient } from "../models/Patient.ts";
@@ -176,7 +176,7 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
   it("2. Patient public tracker synchronizes confirmed follow-up consultation and token", async () => {
     const trackerRes = await app.inject({
       method: "GET",
-      url: `/api/public/tracker/${appointmentId}`,
+      url: `/api/public/track/${appointmentId}`,
     });
 
     expect(trackerRes.statusCode).toBe(200);

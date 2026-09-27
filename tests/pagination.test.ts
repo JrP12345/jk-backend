@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Medicine } from "../models/Medicine.ts";
 
 describe("List Pagination API Integration Tests", () => {

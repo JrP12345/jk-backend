@@ -348,13 +348,13 @@ export async function adminExtendTrial(req: FastifyRequest, reply: FastifyReply)
       try {
         await enqueueTransactionalEmail({
           to: org.email,
-          subject: `[ANANT] Free Trial Extended for ${org.name}`,
+          subject: `[Ekavyu] Free Trial Extended for ${org.name}`,
           html: `<div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">
             <h2>Great News! Free Trial Extended 🎉</h2>
             <p>Dear ${org.name},</p>
-            <p>Your free trial of ANANT Healthcare SaaS has been extended by <strong>${daysToAdd} additional days</strong>.</p>
+            <p>Your free trial of Ekavyu Healthcare SaaS has been extended by <strong>${daysToAdd} additional days</strong>.</p>
             <p>Your trial will now expire on <strong>${subscription.trialEndsAt.toLocaleDateString()}</strong>.</p>
-            <p>Best regards,<br/>ANANT Platform Operations</p>
+            <p>Best regards,<br/>Ekavyu Platform Operations</p>
           </div>`,
           idempotencyKey: `transactional-email:trial-extended:${subscription._id}:${subscription.trialEndsAt.getTime()}`,
         });

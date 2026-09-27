@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import mongoose from "mongoose";
-import app from "../index.js";
+import app from "../index.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
 import { Clinic } from "../models/Clinic.ts";
@@ -103,7 +103,7 @@ describe("Milestone 5: AI Platform Infrastructure Tests", () => {
 
     expect(result.answer).toBeDefined();
     expect(result.citations.length).toBeGreaterThan(0);
-    expect(result.disclaimer).toContain("ANANTA AI Health Assistant");
+    expect(result.disclaimer).toContain("Ekavyu AI Health Assistant");
   });
 
   it("should evaluate CDS clinical safety checks and persist clinician overrides", async () => {

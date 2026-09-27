@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Observation } from "../models/Observation.ts";
@@ -281,7 +281,7 @@ describe("Pre-Consultation Vitals, Clinical SOAP Handshake, Pharmacy Queue, STAT
     // Verify Public Tracker shows STAT Emergency and Vitals payload
     const trackerRes = await app.inject({
       method: "GET",
-      url: `/api/public/appointments/${appt2._id}/tracker`,
+      url: `/api/public/track/${appt2._id}`,
     });
     expect(trackerRes.statusCode).toBe(200);
     const trackerData = JSON.parse(trackerRes.body).data;

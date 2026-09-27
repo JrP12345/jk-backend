@@ -1,5 +1,6 @@
+import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
 import { LabTest } from "../models/LabTest.ts";
@@ -30,19 +31,14 @@ describe("Pathology Laboratory & LIS Integration Tests", () => {
     adminCookies = orgRes.headers["set-cookie"] as string[];
 
     // 2. Create Clinic
-    const clinicRes = await app.inject({
-      method: "POST",
-      url: "/api/onboarding/clinics",
-      headers: { cookie: adminCookies.join("; ") },
-      payload: {
+    const clinicRes = await reuseOnboardingClinic(app, { headers: { cookie: adminCookies.join("; ") }, payload: {
         name: "Central Clinical Pathology Lab",
         city: "Pune",
         address: "50 Diagnostic Hub",
         phone: "9300022200",
         email: "lab@metropolis.internal",
-      },
-    });
-    expect(clinicRes.statusCode).toBe(201);
+      } });
+    expect(clinicRes.statusCode).toBe(200);
     clinicId = JSON.parse(clinicRes.body).data.id;
 
     // 3. Register Patient
@@ -51,6 +47,7 @@ describe("Pathology Laboratory & LIS Integration Tests", () => {
       url: "/api/auth/register",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
+        clinicId,
         name: "Pathology Patient Vikram",
         email: `vikram_lab_${Date.now()}@patient.com`,
         phone: "9876543321",

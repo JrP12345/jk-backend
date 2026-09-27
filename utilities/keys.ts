@@ -15,14 +15,6 @@ export const KEY_ID = "healthos-service-key-1";
 export let SERVICE_PRIVATE_KEY: string = "";
 export let SERVICE_PUBLIC_KEY: string = "";
 
-export function getServicePrivateKey(): string {
-  return SERVICE_PRIVATE_KEY;
-}
-
-export function getServicePublicKey(): string {
-  return SERVICE_PUBLIC_KEY;
-}
-
 /**
  * Check if keys are provided via environment variables or existing files without triggering generation.
  */

@@ -495,13 +495,13 @@ export class SubscriptionService {
           <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8fafc; padding: 30px; color: #1e293b;">
             <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 16px; border: 1px solid #e2e8f0; padding: 30px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
               <div style="text-align: center; border-bottom: 2px solid #0284c7; padding-bottom: 20px; margin-bottom: 20px;">
-                <h1 style="color: #0284c7; margin: 0; font-size: 24px;">ANANT Healthcare SaaS</h1>
+                <h1 style="color: #0284c7; margin: 0; font-size: 24px;">Ekavyu Healthcare SaaS</h1>
                 <p style="color: #64748b; font-size: 13px; margin-top: 4px;">Commercial Subscription Invoice Receipt</p>
               </div>
               
               <p style="font-size: 15px; font-weight: 600;">Dear ${org?.name || "Customer"},</p>
               <p style="font-size: 14px; color: #334155; line-height: 1.6;">
-                Thank you for subscribing to ANANT. Your payment for the <strong>${plan.name} Plan (${payment.billingCycle})</strong> has been successfully processed.
+                Thank you for subscribing to Ekavyu. Your payment for the <strong>${plan.name} Plan (${payment.billingCycle})</strong> has been successfully processed.
               </p>
 
               <table style="width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 13px;">
@@ -524,7 +524,7 @@ export class SubscriptionService {
               </p>
 
               <div style="margin-top: 30px; padding-top: 15px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 12px; color: #94a3b8;">
-                ANANT Healthcare SaaS System • Automated Commercial Billing & Invoicing
+                Ekavyu Healthcare SaaS System • Automated Commercial Billing & Invoicing
               </div>
             </div>
           </div>
@@ -532,7 +532,7 @@ export class SubscriptionService {
 
         await enqueueTransactionalEmail({
           to: recipientEmail,
-          subject: `[ANANT Invoice #${invoiceNumber}] Subscription Payment Confirmed - ${plan.name} Plan`,
+          subject: `[Ekavyu Invoice #${invoiceNumber}] Subscription Payment Confirmed - ${plan.name} Plan`,
           html: emailBodyHtml,
           idempotencyKey: `transactional-email:subscription-invoice:${invoice._id}`,
         });
@@ -622,13 +622,13 @@ export class SubscriptionService {
       try {
         await enqueueTransactionalEmail({
           to: org.email,
-          subject: `[ANANT] Subscription Cancellation Confirmed - ${org.name}`,
+          subject: `[Ekavyu] Subscription Cancellation Confirmed - ${org.name}`,
           html: `<div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">
             <h2>Subscription Cancellation Confirmed</h2>
             <p>Dear ${org.name},</p>
-            <p>Your subscription auto-renewal for ANANT SaaS has been cancelled as requested.</p>
+            <p>Your subscription auto-renewal for Ekavyu SaaS has been cancelled as requested.</p>
             <p>Your organization's current plan features and resource limits will remain active until the end of your current billing period.</p>
-            <p>Best regards,<br/>ANANT Billing Team</p>
+            <p>Best regards,<br/>Ekavyu Billing Team</p>
           </div>`,
           idempotencyKey: `transactional-email:subscription-cancelled:${sub._id}:${sub.cancelledAt!.getTime()}`,
         });

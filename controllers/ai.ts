@@ -13,7 +13,7 @@ import { Medicine } from "../models/Medicine.ts";
 import { AIChatSession } from "../models/AIChatSession.ts";
 import { AIChatMessage } from "../models/AIChatMessage.ts";
 import type { ChatTurn } from "../services/ai/AIProvider.ts";
-import { aiService, AIServiceUnavailableError } from "../services/ai/AIService.ts";
+import { AIServiceUnavailableError } from "../services/ai/AIService.ts";
 import { aiGateway } from "../services/ai/AIGateway.ts";
 import { timelineService } from "../services/TimelineService.ts";
 import { PHIAnonymizer } from "../utilities/phiAnonymizer.ts";
@@ -256,7 +256,7 @@ export async function createChatSessionController(req: FastifyRequest, reply: Fa
     const welcomeMsg = {
       id: "m1",
       sender: "ai" as const,
-      text: `Hello ${(req.user as any)?.name || "User"}! I am your Anant Clinical AI Copilot.\n\nI can assist you with real-time patient records, clinic operational analytics, active prescriptions, lab reports, or appointment scheduling. How can I help you today?`,
+      text: `Hello ${(req.user as any)?.name || "User"}! I am your Ekavyu Clinical AI Copilot.\n\nI can assist you with real-time patient records, clinic operational analytics, active prescriptions, lab reports, or appointment scheduling. How can I help you today?`,
       citations: [],
       suggestedActions: [],
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
@@ -268,7 +268,6 @@ export async function createChatSessionController(req: FastifyRequest, reply: Fa
       userId,
       patientId: patientId && mongoose.Types.ObjectId.isValid(patientId) ? patientId : null,
       title: initialTitle || "New Clinical Session",
-      messages: [welcomeMsg], // dual-write temporarily for rollback safety
       retentionExpiresAt: new Date(Date.now() + 30 * 86400 * 1000)
     });
 
@@ -286,7 +285,7 @@ export async function createChatSessionController(req: FastifyRequest, reply: Fa
       createdAt: welcomeMsg.createdAt,
     });
 
-    return reply.code(201).send(successResponse(session, "Chat session initialized"));
+    return reply.code(201).send(successResponse({ ...session.toJSON(), messages: [welcomeMsg] }, "Chat session initialized"));
   } catch (err) {
     console.error("createChatSessionController error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -342,9 +341,6 @@ export async function getChatSessionController(req: FastifyRequest, reply: Fasti
         timestamp: m.timestamp,
         createdAt: m.createdAt,
       }));
-    } else {
-      // Rollback/migration compatibility fallback to embedded messages
-      messagesForClient = session.messages || [];
     }
 
     reply.header("X-Next-Cursor", nextCursor || "");
@@ -445,7 +441,12 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
       return reply.code(400).send(errorResponse("Invalid session ID"));
     }
 
-    // Step 5.4: Calculate next sequence number for message
+    const session = await AIChatSession.findOne({
+      _id: sessionId, userId, organizationId: requesterOrgId, status: "active"
+    }).select("_id").lean();
+    if (!session) return reply.code(404).send(errorResponse("Chat session not found"));
+
+    // Calculate the next sequence number for the normalized message
     const lastMsg = await AIChatMessage.findOne({ sessionId })
       .sort({ sequence: -1 })
       .select("sequence")
@@ -466,7 +467,7 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
       createdAt: new Date()
     };
 
-    // 1. Dual-write User Message to normalized collection
+    // 1. Persist the user message
     await AIChatMessage.create({
       sessionId: new mongoose.Types.ObjectId(sessionId),
       organizationId: new mongoose.Types.ObjectId(requesterOrgId),
@@ -480,16 +481,7 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
       createdAt: userMsg.createdAt,
     });
 
-    // Dual-write to session.messages in MongoDB for rollback safety
-    const sessionBefore = await AIChatSession.findOneAndUpdate(
-      { _id: sessionId, userId, organizationId: requesterOrgId, status: "active" },
-      { $push: { messages: userMsg } },
-      { returnDocument: "after" }
-    );
-
-    if (!sessionBefore) return reply.code(404).send(errorResponse("Chat session not found"));
-
-    const isFirstUserTurn = sessionBefore.messages.filter(m => m.sender === "user").length === 1;
+    const isFirstUserTurn = await AIChatMessage.countDocuments({ sessionId, sender: "user" }) === 1;
 
     // 2. Fetch sample patient data for PHI anonymization context if available
     const samplePatientsList = await Patient.find(
@@ -561,22 +553,26 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
       ? (query.trim().length > 30 ? query.trim().substring(0, 27) + "..." : query.trim())
       : undefined;
 
-    // 5. Dual-write to session.messages and update title if first turn
+    // 5. Refresh session activity and update the title on its first user turn
     const updatedSession = await AIChatSession.findOneAndUpdate(
       { _id: sessionId, userId, organizationId: requesterOrgId, status: "active" },
       {
-        $push: { messages: aiMsg },
-        ...(newTitle ? { title: newTitle } : {})
+        $set: { updatedAt: new Date(), ...(newTitle ? { title: newTitle } : {}) }
       },
       { returnDocument: "after" }
     );
 
+    const allMessages = await AIChatMessage.find({ sessionId }).sort({ sequence: 1 }).lean();
     return reply.code(200).send(successResponse({
       sessionId: updatedSession?._id.toString() || sessionId,
       title: updatedSession?.title || "Clinical Chat Session",
       userMessage: userMsg,
       aiMessage: aiMsg,
-      allMessages: updatedSession?.messages || []
+      allMessages: allMessages.map(m => ({
+        id: m._id.toString(), sender: m.sender, text: m.text,
+        citations: m.citations || [], suggestedActions: m.suggestedActions || [],
+        sequence: m.sequence, timestamp: m.timestamp, createdAt: m.createdAt
+      }))
     }));
   } catch (err: any) {
     console.error("sendChatMessageController error:", err);

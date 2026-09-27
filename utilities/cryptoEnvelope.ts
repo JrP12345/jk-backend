@@ -1,12 +1,11 @@
 import crypto from "node:crypto";
 
 /**
- * HealthOS Field-Level Envelope Encryption (FLE) Utility
+ * Ekavyu Field-Level Envelope Encryption (FLE) Utility
  * Compliant with DPDP Act 2023 (Section 8) & HIPAA Security Rule (45 CFR § 164.312)
  *
  * Algorithm: AES-256-GCM (Authenticated Encryption with Associated Data)
  * Primary Format: enc:v1:<iv_hex>:<tag_hex>:<ciphertext_hex>
- * Legacy Format:  <iv_hex>:<tag_hex>:<ciphertext_hex>
  */
 
 function resolveEncryptionSecret(): string {
@@ -31,16 +30,8 @@ const ENCRYPTION_SECRET = resolveEncryptionSecret();
 const MASTER_KEY = crypto.scryptSync(ENCRYPTION_SECRET, "healthos-fle-salt-2026", 32);
 const BLIND_INDEX_KEY = crypto.scryptSync(ENCRYPTION_SECRET, "healthos-blind-index-salt-2026", 32);
 
-// Legacy raw/SHA256 key for backward-compatibility with legacy encryption.ts records
-const LEGACY_KEY = /^[0-9a-fA-F]{64}$/.test(ENCRYPTION_SECRET)
-  ? Buffer.from(ENCRYPTION_SECRET, "hex")
-  : crypto.createHash("sha256").update(ENCRYPTION_SECRET).digest();
-
 export function isEncrypted(val: any): boolean {
-  if (typeof val !== "string") return false;
-  if (val.startsWith("enc:v1:")) return true;
-  const parts = val.split(":");
-  return parts.length === 3 && parts[0].length === 24 && parts[1].length === 32;
+  return typeof val === "string" && val.startsWith("enc:v1:");
 }
 
 /**
@@ -66,77 +57,21 @@ export function encryptField(plaintext: string | null | undefined): string {
   return `enc:v1:${iv.toString("hex")}:${authTag}:${encrypted}`;
 }
 
-/**
- * Decrypts an authenticated AES-256-GCM envelope or legacy ciphertext back to plaintext.
- * Gracefully returns unencrypted values unchanged to maintain backward compatibility.
- */
+/** Decrypts the current authenticated envelope; passes through plain values. */
 export function decryptField(ciphertext: string | null | undefined): string {
-  if (ciphertext === null || ciphertext === undefined) {
-    return ciphertext as any;
-  }
+  if (ciphertext === null || ciphertext === undefined) return ciphertext as any;
   const str = String(ciphertext);
-  if (!isEncrypted(str)) {
-    return str;
-  }
-
-  // 1. Primary envelope format: enc:v1:<iv>:<tag>:<ciphertext>
-  if (str.startsWith("enc:v1:")) {
-    const parts = str.split(":");
-    if (parts.length === 5) {
-      const iv = Buffer.from(parts[2], "hex");
-      const authTag = Buffer.from(parts[3], "hex");
-      const encryptedText = parts[4];
-
-      // Try with MASTER_KEY first
-      try {
-        const decipher = crypto.createDecipheriv("aes-256-gcm", MASTER_KEY, iv);
-        decipher.setAuthTag(authTag);
-        let decrypted = decipher.update(encryptedText, "hex", "utf8");
-        decrypted += decipher.final("utf8");
-        return decrypted;
-      } catch {
-        // Fallback to LEGACY_KEY
-        try {
-          const decipher = crypto.createDecipheriv("aes-256-gcm", LEGACY_KEY, iv);
-          decipher.setAuthTag(authTag);
-          let decrypted = decipher.update(encryptedText, "hex", "utf8");
-          decrypted += decipher.final("utf8");
-          return decrypted;
-        } catch {
-          // fall through
-        }
-      }
-    }
-  }
-
-  // 2. Legacy 3-part hex format: <iv_hex>:<tag_hex>:<ciphertext_hex>
+  if (!isEncrypted(str)) return str;
   const parts = str.split(":");
-  if (parts.length === 3) {
-    const iv = Buffer.from(parts[0], "hex");
-    const authTag = Buffer.from(parts[1], "hex");
-    const encryptedText = parts[2];
-
-    // Try with LEGACY_KEY first (matches original encryption.ts)
+  if (parts.length === 5) {
     try {
-      const decipher = crypto.createDecipheriv("aes-256-gcm", LEGACY_KEY, iv);
-      decipher.setAuthTag(authTag);
-      let decrypted = decipher.update(encryptedText, "hex", "utf8");
-      decrypted += decipher.final("utf8");
-      return decrypted;
+      const decipher = crypto.createDecipheriv("aes-256-gcm", MASTER_KEY, Buffer.from(parts[2], "hex"));
+      decipher.setAuthTag(Buffer.from(parts[3], "hex"));
+      return decipher.update(parts[4], "hex", "utf8") + decipher.final("utf8");
     } catch {
-      // Try with MASTER_KEY
-      try {
-        const decipher = crypto.createDecipheriv("aes-256-gcm", MASTER_KEY, iv);
-        decipher.setAuthTag(authTag);
-        let decrypted = decipher.update(encryptedText, "hex", "utf8");
-        decrypted += decipher.final("utf8");
-        return decrypted;
-      } catch {
-        // fall through
-      }
+      // Authentication failures must never expose ciphertext as patient data.
     }
   }
-
   console.error("[FLE] Decryption or authentication tag verification failed");
   return "[DECRYPTION_FAILED]";
 }

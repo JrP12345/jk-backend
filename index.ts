@@ -1,8 +1,9 @@
-import { verifyEnv } from "./utilities/config.ts";
-verifyEnv();
+import "./utilities/startupEnvironment.ts";
+import { getServerPort } from "./utilities/serverPort.ts";
 
 import "./db.ts";
 import mongoose from "mongoose";
+import { closeRealtimeTransports } from "./notifications/websocket.ts";
 import { requestContextStore } from "./utilities/context.ts";
 import { redisClient } from "./utilities/redis.ts";
 import { reportCriticalError } from "./utilities/telemetry.ts";
@@ -76,7 +77,6 @@ import { csrfProtection } from "./middleware/csrf.ts";
 import { sanitizeMiddleware } from "./middleware/sanitize.ts";
 import { tenantRateLimiter } from "./middleware/tenantRateLimiter.ts";
 import { registerProfilingHooks, getHandlerProfilingMetrics } from "./utilities/profiling.ts";
-import { initReplicaCoordination } from "./utilities/replicaCoordination.ts";
 import {
   MAX_REQUEST_BODY_BYTES,
   GLOBAL_RATE_LIMIT_PER_MINUTE,
@@ -96,7 +96,7 @@ const app = fastify({
   },
   bodyLimit: MAX_REQUEST_BODY_BYTES, // Centralized resource budget
   trustProxy: process.env.TRUSTED_PROXY_HOPS
-    ? parseInt(process.env.TRUSTED_PROXY_HOPS, 10)
+    ? (_address: string, hop: number) => hop < Number(process.env.TRUSTED_PROXY_HOPS)
     : (process.env.TRUSTED_PROXY_CIDRS
         ? process.env.TRUSTED_PROXY_CIDRS.split(",").map(c => c.trim())
         : ["127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]),
@@ -110,11 +110,18 @@ const app = fastify({
   },
 });
 
+let acceptingTraffic = process.env.NODE_ENV === "test";
+const probePaths = new Set(["/api/health", "/api/health/liveness", "/api/health/readiness"]);
+app.addHook("onRequest", (request, reply, done) => {
+  if (!acceptingTraffic && !probePaths.has(request.url.split("?")[0])) {
+    reply.header("Retry-After", "2").code(503).send({ success: false, message: "The service is starting or shutting down. Please try again shortly." });
+    return;
+  }
+  done();
+});
+
 // Enforce edge proxy origin protection & Referrer-Policy
 app.addHook("onRequest", (req, reply, done) => {
-  reply.header("Referrer-Policy", "no-referrer");
-  reply.header("X-Content-Type-Options", "nosniff");
-  reply.header("X-Frame-Options", "DENY");
 
   // Verify origin cannot be reached around trusted edge proxy when origin protection is enabled
   if (process.env.REQUIRE_TRUSTED_PROXY === "true" || process.env.ORIGIN_VERIFY_TOKEN) {
@@ -148,7 +155,7 @@ if (process.env.NODE_ENV !== "production") {
   app.register(fastifySwagger, {
     openapi: {
       info: {
-        title: "ANANTA Healthcare Infrastructure Platform API",
+        title: "Ekavyu Healthcare Infrastructure Platform API",
         description: "Production-Grade Enterprise AI-First Healthcare Infrastructure Platform API Specification",
         version: "1.0.0",
       },
@@ -363,8 +370,22 @@ const livenessHandler = async (_request: FastifyRequest, reply: FastifyReply) =>
   });
 };
 
+let lastReadinessState = "";
 const readinessHandler = async (_request: FastifyRequest, reply: FastifyReply) => {
   const report = await checkApiReadiness();
+  const state = {
+    status: report.data.status,
+    database: report.data.database.status,
+    redis: report.data.redis.status,
+    configurationErrors: report.data.configuration.errors,
+    bootstrapComplete: report.data.bootstrap.complete,
+  };
+  const signature = JSON.stringify(state);
+  if (signature !== lastReadinessState) {
+    if (!report.ready) app.log.warn({ readiness: state }, "API readiness failed. Check the reported dependency or configuration before redeploying.");
+    else if (lastReadinessState) app.log.info("API readiness recovered.");
+    lastReadinessState = signature;
+  }
   return reply.code(report.statusCode).send(report.data);
 };
 
@@ -376,9 +397,11 @@ app.get("/api/admin/operations/profiling", async (_req, reply) => {
 });
 
 // ─── Graceful Shutdown & Server Startup ──────────────────────────
-const PORT = Number(process.env.PORT) || 5000;
-
-async function startServer() {
+async function startServer(port = getServerPort()) {
+  // Claim the configured port before writing bootstrap data or starting jobs.
+  // Health probes remain 503 until bootstrap is complete.
+  acceptingTraffic = false;
+  const address = await app.listen({ port, host: "0.0.0.0" });
   try {
     // 1. One-time migration guard & bootstrap work
     await seedDefaultRoles();
@@ -387,32 +410,36 @@ async function startServer() {
     await syncOrganizationPlanQuotas();
     app.log.info("✓ Tenant plan resource quotas verified / synchronized.");
 
-    // 2. Mark bootstrap complete so readiness becomes true
-    markBootstrapComplete();
-    app.log.info("✓ Application bootstrap completed successfully.");
-
-    // 2.5 Initialize multi-replica coordination
-    initReplicaCoordination();
-    app.log.info("✓ Multi-replica coordination subscriber initialized.");
-
     // 3. Start scheduled no-show sweeper if running inline background jobs
-    if (process.env.RUN_INLINE_JOBS === "true" || process.env.NODE_ENV !== "production") {
+    if (process.env.NODE_ENV !== "test" && (process.env.RUN_INLINE_JOBS === "true" || process.env.NODE_ENV !== "production")) {
       startNoShowSweepJob();
       whatsAppWebhookWorker.start();
       outboundMessageDeliveryWorker.start();
       app.log.info("✓ Scheduled no-show background sweeper started (inline mode).");
     }
 
-    // 4. Bind HTTP listener to begin receiving traffic
-    const address = await app.listen({ port: PORT, host: "0.0.0.0" });
-    app.log.info(`🚀 HealthOS Fastify Server running at ${address}`);
+    markBootstrapComplete();
+    acceptingTraffic = true;
+    app.log.info("✓ Application bootstrap completed successfully.");
+    app.log.info(`🚀 Ekavyu Fastify Server running at ${address}`);
+    return address;
   } catch (err) {
-    app.log.error(err, "Fatal error during startup / bootstrap:");
-    process.exit(1);
+    await app.close();
+    throw err;
   }
 }
 
-const gracefulShutdown = async (signal: string) => {
+let shutdownStarted = false;
+const gracefulShutdown = async (signal: string, exitCode = 0) => {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  acceptingTraffic = false;
+  markShuttingDown();
+  const deadline = setTimeout(() => {
+    app.log.error("Shutdown exceeded 30 seconds; forcing exit so the supervisor can restart the API.");
+    process.exit(1);
+  }, 30_000);
+  deadline.unref();
   app.log.info(`Received ${signal}. Initiating graceful traffic drain and shutdown...`);
   try {
     // Step 0: Stop scheduled background sweepers
@@ -421,14 +448,14 @@ const gracefulShutdown = async (signal: string) => {
     await outboundMessageDeliveryWorker.stop();
 
     // Step 1: Remove server from traffic by failing readiness probes immediately
-    markShuttingDown();
-    const drainMs = SHUTDOWN_DRAIN_MS;
+    const drainMs = exitCode === 0 ? SHUTDOWN_DRAIN_MS : 0;
     if (drainMs > 0) {
       app.log.info(`Draining inbound traffic for ${drainMs}ms before closing listeners...`);
       await new Promise((resolve) => setTimeout(resolve, drainMs));
     }
 
     // Step 2: Stop accepting new HTTP connections and wait for in-flight requests
+    closeRealtimeTransports();
     await app.close();
     app.log.info("HTTP listener closed, in-flight requests completed.");
 
@@ -443,7 +470,8 @@ const gracefulShutdown = async (signal: string) => {
     }
 
     app.log.info("Server closed successfully.");
-    process.exit(0);
+    clearTimeout(deadline);
+    process.exit(exitCode);
   } catch (err) {
     app.log.error(err, "Error during graceful shutdown:");
     process.exit(1);
@@ -451,10 +479,16 @@ const gracefulShutdown = async (signal: string) => {
 };
 
 if (process.env.NODE_ENV !== "test") {
-  startServer();
   process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
   process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+  startServer().catch(async (err) => {
+    const conflict = (err as NodeJS.ErrnoException).code === "EADDRINUSE";
+    app.log.error({ err, port: getServerPort() }, conflict
+      ? "API port is already in use. Run only one backend process on this port; use npm run dev for the local duplicate check."
+      : "Fatal error during startup / bootstrap.");
+    await gracefulShutdown("startup failure", 1);
+  });
 }
 
-export { app };
+export { app, startServer };
 export default app;

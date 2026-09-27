@@ -109,12 +109,6 @@ export const NO_SHOW_SWEEP_INTERVAL_MS = positiveInt("NO_SHOW_SWEEP_INTERVAL_MS"
 /** Redis pub/sub channel prefix for WebSocket fan-out (default "ws") */
 export const WS_PUBSUB_PREFIX = process.env.WS_PUBSUB_PREFIX || "ws";
 
-/** Redis pub/sub channel for session revocation broadcast (default "session:revoke") */
-export const SESSION_REVOKE_CHANNEL = process.env.SESSION_REVOKE_CHANNEL || "session:revoke";
-
-/** Redis pub/sub channel for permission invalidation broadcast (default "perm:invalidate") */
-export const PERMISSION_INVALIDATE_CHANNEL = process.env.PERMISSION_INVALIDATE_CHANNEL || "perm:invalidate";
-
 /** Graceful shutdown drain period in ms (default 2000, test: 0) */
 export const SHUTDOWN_DRAIN_MS = process.env.NODE_ENV === "test" ? 0 : positiveInt("SHUTDOWN_DRAIN_MS", 2_000);
 

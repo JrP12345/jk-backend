@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import crypto from "node:crypto";
 import { isoCBOR } from "@simplewebauthn/server/helpers";
-import app from "../index.js";
+import app from "../index.ts";
 import { User } from "../models/User.ts";
 import { Passkey } from "../models/Passkey.ts";
 import { createRefreshTokenDetails, generateAccessToken } from "../utilities/helpers.ts";

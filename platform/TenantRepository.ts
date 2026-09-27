@@ -1,4 +1,4 @@
-import mongoose, { type Model, type FilterQuery, type UpdateQuery, type QueryOptions, type PipelineStage } from "mongoose";
+import mongoose, { type Model, type QueryFilter, type UpdateQuery, type QueryOptions, type PipelineStage } from "mongoose";
 import { requestContextStore } from "../utilities/context.ts";
 import { logger } from "../utilities/logger.ts";
 
@@ -53,7 +53,7 @@ export class TenantRepository<T extends mongoose.Document | any> {
    * Enforces that the filter contains the mandatory organizationId,
    * preventing cross-tenant filter collisions or overrides.
    */
-  private scopeFilter(filter: FilterQuery<T> = {}, explicitOrgId?: string | mongoose.Types.ObjectId): FilterQuery<T> {
+  private scopeFilter(filter: QueryFilter<T> = {}, explicitOrgId?: string | mongoose.Types.ObjectId): QueryFilter<T> {
     const orgId = this.resolveOrgId(explicitOrgId);
     const existingOrgId = (filter as any)[this.tenantField];
 
@@ -71,26 +71,26 @@ export class TenantRepository<T extends mongoose.Document | any> {
     };
   }
 
-  async find(filter: FilterQuery<T> = {}, projection?: any, options?: QueryOptions & TenantRepoOptions): Promise<T[]> {
+  async find(filter: QueryFilter<T> = {}, projection?: any, options?: Omit<QueryOptions, "session"> & { session?: mongoose.ClientSession } & TenantRepoOptions): Promise<T[]> {
     const scoped = this.scopeFilter(filter, options?.organizationId);
-    return this.model.find(scoped, projection, options).exec();
+    return this.model.find<T>(scoped, projection, options).exec();
   }
 
-  async findOne(filter: FilterQuery<T> = {}, projection?: any, options?: QueryOptions & TenantRepoOptions): Promise<T | null> {
+  async findOne(filter: QueryFilter<T> = {}, projection?: any, options?: Omit<QueryOptions, "session"> & { session?: mongoose.ClientSession } & TenantRepoOptions): Promise<T | null> {
     const scoped = this.scopeFilter(filter, options?.organizationId);
-    return this.model.findOne(scoped, projection, options).exec();
+    return this.model.findOne<T>(scoped, projection, options).exec();
   }
 
-  async findById(id: string | mongoose.Types.ObjectId, projection?: any, options?: QueryOptions & TenantRepoOptions): Promise<T | null> {
+  async findById(id: string | mongoose.Types.ObjectId, projection?: any, options?: Omit<QueryOptions, "session"> & { session?: mongoose.ClientSession } & TenantRepoOptions): Promise<T | null> {
     if (!id || !mongoose.Types.ObjectId.isValid(String(id))) {
       return null;
     }
-    const filter = { _id: new mongoose.Types.ObjectId(String(id)) } as FilterQuery<T>;
+    const filter = { _id: new mongoose.Types.ObjectId(String(id)) } as QueryFilter<T>;
     const scoped = this.scopeFilter(filter, options?.organizationId);
-    return this.model.findOne(scoped, projection, options).exec();
+    return this.model.findOne<T>(scoped, projection, options).exec();
   }
 
-  async countDocuments(filter: FilterQuery<T> = {}, options?: QueryOptions & TenantRepoOptions): Promise<number> {
+  async countDocuments(filter: QueryFilter<T> = {}, options?: Omit<QueryOptions, "session"> & { session?: mongoose.ClientSession } & TenantRepoOptions): Promise<number> {
     const scoped = this.scopeFilter(filter, options?.organizationId);
     return this.model.countDocuments(scoped, options).exec();
   }
@@ -115,34 +115,34 @@ export class TenantRepository<T extends mongoose.Document | any> {
     return this.model.create({ ...docs, [this.tenantField]: orgId });
   }
 
-  async updateOne(filter: FilterQuery<T>, update: UpdateQuery<T>, options?: QueryOptions & TenantRepoOptions): Promise<any> {
+  async updateOne(filter: QueryFilter<T>, update: UpdateQuery<T>, options?: Omit<QueryOptions, "session"> & { session?: mongoose.ClientSession } & TenantRepoOptions): Promise<any> {
     const scoped = this.scopeFilter(filter, options?.organizationId);
     return this.model.updateOne(scoped, update, options).exec();
   }
 
-  async updateMany(filter: FilterQuery<T>, update: UpdateQuery<T>, options?: QueryOptions & TenantRepoOptions): Promise<any> {
+  async updateMany(filter: QueryFilter<T>, update: UpdateQuery<T>, options?: Omit<QueryOptions, "session"> & { session?: mongoose.ClientSession } & TenantRepoOptions): Promise<any> {
     const scoped = this.scopeFilter(filter, options?.organizationId);
     return this.model.updateMany(scoped, update, options).exec();
   }
 
-  async findOneAndUpdate(filter: FilterQuery<T>, update: UpdateQuery<T>, options?: QueryOptions & TenantRepoOptions): Promise<T | null> {
+  async findOneAndUpdate(filter: QueryFilter<T>, update: UpdateQuery<T>, options?: Omit<QueryOptions, "session"> & { session?: mongoose.ClientSession } & TenantRepoOptions): Promise<T | null> {
     const scoped = this.scopeFilter(filter, options?.organizationId);
-    return this.model.findOneAndUpdate(scoped, update, options).exec();
+    return this.model.findOneAndUpdate<T>(scoped, update, options).exec();
   }
 
-  async deleteOne(filter: FilterQuery<T>, options?: QueryOptions & TenantRepoOptions): Promise<any> {
+  async deleteOne(filter: QueryFilter<T>, options?: Omit<QueryOptions, "session"> & { session?: mongoose.ClientSession } & TenantRepoOptions): Promise<any> {
     const scoped = this.scopeFilter(filter, options?.organizationId);
     return this.model.deleteOne(scoped, options).exec();
   }
 
-  async deleteMany(filter: FilterQuery<T>, options?: QueryOptions & TenantRepoOptions): Promise<any> {
+  async deleteMany(filter: QueryFilter<T>, options?: Omit<QueryOptions, "session"> & { session?: mongoose.ClientSession } & TenantRepoOptions): Promise<any> {
     const scoped = this.scopeFilter(filter, options?.organizationId);
     return this.model.deleteMany(scoped, options).exec();
   }
 
-  async findOneAndDelete(filter: FilterQuery<T>, options?: QueryOptions & TenantRepoOptions): Promise<T | null> {
+  async findOneAndDelete(filter: QueryFilter<T>, options?: Omit<QueryOptions, "session"> & { session?: mongoose.ClientSession } & TenantRepoOptions): Promise<T | null> {
     const scoped = this.scopeFilter(filter, options?.organizationId);
-    return this.model.findOneAndDelete(scoped, options).exec();
+    return this.model.findOneAndDelete<T>(scoped, options).exec();
   }
 
   /**
@@ -174,7 +174,7 @@ export class TenantRepository<T extends mongoose.Document | any> {
       }
       return { [opKey]: payload };
     });
-    return this.model.bulkWrite(scopedOps);
+    return this.model.bulkWrite(scopedOps as Parameters<Model<T>["bulkWrite"]>[0]);
   }
 
   getModel(): Model<T> {

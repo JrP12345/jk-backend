@@ -8,7 +8,6 @@ import {
   issuePublicTrackerCheckInCapability,
   processPublicTrackerCheckIn,
   printPublicTrackerPrescription,
-  processPublicTrackerPayment,
   joinPublicQueue,
   processPublicTrackerReturn,
   getPublicQueueTv,
@@ -59,8 +58,6 @@ export default async function publicRoutes(app: FastifyInstance) {
 
   // GET /api/public/track/:appointmentId — Public live queue tracking for patient
   app.get("/api/public/track/:appointmentId", getPublicAppointmentTracker);
-  app.get("/api/public/tracker/:appointmentId", getPublicAppointmentTracker);
-  app.get("/api/public/appointments/:appointmentId/tracker", getPublicAppointmentTracker);
 
   // POST /api/public/track/:appointmentId/check-in — Patient "I have arrived" self check-in
   app.post("/api/public/track/:appointmentId/check-in-capability", {
@@ -75,9 +72,6 @@ export default async function publicRoutes(app: FastifyInstance) {
 
   // GET /api/public/track/:appointmentId/prescription/print — Printable official prescription HTML
   app.get("/api/public/track/:appointmentId/prescription/print", printPublicTrackerPrescription);
-
-  // Retired public settlement endpoint. Payments must use the authenticated verified payment flow.
-  app.post("/api/public/track/:appointmentId/pay", processPublicTrackerPayment);
 
   // POST /api/public/join-queue — Fast walk-in queue join via Clinic QR Poster
   app.post("/api/public/join-queue", joinPublicQueue);

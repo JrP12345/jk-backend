@@ -28,7 +28,7 @@ describe("Enterprise Onboarding & Email Security OTP Infrastructure", () => {
     const sendEmail = vi.spyOn(emailProvider, "sendEmail").mockResolvedValue(true);
     const sent = await emailProvider.sendEmail({
       to: "admin@hospital.internal",
-      subject: "ANANTA Security Verification OTP Code",
+      subject: "Ekavyu Security Verification OTP Code",
       text: "Your 6-digit OTP code is: 123456",
       html: "<h1>123456</h1>",
     });

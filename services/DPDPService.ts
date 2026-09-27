@@ -1,5 +1,5 @@
 /**
- * HealthOS DPDP (Digital Personal Data Protection Act 2023) Compliance Engine
+ * Ekavyu DPDP (Digital Personal Data Protection Act 2023) Compliance Engine
  *
  * Implements:
  * 1. Data Portability / Machine-Readable Export (Section 11)
@@ -449,7 +449,7 @@ export class DPDPService {
         filingTimestamp: new Date().toISOString(),
       },
       dataFiduciary: {
-        name: org?.name || "HealthOS Facility",
+        name: org?.name || "Ekavyu Facility",
         identifier: org?._id || incident.organizationId,
         contactEmail: org?.email || "compliance@ananta.health",
       },

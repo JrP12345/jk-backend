@@ -1,10 +1,12 @@
+import { markBootstrapComplete } from "../utilities/readiness.ts";
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { redisClient } from "../utilities/redis.ts";
 
 describe("Centralized Rate Limiting Unit Tests", () => {
   beforeAll(async () => {
     await app.ready();
+    markBootstrapComplete();
   });
 
   it("should respond to health check under rate limit threshold", async () => {
@@ -38,7 +40,7 @@ describe("Centralized Rate Limiting Unit Tests", () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.status).toBe("ready");
-    expect(body.database).toBe("connected");
+    expect(body.database.status).toBe("connected");
   });
 
   it("should handle redis store initialization safely without throwing", () => {

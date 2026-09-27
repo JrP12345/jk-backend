@@ -19,7 +19,6 @@ import "../models/LabTest.ts";
 import "../models/LabOrder.ts";
 import "../models/Notification.ts";
 import "../models/NotificationPreference.ts";
-import "../models/NotificationTemplate.ts";
 import "../models/NotificationDelivery.ts";
 import "../models/OutboundMessage.ts";
 import "../models/WorkerLease.ts";

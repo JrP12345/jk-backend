@@ -1,5 +1,5 @@
 /**
- * HealthOS Telemetry, Error Tracking & Alert Dispatcher
+ * Ekavyu Telemetry, Error Tracking & Alert Dispatcher
  *
  * Implements:
  * 1. Sentry APM with a strict ALLOWLIST PHI scrubber (drops untrusted request data,

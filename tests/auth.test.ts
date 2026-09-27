@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
 import { RefreshToken } from "../models/RefreshToken.ts";

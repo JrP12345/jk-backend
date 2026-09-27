@@ -50,8 +50,12 @@ export async function compileEncounterCharges(
   // 1. Doctor Consultation Fee (skip if already invoiced at booking)
   let skipConsultFee = false;
   if (appointmentId) {
-    const existingApptInvoice = await Invoice.findOne({ appointmentId });
-    if (existingApptInvoice && existingApptInvoice.status === "paid") {
+    const existingApptInvoice = await Invoice.findOne({
+      appointmentId,
+      status: { $in: ["unpaid", "partially_paid", "paid"] },
+      "items.description": /^(?:Physician )?Consultation(?: Fee)?(?: \(| -|$)/i,
+    });
+    if (existingApptInvoice) {
       skipConsultFee = true;
     }
   }

@@ -20,13 +20,13 @@ export default async function documentRoutes(fastify: FastifyInstance) {
   };
 
   fastify.post(
-    "/api/v1/documents/upload",
+    "/api/documents/upload",
     uploadDocuments,
     uploadDocument
   );
 
   fastify.get(
-    "/api/v1/documents/patient/:patientId",
+    "/api/documents/patient/:patientId",
     viewDocuments,
     getPatientDocuments
   );

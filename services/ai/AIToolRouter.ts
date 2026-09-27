@@ -7,55 +7,6 @@ export interface DetectedToolIntent {
   confidence: number;
 }
 
-export const LLM_CLINICAL_TOOL_DECLARATIONS = [
-  {
-    name: "createAppointmentTool",
-    description: "Schedule a patient consultation or follow-up appointment in the clinic calendar",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        patientId: { type: "STRING", description: "Target patient unique identifier" },
-        doctorId: { type: "STRING", description: "Attending doctor unique identifier" },
-        clinicId: { type: "STRING", description: "Clinic facility identifier" },
-        appointmentDate: { type: "STRING", description: "ISO datetime for scheduled encounter" },
-        type: { type: "STRING", description: "Encounter modality: in_person, teleconsult, follow_up" },
-        notes: { type: "STRING", description: "Reason for encounter or triage notes" }
-      },
-      required: ["patientId", "doctorId", "clinicId"]
-    }
-  },
-  {
-    name: "prescribeMedicationTool",
-    description: "Draft a digital prescription for a patient encounter requiring doctor approval",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        patientId: { type: "STRING", description: "Target patient unique identifier" },
-        clinicId: { type: "STRING", description: "Clinic facility identifier" },
-        medicineName: { type: "STRING", description: "Commercial or generic pharmaceutical name" },
-        dosage: { type: "STRING", description: "Dosage unit (e.g. 500mg, 10ml)" },
-        frequency: { type: "STRING", description: "Regimen frequency (e.g. 1-0-1, TID)" },
-        duration: { type: "STRING", description: "Therapy duration (e.g. 5 days, 2 weeks)" },
-        instructions: { type: "STRING", description: "Administration instructions" }
-      },
-      required: ["patientId", "clinicId", "medicineName"]
-    }
-  },
-  {
-    name: "generateSOAPNoteTool",
-    description: "Generate structured clinical SOAP documentation draft for patient chart",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        chiefComplaint: { type: "STRING", description: "Primary chief complaint narrative" },
-        examinationFindings: { type: "STRING", description: "Objective physical examination findings" },
-        history: { type: "STRING", description: "History of present illness and medical history" }
-      },
-      required: ["chiefComplaint"]
-    }
-  }
-];
-
 export class AIToolRouter {
   private static instance: AIToolRouter;
 

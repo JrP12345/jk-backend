@@ -1,5 +1,6 @@
+import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Role } from "../models/Role.ts";
 
 /**
@@ -38,19 +39,14 @@ describe("Dynamic RBAC Authorization", () => {
     // 2. Admin creates a clinic — capture the clinicId for later payloads.
     //    addReceptionistSchema requires clinicId as a valid ObjectId, so all
     //    receptionist creation calls must include it.
-    const clinicRes = await app.inject({
-      method: "POST",
-      url: "/api/onboarding/clinics",
-      headers: { cookie: adminCookies.join("; ") },
-      payload: {
+    const clinicRes = await reuseOnboardingClinic(app, { headers: { cookie: adminCookies.join("; ") }, payload: {
         name: "RBAC Clinic",
         city: "Bangalore",
         address: "1 Test Street",
         phone: "9000000001",
         email: "clinic@rbactest.com",
-      },
-    });
-    expect(clinicRes.statusCode).toBe(201);
+      } });
+    expect(clinicRes.statusCode).toBe(200);
     clinicId = JSON.parse(clinicRes.body).data.id;
 
     // 3. Admin registers a doctor (the "doctor" role has no Role document yet)

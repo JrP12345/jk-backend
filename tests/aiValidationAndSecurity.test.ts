@@ -1,6 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { validateSOAPNoteDraft, validateHealthQueryResponse, AISchemaValidationError } from "../services/ai/aiValidation.ts";
-import { AIService, AIServiceUnavailableError } from "../services/ai/AIService.ts";
+import { AIServiceUnavailableError } from "../services/ai/AIService.ts";
+import { aiGateway } from "../services/ai/AIGateway.ts";
+import { InboundPipeline } from "../services/ai/InboundPipeline.ts";
+import { providerRegistry } from "../services/ai/ProviderRegistry.ts";
 
 describe("Batch 1: AI Provider Security & Schema Validation Tests", () => {
   it("should validate and sanitize valid SOAP note draft structure", () => {
@@ -43,16 +46,18 @@ describe("Batch 1: AI Provider Security & Schema Validation Tests", () => {
     expect(validated.suggestedActions![0].targetUrl).toBe("/dashboard/patients/123");
   });
 
-  it("should throw AIServiceUnavailableError in production when primary provider fails", async () => {
-    const prevEnv = process.env.NODE_ENV;
-    process.env.NODE_ENV = "production";
-
+  it("refuses simulated AI execution in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const query = vi.fn();
+    vi.spyOn(InboundPipeline, "process").mockResolvedValue({ providerName: "FallbackSimulationAI", allowedProviders: [] } as any);
+    vi.spyOn(providerRegistry, "listProviders").mockReturnValue(["FallbackSimulationAI"]);
+    vi.spyOn(providerRegistry, "getProvider").mockReturnValue({ name: "FallbackSimulationAI", queryPatientHealthAssistant: query } as any);
     try {
-      const service = new AIService();
-      // Service in production with no configured key sets primary to UnavailableAIProvider
-      await expect(service.generateSOAPNote({ chiefComplaint: "Chest pain" })).rejects.toThrow(AIServiceUnavailableError);
+      await expect(aiGateway.execute({ correlationId: "prod-guard", organizationId: "", userId: "", sessionId: "test", requestId: "test", prompt: "Explain clinic scheduling", dataClassification: "nonclinical" })).rejects.toThrow(AIServiceUnavailableError);
+      expect(query).not.toHaveBeenCalled();
     } finally {
-      process.env.NODE_ENV = prevEnv;
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
     }
   });
 });

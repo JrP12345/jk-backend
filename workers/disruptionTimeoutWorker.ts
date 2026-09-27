@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { startWorkerHealthServer } from "../utilities/workerHealthServer.ts";
 import { verifyEnv } from "../utilities/config.ts";
 import { startDisruptionTimeoutJob, stopDisruptionTimeoutJob } from "../jobs/disruptionTimeoutJob.ts";
 import { acquireOrRenewWorkerLease, releaseWorkerLease } from "../utilities/workerLease.ts";
@@ -73,7 +74,10 @@ heartbeat = setInterval(() => {
 }, heartbeatMs);
 console.log("Disruption timeout worker started; awaiting scheduler leadership");
 
+const healthServer = startWorkerHealthServer({ workerName: "disruptionTimeoutWorker", defaultPort: 5003 });
+
 const shutdown = async () => {
+  await healthServer.stop();
   if (heartbeat) clearInterval(heartbeat);
   heartbeat = null;
   stopDisruptionTimeoutJob();

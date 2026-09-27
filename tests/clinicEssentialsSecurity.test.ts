@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import mongoose from "mongoose";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";

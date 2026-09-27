@@ -151,8 +151,6 @@ export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyRe
             inConsultationPreservedCount: 0,
             checkedInTriageCount: 0,
             remoteNotifiedCount: 0,
-            checkedInAtRisk: 0,
-            autoCancelled: 0,
           },
         },
         `Doctor availability override set successfully for ${createdOverrides.length} clinic branch(es)`

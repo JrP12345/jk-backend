@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import mongoose from "mongoose";
-import app from "../index.js";
+import app from "../index.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
 import { Clinic } from "../models/Clinic.ts";
@@ -70,6 +70,8 @@ describe("Milestone 8: Analytics & Reporting Platform Integration Tests", () => 
       role: "doctor",
     });
 
+    await OrgMember.create({ userId: docUser._id, organizationId: org._id, role: "doctor" });
+
     const patientUser = await User.create({
       name: "Analytics Patient",
       email: "analytics_patient@ananta.internal",
@@ -119,6 +121,9 @@ describe("Milestone 8: Analytics & Reporting Platform Integration Tests", () => 
       password: await bcrypt.hash("Password123!", 10),
       role: "admin",
     });
+
+    const org = await Organization.create({ name: "Export Organization", city: "Pune" });
+    await OrgMember.create({ userId: adminUser._id, organizationId: org._id, role: "admin" });
 
     const loginRes = await app.inject({
       method: "POST",

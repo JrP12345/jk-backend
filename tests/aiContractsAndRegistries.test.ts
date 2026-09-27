@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest";
-import { aiService } from "../services/ai/AIService.ts";
 import { providerRegistry } from "../services/ai/ProviderRegistry.ts";
 import { modelRegistry } from "../services/ai/ModelRegistry.ts";
 import type { AIRequest, AIResponse, AIUsage } from "../services/ai/AIProvider.ts";

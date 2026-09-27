@@ -19,9 +19,7 @@ export class ProviderRegistry {
   }
 
   getProvider(name?: string): AIProvider | undefined {
-    if (name && this.providers.has(name)) {
-      return this.providers.get(name);
-    }
+    if (name) return this.providers.get(name);
     return this.providers.get(this.primaryProviderName) || Array.from(this.providers.values())[0];
   }
 

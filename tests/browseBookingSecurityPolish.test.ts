@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import app from "../index.js";
+import app from "../index.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
 import { OrgMember } from "../models/OrgMember.ts";

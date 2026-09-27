@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
@@ -275,7 +275,16 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     const { Prescription } = await import("../models/Prescription.ts");
     const { Invoice } = await import("../models/Invoice.ts");
 
-    // 1. Mark appointment completed
+    // 1. Start consultation before completing the visit.
+    const startRes = await app.inject({
+      method: "PUT",
+      url: `/api/appointments/${appointmentId}/status`,
+      headers: { cookie: adminCookies.join("; ") },
+      payload: { status: "in-consultation" },
+    });
+    expect(startRes.statusCode, startRes.body).toBe(200);
+
+    // Mark appointment completed
     const completeRes = await app.inject({
       method: "PUT",
       url: `/api/appointments/${appointmentId}/status`,
@@ -427,29 +436,6 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     expect(html).toContain("Amoxicillin 500mg");
     expect(html).toContain("Paracetamol 650mg");
     expect(html).toContain("Acute upper respiratory infection");
-    expect(html).toContain("Doctor's Advice & Treatment Plan:");
-  });
-
-  it("should process patient bill settlement via public pay endpoint", async () => {
-    const payRes = await app.inject({
-      method: "POST",
-      url: `/api/public/track/${appointmentId}/pay`,
-      payload: { paymentMethod: "upi" },
-    });
-    expect(payRes.statusCode).toBe(200);
-    const payBody = JSON.parse(payRes.body).data;
-    expect(payBody.status).toBe("paid");
-    expect(payBody.balanceDue).toBe(0);
-
-    // Verify public tracker immediately reflects paid status
-    const verifiedTracker = await app.inject({
-      method: "GET",
-      url: `/api/public/track/${appointmentId}`,
-    });
-    expect(verifiedTracker.statusCode).toBe(200);
-    const verifiedBody = JSON.parse(verifiedTracker.body).data;
-    expect(verifiedBody.billing.status).toBe("paid");
-    expect(verifiedBody.billing.balanceDue).toBe(0);
-    expect(verifiedBody.paymentStatus).toBe("paid");
+    expect(html).toContain("Doctor&#39;s Advice & Treatment Plan:");
   });
 });

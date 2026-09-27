@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * HealthOS Automated MongoDB Backup Engine
+ * Ekavyu Automated MongoDB Backup Engine
  *
  * Performs an encrypted, compressed snapshot of the MongoDB database.
  * Supports off-site streaming to Cloudflare R2 / AWS S3, local archive storage,
@@ -128,7 +128,7 @@ async function runBackup() {
   }
 
   console.log("================================================================================");
-  console.log("             HealthOS Production MongoDB Backup Engine                         ");
+  console.log("             Ekavyu Production MongoDB Backup Engine                         ");
   console.log("================================================================================");
   console.log(`⏱  Timestamp: ${new Date().toISOString()}`);
   console.log(`📂 Output Directory: ${outDir}`);

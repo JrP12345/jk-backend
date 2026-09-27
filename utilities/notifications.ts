@@ -1,3 +1,4 @@
+import { getFrontendBaseUrl } from "./config.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
@@ -83,8 +84,8 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
         ? `Appointment Confirmed - Token #${token} at ${clinicName}`
         : `Appointment Cancelled - ${clinicName}`;
       const body = actionType === "booked"
-        ? `Hello ${patientName},\n\nYour appointment booking with Dr. ${doctorName} at ${clinicName} is confirmed for ${time}.\n\nYour assigned daily queue token is #${token}.\n\nYou can track your live queue position in real-time here:\n${trackingUrl}\n\nPlease scan the reception QR code or check in via the tracker when you arrive.\n\nBest regards,\nAnant Health Desk`
-        : `Hello ${patientName},\n\nThis is to inform you that your appointment with Dr. ${doctorName} at ${clinicName} scheduled for ${time} has been cancelled.\n\nIf you believe this is an error, please contact clinic reception.\n\nBest regards,\nAnant Health Desk`;
+        ? `Hello ${patientName},\n\nYour appointment booking with Dr. ${doctorName} at ${clinicName} is confirmed for ${time}.\n\nYour assigned daily queue token is #${token}.\n\nYou can track your live queue position in real-time here:\n${trackingUrl}\n\nPlease scan the reception QR code or check in via the tracker when you arrive.\n\nBest regards,\nEkavyu Health Desk`
+        : `Hello ${patientName},\n\nThis is to inform you that your appointment with Dr. ${doctorName} at ${clinicName} scheduled for ${time} has been cancelled.\n\nIf you believe this is an error, please contact clinic reception.\n\nBest regards,\nEkavyu Health Desk`;
 
       await enqueueTransactionalEmail({
         to: patientEmail,
@@ -235,7 +236,7 @@ export async function sendConsultationCompletedNotification(
 
     if (patientEmail) {
       const subject = `Consultation Completed - Prescription & Bill for Token #${token}`;
-      const body = `Hello ${patientName},\n\nYour consultation with Dr. ${doctorName} at ${clinicName} has been completed.\n\nYour digital prescription, prescribed medicines, doctor's advice, and invoice are now available to view and download:\n${trackingUrl}\n\nThank you for choosing ${clinicName}.\n\nBest regards,\nAnant Health Desk`;
+      const body = `Hello ${patientName},\n\nYour consultation with Dr. ${doctorName} at ${clinicName} has been completed.\n\nYour digital prescription, prescribed medicines, doctor's advice, and invoice are now available to view and download:\n${trackingUrl}\n\nThank you for choosing ${clinicName}.\n\nBest regards,\nEkavyu Health Desk`;
 
       await enqueueTransactionalEmail({
         to: patientEmail,
@@ -288,65 +289,6 @@ export async function sendConsultationCompletedNotification(
 }
 
 /**
- * Dispatches disruption notification via email and WhatsApp.
- */
-export async function sendDisruptionAlertNotification(appointmentId: any, params: {
-  doctorName: string;
-  clinicName: string;
-  formattedTime: string;
-  rescheduleUrl: string;
-  cancelUrl: string;
-}) {
-  try {
-    const appt: any = await Appointment.findById(appointmentId)
-      .populate("clinicId", "name phone organizationId")
-      .populate("doctorId", "name")
-      .populate({
-        path: "patientId",
-        populate: { path: "userId", select: "name email phone" },
-      });
-
-    if (!appt) return;
-
-    const patientName = appt.patientId?.name || appt.patientId?.userId?.name || "Patient";
-    const patientPhone = appt.patientId?.phone || appt.patientId?.userId?.phone;
-    const patientEmail = appt.patientId?.email || appt.patientId?.userId?.email;
-
-    if (patientPhone) {
-      const { SmsWhatsAppService } = await import("../services/SmsWhatsAppService.ts");
-      await SmsWhatsAppService.sendDisruptionAlert(
-        appt._id.toString(),
-        appt.clinicId?.organizationId?.toString() || "",
-        patientPhone,
-        {
-          patientName,
-          doctorName: params.doctorName,
-          clinicName: params.clinicName,
-          appointmentTime: params.formattedTime,
-          rescheduleUrl: params.rescheduleUrl,
-          cancelUrl: params.cancelUrl,
-          actionDeadlineMinutes: 60,
-        }
-      );
-    }
-
-    if (patientEmail) {
-      const subject = `Urgent: Schedule Disruption for Dr. ${params.doctorName}`;
-      const body = `Hello ${patientName},\n\nWe regret to inform you that Dr. ${params.doctorName} at ${params.clinicName} has experienced an unexpected schedule disruption for your appointment on ${params.formattedTime}.\n\nPlease choose one of the following options within 60 minutes:\n- Reschedule: ${params.rescheduleUrl}\n- Cancel & Refund: ${params.cancelUrl}\n\nWe apologize for any inconvenience.\n\nBest regards,\nAnant Health Desk`;
-      await enqueueTransactionalEmail({
-        to: patientEmail,
-        subject,
-        text: body,
-        html: `<div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">${body.replace(/\n/g, "<br/>")}</div>`,
-        idempotencyKey: `transactional-email:disruption:${appt._id}`,
-      });
-    }
-  } catch (err) {
-    console.error("sendDisruptionAlertNotification error:", err);
-  }
-}
-
-/**
  * Dispatches payment receipt notification via email and WhatsApp.
  */
 export async function sendPaymentReceiptNotification(params: {
@@ -380,16 +322,14 @@ export async function sendPaymentReceiptNotification(params: {
     const patientPhone = appt.patientId?.phone || appt.patientId?.userId?.phone;
     const patientEmail = appt.patientId?.email || appt.patientId?.userId?.email;
     const doctorName = appt.doctorId?.name || "Doctor";
-    const clinicName = appt.clinicId?.name || "Ananta Health Clinic";
+    const clinicName = appt.clinicId?.name || "Ekavyu Health Clinic";
     const token = appt.tokenNumber || "OPD";
     const invoiceNum = invoice?.invoiceNumber || "INV-REC";
     const amountStr = `₹${Number(params.amount).toFixed(2)}`;
 
-    let backendBase = process.env.NEXT_PUBLIC_API_URL;
-    if (!backendBase) backendBase = "http://localhost:5000/api";
-    const cleanBase = backendBase.replace(/\/+$/, "");
-    const receiptUrl = `${cleanBase}/public/invoices/${invoice?._id || params.invoiceId}/print`;
-    const { url: trackingUrl } = await issueAppointmentTrackerLink(appt);
+    const { url: trackingUrl } = await issueAppointmentTrackerLink(appt, { pathPrefix: `${getFrontendBaseUrl()}/track` });
+    // The public tracker is the implemented, capability-protected payment view.
+    const receiptUrl = trackingUrl;
 
     if (patientPhone) {
       const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
@@ -415,8 +355,8 @@ export async function sendPaymentReceiptNotification(params: {
     }
 
     if (patientEmail) {
-      const subject = `Payment Confirmed - Receipt #${invoiceNum} (${amountStr})`;
-      const body = `Hello ${patientName},\n\nWe have received your payment of ${amountStr} via ${params.paymentMethod.toUpperCase()} for Token #${token} (Dr. ${doctorName} at ${clinicName}).\n\nYour official payment receipt is available here:\n${receiptUrl}\n\nView your live visit tracker:\n${trackingUrl}\n\nThank you for choosing ${clinicName}.\n\nBest regards,\nAnant Health Billing Team`;
+      const subject = `Payment Confirmed - Invoice #${invoiceNum} (${amountStr})`;
+      const body = `Hello ${patientName},\n\nWe have received your payment of ${amountStr} via ${params.paymentMethod.toUpperCase()} for Token #${token} (Dr. ${doctorName} at ${clinicName}).\n\nYour payment details are available here:\n${receiptUrl}\n\nView your live visit tracker:\n${trackingUrl}\n\nThank you for choosing ${clinicName}.\n\nBest regards,\nEkavyu Health Billing Team`;
 
       await enqueueTransactionalEmail({
         to: patientEmail,

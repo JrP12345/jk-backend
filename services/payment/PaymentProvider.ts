@@ -15,14 +15,6 @@ export interface PaymentLinkResponse {
   expiresAt: string;
 }
 
-export interface PaymentWebhookPayload {
-  paymentLinkId: string;
-  transactionId: string;
-  status: "captured" | "failed";
-  paymentMethod: "card" | "upi" | "net-banking" | "wallet";
-  paidAmount: number;
-}
-
 export interface PaymentRefundRequest {
   transactionId: string;
   amount: number;

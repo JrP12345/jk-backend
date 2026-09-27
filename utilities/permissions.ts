@@ -1,8 +1,6 @@
 import type { FastifyRequest } from "fastify";
 import mongoose from "mongoose";
 import { Role } from "../models/Role.ts";
-import { User } from "../models/User.ts";
-import { Organization } from "../models/Organization.ts";
 import { redisClient, publishRedisEvent, createRedisSubscriber } from "./redis.ts";
 import { logger } from "./logger.ts";
 
@@ -219,32 +217,6 @@ export async function invalidateRoleCache(roleName?: string, organizationId?: st
   }
 }
 (globalThis as any).__invalidateRoleCache = invalidateRoleCache;
-
-/**
- * Increment User authorization version and revoke active sessions.
- */
-export async function incrementUserAuthVersion(userId: string): Promise<number> {
-  const updated = await User.findOneAndUpdate(
-    { _id: userId },
-    { $inc: { authVersion: 1 } },
-    { new: true }
-  ).lean();
-  await invalidateRoleCache();
-  return updated?.authVersion || 1;
-}
-
-/**
- * Increment Organization authorization version to invalidate all active organization sessions.
- */
-export async function incrementOrgAuthVersion(organizationId: string): Promise<number> {
-  const updated = await Organization.findOneAndUpdate(
-    { _id: organizationId },
-    { $inc: { authVersion: 1 } },
-    { new: true }
-  ).lean();
-  await invalidateRoleCache(undefined, organizationId);
-  return updated?.authVersion || 1;
-}
 
 /**
  * Authoritative permission resolution from Database Role definitions.

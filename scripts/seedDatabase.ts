@@ -27,11 +27,9 @@ import { TaskModel } from "../models/Task.ts";
 import { Notification } from "../models/Notification.ts";
 import { NotificationDelivery } from "../models/NotificationDelivery.ts";
 import { NotificationPreference } from "../models/NotificationPreference.ts";
-import { NotificationTemplate } from "../models/NotificationTemplate.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { Counter } from "../models/Counter.ts";
 import { Role } from "../models/Role.ts";
-import { Permission } from "../models/Permission.ts";
 import { PendingTwoFactorSetup } from "../models/PendingTwoFactorSetup.ts";
 import { OnboardingDraft } from "../models/OnboardingDraft.ts";
 import { RefreshToken } from "../models/RefreshToken.ts";
@@ -45,7 +43,7 @@ async function runSeed() {
   }
 
   console.log("=======================================================================");
-  console.log("🚀 [ANANTA HEALTHCARE SYSTEM] COMPLETE DATABASE PURGE & FRESH RESEED");
+  console.log("🚀 [Ekavyu HEALTHCARE SYSTEM] COMPLETE DATABASE PURGE & FRESH RESEED");
   console.log("=======================================================================");
 
   try {
@@ -82,11 +80,9 @@ async function runSeed() {
       Notification.deleteMany({}),
       NotificationDelivery.deleteMany({}),
       NotificationPreference.deleteMany({}),
-      NotificationTemplate.deleteMany({}),
       AuditLog.deleteMany({}),
       Counter.deleteMany({}),
       Role.deleteMany({}),
-      Permission.deleteMany({}),
       PendingTwoFactorSetup.deleteMany({}),
       OnboardingDraft.deleteMany({}),
       RefreshToken.deleteMany({}),
@@ -98,7 +94,7 @@ async function runSeed() {
     // -------------------------------------------------------------------------
     console.log("\n🏢 Seeding Organization & Clinic architecture...");
     const org = await Organization.create({
-      name: "ANANTA Healthcare & Research Institute",
+      name: "Ekavyu Healthcare & Research Institute",
       city: "San Francisco",
       address: "100 Medical Center Drive, Suite 500",
       phone: "+1 415 555 0199",
@@ -110,7 +106,7 @@ async function runSeed() {
 
     const clinic = await Clinic.create({
       organizationId: org._id,
-      name: "ANANTA Central Hospital & Emergency Pavilion",
+      name: "Ekavyu Central Hospital & Emergency Pavilion",
       city: "San Francisco",
       address: "100 Medical Center Drive, Main Pavilion",
       phone: "+1 415 555 0100",
@@ -1337,8 +1333,8 @@ async function runSeed() {
     console.log("\n=======================================================================");
     console.log("🎉 DATABASE SEEDED SUCCESSFULLY WITH HIGHLY REALISTIC DATA!");
     console.log("=======================================================================");
-    console.log("Organization      : ANANTA Healthcare & Research Institute");
-    console.log("Primary Clinic    : ANANTA Central Hospital & Emergency Pavilion");
+    console.log("Organization      : Ekavyu Healthcare & Research Institute");
+    console.log("Primary Clinic    : Ekavyu Central Hospital & Emergency Pavilion");
     console.log("Departments (5)   : CARD, EMERG, INTMED, NEURO, SURG");
     console.log("Beds (6)          : ICU-101, ICU-102 (Occupied), ICU-103, GW-201 (Occupied), GW-202, VIP-301 (Occupied)");
     console.log("Patients (5)      : John Doe, Maria Garcia, Robert Smith, Emily Davis, James Wilson");

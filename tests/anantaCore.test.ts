@@ -4,9 +4,9 @@ import { EVENT_TYPES } from "../events/types.ts";
 import { Logger } from "../utilities/logger.ts";
 import { DocumentUploadProvider } from "../services/providers/DocumentUploadProvider.ts";
 import { generatePrintablePrescriptionHtml } from "../utilities/prescriptionFormatter.ts";
-import { gatewayAuthMiddleware } from "../platform/gateway.ts";
+import { app } from "../index.ts";
 
-describe("ANANTA Core Infrastructure (Sprint 1)", () => {
+describe("Ekavyu Core Infrastructure (Sprint 1)", () => {
   it("should format OpenTelemetry structured JSON log lines correctly", () => {
     const logger = new Logger("test-service");
     const spy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -82,16 +82,9 @@ describe("ANANTA Core Infrastructure (Sprint 1)", () => {
     expect(html).toContain("500mg");
   });
 
-  it("should authenticate valid Platform API keys in gatewayAuthMiddleware", async () => {
-    const req = {
-      headers: { "x-ananta-api-key": "ananta_live_testkey_9921" },
-      url: "/api/v1/timeline",
-    } as any;
-    const reply = {} as any;
-
-    await gatewayAuthMiddleware(req, reply);
-    expect(req.gatewayClient).toBeDefined();
-    expect(req.gatewayClient.apiKey).toBe("ananta_live_testkey_9921");
-    expect(req.gatewayClient.clientId).toBe("dev_partner_001");
+  it("rejects unverified developer API keys on the platform manifest", async () => {
+    const response = await app.inject({ method: "GET", url: "/api/platform/manifest", headers: { "x-ananta-api-key": "ananta_live_testkey_9921" } });
+    expect(response.statusCode).toBe(401);
   });
+
 });

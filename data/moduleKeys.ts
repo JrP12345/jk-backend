@@ -46,16 +46,6 @@ export const MODULE_KEYS: Record<string, ModuleDefinition> = {
   "feedback":        { route: "/dashboard/feedback",       priority: "P2", label: "Patient Feedback",                   section: "Administration",         description: "Collect and analyze patient experience feedback" },
 };
 
-/** All module key strings */
-export type ModuleKey = keyof typeof MODULE_KEYS;
-
-/** Get all module keys of a given priority */
-export function getModulesByPriority(priority: "P1" | "P2" | "P3"): string[] {
-  return Object.entries(MODULE_KEYS)
-    .filter(([, def]) => def.priority === priority)
-    .map(([key]) => key);
-}
-
 /** Get module keys that are always on and cannot be disabled */
 export function getAlwaysOnModules(): string[] {
   return Object.entries(MODULE_KEYS)

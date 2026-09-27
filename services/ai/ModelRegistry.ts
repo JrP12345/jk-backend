@@ -26,21 +26,21 @@ export class ModelRegistry {
     this.mappings.set("CLINICAL_FAST", {
       alias: "CLINICAL_FAST",
       providerName: "GoogleGeminiAI",
-      modelEndpoint: "gemini-1.5-flash",
+      modelEndpoint: process.env.GEMINI_MODEL || "gemini-1.5-flash",
       costPer1kTokensUSD: 0.000075
     });
 
     this.mappings.set("CLINICAL_ACCURATE", {
       alias: "CLINICAL_ACCURATE",
       providerName: "OpenAI",
-      modelEndpoint: "gpt-4o",
+      modelEndpoint: process.env.OPENAI_MODEL || "gpt-4o",
       costPer1kTokensUSD: 0.0025
     });
 
     this.mappings.set("CLINICAL_REASONING", {
       alias: "CLINICAL_REASONING",
       providerName: "GoogleGeminiAI",
-      modelEndpoint: "gemini-1.5-pro",
+      modelEndpoint: process.env.GEMINI_REASONING_MODEL || "gemini-1.5-pro",
       costPer1kTokensUSD: 0.00125
     });
   }

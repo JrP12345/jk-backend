@@ -1,14 +1,4 @@
-/**
- * File Security Scanner & Magic Bytes Inspector
- * Inspects binary magic byte headers and detects active scripts/malicious payloads.
- */
 
-export interface MagicByteResult {
-  detectedMime: string | null;
-  isValid: boolean;
-  isSafe: boolean;
-  rejectionReason?: string;
-}
 
 export function detectMagicBytes(buffer: Buffer): string | null {
   if (!buffer || buffer.length < 4) return null;

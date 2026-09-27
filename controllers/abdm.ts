@@ -17,7 +17,7 @@ export async function generateAadhaarOtpController(req: FastifyRequest, reply: F
     const result = await abdmService.generateAadhaarOtp(aadhaarNumber, phone);
     return reply.code(200).send(successResponse(result, "Aadhaar OTP generated successfully"));
   } catch (err: any) {
-    return reply.code(400).send(errorResponse(err.message || "Failed to generate Aadhaar OTP"));
+    return reply.code(err.statusCode || 400).send(errorResponse(err.message || "Failed to generate Aadhaar OTP"));
   }
 }
 
@@ -45,7 +45,7 @@ export async function verifyAadhaarOtpController(req: FastifyRequest, reply: Fas
 
     return reply.code(200).send(successResponse(profile, "ABHA verified and generated successfully"));
   } catch (err: any) {
-    return reply.code(400).send(errorResponse(err.message || "Failed to verify Aadhaar OTP"));
+    return reply.code(err.statusCode || 400).send(errorResponse(err.message || "Failed to verify Aadhaar OTP"));
   }
 }
 
@@ -67,7 +67,7 @@ export async function searchAbhaController(req: FastifyRequest, reply: FastifyRe
 
     return reply.code(200).send(successResponse(profile, "ABHA profile found"));
   } catch (err: any) {
-    return reply.code(500).send(errorResponse(err.message || "Failed to search ABHA"));
+    return reply.code(err.statusCode || 500).send(errorResponse(err.message || "Failed to search ABHA"));
   }
 }
 
@@ -94,7 +94,7 @@ export async function scanAndShareCheckInController(req: FastifyRequest, reply: 
 
     return reply.code(201).send(successResponse(result, result.message));
   } catch (err: any) {
-    return reply.code(400).send(errorResponse(err.message || "Failed to process ABDM Scan & Share check-in"));
+    return reply.code(err.statusCode || 400).send(errorResponse(err.message || "Failed to process ABDM Scan & Share check-in"));
   }
 }
 
@@ -131,7 +131,7 @@ export async function getClinicQrStandeeController(req: FastifyRequest, reply: F
       )
     );
   } catch (err: any) {
-    return reply.code(500).send(errorResponse(err.message || "Failed to generate ABDM QR standee data"));
+    return reply.code(err.statusCode || 500).send(errorResponse(err.message || "Failed to generate ABDM QR standee data"));
   }
 }
 
@@ -165,7 +165,7 @@ export async function linkCareContextController(req: FastifyRequest, reply: Fast
 
     return reply.code(200).send(successResponse(result, result.message));
   } catch (err: any) {
-    return reply.code(400).send(errorResponse(err.message || "Failed to link ABDM Care-Context"));
+    return reply.code(err.statusCode || 400).send(errorResponse(err.message || "Failed to link ABDM Care-Context"));
   }
 }
 
@@ -182,7 +182,7 @@ export async function getPatientCareContextsController(req: FastifyRequest, repl
     const result = await abdmService.getPatientCareContexts(patientId);
     return reply.code(200).send(successResponse(result, "Patient care contexts retrieved successfully"));
   } catch (err: any) {
-    return reply.code(400).send(errorResponse(err.message || "Failed to retrieve care contexts"));
+    return reply.code(err.statusCode || 400).send(errorResponse(err.message || "Failed to retrieve care contexts"));
   }
 }
 
@@ -205,7 +205,7 @@ export async function getFhirBundleController(req: FastifyRequest, reply: Fastif
 
     return reply.code(200).send(successResponse(bundle, "HL7 FHIR R4 Bundle generated successfully"));
   } catch (err: any) {
-    return reply.code(400).send(errorResponse(err.message || "Failed to generate FHIR bundle"));
+    return reply.code(err.statusCode || 400).send(errorResponse(err.message || "Failed to generate FHIR bundle"));
   }
 }
 
@@ -230,7 +230,7 @@ export async function createConsentRequestController(req: FastifyRequest, reply:
 
     return reply.code(201).send(successResponse(result, result.message));
   } catch (err: any) {
-    return reply.code(400).send(errorResponse(err.message || "Failed to create consent request"));
+    return reply.code(err.statusCode || 400).send(errorResponse(err.message || "Failed to create consent request"));
   }
 }
 
@@ -249,7 +249,7 @@ export async function getConsentStatusController(req: FastifyRequest, reply: Fas
     const result = await abdmService.getConsentStatus(consentRequestId);
     return reply.code(200).send(successResponse(result, result.message));
   } catch (err: any) {
-    return reply.code(400).send(errorResponse(err.message || "Failed to get consent status"));
+    return reply.code(err.statusCode || 400).send(errorResponse(err.message || "Failed to get consent status"));
   }
 }
 
@@ -268,6 +268,6 @@ export async function getExternalHealthDataController(req: FastifyRequest, reply
     const result = await abdmService.fetchExternalHealthData(consentRequestId);
     return reply.code(200).send(successResponse(result, "External health records fetched successfully via ABDM HIU"));
   } catch (err: any) {
-    return reply.code(400).send(errorResponse(err.message || "Failed to fetch external health data"));
+    return reply.code(err.statusCode || 400).send(errorResponse(err.message || "Failed to fetch external health data"));
   }
 }

@@ -4,27 +4,27 @@ import { validateConfig } from "./config.ts";
 
 let bootstrapComplete = false;
 let shuttingDown = false;
-let shutdownStartedAt: number | null = null;
+
+async function pingWithTimeout<T>(ping: Promise<T>, dependency: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      ping,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${dependency} ping timed out (1500ms)`)), 1500);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export function markBootstrapComplete(): void {
   bootstrapComplete = true;
 }
 
-export function isBootstrapComplete(): boolean {
-  return bootstrapComplete;
-}
-
 export function markShuttingDown(): void {
   shuttingDown = true;
-  shutdownStartedAt = Date.now();
-}
-
-export function isShuttingDown(): boolean {
-  return shuttingDown;
-}
-
-export function getShutdownDurationMs(): number | null {
-  return shutdownStartedAt ? Date.now() - shutdownStartedAt : null;
 }
 
 /**
@@ -50,10 +50,7 @@ export async function checkDatabaseReadiness(): Promise<{
   try {
     // Ping admin command with a bounded timeout
     if (mongoose.connection.db) {
-      await Promise.race([
-        mongoose.connection.db.admin().ping(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Database ping timed out (1500ms)")), 1500)),
-      ]);
+      await pingWithTimeout(mongoose.connection.db.admin().ping(), "Database");
       return { ready: true, status: "connected", latencyMs: Date.now() - start };
     }
     return { ready: true, status: "connected" };
@@ -101,10 +98,7 @@ export async function checkRedisReadiness(): Promise<{
 
   const start = Date.now();
   try {
-    const pingResult = await Promise.race([
-      redisClient.ping(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("Redis ping timed out (1500ms)")), 1500)),
-    ]);
+    const pingResult = await pingWithTimeout(redisClient.ping(), "Redis");
 
     const isPong = pingResult === "PONG";
     return {

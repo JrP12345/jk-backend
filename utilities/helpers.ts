@@ -44,16 +44,6 @@ export function verifyTwoFactorChallenge(token: string): { userId: string; purpo
 import { User } from "../models/User.ts";
 import { registerSession, revokeSession } from "./sessionResolver.ts";
 
-// ─── Fast in-memory cache of revoked session IDs (backward-compat alias) ────
-export const revokedSessionIds = new Set<string>();
-
-export function revokeSessionCache(sessionId: string): void {
-  if (!sessionId) return;
-  revokeSession(sessionId, "displaced").catch(() => {});
-}
-
-// ─── Refresh Token (opaque random + SHA-256 hash in DB) ─────────
-
 /**
  * Create an opaque refresh token, store its SHA-256 hash in the DB.
  * For root users: strictly enforces 1 single active session by revoking all other sessions.

@@ -15,14 +15,6 @@ import {
   DOMAIN_EVENT_WORKER_BATCH_SIZE,
   OUTBOUND_MESSAGE_WORKER_BATCH_SIZE,
 } from "../utilities/scalability.ts";
-import {
-  getCachedPermissions,
-  setCachedPermissions,
-  invalidateLocalPermissionCache,
-  isSessionFamilyRevoked,
-  revokeSessionFamily,
-  withLeaderGuard,
-} from "../utilities/replicaCoordination.ts";
 import { tenantRateLimiter } from "../middleware/tenantRateLimiter.ts";
 import { domainEventDeliveryWorker } from "../services/DomainEventDeliveryWorker.ts";
 import { outboundMessageDeliveryWorker } from "../services/OutboundMessageDeliveryWorker.ts";
@@ -48,50 +40,6 @@ describe("Phase 6 — Scalability & Multi-Replica Coordination Suite", () => {
       expect(TENANT_RATE_LIMIT_PER_MINUTE).toBe(2_000);
       expect(DOMAIN_EVENT_WORKER_BATCH_SIZE).toBe(10);
       expect(OUTBOUND_MESSAGE_WORKER_BATCH_SIZE).toBe(5);
-    });
-  });
-
-  describe("Step 6.2 — Multi-Replica In-Memory Cache Invalidation & Session Revocation", () => {
-    it("should cache and invalidate user permissions locally", () => {
-      const userId = "user-test-coord-1";
-      expect(getCachedPermissions(userId)).toBeNull();
-
-      setCachedPermissions(userId, ["VIEW_CLINICS", "MANAGE_APPOINTMENTS"]);
-      expect(getCachedPermissions(userId)).toEqual(["VIEW_CLINICS", "MANAGE_APPOINTMENTS"]);
-
-      invalidateLocalPermissionCache(userId);
-      expect(getCachedPermissions(userId)).toBeNull();
-    });
-
-    it("should track revoked session families and verify revocation state", async () => {
-      const familyId = "fam_test_998877";
-      expect(isSessionFamilyRevoked(familyId)).toBe(false);
-
-      await revokeSessionFamily(familyId);
-      expect(isSessionFamilyRevoked(familyId)).toBe(true);
-    });
-
-    it("should guard scheduled jobs so only the active leader executes", async () => {
-      let isLeaderFlag = false;
-      let executedCount = 0;
-
-      const job = withLeaderGuard("test-sweep", () => isLeaderFlag, async () => {
-        executedCount++;
-      });
-
-      // When replica is not leader, job skips silently
-      await job();
-      expect(executedCount).toBe(0);
-
-      // When replica acquires leadership, job executes
-      isLeaderFlag = true;
-      await job();
-      expect(executedCount).toBe(1);
-
-      // When replica loses leadership, job stops executing
-      isLeaderFlag = false;
-      await job();
-      expect(executedCount).toBe(1);
     });
   });
 

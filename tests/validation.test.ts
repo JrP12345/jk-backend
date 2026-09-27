@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 
 describe("Strict Runtime Schema Validation Integration Tests", () => {
   it("should block registration with invalid email format (400 Bad Request)", async () => {

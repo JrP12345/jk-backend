@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { Clinic } from "../models/Clinic.ts";
 import { Patient } from "../models/Patient.ts";
@@ -286,8 +286,8 @@ describe("ABDM Milestone 3 (M3) FHIR Engine, WhatsApp PDF Dispatch & Lab Panic R
 
     expect(docDispatch.success).toBe(true);
     expect(docDispatch.providerMessageId).toBeDefined();
-    expect(docDispatch.status).toBe("sent");
-    expect(docDispatch.rawResponse.documentSent.filename).toBe(`Prescription_Token_${appointmentDoc.tokenNumber}_Dr_Vikram_Sethi.pdf`);
+    expect(docDispatch.status).toBe("accepted");
+    expect(docDispatch.rawResponse.mode).toBe("sandbox");
   });
 
   it("should respond to inbound 'RX' keyword by returning prescription summary and dispatching PDF document", async () => {

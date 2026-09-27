@@ -37,36 +37,6 @@ interface WhatsAppBookingSession {
 export const bookingSessions = new Map<string, WhatsAppBookingSession>();
 
 /**
- * Verify Meta X-Hub-Signature-256 header against the app secret.
- */
-export function verifyMetaWhatsAppSignature(req: FastifyRequest, appSecret: string): boolean {
-  const signatureHeader = req.headers["x-hub-signature-256"] as string | undefined;
-  if (!signatureHeader) return false;
-
-  const parts = signatureHeader.split("=");
-  const signature = parts.length === 2 ? parts[1] : parts[0];
-
-  const rawBody = (req as any).rawBody;
-  if (typeof rawBody !== "string" && !Buffer.isBuffer(rawBody)) return false;
-  const payloadString = typeof rawBody === "string" ? rawBody : rawBody.toString("utf8");
-
-  const expectedSignature = crypto.createHmac("sha256", appSecret).update(payloadString).digest("hex");
-
-  try {
-    if (
-      signature.length === expectedSignature.length &&
-      crypto.timingSafeEqual(Buffer.from(signature, "utf8"), Buffer.from(expectedSignature, "utf8"))
-    ) {
-      return true;
-    }
-  } catch {
-    return false;
-  }
-
-  return false;
-}
-
-/**
  * GET /api/webhooks/whatsapp
  * Meta Webhook verification handshake
  */
@@ -590,7 +560,7 @@ export async function processWhatsAppWebhookPayload(body: any) {
 
           // 2G. Default Help Menu
           else {
-            replyText = `👋 *ANANT Healthcare OPD Assistant*\n\nHello ${patient.name}, how can we help you today?\n\nReply with a number:\n1️⃣ *STATUS* - Check live token & queue wait time\n2️⃣ *RX* - View & receive PDF prescription\n3️⃣ *DELAY* - Running late? Postpone token by 2 turns\n4️⃣ *BOOK* - Schedule an appointment with a doctor\n5️⃣ *BILL* - View receipt & payment details\n\n_Reply "STOP" at any time to opt out._`;
+            replyText = `👋 *Ekavyu Healthcare OPD Assistant*\n\nHello ${patient.name}, how can we help you today?\n\nReply with a number:\n1️⃣ *STATUS* - Check live token & queue wait time\n2️⃣ *RX* - View & receive PDF prescription\n3️⃣ *DELAY* - Running late? Postpone token by 2 turns\n4️⃣ *BOOK* - Schedule an appointment with a doctor\n5️⃣ *BILL* - View receipt & payment details\n\n_Reply "STOP" at any time to opt out._`;
           }
 
           // Dispatch conversational response to patient's WhatsApp

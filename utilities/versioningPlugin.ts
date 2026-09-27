@@ -7,28 +7,6 @@ declare module "fastify" {
   }
 }
 
-export interface DeprecationOptions {
-  sunsetDate?: string; // e.g. "Wed, 01 Jan 2027 00:00:00 GMT"
-  successor?: string;  // e.g. "/api/v2/appointments"
-  note?: string;
-}
-
-/**
- * Emits RFC 8594 standard deprecation headers on a Fastify response.
- */
-export function markDeprecated(reply: FastifyReply, options: DeprecationOptions = {}): void {
-  reply.header("Deprecation", "true");
-  if (options.sunsetDate) {
-    reply.header("Sunset", options.sunsetDate);
-  }
-  if (options.successor) {
-    reply.header("Link", `<${options.successor}>; rel="successor-version"`);
-  }
-  if (options.note) {
-    reply.header("X-Deprecation-Notice", options.note);
-  }
-}
-
 /**
  * API Versioning Plugin.
  * Establishes /api/v1 as a stable, auditable compatibility contract.
@@ -41,7 +19,6 @@ async function versioningPlugin(app: FastifyInstance) {
     // Detect explicit API version prefix
     if (rawUrl.startsWith("/api/v1/")) {
       req.apiVersion = "v1";
-      req.raw.url = rawUrl.replace("/api/v1/", "/api/");
     } else if (rawUrl.startsWith("/api/")) {
       req.apiVersion = "v1"; // default canonical version
     }

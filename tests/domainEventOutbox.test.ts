@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import mongoose from "mongoose";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { User } from "../models/User.ts";
 import { DomainEventOutbox } from "../models/DomainEventOutbox.ts";
 import { eventBus } from "../events/eventBus.ts";
@@ -161,5 +161,37 @@ describe("Durable Domain Event Outbox", () => {
     expect(reloaded?.status).toBe("pending");
     expect(reloaded?.attempts).toBe(0);
     expect(reloaded?.replayCount).toBe(1);
+  });
+  it("keeps an event processing until its async subscriber finishes", async () => {
+    let finish!: () => void;
+    const waiting = new Promise<void>(resolve => { finish = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const handler = async () => { entered(); await waiting; };
+    eventBus.subscribe("TEST_ASYNC_ACK", handler);
+    try {
+      await eventBus.publishDurable({ eventId: "async-ack", eventType: "TEST_ASYNC_ACK", category: "system", title: "Async" });
+      const processing = domainEventDeliveryWorker.processOne();
+      await started;
+      expect((await DomainEventOutbox.findOne({ idempotencyKey: "async-ack" }))?.status).toBe("processing");
+      finish();
+      await processing;
+      expect((await DomainEventOutbox.findOne({ idempotencyKey: "async-ack" }))?.status).toBe("sent");
+    } finally { finish(); eventBus.off("TEST_ASYNC_ACK", handler); }
+  });
+  it("retries async subscriber failures with the same generated event identity", async () => {
+    const ids: string[] = [];
+    const handler = async (event: any) => { ids.push(event.eventId); if (ids.length === 1) throw new Error("temporary failure"); };
+    eventBus.subscribe("TEST_ASYNC_RETRY", handler);
+    try {
+      await eventBus.publishDurable({ eventType: "TEST_ASYNC_RETRY", category: "system", title: "Retry" });
+      await domainEventDeliveryWorker.processOne();
+      const row = await DomainEventOutbox.findOne({ eventType: "TEST_ASYNC_RETRY" });
+      expect(row?.status).toBe("retrying");
+      await DomainEventOutbox.updateOne({ _id: row!._id }, { nextAttemptAt: new Date(0) });
+      await domainEventDeliveryWorker.processOne();
+      expect(ids).toEqual([row!.idempotencyKey, row!.idempotencyKey]);
+      expect((await DomainEventOutbox.findById(row!._id))?.status).toBe("sent");
+    } finally { eventBus.off("TEST_ASYNC_RETRY", handler); }
   });
 });

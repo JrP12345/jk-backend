@@ -1,6 +1,6 @@
-# WhatsApp setup for ANANTA
+# WhatsApp setup for Ekavyu
 
-The workspace WhatsApp guide is adapted to the existing Fastify, Mongoose, Next.js and outbound worker. Shared platform sending, dedicated clinic sending, notification preferences and prepaid credits remain the supported modes.
+WhatsApp runs through the existing Fastify API, Mongoose models, Next.js settings and outbound worker. Shared platform sending, dedicated clinic sending, notification preferences and prepaid credits remain the supported modes.
 
 ## Setup
 
@@ -10,7 +10,7 @@ The workspace WhatsApp guide is adapted to the existing Fastify, Mongoose, Next.
 4. Save, click **Test connection**, then **Sync templates**. Testing verifies that the phone belongs to the WABA. Credential changes reset connection state to pending. The browser receives readiness flags instead of saved tokens/secrets.
 5. Copy the displayed callback URL and verify token into Meta. Subscribe to `messages`, `message_template_status_update`, `message_template_quality_update`, `template_category_update` and `message_template_components_update`. Subscribe the app to the WABA in Meta.
 6. Create and approve the templates below in WhatsApp Manager and sync again. Match language (`META_WHATSAPP_LANG`, default `en`) and positional variable order. The panel lists missing/unusable templates.
-7. Preview storage migration with `npm run migrate:whatsapp`, then run `npm run migrate:whatsapp -- --apply` during rollout. It encrypts legacy credentials/bodies, normalizes empty WABA IDs, checks duplicate provider IDs and creates indexes without deleting data. Production must run `npm run worker:outbound-messages` alongside the API. This worker now handles both outbound delivery and webhook processing. Development starts both inline; `RUN_INLINE_JOBS=true` enables inline processing in production as well.
+7. Preview storage migration with `npm run migrate:whatsapp`, then run `npm run migrate:whatsapp -- --apply` during rollout. It encrypts legacy credentials/bodies, normalizes empty WABA IDs, checks duplicate provider IDs and creates indexes without deleting data. Build with `npm run build` first. Production must run `npm run worker:outbound-messages` alongside the API. This worker now handles both outbound delivery and webhook processing. Development starts both inline; `RUN_INLINE_JOBS=true` enables inline processing in production as well.
 8. Use a Meta-approved test recipient first. Check accepted → sent → delivered/read, STOP/START, paused templates, reconnect and provider timeout handling before enabling clinics.
 
 For local Meta callbacks, use an HTTPS tunnel and set `PUBLIC_API_BASE_URL` to its backend origin. Meta cannot reach localhost or a private LAN address. Explicit development sandbox mode produces synthetic message IDs; missing live credentials fail instead of pretending to deliver. Sandbox mode is ignored in production.

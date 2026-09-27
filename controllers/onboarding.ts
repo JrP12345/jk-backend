@@ -343,7 +343,7 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
         category: "organization",
         targetUserId: adminUser._id.toString(),
         title: "Organization Created",
-        message: `Welcome to Anant! Organization workspace (${org_name}) is now active.`,
+        message: `Welcome to Ekavyu! Organization workspace (${org_name}) is now active.`,
         severity: "success",
         organizationId: orgIdStr,
         actionUrl: "/dashboard",
@@ -353,9 +353,9 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
         const portalUrl = `${getFrontendBaseUrl()}/login`;
         await enqueueTransactionalEmail({
           to: admin_email.trim().toLowerCase(),
-          subject: `Welcome to ANANT - ${org_name} Workspace Provisioned`,
-          text: `Hello ${admin_name},\n\nYour organization workspace (${org_name}) has been provisioned on ANANT Healthcare OS.\n\nLogin Portal: ${portalUrl}\nEmail: ${admin_email}\n\nUse the password you chose during provisioning to sign in. Please sign in to configure your clinical staff and operational settings.`,
-          html: `<p>Hello <strong>${admin_name}</strong>,</p><p>Your organization workspace (<strong>${org_name}</strong>) has been provisioned on ANANT Healthcare OS.</p><ul><li><strong>Login Portal:</strong> <a href="${portalUrl}">${portalUrl}</a></li><li><strong>Email:</strong> ${admin_email}</li></ul><p>Use the password you chose during provisioning to sign in. Please sign in to configure your clinical staff and operational settings.</p>`,
+          subject: `Welcome to Ekavyu - ${org_name} Workspace Provisioned`,
+          text: `Hello ${admin_name},\n\nYour organization workspace (${org_name}) has been provisioned on Ekavyu Healthcare OS.\n\nLogin Portal: ${portalUrl}\nEmail: ${admin_email}\n\nUse the password you chose during provisioning to sign in. Please sign in to configure your clinical staff and operational settings.`,
+          html: `<p>Hello <strong>${admin_name}</strong>,</p><p>Your organization workspace (<strong>${org_name}</strong>) has been provisioned on Ekavyu Healthcare OS.</p><ul><li><strong>Login Portal:</strong> <a href="${portalUrl}">${portalUrl}</a></li><li><strong>Email:</strong> ${admin_email}</li></ul><p>Use the password you chose during provisioning to sign in. Please sign in to configure your clinical staff and operational settings.</p>`,
           idempotencyKey: `transactional-email:organization-welcome:${org._id}`,
           session,
         });
@@ -662,7 +662,7 @@ export async function addDoctor(req: FastifyRequest, reply: FastifyReply) {
         category: "organization",
         targetUserId: newDoctorUser._id.toString(),
         title: "Joined Organization",
-        message: `You have been added as a Doctor in Anant.`,
+        message: `You have been added as a Doctor in Ekavyu.`,
         severity: "info",
         organizationId: orgId,
       }, session);
@@ -737,7 +737,7 @@ export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) 
         category: "organization",
         targetUserId: newRecUser._id.toString(),
         title: "Joined Organization",
-        message: `You have been added as a Receptionist in Anant.`,
+        message: `You have been added as a Receptionist in Ekavyu.`,
         severity: "info",
         organizationId: orgId,
       }, session);
@@ -921,7 +921,7 @@ export async function addStaff(req: FastifyRequest, reply: FastifyReply) {
         category: "organization",
         targetUserId: newUser._id.toString(),
         title: "Joined Organization",
-        message: `You have been added as a ${role.replace("_", " ").toUpperCase()} in Anant.`,
+        message: `You have been added as a ${role.replace("_", " ").toUpperCase()} in Ekavyu.`,
         severity: "info",
         organizationId: orgId,
       }, session);
@@ -965,9 +965,9 @@ export async function inviteStaff(req: FastifyRequest, reply: FastifyReply) {
     const inviteUrl = `${getFrontendBaseUrl()}/accept-invite?token=${rawToken}`;
     await enqueueTransactionalEmail({
       to: email,
-      subject: "Invitation to join ANANT Healthcare Platform",
-      text: `You have been invited to join ANANT as a ${role.toUpperCase()}. Click here to set up your account: ${inviteUrl}`,
-      html: `<p>You have been invited to join ANANT as a <strong>${role.toUpperCase()}</strong>.</p><p><a href="${inviteUrl}">Click here to accept invitation</a> (valid for 48 hours).</p>`,
+      subject: "Invitation to join Ekavyu Healthcare Platform",
+      text: `You have been invited to join Ekavyu as a ${role.toUpperCase()}. Click here to set up your account: ${inviteUrl}`,
+      html: `<p>You have been invited to join Ekavyu as a <strong>${role.toUpperCase()}</strong>.</p><p><a href="${inviteUrl}">Click here to accept invitation</a> (valid for 48 hours).</p>`,
       idempotencyKey: `transactional-email:staff-invite:${tokenHash}`,
     });
 
@@ -1449,7 +1449,7 @@ export async function setupOnboardingTOTP(req: FastifyRequest, reply: FastifyRep
     if (!user) return reply.code(404).send(errorResponse("User not found"));
 
     // Generate fresh TOTP secret for Google Authenticator using TwoFactorService
-    const { base32, otpauthUrl } = TwoFactorService.generateSecret(user.email || user.name || "user", "ANANTA");
+    const { base32, otpauthUrl } = TwoFactorService.generateSecret(user.email || user.name || "user", "Ekavyu");
     const qrCodeDataUrl = otpauthUrl ? await TwoFactorService.generateQRCodeDataURI(otpauthUrl) : "";
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes TTL
 
@@ -1533,7 +1533,7 @@ export async function verifyOnboardingTOTP(req: FastifyRequest, reply: FastifyRe
       category: "organization",
       targetUserId: userId,
       title: "Organization Onboarding Complete",
-      message: "ANANTA Workspace onboarding and 2FA Google Authenticator verification completed!",
+      message: "Ekavyu Workspace onboarding and 2FA Google Authenticator verification completed!",
       severity: "success",
       organizationId: orgId,
       actionUrl: "/dashboard",

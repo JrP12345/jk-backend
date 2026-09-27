@@ -25,7 +25,7 @@ async function getOrganizationSmtp(organizationId?: string | null): Promise<Smtp
     user: smtp.user,
     pass: decrypt(smtp.pass),
     fromEmail: smtp.fromEmail || smtp.user,
-    fromName: smtp.fromName || "Anant Health",
+    fromName: smtp.fromName || "Ekavyu",
   };
 }
 
@@ -302,7 +302,7 @@ export default async function notificationRoutes(app: FastifyInstance) {
             html: `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
               <div style="display: flex; items-center; justify-content: space-between; border-bottom: 2px solid #3b82f6; padding-bottom: 12px; margin-bottom: 20px;">
-                <h2 style="color: #1e293b; margin: 0; font-size: 20px;">Anant Health Alert</h2>
+                <h2 style="color: #1e293b; margin: 0; font-size: 20px;">Ekavyu Health Alert</h2>
                 <span style="background-color: #3b82f6; color: #ffffff; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; text-transform: uppercase;">${category}</span>
               </div>
               <h3 style="color: #0f172a; margin-top: 0; font-size: 16px;">${title}</h3>
@@ -311,7 +311,7 @@ export default async function notificationRoutes(app: FastifyInstance) {
               </div>
               ${actionUrl ? `<div style="margin: 24px 0;"><a href="${actionUrl}" style="background-color: #2563eb; color: #ffffff; padding: 10px 20px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 13px; display: inline-block;">View Action Destination &rarr;</a></div>` : ""}
               <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0 16px 0;" />
-              <p style="font-size: 11px; color: #94a3b8; text-align: center; margin: 0;">Sent by Anant Health Intelligence System &bull; Confidential Medical Telemetry</p>
+              <p style="font-size: 11px; color: #94a3b8; text-align: center; margin: 0;">Sent by Ekavyu Health Intelligence System &bull; Confidential Medical Telemetry</p>
             </div>
             `,
             orgSmtp,
@@ -402,20 +402,20 @@ export default async function notificationRoutes(app: FastifyInstance) {
           user: smtp.user,
           pass: decrypt(smtp.pass),   // ← AES-256-GCM decrypt before SMTP auth
           fromEmail: smtp.fromEmail || smtp.user,
-          fromName: smtp.fromName || "Anant Health",
+          fromName: smtp.fromName || "Ekavyu",
         };
       }
     }
 
     const sent = await emailProvider.sendEmail({
       to: recipient,
-      subject: "Test Email from Anant Health Platform",
-      text: `Hello,\n\nThis is a test email sent from your Anant Health application.\nIf you received this, your outbound email configuration is working properly!\n\nBest regards,\nAnant Health System`,
+      subject: "Test Email from Ekavyu Health Platform",
+      text: `Hello,\n\nThis is a test email sent from your Ekavyu Health application.\nIf you received this, your outbound email configuration is working properly!\n\nBest regards,\nEkavyu Health System`,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
-          <h2 style="color: #2563eb; margin-top: 0;">Anant Health - Email Delivery Test</h2>
+          <h2 style="color: #2563eb; margin-top: 0;">Ekavyu Health - Email Delivery Test</h2>
           <p>Hello,</p>
-          <p>This is a test email sent from your <strong>Anant Health</strong> system to verify your email delivery configuration.</p>
+          <p>This is a test email sent from your <strong>Ekavyu Health</strong> system to verify your email delivery configuration.</p>
           <div style="background-color: #f8fafc; padding: 15px; border-left: 4px solid #2563eb; border-radius: 4px; margin: 20px 0;">
             <p style="margin: 0; font-size: 14px; color: #475569;">
               <strong>Recipient:</strong> ${recipient}<br/>
@@ -425,7 +425,7 @@ export default async function notificationRoutes(app: FastifyInstance) {
           </div>
           <p>If you see this in your inbox, your email provider settings are correctly configured!</p>
           <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
-          <p style="font-size: 12px; color: #94a3b8; text-align: center;">Anant Health System &bull; Automated Delivery</p>
+          <p style="font-size: 12px; color: #94a3b8; text-align: center;">Ekavyu Health System &bull; Automated Delivery</p>
         </div>
       `,
     }, orgSmtp);

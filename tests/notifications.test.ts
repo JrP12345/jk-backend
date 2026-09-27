@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import mongoose from "mongoose";
+import { notificationQueue } from "../notifications/services/NotificationQueue.ts";
 import { notificationService } from "../notifications/services/NotificationService.ts";
 import { Notification } from "../models/Notification.ts";
 import { NotificationPreference } from "../models/NotificationPreference.ts";
@@ -298,4 +299,18 @@ describe("Notification Infrastructure System", () => {
     const unread = await notificationService.getUnreadCount(userId);
     expect(unread).toBe(1);
   });
+  it("repairs a failed email enqueue without duplicating the notification", async () => {
+    await notificationService.updatePreferences(userId, { channels: { inApp: true, email: true } });
+    const event = { eventId: "partial-enqueue", eventType: "TEST_REPAIR", targetUserId: userId, category: "system" as const, title: "Repair", message: "Retry delivery" };
+    const enqueue = vi.spyOn(notificationQueue, "enqueue").mockRejectedValueOnce(new Error("temporary queue write failure"));
+    try {
+      await expect(notificationService.handleDomainEvent(event)).rejects.toThrow("temporary queue write failure");
+      await notificationService.handleDomainEvent(event);
+      await notificationService.handleDomainEvent(event);
+      expect(await Notification.countDocuments({ targetUser: userId, idempotencyKey: event.eventId })).toBe(1);
+      expect(await NotificationDelivery.countDocuments({ channel: "inApp", recipient: userId })).toBe(1);
+      expect(await NotificationDelivery.countDocuments({ channel: "email", recipient: "notification-test@example.com" })).toBe(1);
+    } finally { enqueue.mockRestore(); }
+  });
+
 });

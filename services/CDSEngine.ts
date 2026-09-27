@@ -1,6 +1,4 @@
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import interactionDataset from "../data/interactions.json" with { type: "json" };
 import type {
   CDSContext,
   SafetyEvaluationResult,
@@ -10,10 +8,6 @@ import type {
   SystemAction,
 } from "../types/cds.ts";
 import { ClinicalTerminologyService } from "./ClinicalTerminologyService.ts";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const DATASET_PATH = path.resolve(__dirname, "../data/interactions.json");
 
 // System Policy Mapper: Maps clinical severity to system action workflow
 function mapSeverityToSystemAction(severity: SeverityLevel): SystemAction {
@@ -79,16 +73,9 @@ export class DrugInteractionRule implements SafetyRule {
   public datasetVersion = "2026.09.08";
 
   constructor() {
-    try {
-      if (fs.existsSync(DATASET_PATH)) {
-        const raw = JSON.parse(fs.readFileSync(DATASET_PATH, "utf8"));
-        this.datasetVersion = raw.datasetVersion || "2026.09.08";
-        this.version = this.datasetVersion;
-        this.interactionRules = raw.rules || [];
-      }
-    } catch (err) {
-      console.error("Failed to load interactions.json:", err);
-    }
+    this.datasetVersion = interactionDataset.datasetVersion;
+    this.version = this.datasetVersion;
+    this.interactionRules = interactionDataset.rules;
   }
 
   async evaluate(context: CDSContext): Promise<SafetyFinding[]> {

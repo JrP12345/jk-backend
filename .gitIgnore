@@ -15,7 +15,6 @@ keys/
 # Build outputs & Logs
 dist/
 build/
-index.js
 *.log
 
 # OS & IDE metadata
@@ -29,3 +28,4 @@ backups/
 *.enc.gz
 *.enc
 *.dump
+/.dev-server*.lock

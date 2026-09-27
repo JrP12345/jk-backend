@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
@@ -263,6 +263,8 @@ describe("Closed-Loop Diagnostic Lab Order, WhatsApp Rx & BharatPe UPI Settlemen
     expect(printRes.body).toContain("Ramesh Sharma");
     expect(printRes.body).toContain("Tab. Metformin 500mg");
     expect(printRes.body).toContain("Diagnostic Investigations");
+    expect(printRes.body).toContain("245 mg/dL");
+    expect(printRes.body).toContain("Hb: 10.2");
   });
 
   it("Step 5: Counter-top dynamic BharatPe/NPCI UPI settlement -> 1-click marks invoice & appointment as paid", async () => {

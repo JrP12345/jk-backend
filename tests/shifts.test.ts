@@ -1,5 +1,6 @@
+import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { app } from "../index.js";
+import { app } from "../index.ts";
 import mongoose from "mongoose";
 import { User } from "../models/User.ts";
 import { ShiftRoster } from "../models/ShiftRoster.ts";
@@ -34,20 +35,15 @@ describe("Shift Roster & Staff Scheduling Integration Tests", () => {
     adminUserId = adminUser?._id?.toString() || adminUser?.id || new mongoose.Types.ObjectId().toString();
 
     // 2. Create Clinic
-    const clinicRes = await app.inject({
-      method: "POST",
-      url: "/api/onboarding/clinics",
-      headers: { cookie: adminCookies.join("; ") },
-      payload: {
+    const clinicRes = await reuseOnboardingClinic(app, { headers: { cookie: adminCookies.join("; ") }, payload: {
         name: "Main Ward Clinic",
         code: `MWC-${Date.now()}`,
         city: "Hyderabad",
         address: "100 Ward Street",
         phone: "9100055000",
         email: "shiftward@hospital.com",
-      },
-    });
-    expect(clinicRes.statusCode).toBe(201);
+      } });
+    expect(clinicRes.statusCode).toBe(200);
     const clinicBody = JSON.parse(clinicRes.body);
     clinicId = clinicBody.data.id;
   });
