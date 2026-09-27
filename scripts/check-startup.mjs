@@ -30,7 +30,7 @@ async function waitForExit(process, timeoutMs = 15000) {
     return await Promise.race([
       process.exited,
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error("Startup check process did not exit within its deadline.")), timeoutMs);
+        timer = setTimeout(() => reject(new Error(`Startup check process did not exit within its deadline. Output: ${process.output()}`)), timeoutMs);
       }),
     ]);
   } finally { clearTimeout(timer); }
@@ -68,6 +68,13 @@ try {
     ALLOW_SINGLE_NODE_IN_PRODUCTION: "true", RUN_INLINE_JOBS: "false",
     LOG_LEVEL: "info", SHUTDOWN_DRAIN_MS: "1",
   };
+  // Reproduce Render's rejected development placeholder without touching Redis.
+  const invalidRedis = launch({ ...env, ALLOW_SINGLE_NODE_IN_PRODUCTION: "false", REDIS_URL: "redis://localhost:6379" });
+  processes.push(invalidRedis);
+  assert.equal((await waitForExit(invalidRedis)).code, 1);
+  assert.match(invalidRedis.output(), /Production Redis must use a remote hostname/);
+  assert.doesNotMatch(invalidRedis.output(), /Connected to MongoDB|Server listening|Application bootstrap completed/);
+  console.log("PASS: a production Redis placeholder fails before database connection or bootstrap instead of leaving readiness at 503.");
   const api = launch(env, true);
   processes.push(api);
   const origin = `http://127.0.0.1:${port}`;

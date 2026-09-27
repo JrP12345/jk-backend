@@ -377,6 +377,8 @@ const readinessHandler = async (_request: FastifyRequest, reply: FastifyReply) =
     status: report.data.status,
     database: report.data.database.status,
     redis: report.data.redis.status,
+    redisRequired: report.data.redis.required,
+    redisError: report.data.redis.error,
     configurationErrors: report.data.configuration.errors,
     bootstrapComplete: report.data.bootstrap.complete,
   };

@@ -1,0 +1,218 @@
+[
+  {
+    "version": "1.0.0-rbac",
+    "timestamp": "2026-07-22T05:32:17.940Z",
+    "tests_passed": 56,
+    "tests_total": 56,
+    "ts_errors": 0,
+    "heap_used_mb": "7.88",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.0.0-rbac",
+    "timestamp": "2026-07-22T06:01:39.852Z",
+    "tests_passed": 56,
+    "tests_total": 56,
+    "ts_errors": 0,
+    "heap_used_mb": "7.86",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.1.0-ehr-timeline",
+    "timestamp": "2026-07-22T06:04:10.337Z",
+    "tests_passed": 62,
+    "tests_total": 62,
+    "ts_errors": 0,
+    "heap_used_mb": "7.91",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.1.0-ehr-timeline",
+    "timestamp": "2026-07-22T06:17:58.600Z",
+    "tests_passed": 67,
+    "tests_total": 67,
+    "ts_errors": 0,
+    "heap_used_mb": "7.92",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.1.0-ehr-timeline",
+    "timestamp": "2026-07-22T06:31:12.044Z",
+    "tests_passed": 71,
+    "tests_total": 71,
+    "ts_errors": 0,
+    "heap_used_mb": "7.91",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.1.0-ehr-timeline",
+    "timestamp": "2026-07-22T06:50:50.880Z",
+    "tests_passed": 74,
+    "tests_total": 74,
+    "ts_errors": 0,
+    "heap_used_mb": "8.02",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.1.0-ehr-timeline",
+    "timestamp": "2026-07-22T07:29:30.509Z",
+    "tests_passed": 78,
+    "tests_total": 78,
+    "ts_errors": 0,
+    "heap_used_mb": "8.03",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.1.0-ehr-timeline",
+    "timestamp": "2026-07-22T07:48:42.946Z",
+    "tests_passed": 82,
+    "tests_total": 82,
+    "ts_errors": 0,
+    "heap_used_mb": "7.93",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.1.0-ehr-timeline",
+    "timestamp": "2026-07-22T08:04:54.254Z",
+    "tests_passed": 86,
+    "tests_total": 86,
+    "ts_errors": 0,
+    "heap_used_mb": "7.95",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.1.0-ehr-timeline",
+    "timestamp": "2026-07-22T08:18:14.594Z",
+    "tests_passed": 93,
+    "tests_total": 93,
+    "ts_errors": 0,
+    "heap_used_mb": "7.94",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.1.0-ehr-timeline",
+    "timestamp": "2026-07-22T08:28:15.692Z",
+    "tests_passed": 98,
+    "tests_total": 98,
+    "ts_errors": 0,
+    "heap_used_mb": "7.96",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.1.0-ehr-timeline",
+    "timestamp": "2026-07-22T08:41:10.700Z",
+    "tests_passed": 103,
+    "tests_total": 103,
+    "ts_errors": 0,
+    "heap_used_mb": "7.96",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.1.0-ehr-timeline",
+    "timestamp": "2026-07-22T08:50:31.110Z",
+    "tests_passed": 103,
+    "tests_total": 103,
+    "ts_errors": 0,
+    "heap_used_mb": "7.96",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.1.0-ehr-timeline",
+    "timestamp": "2026-07-22T08:55:16.815Z",
+    "tests_passed": 103,
+    "tests_total": 103,
+    "ts_errors": 0,
+    "heap_used_mb": "7.96",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.1.0-ehr-timeline",
+    "timestamp": "2026-07-22T09:00:39.626Z",
+    "tests_passed": 103,
+    "tests_total": 103,
+    "ts_errors": 0,
+    "heap_used_mb": "7.98",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.0.0-rbac",
+    "timestamp": "2026-07-24T17:31:07.669Z",
+    "tests_passed": 56,
+    "tests_total": 56,
+    "ts_errors": 0,
+    "heap_used_mb": "8.01",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.0.0-rbac",
+    "timestamp": "2026-07-24T17:36:43.591Z",
+    "tests_passed": 56,
+    "tests_total": 56,
+    "ts_errors": 0,
+    "heap_used_mb": "8.17",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.0.0-rbac",
+    "timestamp": "2026-07-24T17:42:05.027Z",
+    "tests_passed": 56,
+    "tests_total": 56,
+    "ts_errors": 0,
+    "heap_used_mb": "8.16",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.0.0-rbac",
+    "timestamp": "2026-07-24T17:46:44.987Z",
+    "tests_passed": 56,
+    "tests_total": 56,
+    "ts_errors": 0,
+    "heap_used_mb": "8.16",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.0.0-rbac",
+    "timestamp": "2026-07-24T17:48:08.395Z",
+    "tests_passed": 56,
+    "tests_total": 56,
+    "ts_errors": 0,
+    "heap_used_mb": "8.16",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.0.0-rbac",
+    "timestamp": "2026-07-24T17:51:12.354Z",
+    "tests_passed": 56,
+    "tests_total": 56,
+    "ts_errors": 0,
+    "heap_used_mb": "8.16",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.0.0-rbac",
+    "timestamp": "2026-07-24T17:55:23.352Z",
+    "tests_passed": 56,
+    "tests_total": 56,
+    "ts_errors": 0,
+    "heap_used_mb": "8.08",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.1.0-ehr-timeline",
+    "timestamp": "2026-07-24T17:57:48.117Z",
+    "tests_passed": 118,
+    "tests_total": 118,
+    "ts_errors": 0,
+    "heap_used_mb": "8.07",
+    "release_gate": "approved"
+  },
+  {
+    "version": "1.0.0-rbac",
+    "timestamp": "2026-09-15T14:29:17.868Z",
+    "tests_passed": 56,
+    "tests_total": 56,
+    "ts_errors": 0,
+    "heap_used_mb": "8.50",
+    "release_gate": "approved"
+  }
+]

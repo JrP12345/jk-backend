@@ -6,9 +6,10 @@
   "scripts": {
     "test": "vitest run",
     "check:fast": "node node_modules/typescript/bin/tsc --noEmit",
+    "check:build-install": "node scripts/check-build-install.mjs",
     "check:startup": "node scripts/check-startup.mjs",
     "check:tenants": "node --experimental-strip-types scripts/check-tenant-scoping.ts",
-    "audit:release": "node ../scripts/repo_auditor.js",
+    "audit:release": "node scripts/repo_auditor.js",
     "seed": "node --env-file=.env --experimental-strip-types scripts/seedDatabase.ts",
     "seed:clean": "node --env-file=.env --experimental-strip-types scripts/seedFreshCleanDB.ts",
     "setup:root-2fa": "node --env-file=.env --experimental-strip-types scripts/setupRoot2FA.ts",
@@ -40,6 +41,11 @@
   "author": "",
   "license": "ISC",
   "type": "module",
+  "config": {
+    "mongodbMemoryServer": {
+      "disablePostinstall": true
+    }
+  },
   "bugs": {
     "url": "https://github.com/JrP12345/jk-backend/issues"
   },

@@ -1,0 +1,55 @@
+name: CI — Ekavyu backend
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  NODE_VERSION: "24"
+jobs:
+  backend:
+    name: Backend — Type Check, Tests & Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Cache MongoDB Memory Server Binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            mongodb-binaries-${{ runner.os }}-
+      - name: Install backend dependencies
+        run: npm ci
+      - name: Verify deployment install behavior
+        run: npm run check:build-install
+      - name: Security Vulnerability Audit (High/Critical Only)
+        run: npm audit --audit-level=high
+      - name: Build API and worker bundles
+        run: npm run build
+      - name: Run Architecture & Fitness Function Auditor
+        run: node scripts/repo_auditor.js
+        env:
+          NO_COLOR: "1"
+      - name: Upload release manifest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest-${{ github.sha }}
+          path: release_manifest.json
+          retention-days: 90
+permissions:
+  contents: read

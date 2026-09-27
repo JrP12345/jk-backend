@@ -11,6 +11,19 @@ Run npm ci then npm run build in backend/. Installation does not build source.
 esbuild produces dist/index.js and dist/workers/*.js. The backend Docker image
 contains production dependencies and those executable bundles.
 
+Dependency installation no longer downloads the test-only MongoDB binary:
+`package.json` sets `config.mongodbMemoryServer.disablePostinstall=true`.
+Integration/startup tests can still obtain their binary when they explicitly run;
+the installed test dependency is not disabled. Do not use `--ignore-scripts`,
+which would also bypass esbuild's installation setup.
+
+The build prints its elapsed compilation time and verifies the API/worker
+executables. An install delay, compiler error, integration-test failure and
+production readiness failure are separate stages. `npm run audit:release` runs
+the full serial integration suite and belongs in CI/release verification, not
+Render's build or start command. The recorded full suite took about 20 minutes;
+`npm run build` does not run that suite or connect to the production database.
+
 ### Render web service
 
 Set the service's **root directory** to `backend` when deploying the workspace
@@ -21,6 +34,29 @@ Set `NODE_ENV=production` in Render's environment and let Render supply `PORT`.
 The API binds to `0.0.0.0` and honors that port. `npm start` runs the built API;
 it does not compile source, run nodemon or start a second listener on restart.
 The Docker liveness check also uses the actual `PORT` instead of assuming 5000.
+
+#### Missing `dist/index.js` on Render
+
+The September 27 deployment at commit `97ab1e8` ran build command `npm install`
+and then start command `npm start`. That installed dependencies without running
+the compiler, so startup failed with `MODULE_NOT_FOUND` for `dist/index.js`.
+Restarting or redeploying with the same build command repeats this failure.
+
+In the existing service's Render dashboard, open **Settings > Build & Deploy**
+and set **Build Command** to `npm ci --include=dev && npm run build`. Keep
+**Start Command** as `npm start`. For `JrP12345/jk-backend`, leave **Root Directory**
+empty because `package.json` is at that repository's root. Save and redeploy
+using **Clear build cache & deploy**. Build logs must show `npm run build` and
+the generated `dist/index.js` before startup. `--include=dev` includes esbuild
+even with `NODE_ENV=production`.
+
+`render.yaml` records these settings for the standalone backend repository.
+It takes effect when adopted through a Render Blueprint; adding it to Git alone
+does not update an existing manually configured service. Before adopting it,
+match its service `name` to the existing Render service name and keep existing
+production environment variables. A workspace-repository Blueprint needs
+`rootDir: backend` and the appropriate repository URL instead. Dist stays ignored
+in Git and is built during deployment; no runtime compilation hook is required.
 
 The supplied September 26 logs show an older deployment with a `prestart` build
 and repeated readiness 503s. Deploy the current source and build command rather
@@ -40,9 +76,38 @@ override, not an automatic fallback or a solution for multi-replica deployments.
 
 After building, `npm run check:startup` checks the actual production bundle with
 an isolated MongoDB replica set and temporary in-memory test credentials. It
-checks configuration failure, readiness/liveness, duplicate port ownership and
+checks configuration failure, production Redis placeholders, readiness/liveness, duplicate port ownership and
 graceful shutdown/port release. Its Redis single-node override applies only to
 that isolated test; it does not validate the deployed Redis service.
+
+#### Fifteen-minute deploy timeout with Redis `not_configured`
+
+The supplied 12:33 UTC logs show successful MongoDB connection and bootstrap,
+followed by readiness HTTP 503 with Redis `not_configured`. This deployment is
+waiting for health checks, not compiling. Render cancels a new deployment if
+its instances do not pass health checks within 15 minutes.
+
+In **Anant-Backend > Environment**, choose the setting for your topology:
+
+- For one API instance without Redis, set `ALLOW_SINGLE_NODE_IN_PRODUCTION=true`
+  and remove development `REDIS_URL` / `REDIS_HOST` placeholders. In-memory
+  rate limiting and event delivery stay confined to that API process. Do not
+  scale to multiple API replicas with this override.
+- For a Redis-backed deployment, set `REDIS_URL` to the actual service connection
+  URL (`redis://` or `rediss://`) and remove/disable the single-node override.
+  Localhost points at the API container, not a remote Redis service.
+
+Keep `NODE_ENV=production`, save the environment changes and redeploy. Readiness
+must report HTTP 200 after bootstrap with Redis `ready` or the deliberate
+`single_node_override`. The health-check path stays `/api/health/readiness`.
+The legacy Render service name is retained as an existing deployment identifier.
+
+Startup validation and client initialization now resolve the same Redis settings.
+Required missing/invalid/local Redis configuration exits before MongoDB connects,
+with the corrective environment setting in its error message. Previously a local
+URL satisfied validation but the client rejected it, leaving readiness at 503.
+Actual connection failures still fail readiness; validation does not certify
+network access or authenticate Redis.
 
 ### Local development and port conflicts
 
@@ -67,8 +132,8 @@ Next rewrites and headers are captured in the standalone output at build time.
 
 ## Production processes
 
-Use docker-compose.production.yml with BACKEND_IMAGE, FRONTEND_IMAGE and required
-production environment values. It does not provision MongoDB or Redis.
+Use `deploy/docker-compose.production.yml` with BACKEND_IMAGE, FRONTEND_IMAGE
+and required production environment values; run Compose from `deploy/`. It does not provision MongoDB or Redis.
 
 | Process | Built command |
 | --- | --- |
@@ -102,5 +167,5 @@ chain-preserving transition, not ordinary cleanup edits.
 Provision TLS, secrets management, backups/PITR, external health alerts and restore
 drills. Validate the built image, authenticated database topology, transactions,
 worker delivery and multi-replica behavior in staging before release. See
-../docs/production-readiness-tracker.md; local passing checks do not close external
+docs/production-readiness-tracker.md; local passing checks do not close external
 production gates.

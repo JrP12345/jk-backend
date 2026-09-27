@@ -1,4 +1,5 @@
 import { Redis } from "ioredis";
+import { getRedisConfiguration } from "./redisConfiguration.ts";
 
 /**
  * Redis client initialization with graceful fallback.
@@ -6,14 +7,10 @@ import { Redis } from "ioredis";
  * Otherwise returns null to let plugins fall back to in-memory storage safely.
  */
 function createRedisClient(): Redis | null {
-  const redisUrl = process.env.REDIS_URL;
-  const redisHost = process.env.REDIS_HOST;
+  const { url: redisUrl, host: redisHost, error } = getRedisConfiguration();
 
-  // In production, if REDIS_URL contains localhost, treat as unset unless explicit
-  const isLocalInProd = process.env.NODE_ENV === "production" && (redisUrl?.includes("localhost") || redisUrl?.includes("127.0.0.1"));
-
-  if ((!redisUrl && !redisHost) || isLocalInProd) {
-    console.log("[Redis] No valid remote REDIS_URL or REDIS_HOST set. Using in-memory fallback store.");
+  if (error) {
+    console.log(`[Redis] ${error}. Using in-memory fallback store.`);
     return null;
   }
 

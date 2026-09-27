@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { getRedisConfiguration } from "./redisConfiguration.ts";
 
 const baseRequiredEnv = [
   "MONGODB_URI",
@@ -51,10 +52,9 @@ export function validateConfig(): { valid: boolean; errors: string[] } {
       missing.push("JWT_PRIVATE_KEY_BASE64 & JWT_PUBLIC_KEY_BASE64 (or JWT_PRIVATE_KEY & JWT_PUBLIC_KEY) - run 'npm run generate:keys'");
     }
 
-    if (!process.env.REDIS_URL && !process.env.REDIS_HOST) {
-      if (process.env.ALLOW_SINGLE_NODE_IN_PRODUCTION !== "true") {
-        missing.push("REDIS_URL or REDIS_HOST (Required in production for multi-replica WebSocket PubSub fan-out and panic alert delivery; set ALLOW_SINGLE_NODE_IN_PRODUCTION=true to explicitly allow single-node deploys)");
-      }
+    const redis = getRedisConfiguration();
+    if (redis.required && redis.error) {
+      missing.push(`${redis.error}. Set REDIS_URL or REDIS_HOST to your Redis service, or set ALLOW_SINGLE_NODE_IN_PRODUCTION=true only for a single-instance deployment without Redis`);
     }
 
     const mongoUri = process.env.MONGODB_URI || "";

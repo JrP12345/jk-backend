@@ -1,0 +1,59 @@
+name: Release — Ekavyu Semantic Version & Manifest
+on:
+  push:
+    tags:
+      - v*.*.*
+permissions:
+  contents: write
+jobs:
+  release:
+    name: Create GitHub Release with Manifest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install backend dependencies
+        run: npm ci
+      - name: Verify deployment install behavior
+        run: npm run check:build-install
+      - name: Build API and worker bundles
+        run: npm run build
+      - name: Run Architecture & Fitness Function Auditor (generates
+          release_manifest.json)
+        run: node scripts/repo_auditor.js
+        env:
+          NO_COLOR: "1"
+      - name: Inject semantic version into release manifest
+        run: node -e "const fs = require('fs'); const m =
+          JSON.parse(fs.readFileSync('release_manifest.json', 'utf8'));
+          m.version = process.env.RELEASE_TAG; m.git_sha =
+          process.env.GITHUB_SHA; m.ref = process.env.RELEASE_TAG;
+          fs.writeFileSync('release_manifest.json', JSON.stringify(m, null,
+          2));"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Ekavyu ${{ github.ref_name }}
+          body: |
+            ## Ekavyu Release ${{ github.ref_name }}
+
+            **Commit**: `${{ github.sha }}`
+
+            ### Quality Gates
+            Backend type, test and architecture gates passed.
+
+            See `release_manifest.json` artifact for machine-readable evidence.
+          files: |
+            release_manifest.json
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

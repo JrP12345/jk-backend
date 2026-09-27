@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import { redisClient } from "./redis.ts";
 import { validateConfig } from "./config.ts";
+import { getRedisConfiguration } from "./redisConfiguration.ts";
 
 let bootstrapComplete = false;
 let shuttingDown = false;
@@ -74,16 +75,16 @@ export async function checkRedisReadiness(): Promise<{
   latencyMs?: number;
   error?: string;
 }> {
-  const isProd = process.env.NODE_ENV === "production";
   const isDegradedAllowed = process.env.ALLOW_SINGLE_NODE_IN_PRODUCTION === "true";
-  const isRequired = isProd && !isDegradedAllowed;
+  const configuration = getRedisConfiguration();
+  const isRequired = configuration.required;
 
   if (!redisClient) {
     return {
       ready: !isRequired,
       required: isRequired,
       status: isDegradedAllowed ? "single_node_override" : "not_configured",
-      error: isRequired ? "Redis is required in production but not configured" : undefined,
+      error: isRequired ? `${configuration.error || "Redis client could not be initialized"}. Configure a Redis service or explicitly enable ALLOW_SINGLE_NODE_IN_PRODUCTION=true for a single instance` : undefined,
     };
   }
 

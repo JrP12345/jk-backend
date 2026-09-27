@@ -1,0 +1,15 @@
+# Blueprint for the standalone jk-backend repository.
+# Before adopting it for an existing service, match `name` to its Render name.
+# Existing manually configured services must update their dashboard build command.
+services:
+  - type: web
+    name: jk-backend
+    runtime: node
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health/readiness
+    envVars:
+      - key: NODE_ENV
+        value: production
+# Keep existing secrets configured in Render; none are generated or replaced here.
+# PORT is supplied by Render. Node 24 is selected through package.json engines.
