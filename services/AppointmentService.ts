@@ -58,72 +58,10 @@ export interface BookingActor {
   bookingPatientId?: string;
 }
 
-export class AppointmentService {
-  /**
-   * Orchestrates the complete appointment booking workflow:
-   * 1. Doctor assignment & booking mode validation
-   * 2. Slot lock acquisition & validation
-   * 3. Patient identity resolution (self, dependent, existing walk-in, or new profile)
-   * 4. Duplicate booking guard & time-slot collision check
-   * 5. Atomic sequential daily token counter generation
-   * 6. Appointment record persistence
-   * 7. Auto invoice creation for consultation fees
-   * 8. Audit logging & async notification dispatch
-   */
-  async book(actor: BookingActor, input: BookAppointmentInput, effectiveOrgId?: string) {
-    let { doctorId } = input;
-    const {
-      clinicId,
-      appointmentTime,
-      appointmentType,
-      notes,
-      patientId,
-      patientDetails,
-      followUpForAppointmentId,
-      lockId,
-      reasonForVisit,
-      duration,
-      payAtClinic,
-    } = input;
-
-    if (!clinicId || !doctorId || !appointmentTime || !appointmentType) {
-      throw new AppointmentDomainError("clinicId, doctorId, appointmentTime, and appointmentType are required", 400);
-    }
-
-    const orgId = effectiveOrgId || actor.organizationId;
-    if (actor.role !== "root" && !orgId) {
-      throw new AppointmentDomainError("Organization context is required to book an appointment", 403);
-    }
-
-    // 1. Validate Doctor Assignment
-    const clinicQuery = mongoose.Types.ObjectId.isValid(clinicId)
-      ? { $in: [clinicId, new mongoose.Types.ObjectId(clinicId)] }
-      : clinicId;
-
-    let assignment = await DoctorAssignment.findOne({
-      doctorId: mongoose.Types.ObjectId.isValid(doctorId)
-        ? { $in: [doctorId, new mongoose.Types.ObjectId(doctorId)] }
-        : doctorId,
-      clinicId: clinicQuery,
-    });
-
-    if (!assignment && mongoose.Types.ObjectId.isValid(doctorId)) {
-      const docProfile = await Doctor.findOne({
-        $or: [{ _id: doctorId }, { userId: doctorId }],
-      });
-      if (docProfile) {
-        const candidateIds = [docProfile.userId, docProfile._id].filter(Boolean);
-        assignment = await DoctorAssignment.findOne({
-          doctorId: { $in: candidateIds },
-          clinicId: clinicQuery,
-        });
-      }
-    }
-    if (!assignment) {
-      throw new AppointmentDomainError("Doctor is not assigned to the selected clinic", 400);
-    }
-    doctorId = assignment.doctorId.toString();
-
+export async function validateAppointmentAvailability(
+  actor: Pick<BookingActor, "role">, input: BookAppointmentInput, assignment: any, excludeAppointmentId?: string
+) {
+  const { doctorId, clinicId, appointmentTime, duration } = input;
     const requestedDate = new Date(appointmentTime);
     if (isNaN(requestedDate.getTime())) {
       throw new AppointmentDomainError("Invalid appointment time format", 400);
@@ -220,7 +158,8 @@ export class AppointmentService {
         clinicId,
         doctorId,
         appointmentTime: { $gte: startOfToday, $lte: endOfToday },
-        status: { $in: ["pending", "confirmed", "checked-in", "in-consultation"] }
+        status: { $in: ["pending", "confirmed", "checked-in", "in-consultation"] },
+        ...(excludeAppointmentId ? { _id: { $ne: excludeAppointmentId } } : {})
       });
 
       const estimatedQueueTime = activeWaitingPatients * effectiveDuration;
@@ -246,6 +185,78 @@ export class AppointmentService {
       }
     }
 
+
+  return { isSequentialQueue, requestedDate, slotDuration };
+}
+
+export class AppointmentService {
+  /**
+   * Orchestrates the complete appointment booking workflow:
+   * 1. Doctor assignment & booking mode validation
+   * 2. Slot lock acquisition & validation
+   * 3. Patient identity resolution (self, dependent, existing walk-in, or new profile)
+   * 4. Duplicate booking guard & time-slot collision check
+   * 5. Atomic sequential daily token counter generation
+   * 6. Appointment record persistence
+   * 7. Auto invoice creation for consultation fees
+   * 8. Audit logging & async notification dispatch
+   */
+  async book(actor: BookingActor, input: BookAppointmentInput, effectiveOrgId?: string) {
+    let { doctorId } = input;
+    const {
+      clinicId,
+      appointmentTime,
+      appointmentType,
+      notes,
+      patientId,
+      patientDetails,
+      followUpForAppointmentId,
+      lockId,
+      reasonForVisit,
+      duration,
+      payAtClinic,
+    } = input;
+
+    if (!clinicId || !doctorId || !appointmentTime || !appointmentType) {
+      throw new AppointmentDomainError("clinicId, doctorId, appointmentTime, and appointmentType are required", 400);
+    }
+
+    const orgId = effectiveOrgId || actor.organizationId;
+    if (actor.role !== "root" && !orgId) {
+      throw new AppointmentDomainError("Organization context is required to book an appointment", 403);
+    }
+
+    // 1. Validate Doctor Assignment
+    const clinicQuery = mongoose.Types.ObjectId.isValid(clinicId)
+      ? { $in: [clinicId, new mongoose.Types.ObjectId(clinicId)] }
+      : clinicId;
+
+    let assignment = await DoctorAssignment.findOne({
+      doctorId: mongoose.Types.ObjectId.isValid(doctorId)
+        ? { $in: [doctorId, new mongoose.Types.ObjectId(doctorId)] }
+        : doctorId,
+      clinicId: clinicQuery,
+    });
+
+    if (!assignment && mongoose.Types.ObjectId.isValid(doctorId)) {
+      const docProfile = await Doctor.findOne({
+        $or: [{ _id: doctorId }, { userId: doctorId }],
+      });
+      if (docProfile) {
+        const candidateIds = [docProfile.userId, docProfile._id].filter(Boolean);
+        assignment = await DoctorAssignment.findOne({
+          doctorId: { $in: candidateIds },
+          clinicId: clinicQuery,
+        });
+      }
+    }
+    if (!assignment) {
+      throw new AppointmentDomainError("Doctor is not assigned to the selected clinic", 400);
+    }
+    doctorId = assignment.doctorId.toString();
+
+    const { isSequentialQueue } = await validateAppointmentAvailability(actor, { ...input, doctorId }, assignment);
+
     // 2. Validate Slot Lock (for time_slot mode)
     let lockValidation: { valid: boolean; message?: string; lockKey?: string } = { valid: true };
     if (!isSequentialQueue) {
@@ -267,15 +278,19 @@ export class AppointmentService {
 
       // 3. Identify or Create Patient Profile
       if (actor.role === "patient" || actor.role === "guest") {
-        if (actor.role === "guest" && actor.bookingPatientId && patientId && patientId !== actor.bookingPatientId) throw new AppointmentDomainError("This booking session belongs to another patient", 403);
+        if (actor.role === "guest" && (!actor.bookingPatientId || (patientId && patientId !== actor.bookingPatientId))) throw new AppointmentDomainError("This booking session belongs to another patient", 403);
         const targetPatientId = actor.role === "guest" ? actor.bookingPatientId || patientId : patientId;
 
         if (targetPatientId) {
-          let isAuthorized = await FamilyRelationship.findOne(
+          // Guest authority is the server-issued booking capability, never
+          // permission to modify the phone account's family relationships.
+          let isAuthorized = actor.role === "guest"
+            ? !!(await Patient.exists({ _id: targetPatientId }).setOptions({ bypassTenantFilter: true }).session(session || null))
+            : !!(await FamilyRelationship.findOne(
             { userId: actor.id, patientId: targetPatientId, status: "active" },
             null,
             option
-          );
+          ));
           if (!isAuthorized) {
             const selfPatient = await Patient.findById(targetPatientId, null, option).setOptions({ bypassTenantFilter: true });
             if (
@@ -283,7 +298,7 @@ export class AppointmentService {
               (String(selfPatient.userId || "") === String(actor.id) ||
                 String(selfPatient._id || "") === String(actor.id))
             ) {
-              isAuthorized = true as any;
+              isAuthorized = true;
             }
           }
           if (!isAuthorized) {
@@ -582,6 +597,7 @@ export class AppointmentService {
           appointmentType: appointment.appointmentType,
           status: appointment.status,
           paymentStatus: appointment.paymentStatus,
+          paymentAmount: appointment.paymentAmount,
           bookingMode: appointment.bookingMode,
           tokenNumber: appointment.tokenNumber,
           queuePosition: appointment.queuePosition,

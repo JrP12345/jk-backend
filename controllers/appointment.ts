@@ -1,3 +1,4 @@
+import { withClinicalTransaction } from "../utilities/transaction.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { Appointment } from "../models/Appointment.ts";
@@ -22,7 +23,7 @@ import {
 import { checkClinicAccess, getRequestClinicIds } from "../utilities/tenant.ts";
 import { getNextAtomicSequence } from "../models/Counter.ts";
 
-import { appointmentService, AppointmentDomainError, type BookAppointmentInput } from "../services/AppointmentService.ts";
+import { appointmentService, AppointmentDomainError, validateAppointmentAvailability, type BookAppointmentInput } from "../services/AppointmentService.ts";
 
 async function ensureAppointmentClinicAccess(
   req: FastifyRequest,
@@ -147,6 +148,8 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
           tokenNumber: appointment.tokenNumber,
           queuePosition: appointment.queuePosition,
           notes: appointment.notes,
+          paymentStatus: appointment.paymentStatus,
+          paymentAmount: appointment.paymentAmount,
           trackerToken: appointment.trackerToken
         },
         "Appointment booked successfully"
@@ -170,7 +173,7 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
     const userRole = req.user!.role;
     const userId = req.user!.id;
     const orgId = req.user?.organization_id;
-    const { clinicId, doctorId, status, date, startDate, endDate, page, limit } = req.query as any;
+    const { clinicId, doctorId, status, date, startDate, endDate, page, limit, search } = req.query as any;
 
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
 
@@ -179,19 +182,7 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
     if (userRole === "patient" || userRole === "family_member") {
       const patient = await Patient.findOne({ userId });
       if (userRole === "patient") {
-        if (!patient) {
-          const directAppointments = await Appointment.find({ bookedByUserId: userId })
-            .populate("clinicId", "name city address")
-            .populate("doctorId", "name specialization fees")
-            .sort({ appointmentTime: 1 })
-            .lean();
-          const mapped = directAppointments.map((a: any) => ({ ...a, id: a._id.toString() }));
-          return reply.code(200).send(successResponse(mapped));
-        }
-        filter.$or = [
-          { patientId: patient._id },
-          { bookedByUserId: userId },
-        ];
+        filter.$or = [{ bookedByUserId: userId }, ...(patient ? [{ patientId: patient._id }] : [])];
       } else {
         const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
         const rels = await FamilyRelationship.find({ userId, status: "active" }).select("patientId").lean();
@@ -235,6 +226,27 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
       const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
       const endOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59, 999);
       filter.appointmentTime = { $gte: startOfDay, $lte: endOfDay };
+    }
+
+    if (search && String(search).trim()) {
+      const term = String(search).trim().slice(0, 100);
+      const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const pattern = new RegExp(escaped, "i");
+      // Narrow through authorized appointments before matching identifying data.
+      const [patientIds, doctorIds] = await Promise.all([
+        Appointment.distinct("patientId", filter), Appointment.distinct("doctorId", filter)
+      ]);
+      const linkedPatients = await Patient.find({ _id: { $in: patientIds } }).select("userId").lean();
+      const users = await User.find({ name: pattern, _id: { $in: doctorIds } }).select("_id").lean();
+      const patientUsers = await User.find({ _id: { $in: linkedPatients.map(p => p.userId).filter(Boolean) }, $or: [{ name: pattern }, { phone: pattern }] }).select("_id").lean();
+      const patients = await Patient.find({ _id: { $in: patientIds }, $or: [
+        { name: pattern }, { phone: pattern }, { userId: { $in: patientUsers.map(u => u._id) } }
+      ] }).select("_id").lean();
+      filter.$and = [{ $or: [
+        { patientId: { $in: patients.map(p => p._id) } },
+        { doctorId: { $in: users.map(u => u._id) } },
+        ...(/^\d+$/.test(term) ? [{ tokenNumber: Number(term) }] : [])
+      ] }];
     }
 
     const [totalCount, rawAppointments] = await Promise.all([
@@ -301,12 +313,21 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
       return reply.code(400).send(errorResponse("Invalid status value"));
     }
 
-    let appointment = await Appointment.findById(id);
-    if (!appointment) return reply.code(404).send(errorResponse("Appointment not found"));
+    const foundAppointment = await Appointment.findById(id);
+    if (!foundAppointment) return reply.code(404).send(errorResponse("Appointment not found"));
+    let appointment = foundAppointment;
 
     if (!(await ensureAppointmentObjectAccess(req, reply, appointment, "staff-mutation"))) return;
 
     if (appointment.status === status) {
+      if (status === "completed") {
+        const { Encounter } = await import("../models/Encounter.ts");
+        const { ClinicalNote } = await import("../models/ClinicalNote.ts");
+        const encounter = await Encounter.findOne({ appointmentId: appointment._id, status: "completed" });
+        const note = encounter && await ClinicalNote.exists({ encounterId: encounter._id, isLatest: true, status: "signed" });
+        const explicitClosure = encounter && await AuditLog.exists({ targetId: appointment._id, action: "CONSULTATION_AUTO_COMPLETED_ON_NEXT" });
+        if (!note && !explicitClosure) return reply.code(409).send(errorResponse("This completed visit needs clinical-record review. Required completion records are missing; no records were rewritten.", "CLINICAL_COMPLETION_INCOMPLETE"));
+      }
       return reply.code(200).send(successResponse(appointment, `Appointment is already ${status}`));
     }
 
@@ -406,18 +427,22 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
     if (followUpTimeline) appointmentUpdate.followUpTimeline = followUpTimeline;
     if (followUpNotes) appointmentUpdate.followUpNotes = followUpNotes;
 
+    const originalStatus = appointment.status;
+    let afterCommit: Array<() => Promise<unknown>> = [];
+    await withClinicalTransaction(async () => {
+      afterCommit = [];
     const transitionedAppointment = await Appointment.findOneAndUpdate(
-      { _id: appointment._id, status: appointment.status },
+      { _id: appointment._id, status: originalStatus },
       {
         $set: appointmentUpdate,
-        ...(appointment.status === "in-consultation" && status !== "in-consultation"
+        ...(originalStatus === "in-consultation" && status !== "in-consultation"
           ? { $unset: { activeConsultationDoctorDayKey: 1 } }
           : {}),
       },
       { returnDocument: "after" },
     );
     if (!transitionedAppointment) {
-      return reply.code(409).send(errorResponse("Appointment was changed by another request. Refresh and try again."));
+      throw Object.assign(new Error("Appointment was changed by another request. Refresh and try again."), { statusCode: 409 });
     }
     appointment = transitionedAppointment;
 
@@ -500,7 +525,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
           overrideReason: cdsOverrideReason || "",
           metrics: cdsEvaluationResult.metrics,
           evaluatedAt: new Date(),
-        }).catch((err) => console.error("CDSEvaluation create error:", err));
+        });
 
         if (cdsDecision === "overridden") {
           await AuditLog.create({
@@ -516,7 +541,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
               overrideReason: cdsOverrideReason,
               findingsCount: cdsEvaluationResult.findings.length,
             },
-          }).catch(() => {});
+          });
         }
       }
 
@@ -597,7 +622,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
           await note.save();
         }
       } catch (noteErr) {
-        console.warn("Clinical note persistence notice:", noteErr);
+        throw noteErr;
       }
 
       // Auto-schedule confirmed follow-up review appointment in MongoDB
@@ -636,18 +661,17 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
             await appointment.save();
           }
         } catch (followUpErr) {
-          console.warn("Auto follow-up appointment creation warning:", followUpErr);
+          throw followUpErr;
         }
       }
 
+      afterCommit.push(async () => {
       if (dispatchWhatsAppRx !== false) {
         const { sendConsultationCompletedNotification } = await import("../utilities/notifications.ts");
         await sendConsultationCompletedNotification(appointment._id, {
           phone: recipientPhone?.trim() || undefined,
           channel: "whatsapp",
-        }).catch((err) =>
-          console.error("sendConsultationCompletedNotification dispatch failed:", err)
-        );
+        });
         (appointment as any).rxDispatchedAt = new Date();
         if (recipientPhone) (appointment as any).rxDispatchPhone = recipientPhone.trim();
         await appointment.save();
@@ -692,10 +716,11 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
           console.warn("Real-time pharmacy PRESCRIPTION_ISSUED broadcast warning:", wsErr);
         }
       }
+      });
     }
 
     if (status === "cancelled") {
-      sendBookingNotification(appointment._id, "cancelled").catch((err) => console.error("Cancellation notification dispatch failed:", err));
+      afterCommit.push(() => sendBookingNotification(appointment._id, "cancelled"));
       await Invoice.updateMany({ appointmentId: appointment._id, status: "unpaid" }, { status: "cancelled" });
     }
 
@@ -712,6 +737,12 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
         prescriptionsCount: prescriptions?.length || 0,
       }
     });
+
+    });
+    appointment.$session(null);
+    for (const dispatch of afterCommit) {
+      try { await dispatch(); } catch (err) { req.log.error({ err }, "Clinical records committed; notification delivery failed"); }
+    }
 
     // Real-time queue broadcast
     const clinicIdStr = appointment.clinicId?.toString();
@@ -740,6 +771,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
     return reply.code(200).send(successResponse(appointment, "Appointment status updated successfully"));
   } catch (err) {
     console.error("updateAppointmentStatus error:", err);
+    if ((err as any)?.statusCode === 409) return reply.code(409).send(errorResponse((err as Error).message));
     if (isActiveConsultationLockConflict(err)) {
       return reply.code(409).send(errorResponse("Doctor already has an active consultation. Complete it before starting another.", "ACTIVE_CONSULTATION_IN_PROGRESS"));
     }
@@ -827,11 +859,12 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
       return reply.code(400).send(errorResponse("Valid newTime is required"));
     }
 
-    let appointment = await Appointment.findById(id);
-    if (!appointment) {
+    const foundAppointment = await Appointment.findById(id);
+    if (!foundAppointment) {
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
+    let appointment = foundAppointment;
     if (!(await ensureAppointmentObjectAccess(req, reply, appointment, "patient-self-service"))) return;
 
     const reschedulableStatuses = ["pending_payment", "pending", "confirmed", "checked-in", "standby", "disruption_triage"];
@@ -846,6 +879,12 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
 
     // Validate slot lock anti-double booking (only in time_slot mode)
     const rescheduleAssignment = await DoctorAssignment.findOne({ doctorId: appointment.doctorId, clinicId: appointment.clinicId, isActive: true });
+    if (!rescheduleAssignment) return reply.code(409).send(errorResponse("The doctor is no longer assigned to this clinic"));
+    await validateAppointmentAvailability({ role: req.user!.role }, {
+      doctorId: appointment.doctorId.toString(), clinicId: appointment.clinicId.toString(),
+      appointmentTime: newTime, appointmentType: appointment.appointmentType as BookAppointmentInput["appointmentType"],
+      duration: appointment.duration,
+    }, rescheduleAssignment, appointment._id.toString());
     const rescheduleMode = (rescheduleAssignment as any)?.bookingMode;
     const rescheduleIsQueue = rescheduleMode ? rescheduleMode === "sequential_queue" : true;
     let lockValidation: { valid: boolean; message?: string; lockKey?: string } = { valid: true };
@@ -867,13 +906,18 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
     // Recalculate atomic daily token number & queue position for the new date
     const newDateStr = newDateObj.toISOString().slice(0, 10);
     const counterKey = `token_${appointment.clinicId}_${appointment.doctorId}_${newDateStr}`;
+    const originalStatus = appointment.status;
+    await withClinicalTransaction(async () => {
     const tokenNumber = await getNextAtomicSequence(counterKey);
+    if (rescheduleAssignment.maxDailyTokens && tokenNumber > rescheduleAssignment.maxDailyTokens) {
+      throw new AppointmentDomainError("The doctor's daily token limit has been reached", 409);
+    }
 
     const rescheduleUpdate: Record<string, unknown> = {
       appointmentTime: newDateObj,
       tokenNumber,
       queuePosition: tokenNumber,
-      status: "confirmed",
+      status: appointment.status === "pending_payment" ? "pending_payment" : "confirmed",
     };
     if (reason) {
       rescheduleUpdate.notes = appointment.notes
@@ -882,20 +926,14 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
     }
 
     const rescheduledAppointment = await Appointment.findOneAndUpdate(
-      { _id: appointment._id, status: appointment.status },
+      { _id: appointment._id, status: originalStatus },
       { $set: rescheduleUpdate },
       { returnDocument: "after" },
     );
     if (!rescheduledAppointment) {
-      return reply.code(409).send(errorResponse("Appointment was changed by another request. Refresh and try again."));
+      throw new AppointmentDomainError("Appointment was changed by another request. Refresh and try again.", 409);
     }
     appointment = rescheduledAppointment;
-
-    if (lockValidation.lockKey) {
-      forceReleaseSlotLock(lockValidation.lockKey).catch(() => {});
-    }
-
-    sendBookingNotification(appointment._id, "rescheduled").catch(() => {});
 
     await AuditLog.create({
       userId,
@@ -906,11 +944,20 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
       details: { oldTime: oldTimeStr, newTime, reason }
     });
 
+    });
+    appointment.$session(null);
+    if (lockValidation.lockKey) {
+      forceReleaseSlotLock(lockValidation.lockKey).catch(() => {});
+    }
+
+    sendBookingNotification(appointment._id, "rescheduled").catch(() => {});
+
     return reply.code(200).send(successResponse(appointment, `Appointment successfully rescheduled to ${newDateObj.toISOString()}`));
   } catch (err: any) {
     if (err?.code === 11000) {
       return reply.code(409).send(errorResponse("This consultation time slot has already been booked. Please choose another slot."));
     }
+    if (err instanceof AppointmentDomainError) return reply.code(err.statusCode).send(errorResponse(err.message));
     console.error("rescheduleAppointment error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }

@@ -19,18 +19,26 @@ import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyReply) {
   try {
     const scope = resolveAuthorizedOrganizationScope(req);
-    if (!scope.allowed && req.user?.role !== "root") return reply.code(scope.statusCode).send(errorResponse(scope.message));
-    let orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
     const { startDate, endDate, clinicId } = req.query as { startDate?: string; endDate?: string; clinicId?: string };
 
     // 1. Resolve Clinics under organization scope
     let clinics = orgId ? await Clinic.find({ organizationId: orgId, isActive: true }) : [];
-    if (clinics.length === 0 && req.user?.role === "root") {
+    if (!orgId && req.user?.role === "root") {
       const activeOrgs = await Organization.find().select("_id").lean();
       const activeOrgIds = activeOrgs.map((o: any) => o._id);
       clinics = await Clinic.find({ organizationId: { $in: activeOrgIds }, isActive: true });
     }
     const clinicIds = clinics.map((c) => c._id);
+
+    if (clinicId) {
+      if (!mongoose.Types.ObjectId.isValid(clinicId)) return reply.code(400).send(errorResponse("Invalid clinic ID"));
+      if (!clinicIds.some((id) => id.toString() === clinicId)) return reply.code(404).send(errorResponse("Clinic not found"));
+    }
+    if ((startDate && !Number.isFinite(Date.parse(startDate))) || (endDate && !Number.isFinite(Date.parse(endDate)))) {
+      return reply.code(400).send(errorResponse("Invalid analytics date range"));
+    }
 
     if (clinicIds.length === 0) {
       return reply.code(200).send(
@@ -45,8 +53,11 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
     }
 
     // Filter match object for date range
-    const invoiceMatch: any = { clinicId: { $in: clinicIds } };
-    const apptMatch: any = { clinicId: { $in: clinicIds } };
+    // Aggregation bypasses Mongoose query tenant hooks. Keep the explicit
+    // organization condition even when a caller selects an authorized clinic.
+    const organizationMatch = orgId ? { organizationId: new mongoose.Types.ObjectId(orgId) } : {};
+    const invoiceMatch: any = { ...organizationMatch, clinicId: { $in: clinicIds } };
+    const apptMatch: any = { ...organizationMatch, clinicId: { $in: clinicIds } };
 
     if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
       const targetObjId = new mongoose.Types.ObjectId(clinicId);
@@ -107,6 +118,7 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
 
     // 4. Low Stock Medicines Aggregation
     const lowStockMedicines = await Medicine.countDocuments({
+      ...organizationMatch,
       clinicId: { $in: clinicIds },
       stockQuantity: { $lt: 10 },
     });
@@ -367,4 +379,3 @@ export async function exportAnalyticsReportController(req: FastifyRequest, reply
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
-

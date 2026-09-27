@@ -7,12 +7,18 @@ import { Appointment } from "../../models/Appointment.ts";
 import { Clinic } from "../../models/Clinic.ts";
 import { Invoice } from "../../models/Invoice.ts";
 import { Organization } from "../../models/Organization.ts";
+import { OrgMember } from "../../models/OrgMember.ts";
+import { getEffectivePermissions } from "../../utilities/permissions.ts";
+import { checkPatientAccess } from "../../utilities/tenant.ts";
+import { requestContextStore } from "../../utilities/context.ts";
+import type { FastifyRequest } from "fastify";
 
 export interface ContextDimensionInput {
   currentRoute?: string;
   activePatientId?: string;
   userRole?: string;
   organizationId?: string;
+  userId?: string;
 }
 
 export interface Assembled6DContext {
@@ -48,18 +54,42 @@ export class ContextEngine {
    * 6. Clinical Domain Directives
    */
   async build6DContext(input: ContextDimensionInput): Promise<Assembled6DContext> {
+    const user = input.userId && mongoose.Types.ObjectId.isValid(input.userId)
+      ? await User.findById(input.userId).select("role isActive authVersion").lean() : null;
+    const requestContext = requestContextStore.getStore();
+    const member = user && input.organizationId && mongoose.Types.ObjectId.isValid(input.organizationId)
+      ? await OrgMember.findOne({ userId: user._id, organizationId: input.organizationId }).lean() : null;
+    const userRole = user?.role === "root" ? "root" : member?.role || user?.role;
+    const organizationAuthorized = !!(user?.isActive && (userRole === "root" || member ||
+      (requestContext?.userId === input.userId && requestContext?.organizationId === input.organizationId)));
+    const permissions = user?.isActive && userRole
+      ? await getEffectivePermissions(userRole, input.organizationId, user?.authVersion) : new Set<string>();
+    const canReadFinancials = organizationAuthorized && (userRole === "root" ||
+      ["VIEW_BILLING", "MANAGE_BILLING", "VIEW_ANALYTICS"].some((permission) => permissions.has(permission)));
+    if (input.activePatientId) {
+      if (!user?.isActive || !userRole || (userRole !== "patient" && userRole !== "family_member" && !organizationAuthorized)) {
+        throw Object.assign(new Error("Patient context access denied"), { statusCode: 403 });
+      }
+      if (userRole !== "root" && !permissions.has("VIEW_EHR") && !permissions.has("MANAGE_EHR")) {
+        throw Object.assign(new Error("Patient context access denied"), { statusCode: 403 });
+      }
+      const access = await checkPatientAccess({ user: {
+        id: user._id.toString(), role: userRole, organization_id: input.organizationId,
+      } } as FastifyRequest, input.activePatientId);
+      if (!access.allowed) throw Object.assign(new Error(access.message), { statusCode: access.statusCode });
+    }
     // 1. Route Context
     const routeContext = input.currentRoute
       ? `Active Screen / Route: "${input.currentRoute}"`
       : "Active Screen / Route: General Hospital Dashboard";
 
     // 2. Role Context
-    const roleContext = `User Access Role: ${input.userRole || "clinician"}`;
+    const roleContext = `User Access Role: ${userRole || "unauthorized"}`;
 
     // 3. Organization Financial & Operational Metrics (Cached with 5m TTL)
     let orgName = "Healthcare System";
     const orgId = input.organizationId;
-    const isOperationalQuery = !!(input.currentRoute && (
+    const isOperationalQuery = !!(canReadFinancials && orgId && mongoose.Types.ObjectId.isValid(orgId) && input.currentRoute && (
       input.currentRoute.includes("analytics") ||
       input.currentRoute.includes("billing") ||
       input.currentRoute.includes("finance") ||
@@ -81,35 +111,20 @@ export class ContextEngine {
           console.warn(`[ContextEngine] Organization lookup warning for ${orgId}:`, e.message);
         }
       }
-      if (orgName === "Healthcare System") {
-        try {
-          const firstOrg = await Organization.findOne({ isActive: true }).select("name city").lean();
-          if (firstOrg) orgName = firstOrg.name;
-        } catch (e: any) {
-          console.warn("[ContextEngine] Default Organization lookup warning:", e.message);
-        }
-      }
-
       organizationContext = `Facility / Organization: ${orgName}`;
       try {
         const clinicFilter = orgId && mongoose.Types.ObjectId.isValid(orgId)
           ? { organizationId: orgId, isActive: true }
-          : { isActive: true };
+          : { _id: null };
 
-        let clinics = await Clinic.find(clinicFilter).select("name city").lean();
-        if (clinics.length === 0) {
-          // Fallback: filter by valid org IDs to exclude orphan clinics
-          const validOrgs = await Organization.find().select("_id").lean();
-          const validOrgIds = validOrgs.map((o: any) => o._id);
-          clinics = await Clinic.find({ organizationId: { $in: validOrgIds }, isActive: true }).select("name city").lean();
-        }
+        const clinics = await Clinic.find(clinicFilter).select("name city").lean();
 
         const clinicIds = clinics.map((c) => c._id);
-        const clinicNames = clinics.map(c => `${c.name} (${c.city})`).join(", ") || "Main Clinic";
+        const clinicNames = clinics.map(c => `${c.name} (${c.city})`).join(", ") || "No active clinics";
         let operationalDetails = "";
 
         if (isOperationalQuery) {
-          const invoiceFilter = clinicIds.length > 0 ? { clinicId: { $in: clinicIds } } : {};
+          const invoiceFilter = { organizationId: new mongoose.Types.ObjectId(orgId), clinicId: { $in: clinicIds } };
           const startOfToday = new Date();
           startOfToday.setHours(0, 0, 0, 0);
 
@@ -148,7 +163,7 @@ export class ContextEngine {
                 }
               }
             ]),
-            Appointment.countDocuments(clinicIds.length > 0 ? { clinicId: { $in: clinicIds } } : {})
+            Appointment.countDocuments(invoiceFilter)
           ]);
 
           const statusTotals = aggResults[0]?.statusTotals || [];
@@ -201,14 +216,15 @@ export class ContextEngine {
       try {
         const patient = await Patient.findById(input.activePatientId).populate("userId", "name email").lean();
         if (patient) {
+          const recordScope = { organizationId: orgId && mongoose.Types.ObjectId.isValid(orgId) ? orgId : null };
           const patientName = (patient.userId as any)?.name || "Patient";
-          const prescriptions = await Prescription.find({ patientId: input.activePatientId }).limit(5).lean();
+          const prescriptions = await Prescription.find({ patientId: input.activePatientId, ...recordScope }).limit(5).lean();
           const rxList = prescriptions.map(p => `${(p as any).medicineName || (p as any).medicationName || "Medication"} ${p.dosage}`).join(", ") || "None recorded";
 
-          const labOrders = await LabOrder.find({ patientId: input.activePatientId }).limit(3).lean();
+          const labOrders = await LabOrder.find({ patientId: input.activePatientId, ...recordScope }).limit(3).lean();
           const labList = labOrders.map(l => `${(l as any).testName || "Lab Test"} (${l.status})`).join(", ") || "None pending";
 
-          const appointments = await Appointment.find({ patientId: input.activePatientId }).sort({ appointmentTime: -1 }).limit(1).lean();
+          const appointments = await Appointment.find({ patientId: input.activePatientId, ...recordScope }).sort({ appointmentTime: -1 }).limit(1).lean();
           const apptDate = appointments[0] ? (appointments[0].appointmentTime || (appointments[0] as any).createdAt) : null;
           const lastAppt = apptDate ? `Last Appt: ${new Date(apptDate).toLocaleDateString()}` : "No past appts";
 

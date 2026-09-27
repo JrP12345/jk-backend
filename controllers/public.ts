@@ -3,6 +3,8 @@ import mongoose from "mongoose";
 import crypto from "node:crypto";
 import { Organization } from "../models/Organization.ts";
 import { Doctor } from "../models/Doctor.ts";
+import { PatientFeedback } from "../models/PatientFeedback.ts";
+import { getPublicClinicFacets, getSortedPublicClinicPage } from "../utilities/publicClinicCatalog.ts";
 import { Patient } from "../models/Patient.ts";
 import { User } from "../models/User.ts";
 import { Clinic } from "../models/Clinic.ts";
@@ -122,9 +124,10 @@ export async function getOrganizationDetails(req: FastifyRequest, reply: Fastify
 
 export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { search, city, specialization } = req.query as {
-      search?: string; city?: string; specialization?: string;
+    const { search, city, specialization, sort } = req.query as {
+      search?: string; city?: string; specialization?: string; sort?: string;
     };
+    if (sort && sort !== "rating" && sort !== "fee_low") return reply.code(400).send(errorResponse("Unsupported clinic sort"));
 
     // Filter out orphan clinics belonging to deleted organizations
     const activeOrgs = await Organization.find({ isActive: true }).select("_id").lean();
@@ -139,6 +142,7 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
       },
       { isActive: true }
     ];
+    const visibility = { $and: [...andConditions] };
 
     if (city) {
       andConditions.push({ city: { $regex: new RegExp(escapeRegex(city), "i") } });
@@ -200,16 +204,26 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
     const pagination = getCursorPaginationParams(req.query as any, 20, 100);
     const decoded = decodeCursor(pagination.cursor);
     const cursorFilter = buildCursorFilter(decoded, { timeField: "createdAt", sortDirection: "desc" });
-    if (Object.keys(cursorFilter).length > 0) {
+    if (!sort && Object.keys(cursorFilter).length > 0) {
       andConditions.push(cursorFilter);
     }
 
     const filter: any = andConditions.length > 1 ? { $and: andConditions } : andConditions[0] || {};
-    const rawClinics = await Clinic.find(filter)
+    const rawClinics = sort ? [] : await Clinic.find(filter)
       .sort({ createdAt: -1, _id: -1 })
       .limit(pagination.limit + 1);
 
-    const paginatedResult = formatCursorResult(rawClinics as any[], pagination.limit, "createdAt");
+    let paginatedResult;
+    try {
+      paginatedResult = sort === "rating" || sort === "fee_low"
+        ? await getSortedPublicClinicPage(filter, sort, pagination.limit, pagination.cursor)
+        : formatCursorResult(rawClinics as any[], pagination.limit, "createdAt");
+    } catch (error) {
+      if (pagination.cursor && error instanceof Error && (error.message === "Invalid sorted clinic cursor" || error instanceof SyntaxError)) {
+        return reply.code(400).send(errorResponse("Invalid clinic cursor"));
+      }
+      throw error;
+    }
     const clinics = paginatedResult.items;
 
     const clinicIds = clinics.map(c => c._id);
@@ -228,7 +242,7 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
 
     const clinicAssignmentsMap = new Map<string, any[]>();
     for (const a of allAssignments) {
-      if (!a.doctorId || !(a.doctorId as any).isActive) continue;
+      if (!a.doctorId || !(a.doctorId as any).isActive || profileMap.get(String((a.doctorId as any)._id))?.isActive === false) continue;
       const cid = String(a.clinicId);
       if (!clinicAssignmentsMap.has(cid)) clinicAssignmentsMap.set(cid, []);
       clinicAssignmentsMap.get(cid)!.push(a);
@@ -240,6 +254,12 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
       : [];
     const orgMap = new Map<string, any>(orgs.map((o) => [String(o._id), o]));
 
+    const ratingStats = await PatientFeedback.aggregate([
+      { $match: { clinicId: { $in: clinicIds }, rating: { $gte: 1, $lte: 5 } } },
+      { $group: { _id: "$clinicId", rating: { $avg: "$rating" }, reviewsCount: { $sum: 1 } } },
+    ]);
+    const ratings = new Map(ratingStats.map(item => [String(item._id), item]));
+    const facets = !search && !city && !specialization && !pagination.cursor ? await getPublicClinicFacets(visibility) : undefined;
     const formattedClinics = clinics.map((c) => {
       const json = c.toJSON();
       const org = orgMap.get(String(c.organizationId));
@@ -253,7 +273,7 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
         return {
           id: a.doctorId._id.toString(),
           name: a.doctorId.name,
-          specialization: profile?.specialization || "General Medicine",
+          specialization: profile?.specialization?.trim() || "",
           fees: a.fees || 0,
         };
       });
@@ -271,6 +291,8 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
         currency: org?.currency || "INR",
         doctorCount: doctorsSummary.length,
         minFee,
+        rating: ratings.get(String(c._id))?.rating ?? null,
+        reviewsCount: ratings.get(String(c._id))?.reviewsCount ?? 0,
         specialties,
         doctorsSummary,
       };
@@ -283,15 +305,15 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
 
     const query = req.query as { cursor?: string; format?: string };
     if (query?.format === "paginated" || query?.cursor) {
-      return reply.code(200).send(successResponse({
+      return reply.code(200).send({ ...successResponse({
         items: formattedClinics,
         nextCursor: paginatedResult.nextCursor,
         hasNextPage: paginatedResult.hasNextPage,
         limit: paginatedResult.limit,
-      }));
+      }), ...(facets ? { filters: facets } : {}) });
     }
 
-    return reply.code(200).send(successResponse(formattedClinics));
+    return reply.code(200).send({ ...successResponse(formattedClinics), ...(facets ? { filters: facets } : {}) });
   } catch (err) {
     console.error("getPublicClinics error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));

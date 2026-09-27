@@ -426,6 +426,7 @@ export function broadcastQueueUpdate(clinicId: string, rawPayload: RealtimeMessa
 
   // 1. Deliver synchronously to local clinic sockets
   sendToClinicQueueLocally(clinicId, payload);
+  broadcastClinicalRealtime(clinicId, payload);
 
   // 2. Buffer if critical alert (e.g. STAT or panic alerts)
   bufferCriticalAlert(`clinic:${clinicId}`, payload);

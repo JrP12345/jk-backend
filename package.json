@@ -14,6 +14,7 @@
     "seed:clean": "node --env-file=.env --experimental-strip-types scripts/seedFreshCleanDB.ts",
     "setup:root-2fa": "node --env-file=.env --experimental-strip-types scripts/setupRoot2FA.ts",
     "setup:root-2fa:production": "node --experimental-strip-types scripts/setupRoot2FA.ts",
+    "check:root-2fa:production": "node --experimental-strip-types scripts/checkRoot2FA.ts",
     "generate:keys": "node --experimental-strip-types scripts/generateKeys.ts",
     "backup:mongo": "node --env-file=.env --experimental-strip-types scripts/mongoBackup.ts",
     "restore:mongo:drill": "node --env-file=.env --experimental-strip-types scripts/mongoRestoreDrill.ts",

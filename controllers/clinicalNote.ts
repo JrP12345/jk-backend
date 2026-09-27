@@ -1,3 +1,4 @@
+import { withClinicalTransaction } from "../utilities/transaction.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { Encounter } from "../models/Encounter.ts";
@@ -267,7 +268,7 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
     if (!userId) return reply.code(401).send(errorResponse("Authentication required"));
     const userName = (req.user as any)?.name || "Attending Physician";
 
-    const note = await ClinicalNote.findById(id);
+    let note = await ClinicalNote.findById(id);
     if (!note) return reply.code(404).send(errorResponse("Clinical note not found"));
 
     const noteAccess = await checkOperationalRecordAccess(req, note);
@@ -276,10 +277,20 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
       return reply.code(403).send(errorResponse("Only the assigned doctor can sign this clinical note"));
     }
 
+    if (note.status === "signed") {
+      const encounter = await Encounter.findOne({ _id: note.encounterId, status: "completed" });
+      const visitComplete = encounter && (!encounter.appointmentId || await Appointment.exists({ _id: encounter.appointmentId, status: "completed" }));
+      if (visitComplete) return reply.code(200).send(successResponse(note, "Clinical note is already signed and locked"));
+      return reply.code(409).send(errorResponse("This signed note needs linked-visit review. No clinical records were rewritten."));
+    }
     if (note.status !== "draft" && note.status !== "under_review") {
       return reply.code(400).send(errorResponse(`Cannot sign note in status '${note.status}'`));
     }
 
+    let updatedEncounter: any;
+    await withClinicalTransaction(async () => {
+      note = await ClinicalNote.findById(id);
+      if (!note) throw new Error("Clinical note not found");
     note.status = "signed";
     note.signature = {
       signerId: userId as any,
@@ -287,7 +298,13 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
       signedAt: new Date(),
       signingMethod: "RS256_JWT",
     };
-    await note.save();
+    const signedNote = await ClinicalNote.findOneAndUpdate(
+      { _id: note._id, status: { $in: ["draft", "under_review"] } },
+      { $set: { status: "signed", signature: note.signature } },
+      { returnDocument: "after", runValidators: true }
+    );
+    if (!signedNote) throw Object.assign(new Error("This note was changed by another request. Refresh before signing."), { statusCode: 409 });
+    note = signedNote;
 
     // NMC RMP 2023 Medico-Legal Cryptographic Sealing of Encounter Prescriptions
     try {
@@ -305,19 +322,30 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
         });
       }
     } catch (sealErr) {
-      console.error("Prescription sealing on clinical note sign failed:", sealErr);
+      throw sealErr;
     }
 
     // Complete Encounter and linked Appointment
-    const updatedEncounter = await Encounter.findOneAndUpdate(
-      { _id: note.encounterId, organizationId: note.organizationId, clinicId: note.clinicId },
+    updatedEncounter = await Encounter.findOneAndUpdate(
+      { _id: note.encounterId, organizationId: note.organizationId, clinicId: note.clinicId, status: { $nin: ["cancelled", "closed"] } },
       { status: "completed", endedAt: new Date() },
       { returnDocument: "after" }
     );
 
-    if (updatedEncounter?.appointmentId) {
+    if (!updatedEncounter) throw new Error("The linked encounter could not be completed");
+    if (updatedEncounter.appointmentId) {
       const { Appointment } = await import("../models/Appointment.ts");
-      await Appointment.findByIdAndUpdate(updatedEncounter.appointmentId, { status: "completed" });
+      const completed = await Appointment.findOneAndUpdate(
+        { _id: updatedEncounter.appointmentId, clinicId: note.clinicId,
+          status: { $in: ["in-consultation", "completed"] } },
+        { $set: { status: "completed" }, $unset: { activeConsultationDoctorDayKey: 1 } },
+        { returnDocument: "after" }
+      );
+      if (!completed) throw Object.assign(new Error("The linked visit is no longer an active consultation. Refresh before signing."), { statusCode: 409 });
+    }
+    await AuditLog.create({ userId, action: "CLINICAL_NOTE_SIGNED", targetId: note._id, targetModel: "ClinicalNote", details: { encounterId: note.encounterId } });
+    });
+    if (updatedEncounter?.appointmentId) {
       const { sendConsultationCompletedNotification } = await import("../utilities/notifications.ts");
       sendConsultationCompletedNotification(updatedEncounter.appointmentId).catch((err) =>
         console.error("sendConsultationCompletedNotification on note sign failed:", err)
@@ -391,10 +419,11 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
 
     const message = followUpCreationFailed
       ? "Clinical note signed and locked, but the requested follow-up could not be scheduled"
-      : "Clinical note signed and locked (Follow-up scheduled)";
+      : note.plan?.followUpDate ? "Clinical note signed and locked (follow-up scheduled)" : "Clinical note signed and locked";
     return reply.code(200).send(successResponse(note, message));
   } catch (err) {
     console.error("signClinicalNoteController error:", err);
+    if ((err as any)?.statusCode === 409) return reply.code(409).send(errorResponse((err as Error).message));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

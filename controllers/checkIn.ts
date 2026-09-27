@@ -1,3 +1,4 @@
+import { withClinicalTransaction } from "../utilities/transaction.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { Appointment } from "../models/Appointment.ts";
@@ -51,24 +52,26 @@ export async function processSelfCheckInQr(req: FastifyRequest, reply: FastifyRe
       return reply.code(404).send(errorResponse("No active appointment found for check-in with provided details"));
     }
 
-    if (appointment.status === "checked-in" || appointment.status === "in-consultation") {
-      return reply.code(200).send(
-        successResponse(
-          {
-            appointment,
-            alreadyCheckedIn: true,
-          },
-          `Already checked in! Your Queue Token is #${appointment.tokenNumber}`
-        )
-      );
+    const checkInData = (alreadyCheckedIn: boolean) => ({
+      appointmentId: appointment._id.toString(), tokenNumber: appointment.tokenNumber,
+      patientName: appointment.patientId?.userId?.name || appointment.patientId?.name || "Patient",
+      doctorName: appointment.doctorId?.name || "Doctor", clinicName: appointment.clinicId?.name || "Clinic",
+      status: alreadyCheckedIn ? appointment.status : "checked-in", alreadyCheckedIn,
+    });
+    if (["checked-in", "in-consultation"].includes(appointment.status)) {
+      return reply.code(200).send(successResponse(checkInData(true), "This appointment is already checked in"));
     }
-
-    if (appointment.status === "cancelled" || appointment.status === "completed") {
-      return reply.code(400).send(errorResponse(`Cannot check in for an appointment that is ${appointment.status}`));
+    if (!["pending", "confirmed"].includes(appointment.status)) {
+      return reply.code(409).send(errorResponse(`Cannot check in an appointment that is ${appointment.status}`));
     }
-
-    appointment.status = "checked-in";
-    await appointment.save();
+    await withClinicalTransaction(async () => {
+      const changed = await Appointment.updateOne({ _id: appointment._id, status: { $in: ["pending", "confirmed"] } }, { $set: { status: "checked-in" } });
+      if (!changed.modifiedCount) throw Object.assign(new Error("Appointment changed. Refresh and try again."), { statusCode: 409 });
+      await AuditLog.create({ userId: req.user!.id, action: "SELF_CHECKIN_QR", targetId: appointment._id,
+        targetModel: "Appointment", details: { tokenNumber: appointment.tokenNumber, clinicId } });
+    });
+    const { broadcastQueueUpdate } = await import("../notifications/websocket.ts");
+    broadcastQueueUpdate(clinicId, { type: "QUEUE_UPDATED", data: { appointmentId, clinicId, status: "checked-in" }, timestamp: new Date().toISOString() });
 
     // Publish event for real-time queue update
     await eventBus.publishDurable({
@@ -80,31 +83,17 @@ export async function processSelfCheckInQr(req: FastifyRequest, reply: FastifyRe
       severity: "info",
       actionUrl: "/dashboard/queue",
       metadata: { appointmentId: appointment._id, tokenNumber: appointment.tokenNumber },
-    });
-
-    await AuditLog.create({
-      userId: req.user!.id,
-      action: "SELF_CHECKIN_QR",
-      targetId: appointment._id,
-      targetModel: "Appointment",
-      details: { tokenNumber: appointment.tokenNumber, clinicId: appointment.clinicId?._id }
-    });
+    }).catch(err => req.log.error({ err }, "Check-in committed; notification delivery failed"));
 
     return reply.code(200).send(
       successResponse(
-        {
-          tokenNumber: appointment.tokenNumber,
-          patientName: appointment.patientId?.userId?.name || "Patient",
-          doctorName: appointment.doctorId?.name || "Doctor",
-          clinicName: appointment.clinicId?.name || "Clinic",
-          status: "checked-in",
-          checkedInAt: new Date().toISOString(),
-        },
+        checkInData(false),
         `Self Check-In Successful! Welcome, your Queue Token is #${appointment.tokenNumber}`
       )
     );
   } catch (err) {
     console.error("processSelfCheckInQr error:", err);
+    if ((err as any)?.statusCode === 409) return reply.code(409).send(errorResponse((err as Error).message));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

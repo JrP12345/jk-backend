@@ -46,8 +46,16 @@ PrescriptionSchema.index({ encounterId: 1, createdAt: -1 });
 PrescriptionSchema.plugin(tenantPlugin);
 
 // Immutability guard: once a prescription is sealed, core medical details cannot be tampered with
-PrescriptionSchema.pre("save", function () {
-  if (!this.isNew && this.isModified() && this.isSealed) {
+PrescriptionSchema.pre("save", async function () {
+  if (!this.isNew && this.isModified()) {
+    // Check persisted state: first sealing legitimately attaches diagnosis and
+    // signature together. Checking the new isSealed value rejects that write
+    // and lets an existing sealed document bypass the guard by setting it false.
+    const stored = await (this.constructor as mongoose.Model<any>).exists({ _id: this._id, isSealed: true });
+    if (!stored) return;
+    if (this.isModified("isSealed") && !this.isSealed) {
+      throw new Error("Prescription is cryptographically sealed and immutable; it cannot be unsealed");
+    }
     const modifiedPaths = this.modifiedPaths();
     const allowedSealingPaths = [
       "isSealed",

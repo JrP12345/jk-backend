@@ -49,12 +49,13 @@ describe("Phase 3: Context Engine v2 6D Context Tests", () => {
     const context = await contextEngine.build6DContext({
       currentRoute: "/dashboard/patients/chart",
       activePatientId: testPatientId,
-      userRole: "doctor",
+      userId: testUserId,
+      userRole: "patient",
       organizationId: testOrgId
     });
 
     expect(context.routeContext).toContain("/dashboard/patients/chart");
-    expect(context.roleContext).toContain("doctor");
+    expect(context.roleContext).toContain("patient");
     expect(context.organizationContext).toContain(testOrgId);
     expect(context.patientRecordContext).toContain("Maria Context");
     expect(context.patientRecordContext).toContain("Severe Bronchial Asthma");

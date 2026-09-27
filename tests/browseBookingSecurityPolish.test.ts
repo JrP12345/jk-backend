@@ -6,6 +6,7 @@ import { OrgMember } from "../models/OrgMember.ts";
 import { Clinic } from "../models/Clinic.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Patient } from "../models/Patient.ts";
+import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { RefreshToken } from "../models/RefreshToken.ts";
@@ -81,6 +82,26 @@ describe("Browse booking, owner session controls and patient approval", () => {
     await RefreshToken.updateMany({ userId: payload.id }, { revoked: true, revocationReason: "logout" });
     const revoked = await app.inject({ method: "POST", url: "/api/auth/refresh", headers: { cookie: oldCookie } });
     expect(revoked.statusCode).toBe(401);
+  });
+
+  it("books an unclaimed guest profile without attaching it as a dependent of the phone owner", async () => {
+    const relationshipsBefore = await FamilyRelationship.countDocuments({ userId: patient.userId });
+    const result = await app.inject({ method: "POST", url: "/api/public/booking-session", payload: {
+      name: "Unverified Companion", phone: "9876501234", email: "guest-contact@example.invalid",
+    } });
+    expect(result.statusCode, result.body).toBe(200);
+    const profile = await Patient.findById(result.json().data.patient.id);
+    expect(profile?.userId).toBeUndefined();
+    expect(profile?.accountType).toBe("walkin");
+    const booking = await app.inject({ method: "POST", url: "/api/appointments", headers: { cookie: cookies(result) }, payload: {
+      clinicId: clinicB.id, doctorId: doctor.id, appointmentTime: new Date(Date.now() + 120000).toISOString(), appointmentType: "online",
+    } });
+    expect(booking.statusCode, booking.body).toBe(201);
+    expect(await FamilyRelationship.countDocuments({ userId: patient.userId })).toBe(relationshipsBefore);
+    const wrongPatient = await app.inject({ method: "POST", url: "/api/appointments", headers: { cookie: cookies(result) }, payload: {
+      clinicId: clinicB.id, doctorId: doctor.id, patientId: patient.id, appointmentTime: new Date(Date.now() + 180000).toISOString(), appointmentType: "online",
+    } });
+    expect(wrongPatient.statusCode, wrongPatient.body).toBe(403);
   });
 
   it("allows more than five owner sessions until root applies a limit", async () => {

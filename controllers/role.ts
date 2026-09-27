@@ -5,7 +5,7 @@ import { OrgMember } from "../models/OrgMember.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, revokeAllRefreshTokens } from "../utilities/helpers.ts";
 import { invalidateRoleCache } from "../utilities/permissions.ts";
-import { getRequestOrganizationId, isRootRequest } from "../utilities/tenant.ts";
+import { getRequestOrganizationId, isRootRequest, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { broadcastRealtimeNotification } from "../notifications/websocket.ts";
 
 // Standard System Permissions Catalog with Human-Readable Labels & Categories
@@ -94,6 +94,8 @@ export async function getRoles(req: FastifyRequest, reply: FastifyReply) {
     if (!req.user || !["admin", "root"].includes(req.user.role)) {
       return reply.code(403).send(errorResponse("Only administrators can view role configuration"));
     }
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
     // Seed any missing default system roles
     for (const sysRole of DEFAULT_SYSTEM_ROLES) {
       await Role.findOneAndUpdate(
@@ -103,13 +105,19 @@ export async function getRoles(req: FastifyRequest, reply: FastifyReply) {
       );
     }
 
-    const orgId = getRequestOrganizationId(req);
+    const orgId = scope.organizationId;
     const roleQuery = req.user?.role === "root" && !orgId
       ? {}
       : { $or: [{ organizationId: orgId }, { organizationId: null }] };
     const roles = await Role.find(roleQuery).sort({ isSystemRole: -1, name: 1 });
     const allCatalogCodes = SYSTEM_PERMISSIONS_CATALOG.map((p) => p.code);
-    const sanitizedRoles = roles.map((r) => {
+    const effectiveRoles = orgId
+      ? Array.from(roles.reduce((result, role) => {
+          if (!result.has(role.name) || role.organizationId) result.set(role.name, role);
+          return result;
+        }, new Map<string, (typeof roles)[number]>()).values())
+      : roles;
+    const sanitizedRoles = effectiveRoles.map((r) => {
       if (r.name === "admin" || r.name === "root") {
         // Admin and Root system roles possess full entitlement across all catalog permissions by default
         const mergedPerms = Array.from(new Set([...allCatalogCodes, ...(r.permissions || [])]));
@@ -161,7 +169,9 @@ export async function createRole(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse("Permissions must contain only catalog permission codes"));
     }
 
-    const orgId = getRequestOrganizationId(req);
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
     const existing = await Role.findOne({
       name: formattedName,
       $or: [{ organizationId: orgId || null }, { organizationId: null }]
@@ -177,6 +187,7 @@ export async function createRole(req: FastifyRequest, reply: FastifyReply) {
       permissions: Array.isArray(permissions) ? permissions : [],
       isSystemRole: false,
     });
+    await invalidateRoleCache(formattedName, orgId);
 
     return reply.code(201).send(successResponse(role, "Role created successfully"));
   } catch (err) {
@@ -224,13 +235,19 @@ export async function updateRolePermissions(req: FastifyRequest, reply: FastifyR
       finalPermissions = Array.from(new Set([...finalPermissions, ...MANDATORY_ADMIN_PERMISSIONS]));
     }
 
-    let role = await Role.findOne({ name });
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
+    let role = await Role.findOne({ name, organizationId: orgId || null });
     if (!role) {
-      // If system role missing in DB, create it
-      const defaultRole = DEFAULT_SYSTEM_ROLES.find((r) => r.name === name);
+      // Tenant edits create an override rather than changing the shared role.
+      const globalRole = orgId ? await Role.findOne({ name, organizationId: null }).lean() : null;
+      const defaultRole = globalRole || DEFAULT_SYSTEM_ROLES.find((r) => r.name === name);
       if (defaultRole) {
         role = await Role.create({
-          ...defaultRole,
+          name,
+          organizationId: orgId || null,
+          isSystemRole: defaultRole.isSystemRole,
           description: description || defaultRole.description,
           permissions: finalPermissions,
         });
@@ -244,7 +261,7 @@ export async function updateRolePermissions(req: FastifyRequest, reply: FastifyR
       await role.save();
     }
 
-    await invalidateRoleCache(name);
+    await invalidateRoleCache(name, orgId);
     return reply.code(200).send(successResponse(role, `Permissions updated for role '${name}'`));
   } catch (err) {
     console.error("updateRolePermissions error:", err);
@@ -260,7 +277,12 @@ export async function deleteRole(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const { name } = req.params as { name: string };
-    const role = await Role.findOne({ name });
+    if (BUILT_IN_ROLE_NAMES.has(name)) {
+      return reply.code(400).send(errorResponse(`System role '${name}' cannot be deleted`));
+    }
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const role = await Role.findOne({ name, organizationId: scope.organizationId || null });
 
     if (!role) {
       return reply.code(404).send(errorResponse("Role not found"));
@@ -271,7 +293,7 @@ export async function deleteRole(req: FastifyRequest, reply: FastifyReply) {
     }
 
     await Role.deleteOne({ _id: role._id });
-    invalidateRoleCache(name);
+    await invalidateRoleCache(name, scope.organizationId);
     return reply.code(200).send(successResponse(null, `Role '${name}' deleted successfully`));
   } catch (err) {
     console.error("deleteRole error:", err);

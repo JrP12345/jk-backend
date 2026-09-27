@@ -22,8 +22,8 @@ RoleSchema.set("toJSON", {
   }
 });
 
-RoleSchema.post(["save", "findOneAndUpdate", "updateOne", "deleteOne"] as any, function () {
-  (globalThis as any).__invalidateRoleCache?.();
+RoleSchema.post(["save", "findOneAndUpdate", "updateOne", "deleteOne"] as any, async function () {
+  await (globalThis as any).__invalidateRoleCache?.();
 });
 
 export const Role = mongoose.model("Role", RoleSchema);

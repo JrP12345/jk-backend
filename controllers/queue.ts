@@ -1,3 +1,4 @@
+import { withClinicalTransaction } from "../utilities/transaction.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { Appointment } from "../models/Appointment.ts";
@@ -667,10 +668,12 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
   try {
     const userRole = req.user!.role;
     const userId = req.user!.id;
-    const { clinicId, doctorId, completePrevious = false } = (req.body || {}) as {
+    const { clinicId, doctorId, completePrevious = false, requireArrivalConfirmation = false, confirmedAppointmentId } = (req.body || {}) as {
       clinicId?: string;
       doctorId?: string;
       completePrevious?: boolean;
+      requireArrivalConfirmation?: boolean;
+      confirmedAppointmentId?: string;
     };
 
     const targetDoctorId = doctorId || (userRole === "doctor" ? userId : null);
@@ -707,6 +710,10 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
     });
 
     if (activeConsultation) {
+      if (completePrevious) {
+        const access = await checkClinicAccess(req, activeConsultation.clinicId.toString());
+        if (!access.allowed) return reply.code(403).send(errorResponse("You cannot close the active consultation at another clinic"));
+      }
       if (!completePrevious) {
         return reply.code(409).send(
           errorResponse(
@@ -716,32 +723,7 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
         );
       }
 
-      // Explicitly release the database consultation lock before advancing.
-      await Appointment.updateOne(
-        { _id: activeConsultation._id, status: "in-consultation" },
-        {
-          $set: { status: "completed" },
-          $unset: { activeConsultationDoctorDayKey: 1 },
-        },
-      );
 
-      const { Encounter } = await import("../models/Encounter.ts");
-      await Encounter.updateOne(
-        { appointmentId: activeConsultation._id, status: "in_progress" },
-        { status: "completed", endedAt: new Date() }
-      );
-
-      await AuditLog.create({
-        userId,
-        action: "CONSULTATION_AUTO_COMPLETED_ON_NEXT",
-        targetId: activeConsultation._id,
-        targetModel: "Appointment",
-        category: "ADMIN",
-        details: {
-          tokenNumber: activeConsultation.tokenNumber,
-          doctorId: targetDoctorId,
-        },
-      });
     }
 
     const query: any = {
@@ -785,8 +767,51 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
 
     const nextCandidate = waitingAppts[0];
 
+    if (requireArrivalConfirmation && nextCandidate.status !== "checked-in" && confirmedAppointmentId !== nextCandidate._id.toString()) {
+      return reply.code(409).send({ ...errorResponse("The next booked patient has not checked in. Confirm that you want to call this patient.", "ARRIVAL_CONFIRMATION_REQUIRED"), data: { id: nextCandidate._id.toString(), tokenNumber: nextCandidate.tokenNumber } });
+    }
+    let nextAppt: any;
+    await withClinicalTransaction(async () => {
+      if (activeConsultation) {
+      // Explicitly release the database consultation lock before advancing.
+      await Appointment.updateOne(
+        { _id: activeConsultation._id, status: "in-consultation" },
+        {
+          $set: { status: "completed" },
+          $unset: { activeConsultationDoctorDayKey: 1 },
+        },
+      );
+
+      const { Encounter } = await import("../models/Encounter.ts");
+      const previousEncounter = await Encounter.findOne({ appointmentId: activeConsultation._id });
+      if (previousEncounter && ["cancelled", "closed"].includes(previousEncounter.status)) {
+        throw Object.assign(new Error("The previous encounter needs review before this visit can be closed"), { statusCode: 409 });
+      }
+      if (previousEncounter) {
+        previousEncounter.status = "completed"; previousEncounter.endedAt = new Date();
+        await previousEncounter.save();
+      } else {
+        const owner = await Clinic.findById(activeConsultation.clinicId).select("organizationId").lean();
+        await Encounter.create({ organizationId: activeConsultation.organizationId || owner?.organizationId, clinicId: activeConsultation.clinicId,
+          appointmentId: activeConsultation._id, patientId: activeConsultation.patientId, doctorId: activeConsultation.doctorId,
+          status: "completed", endedAt: new Date() });
+      }
+
+      await AuditLog.create({
+        userId,
+        action: "CONSULTATION_AUTO_COMPLETED_ON_NEXT",
+        targetId: activeConsultation._id,
+        targetModel: "Appointment",
+        category: "ADMIN",
+        details: {
+          tokenNumber: activeConsultation.tokenNumber,
+          doctorId: targetDoctorId,
+          clinicalFinalization: "not_requested",
+        },
+      });
+      }
     // Concurrency Lock: Atomic transition from waiting status to in-consultation
-    const nextAppt = await Appointment.findOneAndUpdate(
+    const claimed = await Appointment.findOneAndUpdate(
       {
         _id: nextCandidate._id,
         status: { $in: ["checked-in", "confirmed", "pending"] },
@@ -804,9 +829,8 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
       populate: { path: "userId", select: "name email phone" }
     }).populate("clinicId", "name city");
 
-    if (!nextAppt) {
-      return reply.code(409).send(errorResponse("Patient was already called or modified by another session. Please refresh queue.", "CONCURRENT_QUEUE_CALL"));
-    }
+    if (!claimed) throw Object.assign(new Error("Patient was already called or modified. Refresh the queue."), { statusCode: 409 });
+    nextAppt = claimed;
 
     const { Encounter } = await import("../models/Encounter.ts");
     const existingEncounter = await Encounter.findOne({ appointmentId: nextAppt._id });
@@ -823,6 +847,19 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
       });
     }
 
+
+    await AuditLog.create({
+      userId,
+      action: "PATIENT_CALL_NEXT",
+      targetId: nextAppt._id,
+      targetModel: "Appointment",
+      details: { tokenNumber: nextAppt.tokenNumber, status: "in-consultation" }
+    });
+
+
+    });
+    nextAppt.$session(null);
+
     const { eventBus } = await import("../events/eventBus.ts");
     const { EVENT_TYPES } = await import("../events/types.ts");
 
@@ -836,7 +873,7 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
         message: `Please proceed to consultation room. Token #${nextAppt.tokenNumber}`,
         severity: "info",
         actionUrl: "/dashboard/appointments"
-      });
+      }).catch(err => req.log.error({ err }, "Queue advance committed; notification delivery failed"));
     }
 
     // Instant WhatsApp Cabin Doorway Summon Notification to Patient Phone
@@ -852,14 +889,6 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
         // Non-blocking
       }
     }
-
-    await AuditLog.create({
-      userId,
-      action: "PATIENT_CALL_NEXT",
-      targetId: nextAppt._id,
-      targetModel: "Appointment",
-      details: { tokenNumber: nextAppt.tokenNumber, status: "in-consultation" }
-    });
 
     const targetClinicId = (nextAppt.clinicId as any)?._id?.toString() || nextAppt.clinicId?.toString();
     if (targetClinicId) {
@@ -883,6 +912,7 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
     return reply.code(200).send(successResponse(nextAppt, `Calling Token #${nextAppt.tokenNumber}`));
   } catch (err) {
     console.error("callNextPatient error:", err);
+    if ((err as any)?.statusCode === 409) return reply.code(409).send(errorResponse((err as Error).message, "CONCURRENT_QUEUE_CALL"));
     if (isActiveConsultationLockConflict(err)) {
       return reply.code(409).send(errorResponse("Doctor already has an active consultation. Refresh the queue before calling the next patient.", "ACTIVE_CONSULTATION_IN_PROGRESS"));
     }

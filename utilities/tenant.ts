@@ -181,6 +181,9 @@ export async function checkPatientAccess(
         return { allowed: true, organizationId: patient.organizationId?.toString() };
       }
     }
+    // Organization membership does not grant consumers access to other
+    // patients. Only staff may continue to the organization-level check.
+    return { allowed: false, statusCode: 404, message: "Patient not found" };
   }
 
   const organizationId = getRequestOrganizationId(req);

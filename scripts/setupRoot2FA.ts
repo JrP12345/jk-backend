@@ -1,5 +1,7 @@
 import mongoose from "mongoose";
 import QRCode from "qrcode";
+import { mkdir, chmod, rm } from "node:fs/promises";
+import path from "node:path";
 import { User } from "../models/User.ts";
 import { TwoFactorService } from "../services/TwoFactorService.ts";
 import { encrypt } from "../utilities/encryption.ts";
@@ -20,8 +22,8 @@ async function setupRootTwoFactor(): Promise<void> {
     throw new Error("MONGODB_URI is required. Refusing to configure 2FA against an implicit local database.");
   }
 
-  if (!process.env.ENCRYPTION_KEY) {
-    throw new Error("ENCRYPTION_KEY is required so the root 2FA secret can be stored encrypted.");
+  if (!process.env.DATA_ENCRYPTION_KEY && !process.env.ENCRYPTION_KEY && !process.env.APP_ENCRYPTION_KEY) {
+    throw new Error("DATA_ENCRYPTION_KEY, ENCRYPTION_KEY or APP_ENCRYPTION_KEY is required so the root 2FA secret can be stored encrypted.");
   }
 
   if (isProduction && process.env.ROOT_2FA_CONFIRM !== "RESET") {
@@ -45,19 +47,30 @@ async function setupRootTwoFactor(): Promise<void> {
     throw new Error("Could not generate a TOTP secret.");
   }
 
-  // Rotating the secret invalidates every previously provisioned authenticator.
-  user.twoFactorEnabled = true;
-  user.twoFactorSecret = encrypt(secret.base32);
-  await user.save();
+  // Prepare the enrollment artifact before changing the saved secret.
+  const qrPath = process.env.ROOT_2FA_QR_PATH ? path.resolve(process.env.ROOT_2FA_QR_PATH) : undefined;
+  const qrTerminal = qrPath ? undefined : await QRCode.toString(secret.otpauthUrl, { type: "terminal", small: true });
+  if (qrPath) {
+    await mkdir(path.dirname(qrPath), { recursive: true });
+    await QRCode.toFile(qrPath, secret.otpauthUrl, { width: 480, margin: 4 });
+    await chmod(qrPath, 0o600);
+  }
+  try {
+    // Rotating the secret invalidates every previously provisioned authenticator.
+    user.twoFactorEnabled = true;
+    user.twoFactorSecret = encrypt(secret.base32);
+    await user.save();
+  } catch (error) {
+    if (qrPath) await rm(qrPath, { force: true });
+    throw error;
+  }
   console.log("Root MFA secret saved.");
-
-  const qrTerminal = await QRCode.toString(secret.otpauthUrl, { type: "terminal", small: true });
 
   console.log("==========================================================");
   console.log(`ROOT 2FA RESET COMPLETE FOR ${rootEmail}`);
   console.log("==========================================================");
   console.log("Scan this QR code once with the authenticator app that will be used for this root account:\n");
-  console.log(qrTerminal);
+  console.log(qrPath ? `Enrollment QR saved to ${qrPath}. Delete this file after scanning.` : qrTerminal);
   console.log("The replacement secret is encrypted in MongoDB. Do not retain this terminal output.");
 }
 

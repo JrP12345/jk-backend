@@ -211,6 +211,11 @@ export async function invalidateRoleCache(roleName?: string, organizationId?: st
 
   // Broadcast invalidation to all replicas via Redis PubSub
   try {
+    if (redisClient) {
+      // A shared generation prevents a replica from reloading stale Redis
+      // permissions even when its Pub/Sub invalidation message is missed.
+      await redisClient.incr(`auth:role:generation:${roleName || "all"}`);
+    }
     await publishRedisEvent("auth:role:invalidate", { roleName, organizationId });
   } catch (err: any) {
     console.warn("[RoleCache] Failed to publish Redis cache invalidation:", err.message);
@@ -230,16 +235,27 @@ export async function getEffectivePermissions(
 ): Promise<Set<string>> {
   if (!role) return new Set();
 
-  const cacheKey = `perm:${organizationId || "global"}:${role}:${authVersion}`;
+  let generation = "local";
+  let cacheAvailable = true;
+  if (redisClient) {
+    try {
+      const versions = await redisClient.mget("auth:role:generation:all", `auth:role:generation:${role}`);
+      generation = `${versions[0] || "0"}.${versions[1] || "0"}`;
+    } catch {
+      // During a shared-cache outage, do not trust previously granted access.
+      cacheAvailable = false;
+    }
+  }
+  const cacheKey = `perm:${organizationId || "global"}:${role}:${authVersion}:${generation}`;
   const now = Date.now();
   const cached = rolePermissionsCache.get(cacheKey);
 
-  if (cached && cached.expiresAt > now) {
+  if (cacheAvailable && cached && cached.expiresAt > now) {
     return new Set(cached.permissions);
   }
 
   // Check Redis cache if available
-  if (redisClient) {
+  if (redisClient && cacheAvailable) {
     try {
       const redisVal = await redisClient.get(`auth:role:${cacheKey}`);
       if (redisVal) {
@@ -265,8 +281,9 @@ export async function getEffectivePermissions(
     .lean()) as { permissions?: string[]; version?: number } | null;
 
   let effectivePermissions: string[] = [];
-  if (roleConfig && Array.isArray(roleConfig.permissions) && roleConfig.permissions.length > 0) {
-    effectivePermissions = roleConfig.permissions;
+  if (roleConfig) {
+    // An explicitly empty role is a denial, not an invitation to restore defaults.
+    effectivePermissions = Array.isArray(roleConfig.permissions) ? roleConfig.permissions : [];
   } else {
     effectivePermissions = BUILTIN_ROLE_PERMISSIONS[role] || [];
   }
@@ -278,7 +295,7 @@ export async function getEffectivePermissions(
   });
 
   // Cache in Redis
-  if (redisClient) {
+  if (redisClient && cacheAvailable) {
     try {
       await redisClient.set(
         `auth:role:${cacheKey}`,

@@ -113,7 +113,8 @@ export class InboundPipeline {
         currentRoute: extraContextInput?.currentRoute,
         activePatientId: extraContextInput?.activePatientId,
         userRole: extraContextInput?.userRole,
-        organizationId: request.organizationId
+        organizationId: request.organizationId,
+        userId: request.userId,
       });
     }
 

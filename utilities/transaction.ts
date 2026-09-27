@@ -1,5 +1,20 @@
 import mongoose from "mongoose";
 
+// Connection.transaction propagates its session to nested Mongoose operations.
+// This covers clinical services that do not accept an explicit session argument.
+mongoose.set("transactionAsyncLocalStorage", true);
+
+export async function withClinicalTransaction<T>(fn: () => Promise<T>): Promise<T> {
+  const topology = (mongoose.connection as any)?.client?.topology?.description?.type;
+  if (topology === "Single" || topology === "Unknown") {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("Clinical finalization requires a transaction-capable MongoDB replica set");
+    }
+    return fn();
+  }
+  return mongoose.connection.transaction(fn);
+}
+
 /**
  * Execute a multi-document workflow in a Mongoose ACID transaction.
  *

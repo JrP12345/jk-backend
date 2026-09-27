@@ -95,52 +95,18 @@ export async function createPublicBookingSession(req: FastifyRequest, reply: Fas
     if (user && !["patient", "family_member"].includes(user.role)) return reply.code(400).send(errorResponse("This phone number belongs to a staff account. Use the patient's phone number to book."));
     let isNewUser = false;
 
-    if (user && user.phone !== normPhone) {
-      user.phone = normPhone;
-      await user.save();
-    }
-
-    // Check if email is already claimed by an existing User
-    const existingUserWithEmail = emailInput ? await User.findOne({ email: emailInput }) : null;
-
     if (!user) {
-      // If no user found by phone, check if the email belongs to a patient account that has no phone attached
-      if (existingUserWithEmail && existingUserWithEmail.role === "patient" && !existingUserWithEmail.phone) {
-        existingUserWithEmail.phone = normPhone;
-        if (existingUserWithEmail.name.startsWith("Patient ")) {
-          existingUserWithEmail.name = nameInput;
-        }
-        await existingUserWithEmail.save();
-        user = existingUserWithEmail;
-      } else {
-        isNewUser = true;
-        // Only set email on User document if it's not already claimed by another User account (avoiding E11000)
-        const emailForUser = (emailInput && !existingUserWithEmail) ? emailInput : undefined;
-        user = await User.create({
-          name: nameInput,
-          phone: normPhone,
-          email: emailForUser,
-          role: "patient",
-          authMethod: "phone_otp",
-          isEmailVerified: false,
-        });
-      }
-    } else {
-      // Security: Do NOT overwrite verified name/email from an unauthenticated guest flow.
-      // Only set name if the account was registered with a temporary placeholder name.
-      let changed = false;
-      if (nameInput && user.name.startsWith("Patient ")) {
-        user.name = nameInput;
-        changed = true;
-      }
-      // Only set email on User if user has no email AND email is not taken by another user
-      if (emailInput && !user.email) {
-        if (!existingUserWithEmail || existingUserWithEmail._id.equals(user._id)) {
-          user.email = emailInput;
-          changed = true;
-        }
-      }
-      if (changed) await user.save();
+      // Booking contact details are not proof of an account identity. In
+      // particular, never link an existing email account to this phone or
+      // install an unverified recovery email through an anonymous request.
+      isNewUser = true;
+      user = await User.create({
+        name: nameInput,
+        phone: normPhone,
+        role: "patient",
+        authMethod: "phone_otp",
+        isEmailVerified: false,
+      });
     }
 
     if (!user.isActive) {
@@ -161,28 +127,26 @@ export async function createPublicBookingSession(req: FastifyRequest, reply: Fas
     }
 
 
-    if (patient && patient.name.startsWith("Patient ")) {
-      patient.name = nameInput;
-      if (emailInput && !patient.email) patient.email = emailInput;
-      await patient.save();
-    }
-
     if (!patient) {
-      const isFirstPatient = !(await Patient.exists({ userId: user._id }));
+      // Only a newly created phone identity gets its initial self profile.
+      // Existing accounts must prove ownership before acquiring dependents.
+      const isFirstPatient = isNewUser;
       patient = await Patient.create({
         userId: isFirstPatient ? user._id : undefined,
         name: nameInput,
         phone: user.phone,
         email: emailInput || user.email || undefined,
-        accountType: isFirstPatient ? "self" : "dependent",
-        createdBy: user._id,
+        accountType: isFirstPatient ? "self" : "walkin",
+        createdBy: isFirstPatient ? user._id : undefined,
       });
 
-      await FamilyRelationship.findOneAndUpdate(
-        { userId: user._id, patientId: patient._id },
-        { relationship: isFirstPatient ? "self" : "other", status: "active" },
-        { upsert: true }
-      );
+      if (isFirstPatient) {
+        await FamilyRelationship.findOneAndUpdate(
+          { userId: user._id, patientId: patient._id },
+          { relationship: "self", status: "active" },
+          { upsert: true }
+        );
+      }
     }
 
     // Scoped Guest Session: Under no circumstance do we grant unauthenticated access to the full 'patient' role
@@ -562,6 +526,10 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
     }
 
     const secret = isEncrypted(user.twoFactorSecret) ? decrypt(user.twoFactorSecret) : user.twoFactorSecret;
+    if (!TwoFactorService.normalizeSecret(secret)) {
+      req.log.error({ userId: user.id, reason: secret === "[DECRYPTION_FAILED]" ? "mfa_secret_decryption_failed" : "mfa_secret_format_invalid" }, "MFA configuration is unreadable; no login session issued");
+      return reply.code(500).send(errorResponse("Two-factor authentication configuration could not be read. Please contact support."));
+    }
     if (!TwoFactorService.verifyToken(secret, otp)) {
       return reply.code(401).send(errorResponse("Invalid two-factor code"));
     }
