@@ -80,11 +80,9 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
     let patient = null;
     const patientScope = requesterRole === "patient"
       ? { userId: requesterUserId }
-      : requesterRole === "root"
-        ? {}
-        : requesterOrgId
-          ? { organizationId: requesterOrgId }
-          : { _id: null };
+      : requesterOrgId
+        ? { organizationId: requesterOrgId }
+        : { _id: null };
     if (patientId && patientId !== "me" && mongoose.Types.ObjectId.isValid(patientId)) {
       patient = await Patient.findOne({ _id: patientId, ...patientScope }).populate("userId", "name email phone");
     }
@@ -127,11 +125,9 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
   }
 
   if (requesterRole !== "patient" && !targetPatientId) {
-    const orgFilter = requesterRole === "root"
-      ? {}
-      : requesterOrgId
-        ? { organizationId: requesterOrgId }
-        : { _id: null };
+    const orgFilter = requesterOrgId
+      ? { organizationId: requesterOrgId }
+      : { _id: null };
 
     const clinicsList = await Clinic.find({ ...orgFilter, isActive: true }).lean();
     const [patientCount, apptCount, doctorsList, samplePatients, recentAppts] = await Promise.all([
@@ -195,7 +191,7 @@ export async function listChatSessionsController(req: FastifyRequest, reply: Fas
     const query = req.query as { cursor?: string; limit?: string | number; format?: string };
 
     if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
-    if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
+    if (!orgId) return reply.code(403).send(errorResponse("Select a healthcare organization before using clinical AI assistance."));
 
     // Step 5.3: Cursor pagination with deterministic compound sorting and hard maximum limits
     const pagination = getCursorPaginationParams(query, 20, 100);
@@ -249,7 +245,7 @@ export async function createChatSessionController(req: FastifyRequest, reply: Fa
     const orgId = await resolveTargetOrganizationId(req);
 
     if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
-    if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
+    if (!orgId) return reply.code(403).send(errorResponse("Select a healthcare organization before using clinical AI assistance."));
 
     const { patientId, initialTitle } = req.body as { patientId?: string; initialTitle?: string };
 
@@ -301,7 +297,7 @@ export async function getChatSessionController(req: FastifyRequest, reply: Fasti
     const query = req.query as { cursor?: string; limit?: string | number };
 
     if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
-    if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
+    if (!orgId) return reply.code(403).send(errorResponse("Select a healthcare organization before using clinical AI assistance."));
     if (!mongoose.Types.ObjectId.isValid(sessionId)) {
       return reply.code(400).send(errorResponse("Invalid session ID"));
     }
@@ -372,7 +368,7 @@ export async function listChatSessionMessagesController(req: FastifyRequest, rep
     const query = req.query as { cursor?: string; limit?: string | number };
 
     if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
-    if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
+    if (!orgId) return reply.code(403).send(errorResponse("Select a healthcare organization before using clinical AI assistance."));
     if (!mongoose.Types.ObjectId.isValid(sessionId)) {
       return reply.code(400).send(errorResponse("Invalid session ID"));
     }
@@ -432,7 +428,7 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
     const requesterOrgId = await resolveTargetOrganizationId(req);
 
     if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
-    if (!requesterOrgId) return reply.code(403).send(errorResponse("Organization context is required"));
+    if (!requesterOrgId) return reply.code(403).send(errorResponse("Select a healthcare organization before using clinical AI assistance."));
     if (!query || !query.trim()) {
       return reply.code(400).send(errorResponse("query string is required"));
     }
@@ -589,7 +585,7 @@ export async function deleteChatSessionController(req: FastifyRequest, reply: Fa
     const orgId = await resolveTargetOrganizationId(req);
 
     if (!userId) return reply.code(401).send(errorResponse("Unauthorized"));
-    if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
+    if (!orgId) return reply.code(403).send(errorResponse("Select a healthcare organization before using clinical AI assistance."));
     if (!mongoose.Types.ObjectId.isValid(sessionId)) {
       return reply.code(400).send(errorResponse("Invalid session ID"));
     }

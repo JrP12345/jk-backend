@@ -195,4 +195,20 @@ describe("Browse booking, owner session controls and patient approval", () => {
     expect(result.json().data.collections).toBe(150);
     expect(result.json().data.outstanding).toBe(100);
   });
+
+  it("requires an organization for root AI and keeps selected-clinic sessions isolated", async () => {
+    const missing = await app.inject({ method: "GET", url: "/api/ai/chat/sessions", headers: { cookie: rootCookie } });
+    expect(missing.statusCode).toBe(403);
+    expect(missing.json().message).toBe("Select a healthcare organization before using clinical AI assistance.");
+    const created = await app.inject({ method: "POST", url: `/api/ai/chat/sessions?clinicId=${clinicA.id}`, headers: { cookie: rootCookie }, payload: { initialTitle: "Selected organization conversation" } });
+    expect(created.statusCode, created.body).toBe(201);
+    const chatId = created.json().data.id;
+    const selected = await app.inject({ method: "GET", url: `/api/ai/chat/sessions?clinicId=${clinicA.id}`, headers: { cookie: rootCookie } });
+    expect(selected.statusCode, selected.body).toBe(200);
+    expect(selected.json().data.some((chat: any) => chat.id === chatId)).toBe(true);
+    const other = await app.inject({ method: "GET", url: `/api/ai/chat/sessions/${chatId}?clinicId=${clinicB.id}`, headers: { cookie: rootCookie } });
+    expect(other.statusCode).toBe(404);
+    const spoofed = await app.inject({ method: "POST", url: `/api/ai/chat/sessions?organizationId=${orgB.id}`, headers: { cookie: ownerACookie }, payload: { initialTitle: "Wrong organization" } });
+    expect(spoofed.statusCode).toBe(403);
+  });
 });

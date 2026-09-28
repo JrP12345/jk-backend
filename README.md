@@ -22,3 +22,9 @@ The standalone repository uses an empty Render root directory.
 - [WhatsApp setup](docs/whatsapp-setup.md)
 - [Optional combined Docker deployment](deploy/README.md)
 - [Frontend repository](https://github.com/JrP12345/jk-frontend)
+
+## Local verification
+
+Choose checks by change risk as described in [AGENTS.md](AGENTS.md). Run affected
+Vitest files with `npm test -- tests/name.test.ts` during development; the full
+Mongo-backed suite and release auditor remain CI/release gates.
