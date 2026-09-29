@@ -85,11 +85,14 @@ export async function createPublicBookingSession(req: FastifyRequest, reply: Fas
     }
 
     const normPhone = normalizePhone(phone);
+    if (!/^\d{10}$/.test(normPhone) && !/^\+[1-9]\d{7,14}$/.test(normPhone)) {
+      return reply.code(400).send(errorResponse("Use an Indian 10-digit number or international +country code"));
+    }
     const nameInput = name.trim();
     const emailInput = email?.trim().toLowerCase() || null;
 
     let user = await User.findOne({ phone: normPhone });
-    if (!user) {
+    if (!user && /^\d{10}$/.test(normPhone)) {
       user = await User.findOne({ phone: { $in: [`+91${normPhone}`, `91${normPhone}`] } });
     }
     if (user && !["patient", "family_member"].includes(user.role)) return reply.code(400).send(errorResponse("This phone number belongs to a staff account. Use the patient's phone number to book."));
@@ -253,7 +256,7 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
 
     if (!user && normPhone) {
       user = await User.findOne({ phone: normPhone });
-      if (!user) {
+      if (!user && /^\d{10}$/.test(normPhone)) {
         user = await User.findOne({ phone: { $in: [`+91${normPhone}`, `91${normPhone}`] } });
       }
       if (user && user.phone !== normPhone) {
@@ -1046,6 +1049,10 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
     }
 
     const normalizedEmail = email.trim().toLowerCase();
+    const normalizedPhone = phone?.trim() ? normalizePhone(phone) : null;
+    if (normalizedPhone && !/^\d{10}$/.test(normalizedPhone) && !/^\+[1-9]\d{7,14}$/.test(normalizedPhone)) {
+      return reply.code(400).send(errorResponse("Use an Indian 10-digit number or international +country code"));
+    }
     const exists = await User.findOne({ email: normalizedEmail });
     if (exists) {
       return reply.code(409).send(errorResponse("Email already registered"));
@@ -1070,7 +1077,7 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
       name: name.trim(),
       email: normalizedEmail,
       password: hashedPassword,
-      phone: phone || null,
+      phone: normalizedPhone,
       role: "patient",
       isEmailVerified: false,
       emailVerificationToken: emailVerificationTokenHash,
@@ -1081,7 +1088,7 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
       await Patient.create({
         userId: newUser._id,
         name: name.trim(),
-        phone: phone || null,
+        phone: normalizedPhone,
         email: normalizedEmail,
         organizationId: selectedClinic?.organizationId,
       });

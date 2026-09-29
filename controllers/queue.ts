@@ -15,7 +15,7 @@ import { User } from "../models/User.ts";
 import { SmsWhatsAppService } from "../services/SmsWhatsAppService.ts";
 import { verifyAuditChainIntegrity } from "../services/AuditTrailService.ts";
 import { issueAppointmentTrackerLink } from "../utilities/publicTracker.ts";
-import { runNoShowSweep } from "../jobs/noShowSweepJob.ts";
+import { clinicDateKey, clinicDayRange, getClinicTimezone } from "../utilities/clinicTime.ts";
 import {
   getCursorPaginationParams,
   decodeCursor,
@@ -79,20 +79,6 @@ export async function getAdaptiveConsultationDuration(
   return { duration: fallbackDuration, isAdaptive: false, sampleCount: 0 };
 }
 
-/**
- * Automatically sweeps through today's appointments and marks un-arrived patients as no-show
- * if their scheduled slot time has passed by more than 30 minutes without check-in.
- */
-export async function autoDetectNoShows(
-  clinicId: string | mongoose.Types.ObjectId,
-  _doctorId?: string | mongoose.Types.ObjectId,
-  _startOfDay?: Date,
-  _endOfDay?: Date
-): Promise<number> {
-  const result = await runNoShowSweep({ clinicId: clinicId.toString() });
-  return result.sweptCount;
-}
-
 export async function getQueue(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { clinicId, doctorId, date } = req.query as { clinicId: string; doctorId: string; date?: string };
@@ -106,11 +92,9 @@ export async function getQueue(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
     }
 
-    const targetDate = date ? new Date(date) : new Date();
-    const startOfDay = new Date(targetDate);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(targetDate);
-    endOfDay.setHours(23, 59, 59, 999);
+    const timezone = await getClinicTimezone(clinicId);
+    const dateStr = date ? date.slice(0, 10) : clinicDateKey(new Date(), timezone);
+    const { start: startOfDay, end: endOfDay } = clinicDayRange(dateStr, timezone);
 
     // Get doctor assignment to find default duration
     const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
@@ -194,9 +178,9 @@ export async function getQueueStatus(req: FastifyRequest, reply: FastifyReply) {
     const bookingMode = (assignment as any)?.bookingMode || "sequential_queue";
     const maxDailyTokens = (assignment as any)?.maxDailyTokens || null;
 
-    const targetDate = date ? new Date(date) : new Date();
-    const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 0, 0, 0, 0);
-    const endOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59, 999);
+    const timezone = await getClinicTimezone(clinicId);
+    const sessionDateStr = date ? date.slice(0, 10) : clinicDateKey(new Date(), timezone);
+    const { start: startOfDay, end: endOfDay } = clinicDayRange(sessionDateStr, timezone);
 
     // Calculate adaptive consultation duration based on today's actual completed encounters
     const { duration, isAdaptive, sampleCount } = await getAdaptiveConsultationDuration(
@@ -206,9 +190,6 @@ export async function getQueueStatus(req: FastifyRequest, reply: FastifyReply) {
       endOfDay,
       defaultDuration
     );
-
-    // Automatically sweep and mark no-shows for past-due un-arrived appointments today
-    await autoDetectNoShows(clinicId, doctorId, startOfDay, endOfDay);
 
     const appointments = await Appointment.find({
       clinicId,
@@ -267,7 +248,6 @@ export async function getQueueStatus(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const { OpdSession } = await import("../models/OpdSession.ts");
-    const sessionDateStr = date ? date.slice(0, 10) : new Date().toISOString().slice(0, 10);
     const opdSession = await OpdSession.findOne({
       clinicId,
       doctorId,
@@ -278,7 +258,7 @@ export async function getQueueStatus(req: FastifyRequest, reply: FastifyReply) {
       successResponse({
         clinicId,
         doctorId,
-        date: targetDate.toISOString().slice(0, 10),
+        date: sessionDateStr,
         bookingMode,
         currentlyServing,
         totalBooked,
@@ -291,7 +271,7 @@ export async function getQueueStatus(req: FastifyRequest, reply: FastifyReply) {
         myStatus,
         peopleAhead,
         estimatedWaitMinutes,
-        opdSession: opdSession || { status: "not_started", date: targetDate.toISOString().slice(0, 10) },
+        opdSession: opdSession || { status: "not_started", date: sessionDateStr },
       })
     );
   } catch (err) {
@@ -1009,7 +989,7 @@ export async function bumpQueuePatient(req: FastifyRequest, reply: FastifyReply)
 
 export async function triggerAutoNoShowDetection(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, doctorId, date } = (req.body || {}) as { clinicId: string; doctorId?: string; date?: string };
+    const { clinicId } = (req.body || {}) as { clinicId: string };
     if (!clinicId) {
       return reply.code(400).send(errorResponse("clinicId is required"));
     }
@@ -1019,24 +999,7 @@ export async function triggerAutoNoShowDetection(req: FastifyRequest, reply: Fas
       return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
     }
 
-    const targetDate = date ? new Date(date) : new Date();
-    const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 0, 0, 0, 0);
-    const endOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59, 999);
-
-    const docIds: string[] = doctorId ? [doctorId] : [];
-    if (!doctorId) {
-      const assignments = await DoctorAssignment.find({ clinicId, isActive: true }).select("doctorId");
-      docIds.push(...assignments.map((a) => a.doctorId.toString()));
-    }
-
-    let totalNoShows = 0;
-    for (const dId of docIds) {
-      totalNoShows += await autoDetectNoShows(clinicId, dId, startOfDay, endOfDay);
-    }
-
-    return reply.code(200).send(
-      successResponse({ detectedNoShows: totalNoShows }, `${totalNoShows} un-arrived appointments marked as no-show`)
-    );
+    return reply.code(410).send(errorResponse("Automatic no-show marking is unavailable. Review overdue appointments and record the outcome manually."));
   } catch (err) {
     console.error("triggerAutoNoShowDetection error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -1961,12 +1924,9 @@ export async function getOpdSessionSummary(req: FastifyRequest, reply: FastifyRe
       return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
     }
 
-    const targetDate = date ? new Date(date) : new Date();
-    const startOfDay = new Date(targetDate);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(targetDate);
-    endOfDay.setHours(23, 59, 59, 999);
-    const dateStr = date ? date.slice(0, 10) : new Date().toISOString().slice(0, 10);
+    const timezone = await getClinicTimezone(clinicId);
+    const dateStr = date ? date.slice(0, 10) : clinicDateKey(new Date(), timezone);
+    const { start: startOfDay, end: endOfDay } = clinicDayRange(dateStr, timezone);
 
     const { OpdSession } = await import("../models/OpdSession.ts");
     const session = await OpdSession.findOne({ clinicId, doctorId, date: dateStr }).lean();
@@ -2032,13 +1992,13 @@ export async function endOpdSessionAndReconcile(req: FastifyRequest, reply: Fast
       clinicId,
       doctorId,
       date,
-      standbyAction = "mark_no_show",
-      waitingAction = "cancel_refund",
+      standbyAction = "keep_unresolved",
+      waitingAction = "keep_unresolved",
     } = (req.body as {
       clinicId: string;
       doctorId: string;
       date?: string;
-      standbyAction?: "mark_no_show" | "cancel_refund";
+      standbyAction?: "keep_unresolved" | "cancel_refund";
       waitingAction?: "cancel_refund" | "keep_unresolved";
     }) || {};
 
@@ -2051,15 +2011,15 @@ export async function endOpdSessionAndReconcile(req: FastifyRequest, reply: Fast
       return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
     }
 
+    if (!["keep_unresolved", "cancel_refund"].includes(standbyAction) || !["keep_unresolved", "cancel_refund"].includes(waitingAction)) {
+      return reply.code(400).send(errorResponse("Invalid reconciliation action"));
+    }
     const now = new Date();
-    const startOfDay = new Date(now);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(now);
-    endOfDay.setHours(23, 59, 59, 999);
-    const dateStr = date ? date.slice(0, 10) : now.toISOString().slice(0, 10);
+    const timezone = await getClinicTimezone(clinicId);
+    const dateStr = date ? date.slice(0, 10) : clinicDateKey(now, timezone);
+    const { start: startOfDay, end: endOfDay } = clinicDayRange(dateStr, timezone);
 
     const { OpdSession } = await import("../models/OpdSession.ts");
-    const { Invoice } = await import("../models/Invoice.ts");
     const user = (req as any).user;
     const orgId = await getRequestOrganizationId(req);
 
@@ -2073,23 +2033,12 @@ export async function endOpdSessionAndReconcile(req: FastifyRequest, reply: Fast
 
     let standbyReconciledCount = 0;
     for (const appt of standbyAppointments) {
-      if (standbyAction === "mark_no_show") {
-        appt.status = "no-show";
-        appt.notes = appt.notes
-          ? `${appt.notes} | [End of OPD: Patient remained on standby without returning]`
-          : `[End of OPD: Patient remained on standby without returning]`;
-        await appt.save();
-        standbyReconciledCount++;
-      } else if (standbyAction === "cancel_refund") {
+      if (standbyAction === "cancel_refund") {
         appt.status = "cancelled";
         appt.cancellationReason = "End of OPD shift — unresumed standby";
         await appt.save();
 
-        // Update invoice to cancelled/refunded
-        await Invoice.updateMany(
-          { appointmentId: appt._id, status: { $in: ["paid", "unpaid", "partially_paid"] } as any },
-          { $set: { status: "cancelled" as any, notes: "Auto-cancelled: OPD closed with patient on standby" } }
-        );
+        // Financial records require a separate explicit review; no refund is inferred here.
         standbyReconciledCount++;
       }
     }
@@ -2109,27 +2058,18 @@ export async function endOpdSessionAndReconcile(req: FastifyRequest, reply: Fast
         appt.cancellationReason = "End of OPD shift — patient not called before session close";
         await appt.save();
 
-        // Update invoice
-        await Invoice.updateMany(
-          { appointmentId: appt._id, status: { $in: ["paid", "unpaid", "partially_paid"] } as any },
-          { $set: { status: "cancelled" as any, notes: "Auto-refund: OPD closed before consultation could occur" } }
-        );
+        // Preserve invoice and payment state until finance reviews the cancellation.
         waitingReconciledCount++;
       }
     }
 
-    // 3. Mark in-consultation as completed if any remained open
-    const inConsultationAppts = await Appointment.find({
+    // Open consultations require a clinician's explicit completion evidence.
+    const inConsultationCount = await Appointment.countDocuments({
       clinicId,
       doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
       status: "in-consultation",
     });
-
-    for (const appt of inConsultationAppts) {
-      appt.status = "completed";
-      await appt.save();
-    }
 
     // 4. Update OpdSession
     const session = await OpdSession.findOneAndUpdate(
@@ -2166,6 +2106,8 @@ export async function endOpdSessionAndReconcile(req: FastifyRequest, reply: Fast
         date: dateStr,
         standbyReconciledCount,
         waitingReconciledCount,
+        inConsultationCount,
+        unresolvedCount: standbyAppointments.length - standbyReconciledCount + waitingAppointments.length - waitingReconciledCount + inConsultationCount,
         closedAt: now,
       },
     });
@@ -2183,8 +2125,10 @@ export async function endOpdSessionAndReconcile(req: FastifyRequest, reply: Fast
           session,
           standbyReconciledCount,
           waitingReconciledCount,
+          inConsultationCount,
+          unresolvedCount: standbyAppointments.length - standbyReconciledCount + waitingAppointments.length - waitingReconciledCount + inConsultationCount,
         },
-        `OPD Session ended. Reconciled ${standbyReconciledCount} standby and ${waitingReconciledCount} waiting appointments.`
+        "OPD session ended. Unresolved appointments remain available for staff review."
       )
     );
   } catch (err) {

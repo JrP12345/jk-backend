@@ -1,6 +1,8 @@
 import mongoose, { Schema } from "mongoose";
 import { auditPlugin } from "../utilities/auditPlugin.ts";
 import { tenantPlugin } from "../utilities/tenantPlugin.ts";
+import { Organization } from "./Organization.ts";
+import { Clinic } from "./Clinic.ts";
 
 const InvoiceItemSchema = new Schema({
   serviceCatalogId: { type: Schema.Types.ObjectId, ref: "ServiceCatalog" },
@@ -18,6 +20,7 @@ const InvoiceItemSchema = new Schema({
 const InvoiceSchema = new Schema({
   invoiceNumber: { type: String, required: true, unique: true },
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization" },
+  currency: { type: String, enum: ["INR", "USD", "CAD", "GBP", "AED", "EUR"] },
   patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
   appointmentId: { type: Schema.Types.ObjectId, ref: "Appointment", index: true },
   encounterId: { type: Schema.Types.ObjectId, ref: "Encounter", index: true },
@@ -80,6 +83,23 @@ const InvoiceSchema = new Schema({
 InvoiceSchema.index({ clinicId: 1, status: 1 });
 InvoiceSchema.index({ organizationId: 1, createdAt: -1 });
 InvoiceSchema.index({ organizationId: 1, patientId: 1, createdAt: -1 });
+
+// Snapshot the business currency when an invoice is issued. Existing invoices
+// without this field retain their historical INR interpretation.
+InvoiceSchema.pre("validate", async function () {
+  if (!this.isNew || this.currency) return;
+  let organizationId = this.organizationId;
+  if (!organizationId && this.clinicId) {
+    const clinic = await Clinic.findById(this.clinicId).select("organizationId").lean();
+    organizationId = clinic?.organizationId;
+  }
+  if (organizationId) {
+    const organization = await Organization.findById(organizationId).select("currency").lean();
+    this.currency = organization?.currency || "INR";
+  } else {
+    this.currency = "INR";
+  }
+});
 
 InvoiceSchema.virtual("id").get(function() {
   return this._id.toHexString();

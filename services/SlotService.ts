@@ -2,6 +2,7 @@ import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
 import { checkSlotLock } from "./SlotLockService.ts";
+import { clinicClockMinutes, clinicDateKey, clinicDayRange, clinicLocalTimeToDate, getClinicTimezone } from "../utilities/clinicTime.ts";
 
 export interface TimeSlot {
   time: string; // e.g. "09:00", "09:15"
@@ -48,16 +49,17 @@ export async function getEffectiveDoctorSchedule(
   doctorId: string,
   clinicId: string,
   targetDate: Date | string,
-  assignmentWorkingHours?: any
+  assignmentWorkingHours?: any,
+  clinicTimezone?: string
 ): Promise<EffectiveSchedule> {
-  const d = typeof targetDate === "string" ? new Date(targetDate) : targetDate;
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  const dateStr = `${year}-${month}-${day}`;
+  const timezone = clinicTimezone || await getClinicTimezone(clinicId);
+  const dateStr = typeof targetDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(targetDate)
+    ? targetDate
+    : clinicDateKey(typeof targetDate === "string" ? new Date(targetDate) : targetDate, timezone);
+  const d = new Date(`${dateStr}T12:00:00Z`);
 
   const daysOfWeek = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
-  const dayName = daysOfWeek[d.getDay()];
+  const dayName = daysOfWeek[d.getUTCDay()];
 
   // 1. Check for day override
   const override = await DoctorDayOverride.findOne({ clinicId, doctorId, date: dateStr });
@@ -226,9 +228,9 @@ export async function getDoctorAvailableSlots(
   dateStr: string,
   requestingUserId?: string
 ): Promise<GetDoctorSlotsResult> {
-  const targetDate = new Date(dateStr);
-  if (isNaN(targetDate.getTime())) {
-    throw new Error("Invalid date format. Expected YYYY-MM-DD");
+  const targetDate = /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? new Date(`${dateStr}T00:00:00Z`) : new Date(NaN);
+  if (isNaN(targetDate.getTime()) || targetDate.toISOString().slice(0, 10) !== dateStr) {
+    throw new RangeError("Invalid date format. Expected YYYY-MM-DD");
   }
 
   // Find assignment
@@ -237,8 +239,8 @@ export async function getDoctorAvailableSlots(
   const bookingMode = (assignment as any)?.bookingMode || "sequential_queue";
   const maxDailyTokens = (assignment as any)?.maxDailyTokens || null;
 
-  const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 0, 0, 0, 0);
-  const endOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59, 999);
+  const timezone = await getClinicTimezone(clinicId);
+  const { start: startOfDay, end: endOfDay } = clinicDayRange(dateStr, timezone);
 
   // Fetch existing non-cancelled appointments count for this day
   const existingAppts = await Appointment.find({
@@ -251,11 +253,7 @@ export async function getDoctorAvailableSlots(
   const tokensToday = existingAppts.length;
   const nextToken = tokensToday + 1;
 
-  // Day of week e.g. "monday"
-  const daysOfWeek = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
-  const dayName = daysOfWeek[targetDate.getDay()];
-
-  const daySchedule = await getEffectiveDoctorSchedule(doctorId, clinicId, targetDate, assignment?.workingHours);
+  const daySchedule = await getEffectiveDoctorSchedule(doctorId, clinicId, dateStr, assignment?.workingHours, timezone);
   const isHoliday = daySchedule.overrideActive && daySchedule.overrideStatus === "unavailable";
   const holidayReason = isHoliday ? (daySchedule.overrideReason || "Doctor Holiday / Leave") : null;
 
@@ -304,15 +302,12 @@ export async function getDoctorAvailableSlots(
   const bookedTimes = new Set(
     existingAppts.map(a => {
       const d = new Date(a.appointmentTime);
-      const hours = d.getHours().toString().padStart(2, "0");
-      const minutes = d.getMinutes().toString().padStart(2, "0");
+      const clockMinutes = clinicClockMinutes(d, timezone);
+      const hours = Math.floor(clockMinutes / 60).toString().padStart(2, "0");
+      const minutes = (clockMinutes % 60).toString().padStart(2, "0");
       return `${hours}:${minutes}`;
     })
   );
-
-  const year = targetDate.getFullYear();
-  const month = String(targetDate.getMonth() + 1).padStart(2, "0");
-  const day = String(targetDate.getDate()).padStart(2, "0");
 
   // Generate slots across all intervals for the day
   const slots: TimeSlot[] = [];
@@ -332,7 +327,13 @@ export async function getDoctorAvailableSlots(
       const isBooked = bookedTimes.has(timeFormatted);
 
       // Check lock status for this slot
-      const slotISOTime = `${year}-${month}-${day}T${timeFormatted}:00`;
+      let slotISOTime: string;
+      try {
+        slotISOTime = clinicLocalTimeToDate(dateStr, timeFormatted, timezone).toISOString();
+      } catch {
+        currentMinutes += duration;
+        continue;
+      }
       let isLocked = false;
       let lockedByOther = false;
 

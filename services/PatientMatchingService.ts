@@ -26,6 +26,9 @@ export class PatientMatchingService {
     const lowConfidence: any[] = [];
 
     const normPhone = normalizePhone(criteria.phone || "");
+    const phoneVariants = /^\d{10}$/.test(normPhone)
+      ? [normPhone, `+91${normPhone}`, `91${normPhone}`]
+      : [normPhone];
     const normName = criteria.name ? criteria.name.trim().toLowerCase() : "";
     const normEmail = criteria.email ? criteria.email.trim().toLowerCase() : "";
     const dobStr = criteria.dob ? new Date(criteria.dob).toISOString().split("T")[0] : "";
@@ -47,7 +50,7 @@ export class PatientMatchingService {
     const orConditions: any[] = [];
 
     if (normPhone) {
-      orConditions.push({ phone: { $regex: normPhone } });
+      orConditions.push({ phone: { $in: phoneVariants } });
     }
     if (normEmail) {
       orConditions.push({ email: normEmail });
@@ -59,7 +62,7 @@ export class PatientMatchingService {
     // Also resolve matches against linked User account records
     if (normPhone || normEmail || normName) {
       const userOrConditions: any[] = [];
-      if (normPhone) userOrConditions.push({ phone: { $regex: normPhone } });
+      if (normPhone) userOrConditions.push({ phone: { $in: phoneVariants } });
       if (normEmail) userOrConditions.push({ email: normEmail });
       if (normName) userOrConditions.push({ name: { $regex: escapeRegex(normName), $options: "i" } });
 

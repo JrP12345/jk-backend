@@ -22,6 +22,7 @@ import {
 } from "../services/SlotLockService.ts";
 import { checkClinicAccess, getRequestClinicIds } from "../utilities/tenant.ts";
 import { getNextAtomicSequence } from "../models/Counter.ts";
+import { clinicDateKey, getClinicTimezone } from "../utilities/clinicTime.ts";
 
 import { appointmentService, AppointmentDomainError, validateAppointmentAvailability, type BookAppointmentInput } from "../services/AppointmentService.ts";
 
@@ -173,7 +174,8 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
     const userRole = req.user!.role;
     const userId = req.user!.id;
     const orgId = req.user?.organization_id;
-    const { clinicId, doctorId, status, date, startDate, endDate, page, limit, search } = req.query as any;
+    const { clinicId, doctorId, status, date, startDate, endDate, page, limit, search, reviewOnly } = req.query as any;
+    const { appointmentReviewState, reviewCandidateFilter } = await import("../utilities/appointmentReview.ts");
 
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
 
@@ -249,6 +251,10 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
       ] }];
     }
 
+    if (reviewOnly === "1" && !["patient", "family_member"].includes(userRole)) {
+      filter.$and = [...(filter.$and || []), reviewCandidateFilter()];
+    }
+
     const [totalCount, rawAppointments] = await Promise.all([
       Appointment.countDocuments(filter),
       Appointment.find(filter)
@@ -265,7 +271,7 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
     ]);
 
     const totalPages = Math.ceil(totalCount / pageSize);
-    const appointments = rawAppointments.map((a: any) => ({ ...a, id: a._id.toString() }));
+    const appointments = rawAppointments.map((a: any) => ({ ...a, id: a._id.toString(), reviewState: appointmentReviewState(a) }));
 
     setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
 
@@ -633,8 +639,9 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
             status: { $ne: "cancelled" },
           });
 
-          if (!existingFollowUp) {
-            const dateStr = followUpDate.toISOString().slice(0, 10);
+          const { canCreateClinicBooking } = await import("../services/billing/SubscriptionAccess.ts");
+          if (!existingFollowUp && await canCreateClinicBooking(String(appointment.clinicId))) {
+            const dateStr = clinicDateKey(followUpDate, await getClinicTimezone(String(appointment.clinicId)));
             const counterKey = `token_${appointment.clinicId}_${appointment.doctorId}_${dateStr}`;
             const tokenNumber = await getNextAtomicSequence(counterKey);
 
@@ -656,7 +663,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
 
             (appointment as any).followUpAppointmentId = followUp._id;
             await appointment.save();
-          } else {
+          } else if (existingFollowUp) {
             (appointment as any).followUpAppointmentId = existingFollowUp._id;
             await appointment.save();
           }
@@ -904,7 +911,7 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
     const oldTimeStr = new Date(appointment.appointmentTime).toISOString();
 
     // Recalculate atomic daily token number & queue position for the new date
-    const newDateStr = newDateObj.toISOString().slice(0, 10);
+    const newDateStr = clinicDateKey(newDateObj, await getClinicTimezone(String(appointment.clinicId)));
     const counterKey = `token_${appointment.clinicId}_${appointment.doctorId}_${newDateStr}`;
     const originalStatus = appointment.status;
     await withClinicalTransaction(async () => {
@@ -974,6 +981,12 @@ export async function getDoctorSlots(req: FastifyRequest, reply: FastifyReply) {
     }
 
     if (req.user && !(await ensureAppointmentClinicAccess(req, reply, clinicId))) return;
+    if (!req.user || ["patient", "family_member", "guest"].includes(req.user.role)) {
+      const { canCreateClinicBooking } = await import("../services/billing/SubscriptionAccess.ts");
+      if (!(await canCreateClinicBooking(clinicId))) {
+        return reply.code(409).send(errorResponse("Online booking is temporarily unavailable. Please contact the clinic directly."));
+      }
+    }
 
     const { getDoctorAvailableSlots } = await import("../services/SlotService.ts");
     const result = await getDoctorAvailableSlots(doctorId, clinicId, date, req.user?.id);
@@ -981,6 +994,9 @@ export async function getDoctorSlots(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(200).send(successResponse(result));
   } catch (err: any) {
     console.error("getDoctorSlots error:", err);
+    if (err instanceof RangeError && err.message.startsWith("Invalid date format")) {
+      return reply.code(400).send(errorResponse(err.message));
+    }
     return reply.code(500).send(errorResponse(err.message || "Internal server error"));
   }
 }
@@ -1053,7 +1069,8 @@ export async function getAppointmentById(req: FastifyRequest, reply: FastifyRepl
 
     if (!(await ensureAppointmentObjectAccess(req, reply, appointment, "view"))) return;
 
-    return reply.code(200).send(successResponse(appointment));
+    const { appointmentReviewState } = await import("../utilities/appointmentReview.ts");
+    return reply.code(200).send(successResponse({ ...appointment.toJSON(), reviewState: appointmentReviewState(appointment) }));
   } catch (err) {
     console.error("getAppointmentById error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));

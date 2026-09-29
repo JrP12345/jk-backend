@@ -10,6 +10,7 @@ const ClinicSchema = new Schema({
   email: { type: String },
   address: { type: String },
   city: { type: String, required: true },
+  timezone: { type: String }, // Optional branch override; otherwise use organization timezone.
   latitude: { type: Number },
   longitude: { type: Number },
   timings: { type: String }, // JSON schedule string

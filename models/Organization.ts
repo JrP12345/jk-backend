@@ -18,7 +18,8 @@ const OrganizationSchema = new Schema({
   maxStaff: { type: Number, default: 2 },
   taxId: { type: String }, // GSTIN / EIN
   licenseNumber: { type: String }, // Operating License No.
-  currency: { type: String, enum: ["INR", "USD", "EUR", "GBP", "AED"], default: "INR" },
+  countryCode: { type: String, enum: ["IN", "US", "CA", "GB", "AE"] },
+  currency: { type: String, enum: ["INR", "USD", "CAD", "EUR", "GBP", "AED"], default: "INR" },
   timezone: { type: String, default: "Asia/Kolkata" },
   onboardingStatus: {
     type: String,

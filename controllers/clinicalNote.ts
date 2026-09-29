@@ -391,6 +391,8 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
         const existingFollowUp = await Appointment.findOne({ followUpForAppointmentId: targetFollowUpId });
 
         if (!existingFollowUp) {
+          const { canCreateClinicBooking } = await import("../services/billing/SubscriptionAccess.ts");
+          if (!(await canCreateClinicBooking(String(note.clinicId)))) throw new Error("New follow-up booking is temporarily unavailable");
           const requestedDate = new Date(note.plan.followUpDate);
           const dateStr = requestedDate.toISOString().slice(0, 10);
           const counterKey = `token_${note.clinicId}_${note.doctorId}_${dateStr}`;

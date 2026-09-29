@@ -59,7 +59,7 @@ export class OtpService {
         throw new Error("Invalid email address format");
       }
     } else if (phone) {
-      if (!phone || phone.length < 10) {
+      if (!/^\d{10}$/.test(phone) && !/^\+[1-9]\d{7,14}$/.test(phone)) {
         throw new Error("Invalid phone number format");
       }
     } else {

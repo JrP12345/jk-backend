@@ -8,13 +8,19 @@ import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { OrgMember } from "../models/OrgMember.ts";
+import { Organization } from "../models/Organization.ts";
 import { getNextAtomicSequence } from "../models/Counter.ts";
 import { sendBookingNotification } from "../utilities/notifications.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
 import { validateSlotLockForBooking, forceReleaseSlotLock } from "./SlotLockService.ts";
 import { generateClinicInvoiceNumber } from "../utilities/invoiceNumber.ts";
+import { canCreateClinicBooking } from "./billing/SubscriptionAccess.ts";
+import { eventBus } from "../events/eventBus.ts";
+import { EVENT_TYPES } from "../events/types.ts";
+import { broadcastQueueUpdate } from "../notifications/websocket.ts";
 import { getEffectiveDoctorSchedule } from "./SlotService.ts";
 import { createTrackerCapability } from "../utilities/publicTracker.ts";
+import { clinicClockMinutes, clinicDateKey, clinicDayRange, getClinicTimezone } from "../utilities/clinicTime.ts";
 
 export class AppointmentDomainError extends Error {
   statusCode: number;
@@ -68,12 +74,15 @@ export async function validateAppointmentAvailability(
     }
 
     const now = new Date();
+    const timezone = await getClinicTimezone(clinicId);
+    const bookingDateKey = clinicDateKey(requestedDate, timezone);
+    const todayKey = clinicDateKey(now, timezone);
     const isStaffRole = ["receptionist", "admin", "doctor", "clinic_manager", "root"].includes(actor.role);
     const isWalkIn = input.appointmentType === "walk-in";
 
     // Guard against booking in the past (> 5 minutes buffer for network latency)
     if (requestedDate.getTime() < now.getTime() - 5 * 60 * 1000) {
-      const isSameDay = requestedDate.toDateString() === now.toDateString();
+      const isSameDay = bookingDateKey === todayKey;
       if ((!isStaffRole && !input.forceBooking && !isWalkIn) || !isSameDay) {
         throw new AppointmentDomainError("Cannot book appointments in the past", 400);
       }
@@ -84,7 +93,8 @@ export async function validateAppointmentAvailability(
       doctorId,
       clinicId,
       requestedDate,
-      (assignment as any)?.workingHours
+      (assignment as any)?.workingHours,
+      timezone
     );
 
     const isHoliday = effectiveSchedule.overrideActive && effectiveSchedule.overrideStatus === "unavailable";
@@ -106,9 +116,7 @@ export async function validateAppointmentAvailability(
 
     // In time_slot mode: ensure requested appointment time falls within doctor's working intervals
     if (!isSequentialQueue) {
-      const reqH = requestedDate.getHours();
-      const reqM = requestedDate.getMinutes();
-      const reqMinutes = reqH * 60 + reqM;
+      const reqMinutes = clinicClockMinutes(requestedDate, timezone);
 
       const isWithinWorkingHours = effectiveSchedule.intervals.some((interval) => {
         const [startH, startM] = interval.start.split(":").map(Number);
@@ -127,11 +135,11 @@ export async function validateAppointmentAvailability(
     }
 
     // Smart Booking Cutoff: If booking for today, verify doctor has remaining capacity
-    const isBookingToday = requestedDate.toDateString() === now.toDateString();
+    const isBookingToday = bookingDateKey === todayKey;
     if (isBookingToday) {
       const [endH, endM] = (effectiveSchedule.dayEndTime || "17:00").split(":").map(Number);
       const closingMinutes = (endH || 0) * 60 + (endM || 0);
-      const currentMinutes = now.getHours() * 60 + now.getMinutes();
+      const currentMinutes = clinicClockMinutes(now, timezone);
       const remainingOperatingMinutes = closingMinutes - currentMinutes;
 
       if (remainingOperatingMinutes <= 0 && !input.forceBooking && !isStaffRole && process.env.NODE_ENV !== "test") {
@@ -141,8 +149,7 @@ export async function validateAppointmentAvailability(
         );
       }
 
-      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-      const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+      const { start: startOfToday, end: endOfToday } = clinicDayRange(todayKey, timezone);
 
       // Fetch Damped Hybrid Duration
       const { getAdaptiveConsultationDuration } = await import("../controllers/queue.ts");
@@ -186,7 +193,7 @@ export async function validateAppointmentAvailability(
     }
 
 
-  return { isSequentialQueue, requestedDate, slotDuration };
+  return { isSequentialQueue, requestedDate, slotDuration, timezone };
 }
 
 export class AppointmentService {
@@ -225,6 +232,9 @@ export class AppointmentService {
     if (actor.role !== "root" && !orgId) {
       throw new AppointmentDomainError("Organization context is required to book an appointment", 403);
     }
+    if (!(await canCreateClinicBooking(clinicId))) {
+      throw new AppointmentDomainError("Online booking is temporarily unavailable. Please contact the clinic directly.", 409);
+    }
 
     // 1. Validate Doctor Assignment
     const clinicQuery = mongoose.Types.ObjectId.isValid(clinicId)
@@ -255,7 +265,14 @@ export class AppointmentService {
     }
     doctorId = assignment.doctorId.toString();
 
-    const { isSequentialQueue } = await validateAppointmentAvailability(actor, { ...input, doctorId }, assignment);
+    if ((assignment as any).paymentRequired) {
+      const organization = await Organization.findById(assignment.organizationId || orgId).select("countryCode currency").lean();
+      if (!organization || (organization.countryCode && organization.countryCode !== "IN") || (organization.currency && organization.currency !== "INR")) {
+        throw new AppointmentDomainError("Online prepayment is unavailable for this clinic; use payment at reception", 409);
+      }
+    }
+
+    const { isSequentialQueue, timezone: bookingTimezone } = await validateAppointmentAvailability(actor, { ...input, doctorId }, assignment);
 
     // 2. Validate Slot Lock (for time_slot mode)
     let lockValidation: { valid: boolean; message?: string; lockKey?: string } = { valid: true };
@@ -422,7 +439,7 @@ export class AppointmentService {
       }
 
       // 6. Generate Atomic Sequential Daily Token
-      const dateStr = requestedDate.toISOString().slice(0, 10);
+      const dateStr = clinicDateKey(requestedDate, bookingTimezone);
       const counterKey = `token_${clinicId}_${doctorId}_${dateStr}`;
       const tokenNumber = await getNextAtomicSequence(counterKey, session);
 
@@ -495,7 +512,7 @@ export class AppointmentService {
       if (assignmentFeeType === "fixed" && (assignment as any)?.fees && (assignment as any).fees > 0) {
         const doctorUser = await User.findById(doctorId, null, option);
         const doctorName = doctorUser?.name ? `Dr. ${doctorUser.name}` : `Dr. ${doctorId}`;
-        const invoiceNumber = await generateClinicInvoiceNumber(clinicId, requestedDate.getFullYear());
+        const invoiceNumber = await generateClinicInvoiceNumber(clinicId, Number(dateStr.slice(0, 4)));
 
         let is7DayCourtesyFollowUp = false;
         let courtesyReason = "";
@@ -622,6 +639,25 @@ export class AppointmentService {
     sendBookingNotification(appointmentId, "booked", trackerToken).catch((err) =>
       console.error("Notification dispatch failed:", err),
     );
+    try {
+      broadcastQueueUpdate(clinicId, { type: "QUEUE_UPDATED", data: { clinicId, appointmentId: String(appointmentId) }, timestamp: new Date().toISOString() });
+    } catch (err) {
+      console.warn("Booking queue broadcast skipped:", err);
+    }
+    if (doctorId !== actor.id) {
+      eventBus.publishDurable({
+        eventId: `booking:doctor:${appointmentId}`,
+        eventType: EVENT_TYPES.PATIENT_APPOINTMENT_BOOKED,
+        category: "clinical",
+        organizationId: orgId,
+        targetUserId: doctorId,
+        title: "New appointment booked",
+        message: "A new appointment was added to your schedule.",
+        severity: "info",
+        actionUrl: "/dashboard/appointments",
+        metadata: { appointmentId: String(appointmentId), clinicId },
+      }).catch((err) => console.warn("Doctor booking notification skipped:", err));
+    }
 
     return booking;
   }

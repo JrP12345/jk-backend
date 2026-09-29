@@ -6,6 +6,7 @@ import { Clinic } from "../models/Clinic.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Appointment } from "../models/Appointment.ts";
+import { Subscription } from "../models/Subscription.ts";
 
 describe("Appointments & Queue API Integration Tests", () => {
   let adminCookies: string[] = [];
@@ -206,5 +207,36 @@ describe("Appointments & Queue API Integration Tests", () => {
     expect(body.data.bloodGroup).toBe("O+");
     expect(body.data.allergies).toContain("Penicillin");
     expect(body.data.conditions).toContain("Hypertension");
+  });
+
+  it("lists past unresolved appointments for staff without changing their stored status", async () => {
+    await Appointment.findByIdAndUpdate(appointmentId, { appointmentTime: new Date(Date.now() - 25 * 60 * 60 * 1000), status: "pending" });
+    const review = await app.inject({ method: "GET", url: `/api/appointments?clinicId=${clinicId}&reviewOnly=1`, headers: { cookie: adminCookies.join("; ") } });
+    expect(review.statusCode).toBe(200);
+    expect(review.json().data.find((visit: { id: string }) => visit.id === appointmentId)?.reviewState).toBe("unresolved");
+    expect((await Appointment.findById(appointmentId))?.status).toBe("pending");
+  });
+
+  it("blocks new patient and staff bookings after expiry while retaining existing appointments and public clinic details", async () => {
+    const clinic = await Clinic.findById(clinicId);
+    const subscription = await Subscription.findOne({ organizationId: clinic!.organizationId });
+    expect(subscription).not.toBeNull();
+    await Subscription.findByIdAndUpdate(subscription!._id, { status: "trialing", trialEndsAt: new Date(Date.now() - 60_000) });
+    const booking = { clinicId, doctorId: doctorUserId, appointmentTime: new Date(Date.now() + 2 * 86400000).toISOString(), appointmentType: "online" };
+    const patientAttempt = await app.inject({ method: "POST", url: "/api/appointments", headers: { cookie: patientCookies.join("; ") }, payload: booking });
+    expect(patientAttempt.statusCode).toBe(409);
+    expect(patientAttempt.body).toContain("Online booking is temporarily unavailable");
+    const staffAttempt = await app.inject({ method: "POST", url: "/api/appointments", headers: { cookie: adminCookies.join("; ") }, payload: booking });
+    expect(staffAttempt.statusCode).toBe(402);
+    const portalAttempt = await app.inject({ method: "POST", url: "/api/patient-portal/self-book", headers: { cookie: patientCookies.join("; ") }, payload: booking });
+    expect(portalAttempt.statusCode).toBe(409);
+    const walkInAttempt = await app.inject({ method: "POST", url: "/api/public/join-queue", payload: { clinicId, doctorId: doctorUserId, name: "Walk-in", phone: "+919876543210" } });
+    expect(walkInAttempt.statusCode).toBe(409);
+    expect(walkInAttempt.body).not.toContain("subscription");
+    const publicDetails = await app.inject({ method: "GET", url: `/api/public/clinics/${clinicId}` });
+    expect(publicDetails.statusCode).toBe(200);
+    expect(JSON.parse(publicDetails.body).data.onlineBookingAvailable).toBe(false);
+    const existingVisit = await app.inject({ method: "GET", url: `/api/appointments/${appointmentId}`, headers: { cookie: patientCookies.join("; ") } });
+    expect(existingVisit.statusCode).toBe(200);
   });
 });

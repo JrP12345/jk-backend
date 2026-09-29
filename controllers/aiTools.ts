@@ -110,6 +110,10 @@ export async function approveAndExecuteToolController(req: FastifyRequest, reply
         userId: req.user?.id || ""
       });
     } else if (log.toolName === "createAppointmentTool") {
+      const { canCreateClinicBooking } = await import("../services/billing/SubscriptionAccess.ts");
+      if (!(await canCreateClinicBooking(input.clinicId))) {
+        return reply.code(409).send(errorResponse("New booking is temporarily unavailable for this clinic."));
+      }
       const { Appointment } = await import("../models/Appointment.ts");
       const apptTime = input.appointmentDate || input.appointmentTime || new Date();
       const count = await Appointment.countDocuments({ clinicId: input.clinicId });

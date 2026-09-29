@@ -18,7 +18,7 @@ import { getAdaptiveConsultationDuration } from "./queue.ts";
 import { broadcastQueueUpdate } from "../notifications/websocket.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
-import { successResponse, errorResponse, escapeRegex } from "../utilities/helpers.ts";
+import { successResponse, errorResponse, escapeRegex, normalizePhone } from "../utilities/helpers.ts";
 import {
   createTrackerCapability,
   getCheckInCapability,
@@ -27,6 +27,8 @@ import {
   isTrackerCapabilityEnforced,
 } from "../utilities/publicTracker.ts";
 import { toPublicOrganizationSummary, toPublicOrganizationDetail } from "../types/publicDtos.ts";
+import { canCreateClinicBooking, canCreateOrganizationBooking } from "../services/billing/SubscriptionAccess.ts";
+import { clinicClockMinutes, clinicDateKey, clinicDayRange, getClinicTimezone } from "../utilities/clinicTime.ts";
 import {
   getCursorPaginationParams,
   decodeCursor,
@@ -250,7 +252,7 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
 
     const orgIds = [...new Set(clinics.map((c) => (c.organizationId ? String(c.organizationId) : null)).filter(Boolean))];
     const orgs = orgIds.length > 0
-      ? await Organization.find({ _id: { $in: orgIds } }).select("_id name logo_url image_url images").lean()
+      ? await Organization.find({ _id: { $in: orgIds } }).select("_id name logo_url image_url images currency countryCode timezone").lean()
       : [];
     const orgMap = new Map<string, any>(orgs.map((o) => [String(o._id), o]));
 
@@ -289,6 +291,8 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
         images: effectiveImages,
         organizationName: org?.name || null,
         currency: org?.currency || "INR",
+        countryCode: org?.countryCode || null,
+        timezone: c.timezone || org?.timezone || "Asia/Kolkata",
         doctorCount: doctorsSummary.length,
         minFee,
         rating: ratings.get(String(c._id))?.rating ?? null,
@@ -332,6 +336,19 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
     if (!clinic) {
       return reply.code(404).send(errorResponse("Clinic not found"));
     }
+    const org = clinic.organizationId
+      ? await Organization.findById(clinic.organizationId)
+          .select("_id name logo_url image_url images description currency countryCode timezone phone email address city")
+          .lean()
+      : null;
+    const timezone = clinic.timezone || org?.timezone || "Asia/Kolkata";
+    const onlineBookingAvailable = await canCreateClinicBooking(id).catch((err) => {
+      req.log.warn({ err }, "Could not verify online booking availability");
+      return false;
+    });
+    const now = new Date();
+    const todayDateStr = clinicDateKey(now, timezone);
+    const { start: startOfDay, end: endOfDay } = clinicDayRange(todayDateStr, timezone);
 
     const assignments = await DoctorAssignment.find({ clinicId: id, isActive: true })
       .populate({
@@ -351,11 +368,6 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
     for (const doc of docProfiles) {
       docProfileMap.set(String(doc.userId), doc);
     }
-
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
 
     const formattedDoctors = await Promise.all(
       assignments.map(async (assign: any) => {
@@ -382,7 +394,6 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
         }
 
         // Check today's doctor availability override
-        const todayDateStr = new Date().toISOString().slice(0, 10);
         const override = await DoctorDayOverride.findOne({
           clinicId: id,
           doctorId: assign.doctorId._id,
@@ -424,7 +435,8 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
               assign.doctorId._id.toString(),
               id,
               new Date(),
-              assign.workingHours
+              assign.workingHours,
+              timezone
             );
 
             if (!effectiveSchedule.isWorkingDay) {
@@ -433,8 +445,7 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
             } else {
               const [endH, endM] = (effectiveSchedule.dayEndTime || "17:00").split(":").map(Number);
               const closingMinutes = (endH || 0) * 60 + (endM || 0);
-              const now = new Date();
-              const currentMinutes = now.getHours() * 60 + now.getMinutes();
+              const currentMinutes = clinicClockMinutes(now, timezone);
               const safetyBuffer = assign.onlineBookingSafetyBuffer ?? 30;
               const allowedOperatingMinutes = closingMinutes - safetyBuffer - currentMinutes;
 
@@ -451,8 +462,8 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
         }
 
         // Query upcoming doctor holidays/leaves for the next 30 days
-        const futureDate = new Date();
-        futureDate.setDate(futureDate.getDate() + 30);
+        const futureDate = new Date(`${todayDateStr}T12:00:00Z`);
+        futureDate.setUTCDate(futureDate.getUTCDate() + 30);
         const maxFutureDateStr = futureDate.toISOString().slice(0, 10);
 
         const upcomingOverrides = await DoctorDayOverride.find({
@@ -475,8 +486,8 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
           email: assign.doctorId.email,
           phone: assign.doctorId.phone,
           specialization: docProfile?.specialization || "General Medicine",
-          qualification: docProfile?.qualification || "MBBS",
-          experience_years: docProfile?.experience_years || 1,
+          qualification: docProfile?.qualification || "",
+          experience_years: docProfile?.experience_years ?? 0,
           fees: assign.fees,
           feeType: (assign as any).feeType || (docProfile as any)?.feeType || "fixed",
           timings: assign.workingHours,
@@ -494,6 +505,7 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
           overrideReason,
           upcomingHolidays,
           consultationDuration: assign.appointmentDuration || 15,
+          appointmentDuration: assign.appointmentDuration || 15,
           waitingPatientsCount,
           estimatedWaitMinutes,
           isOnlineBookingClosed,
@@ -504,11 +516,6 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
 
     const cleanDoctors = formattedDoctors.filter(d => d !== null);
 
-    const org = clinic.organizationId
-      ? await Organization.findById(clinic.organizationId)
-          .select("_id name logo_url image_url images description currency phone email address city")
-          .lean()
-      : null;
     const effectiveLogo = clinic.logo || org?.logo_url || org?.image_url || null;
     const effectiveImages = (Array.isArray(clinic.images) && clinic.images.length > 0) ? clinic.images : (org?.images || []);
     const effectiveCover = org?.image_url || clinic.images?.[0] || effectiveLogo || null;
@@ -520,6 +527,9 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
       image_url: effectiveCover,
       images: effectiveImages,
       currency: org?.currency || (clinicJson as any).currency || "INR",
+      countryCode: org?.countryCode || null,
+      timezone,
+      onlineBookingAvailable,
       organization: org ? {
         id: (org as any)._id.toString(),
         name: org.name,
@@ -528,6 +538,8 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
         images: org.images || [],
         description: org.description,
         currency: org.currency || "INR",
+        countryCode: org.countryCode || null,
+        timezone: org.timezone || "Asia/Kolkata",
         phone: org.phone,
         email: org.email,
         address: org.address,
@@ -565,9 +577,9 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
       return reply.code(400).send(errorResponse("Invalid clinic or doctor ID format"));
     }
 
-    const cleanPhone = phone.replace(/\D/g, "");
-    if (cleanPhone.length < 10) {
-      return reply.code(400).send(errorResponse("Please enter a valid 10-digit mobile number"));
+    const cleanPhone = normalizePhone(phone);
+    if (!/^\d{10}$/.test(cleanPhone) && !/^\+[1-9]\d{7,14}$/.test(cleanPhone)) {
+      return reply.code(400).send(errorResponse("Enter an Indian 10-digit number or an international number with +country code"));
     }
 
     // 1. Verify Clinic & Active Organization
@@ -581,6 +593,12 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
     if (!org) {
       return reply.code(400).send(errorResponse("Healthcare organization is currently inactive"));
     }
+    if (!(await canCreateOrganizationBooking(org._id.toString()))) {
+      return reply.code(409).send(errorResponse("Online booking is temporarily unavailable. Please contact the clinic directly."));
+    }
+    if (org.countryCode && org.countryCode !== "IN" && !phone.trim().startsWith("+")) {
+      return reply.code(400).send(errorResponse("Use the international phone format with +country code"));
+    }
 
     // 2. Verify Doctor Assignment
     const assignment = await DoctorAssignment.findOne({ clinicId, doctorId, isActive: true });
@@ -588,12 +606,10 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
       return reply.code(400).send(errorResponse("Doctor is not actively assigned to this clinic facility"));
     }
 
-    // 3. Verify Doctor Availability for Today
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
-    const todayStr = new Date().toISOString().slice(0, 10);
+    // 3. Verify Doctor Availability for the clinic's local day
+    const timezone = clinic.timezone || org.timezone || "Asia/Kolkata";
+    const todayStr = clinicDateKey(new Date(), timezone);
+    const { start: startOfDay, end: endOfDay } = clinicDayRange(todayStr, timezone);
 
     const override = await DoctorDayOverride.findOne({
       clinicId,
@@ -612,10 +628,12 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
     }
 
     // 4. Duplicate Active Token Guard
-    const cleanPhoneLast10 = cleanPhone.slice(-10);
+    const phoneVariants = /^\d{10}$/.test(cleanPhone)
+      ? [cleanPhone, `+91${cleanPhone}`, `91${cleanPhone}`]
+      : [cleanPhone];
     let patient = await Patient.findOne({
       organizationId: org._id,
-      phone: { $regex: cleanPhoneLast10 },
+      phone: { $in: phoneVariants },
     });
 
     if (patient) {
@@ -628,19 +646,7 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
       });
 
       if (activeAppt) {
-        const trackerCapability = createTrackerCapability();
-        activeAppt.trackerTokenHash = trackerCapability.hash;
-        activeAppt.trackerTokenExpiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
-        await activeAppt.save();
-
-        return reply.code(200).send(successResponse({
-          appointmentId: activeAppt._id.toString(),
-          tokenNumber: activeAppt.tokenNumber,
-          queuePosition: activeAppt.queuePosition || activeAppt.tokenNumber,
-          isExisting: true,
-          trackingUrl: `/track/${activeAppt._id}?t=${encodeURIComponent(trackerCapability.token)}`,
-          trackerToken: trackerCapability.token,
-        }, `You already hold active Token #${activeAppt.tokenNumber} for today! Opening your live tracker.`));
+        return reply.code(409).send(errorResponse("An active token already exists for this contact today. Ask reception for its tracker link."));
       }
     } else {
       patient = await Patient.create({
@@ -830,6 +836,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
 
     const clinicId = (appointment.clinicId as any)?._id || appointment.clinicId;
     const doctorId = (appointment.doctorId as any)?._id || appointment.doctorId;
+    const timezone = await getClinicTimezone(String(clinicId));
 
     // Doctor details & assignment
     const doctorAssignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true }).select("appointmentDuration").lean();
@@ -845,11 +852,10 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
       console.warn(`[PublicTracker] Corrupt historical appointmentTime detected for appointment ${appointment._id}`);
     }
     const safeDate = isValidApptDate ? apptDate : new Date();
-    const startOfDay = new Date(safeDate.getFullYear(), safeDate.getMonth(), safeDate.getDate(), 0, 0, 0, 0);
-    const endOfDay = new Date(safeDate.getFullYear(), safeDate.getMonth(), safeDate.getDate(), 23, 59, 59, 999);
+    const dateStr = clinicDateKey(safeDate, timezone);
+    const { start: startOfDay, end: endOfDay } = clinicDayRange(dateStr, timezone);
 
     // Check same-day DoctorDayOverride safely
-    const dateStr = safeDate.toISOString().slice(0, 10);
     const dayOverride = await DoctorDayOverride.findOne({
       doctorId,
       clinicId,
@@ -1010,13 +1016,14 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
         ],
       };
       const invoice = (await Invoice.findOne(invoiceFilter)
-        .select("invoiceNumber totalAmount amountPaid balanceDue status paymentMethod paymentDate items")
+        .select("invoiceNumber currency totalAmount amountPaid balanceDue status paymentMethod paymentDate items")
         .sort({ createdAt: -1 })
         .lean()) as any;
       if (invoice) {
         billing = {
           invoiceId: invoice._id.toString(),
           invoiceNumber: invoice.invoiceNumber,
+          currency: invoice.currency || "INR",
           totalAmount: invoice.totalAmount || 0,
           amountPaid: invoice.amountPaid || 0,
           balanceDue:
@@ -1069,6 +1076,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
         tokenNumber: appointment.tokenNumber,
         queuePosition: appointment.queuePosition,
         status: appointment.status,
+        reviewState: (await import("../utilities/appointmentReview.ts")).appointmentReviewState(appointment),
         paymentStatus: appointment.paymentStatus || (billing ? (billing.balanceDue === 0 ? "paid" : "unpaid") : "unpaid"),
         appointmentTime: appointment.appointmentTime,
         appointmentType: appointment.appointmentType,
@@ -1086,6 +1094,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
           phone: (appointment.clinicId as any)?.phone || "",
           upiVpa: (appointment.clinicId as any)?.upiVpa || "",
           merchantName: (appointment.clinicId as any)?.merchantName || (appointment.clinicId as any)?.name || "",
+          timezone,
         },
         currentlyServingToken,
         peopleAhead,
@@ -1095,7 +1104,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
         isAdaptiveDuration: isAdaptive,
         adaptiveSampleCount: sampleCount,
         doctorAvailability,
-        isToday: dateStr === new Date().toISOString().slice(0, 10),
+        isToday: dateStr === clinicDateKey(new Date(), timezone),
         disruptionResponseDeadline: appointment.disruptionResponseDeadline || null,
         triageAction: appointment.triageAction || "pending",
         parkedAt: appointment.parkedAt || null,
@@ -1153,7 +1162,7 @@ export async function processPublicTrackerCheckIn(req: FastifyRequest, reply: Fa
     }
 
     // Check doctor day override for today
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = clinicDateKey(new Date(), await getClinicTimezone(String((appointment.clinicId as any)?._id || appointment.clinicId)));
     const dayOverride = await DoctorDayOverride.findOne({
       doctorId: (appointment.doctorId as any)?._id || appointment.doctorId,
       clinicId: (appointment.clinicId as any)?._id || appointment.clinicId,
@@ -1341,8 +1350,9 @@ export async function getPublicQueueTv(req: FastifyRequest, reply: FastifyReply)
     }
 
     const now = new Date();
-    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
-    const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+    const timezone = await getClinicTimezone(clinicId);
+    const dateStr = clinicDateKey(now, timezone);
+    const { start: startOfDay, end: endOfDay } = clinicDayRange(dateStr, timezone);
 
     const query: any = {
       clinicId,
@@ -1400,7 +1410,6 @@ export async function getPublicQueueTv(req: FastifyRequest, reply: FastifyReply)
     const { OpdSession } = await import("../models/OpdSession.ts");
     const { DoctorAssignment } = await import("../models/DoctorAssignment.ts");
 
-    const dateStr = now.toISOString().slice(0, 10);
     const sessionQuery: any = { clinicId, date: dateStr, status: "active" };
     if (doctorId && mongoose.Types.ObjectId.isValid(doctorId)) {
       sessionQuery.doctorId = doctorId;

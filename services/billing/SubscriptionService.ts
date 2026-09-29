@@ -50,6 +50,9 @@ export class SubscriptionService {
       const existingOrg = await Organization.findById(organizationId);
       const targetSlug = existingOrg?.plan || "starter";
       let chosenPlan = await SaaSPlan.findOne({ slug: targetSlug });
+      if (!chosenPlan && targetSlug === "pro") {
+        chosenPlan = await SaaSPlan.findOne({ slug: "professional" });
+      }
       if (!chosenPlan) {
         chosenPlan = await SaaSPlan.findOne({ slug: "starter" });
       }
@@ -61,7 +64,7 @@ export class SubscriptionService {
           monthlyPrice: 0,
           annualPrice: 0,
           currency: "INR",
-          trialDays: customTrialDays || 15,
+          trialDays: customTrialDays ?? 15,
           limits: {
             maxClinics: 1,
             maxDoctors: 2,
@@ -84,7 +87,7 @@ export class SubscriptionService {
       }
 
       const now = new Date();
-      const trialDays = customTrialDays || chosenPlan.trialDays || 15;
+      const trialDays = customTrialDays ?? chosenPlan.trialDays ?? 15;
       const trialEndsAt = new Date(now.getTime() + trialDays * 24 * 60 * 60 * 1000);
 
       sub = await Subscription.create({

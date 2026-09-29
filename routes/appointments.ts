@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { authenticate, checkAnyPermission, checkAnyPermissionOrRoles, checkPermission } from "../middleware/auth.ts";
 import { requireModule } from "../middleware/moduleGuard.ts";
-import { enforceSubscriptionActive } from "../middleware/subscriptionGuard.ts";
+import { enforceNewBookingAllowed } from "../middleware/subscriptionGuard.ts";
 import { bookAppointmentSchema, updateAppointmentStatusSchema } from "../schemas/appointment.ts";
 import {
   bookAppointment,
@@ -61,10 +61,10 @@ export default async function appointmentRoutes(app: FastifyInstance) {
     preHandler: [authenticate, requireModule("appointments"), checkAnyPermissionOrRoles(["patient", "family_member"], "VIEW_APPOINTMENTS", "MANAGE_APPOINTMENTS")],
   };
   const bookAppointments = {
-    preHandler: [authenticate, requireModule("appointments"), checkAnyPermissionOrRoles(["patient", "family_member", "guest"], "MANAGE_APPOINTMENTS", "CREATE_APPOINTMENTS"), enforceSubscriptionActive],
+    preHandler: [authenticate, requireModule("appointments"), checkAnyPermissionOrRoles(["patient", "family_member", "guest"], "MANAGE_APPOINTMENTS", "CREATE_APPOINTMENTS"), enforceNewBookingAllowed],
   };
   const manageAppointments = {
-    preHandler: [authenticate, requireModule("appointments"), checkAnyPermissionOrRoles(["patient", "family_member"], "MANAGE_APPOINTMENTS"), enforceSubscriptionActive],
+    preHandler: [authenticate, requireModule("appointments"), checkAnyPermissionOrRoles(["patient", "family_member"], "MANAGE_APPOINTMENTS")],
   };
   const viewPatients = {
     preHandler: [authenticate, requireModule("patients"), checkAnyPermissionOrRoles(["patient", "family_member"], "VIEW_PATIENTS", "MANAGE_PATIENTS")],
@@ -102,7 +102,7 @@ export default async function appointmentRoutes(app: FastifyInstance) {
   app.get("/api/doctors/:doctorId/slots", viewAppointments, getDoctorSlots);
 
   // Slot Locking (anti-double-booking)
-  app.post("/api/appointments/lock-slot", manageAppointments, lockSlot);
+  app.post("/api/appointments/lock-slot", { preHandler: [...manageAppointments.preHandler, enforceNewBookingAllowed] }, lockSlot);
   app.delete("/api/appointments/lock-slot", manageAppointments, unlockSlot);
   app.get("/api/appointments/slot-lock-status", viewAppointments, getSlotLockStatus);
 

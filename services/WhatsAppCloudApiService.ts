@@ -28,7 +28,7 @@ export interface MetaWhatsAppResponse {
 export class WhatsAppCloudApiService {
   public formatPhoneNumber(phone: string): string {
     let digits = String(phone || "").replace(/\D/g, "");
-    if (digits.length === 10) digits = `91${digits}`;
+    if (digits.length === 10 && !String(phone || "").trim().startsWith("+")) digits = `91${digits}`;
     return digits;
   }
 

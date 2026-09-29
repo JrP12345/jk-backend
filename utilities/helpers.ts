@@ -243,10 +243,15 @@ export function setPaginationHeaders(
 export function normalizePhone(phone: string): string {
   if (!phone) return "";
   let clean = phone.replace(/\D/g, "");
+  const isIndianInternational = clean.length === 12 && clean.startsWith("91");
   if (clean.length === 12 && clean.startsWith("91")) {
     clean = clean.substring(2);
   } else if (clean.length === 11 && clean.startsWith("0")) {
     clean = clean.substring(1);
   }
-  return clean;
+  // Preserve explicit international identity. Indian numbers remain in the
+  // historical national format until existing accounts are migrated.
+  return phone.trim().startsWith("+") && !isIndianInternational && clean.length >= 8 && clean.length <= 15
+    ? `+${phone.replace(/\D/g, "")}`
+    : clean;
 }

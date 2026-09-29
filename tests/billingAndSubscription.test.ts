@@ -7,6 +7,7 @@ import { SubscriptionPayment } from "../models/SubscriptionPayment.ts";
 import { SaaSInvoice } from "../models/SaaSInvoice.ts";
 import { Organization } from "../models/Organization.ts";
 import { subscriptionService } from "../services/billing/SubscriptionService.ts";
+import { canCreateOrganizationBooking } from "../services/billing/SubscriptionAccess.ts";
 import { razorpayService } from "../services/billing/RazorpayService.ts";
 
 import { SaaSConfig } from "../models/SaaSConfig.ts";
@@ -39,6 +40,23 @@ afterAll(async () => {
 });
 
 describe("Commercial SaaS Billing & Subscription Engine", () => {
+  it("uses dates and organization state for trial, paid, overdue and suspended booking access", async () => {
+    const org = await Organization.create({ name: "Lifecycle Clinic", city: "Surat", plan: "starter" });
+    const id = org._id.toString();
+    const subscription = await subscriptionService.getOrInitializeSubscription(id);
+    expect(await canCreateOrganizationBooking(id)).toBe(true);
+    await Subscription.findByIdAndUpdate(subscription._id, { status: "trialing", trialEndsAt: new Date(Date.now() - 1000) });
+    expect(await canCreateOrganizationBooking(id)).toBe(false);
+    await Subscription.findByIdAndUpdate(subscription._id, { status: "active", currentPeriodEnd: new Date(Date.now() + 86400000) });
+    expect(await canCreateOrganizationBooking(id)).toBe(true);
+    await Subscription.findByIdAndUpdate(subscription._id, { currentPeriodEnd: new Date(Date.now() - 1000) });
+    expect(await canCreateOrganizationBooking(id)).toBe(false);
+    await Subscription.findByIdAndUpdate(subscription._id, { status: "payment_failed", currentPeriodEnd: new Date(Date.now() + 86400000) });
+    expect(await canCreateOrganizationBooking(id)).toBe(false);
+    await Subscription.findByIdAndUpdate(subscription._id, { status: "active" });
+    await Organization.findByIdAndUpdate(id, { status: "inactive" });
+    expect(await canCreateOrganizationBooking(id)).toBe(false);
+  });
   it("should initialize default 15-day trial subscription for a new organization", async () => {
     const org = await Organization.create({
       name: "Test Hospital",

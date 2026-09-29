@@ -20,6 +20,7 @@ export interface PublicOrganizationSummary {
   timings?: string;
   working_days?: string;
   currency?: string;
+  countryCode?: string | null;
   timezone?: string;
   isActive: boolean;
 }
@@ -48,6 +49,7 @@ export function toPublicOrganizationSummary(raw: any): PublicOrganizationSummary
     timings: doc.timings || "",
     working_days: doc.working_days || "",
     currency: doc.currency || "INR",
+    countryCode: doc.countryCode || null,
     timezone: doc.timezone || "Asia/Kolkata",
     isActive: doc.isActive !== false,
   };

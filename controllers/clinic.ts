@@ -3,14 +3,15 @@ import mongoose from "mongoose";
 import { Clinic } from "../models/Clinic.ts";
 import { Organization } from "../models/Organization.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
+import { isIanaTimezone } from "../utilities/countrySettings.ts";
 
 export async function createClinic(req: FastifyRequest, reply: FastifyReply) {
   try {
     const {
-      organizationId: reqOrgId, name, logo, description, phone, email, address, city, latitude, longitude, timings, facilities, upiVpa, merchantName
+      organizationId: reqOrgId, name, logo, description, phone, email, address, city, timezone, latitude, longitude, timings, facilities, upiVpa, merchantName
     } = (req.body || {}) as {
       organizationId?: string; name: string; city: string; logo?: string; description?: string;
-      phone?: string; email?: string; address?: string; latitude?: number;
+      phone?: string; email?: string; address?: string; timezone?: string; latitude?: number;
       longitude?: number; timings?: string; facilities?: string[]; upiVpa?: string; merchantName?: string;
     };
 
@@ -26,9 +27,7 @@ export async function createClinic(req: FastifyRequest, reply: FastifyReply) {
     const org = await Organization.findById(orgId);
     if (!org) return reply.code(404).send(errorResponse("Target organization not found"));
 
-    // Calculate effective quota based on plan tier to safeguard against stale database records
-    const planQuota = org.plan === "enterprise" ? 99 : org.plan === "pro" ? 5 : 1;
-    const allowedClinics = Math.max(org.maxClinics || 1, planQuota);
+    const allowedClinics = org.maxClinics || 1;
 
     const existingCount = await Clinic.countDocuments({ organizationId: orgId, isActive: true });
     if (existingCount >= allowedClinics && req.user?.role !== "root") {
@@ -38,6 +37,7 @@ export async function createClinic(req: FastifyRequest, reply: FastifyReply) {
     if (!name || !city) {
       return reply.code(400).send(errorResponse("Clinic name and city are required"));
     }
+    if (timezone && !isIanaTimezone(timezone)) return reply.code(400).send(errorResponse("A valid IANA timezone is required"));
 
     const clinic = await Clinic.create({
       organizationId: orgId,
@@ -48,6 +48,7 @@ export async function createClinic(req: FastifyRequest, reply: FastifyReply) {
       email: email || null,
       address: address || null,
       city,
+      timezone: timezone || null,
       latitude: latitude !== undefined ? latitude : null,
       longitude: longitude !== undefined ? longitude : null,
       timings: timings || null,
@@ -65,6 +66,15 @@ export async function createClinic(req: FastifyRequest, reply: FastifyReply) {
 
 export async function getClinics(req: FastifyRequest, reply: FastifyReply) {
   try {
+    const withTimezone = async (clinics: any[]) => {
+      const orgIds = [...new Set(clinics.map(clinic => clinic.organizationId?.toString()).filter(Boolean))];
+      const organizations = await Organization.find({ _id: { $in: orgIds } }).select("_id timezone").lean();
+      const timezones = new Map(organizations.map(org => [org._id.toString(), org.timezone]));
+      return clinics.map(clinic => ({
+        ...clinic.toJSON(),
+        effectiveTimezone: clinic.timezone || timezones.get(clinic.organizationId?.toString()) || "Asia/Kolkata",
+      }));
+    };
     const { includeInactive, status } = (req.query || {}) as { includeInactive?: string; status?: string };
     const orgId = req.user!.organization_id;
 
@@ -83,14 +93,14 @@ export async function getClinics(req: FastifyRequest, reply: FastifyReply) {
         const activeOrgIds = activeOrgs.map((o) => o._id);
         filter.organizationId = { $in: activeOrgIds };
         const clinics = await Clinic.find(filter).limit(50).sort({ name: 1 });
-        return reply.code(200).send(successResponse(clinics));
+        return reply.code(200).send(successResponse(await withTimezone(clinics)));
       }
       return reply.code(200).send(successResponse([]));
     }
 
     filter.organizationId = orgId;
     const clinics = await Clinic.find(filter).sort({ name: 1 });
-    return reply.code(200).send(successResponse(clinics));
+    return reply.code(200).send(successResponse(await withTimezone(clinics)));
   } catch (err) {
     console.error("getClinics error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -106,16 +116,17 @@ export async function updateClinic(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const {
-      name, logo, image_url, description, phone, email, address, city, latitude, longitude, timings, facilities, upiVpa, merchantName
+      name, logo, image_url, description, phone, email, address, city, timezone, latitude, longitude, timings, facilities, upiVpa, merchantName
     } = req.body as {
       name: string; city: string; logo?: string; image_url?: string; description?: string;
-      phone?: string; email?: string; address?: string; latitude?: number; longitude?: number;
+      phone?: string; email?: string; address?: string; timezone?: string; latitude?: number; longitude?: number;
       timings?: string; facilities?: string[]; upiVpa?: string; merchantName?: string;
     };
 
     if (!name || !city) {
       return reply.code(400).send(errorResponse("Clinic name and city are required"));
     }
+    if (timezone && !isIanaTimezone(timezone)) return reply.code(400).send(errorResponse("A valid IANA timezone is required"));
 
     const filter: any = { _id: id, isActive: true };
     if (req.user?.role !== "root") {
@@ -137,8 +148,9 @@ export async function updateClinic(req: FastifyRequest, reply: FastifyReply) {
         email: email || null,
         address: address || null,
         city,
-        latitude: latitude !== undefined ? latitude : null,
-        longitude: longitude !== undefined ? longitude : null,
+        ...(timezone !== undefined && { timezone: timezone || null }),
+        ...(latitude !== undefined && { latitude }),
+        ...(longitude !== undefined && { longitude }),
         timings: timings || null,
         facilities: facilities || [],
         ...(upiVpa !== undefined && { upiVpa: upiVpa.trim() }),
@@ -222,8 +234,7 @@ export async function reactivateClinic(req: FastifyRequest, reply: FastifyReply)
       return reply.code(404).send(errorResponse("Target organization not found"));
     }
 
-    const planQuota = org.plan === "enterprise" ? 99 : org.plan === "pro" ? 5 : 1;
-    const allowedClinics = Math.max(org.maxClinics || 1, planQuota);
+    const allowedClinics = org.maxClinics || 1;
 
     const existingCount = await Clinic.countDocuments({
       organizationId: clinic.organizationId,

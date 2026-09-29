@@ -44,7 +44,7 @@ describe("Clinic Essentials Cycle 4 — Payment Tenant Isolation", () => {
       method: "POST",
       url: "/api/onboarding/doctors/assignments",
       headers: { cookie: orgACookies.join("; ") },
-      payload: { doctorId: docAId, clinicId: clinicAId, fees: 300, workingHours: "09:00 - 17:00" },
+      payload: { doctorId: docAId, clinicId: clinicAId, fees: 300, workingHours: "00:00 - 23:59" },
     });
 
     const apptRes = await app.inject({
@@ -223,7 +223,7 @@ describe("Clinic Essentials Cycle 4 — Consult Fee Dedupe", () => {
       method: "POST",
       url: "/api/onboarding/doctors/assignments",
       headers: { cookie: adminCookies.join("; ") },
-      payload: { doctorId, clinicId, fees: 400, workingHours: "09:00 - 17:00" },
+      payload: { doctorId, clinicId, fees: 400, workingHours: "00:00 - 23:59" },
     });
 
     const apptRes = await app.inject({

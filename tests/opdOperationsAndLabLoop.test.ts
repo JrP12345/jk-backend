@@ -5,6 +5,7 @@ import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { OpdSession } from "../models/OpdSession.ts";
+import { Invoice } from "../models/Invoice.ts";
 
 describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV Tests", () => {
   let adminCookies: string[] = [];
@@ -244,7 +245,7 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
     expect(resumedData.reasonForVisit).toBe("report_review");
   });
 
-  it("3. Doctor OPD Session Lifecycle: Start shift, get pre-close summary, and reconcile stranded appointments", async () => {
+  it("3. Doctor OPD Session Lifecycle: closing a shift preserves unresolved and unfinished consultations", async () => {
     // 1. Start OPD Session
     const startRes = await app.inject({
       method: "POST",
@@ -270,28 +271,49 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
 
     // Put appt1 back into standby to test reconciliation
     await Appointment.findByIdAndUpdate(appt1._id, { status: "standby", parkedReason: "Left premises" });
+    await Appointment.findByIdAndUpdate(appt2._id, { status: "in-consultation" });
 
-    // 3. End OPD Session & Reconcile (sweeps standby -> no-show, unserved -> cancelled)
+    // Closing the shift records unresolved work without asserting clinical events.
     const endRes = await app.inject({
       method: "POST",
       url: "/api/queue/session/end",
       headers: { cookie: adminCookies.join("; ") },
-      payload: {
-        clinicId,
-        doctorId,
-        standbyAction: "mark_no_show",
-        waitingAction: "cancel_refund",
-      },
+      payload: { clinicId, doctorId },
     });
     expect(endRes.statusCode).toBe(200);
     const endData = JSON.parse(endRes.body).data;
     expect(endData.session.status).toBe("ended");
-    expect(endData.standbyReconciledCount).toBeGreaterThanOrEqual(1);
+    expect(endData.standbyReconciledCount).toBe(0);
+    expect(endData.unresolvedCount).toBeGreaterThanOrEqual(2);
 
-    // Verify appt1 is marked no-show with audit note
     const reconciledAppt1 = await Appointment.findById(appt1._id);
-    expect(reconciledAppt1?.status).toBe("no-show");
-    expect(reconciledAppt1?.notes).toContain("End of OPD: Patient remained on standby");
+    expect(reconciledAppt1?.status).toBe("standby");
+    expect((await Appointment.findById(appt2._id))?.status).toBe("in-consultation");
+    const inferredNoShow = await app.inject({ method: "POST", url: "/api/queue/session/end", headers: { cookie: adminCookies.join("; ") }, payload: { clinicId, doctorId, standbyAction: "mark_no_show" } });
+    expect(inferredNoShow.statusCode).toBe(400);
+
+    const invoice = await Invoice.create({
+      invoiceNumber: `OPD-CANCEL-${Date.now()}`,
+      organizationId: orgId,
+      clinicId,
+      doctorId,
+      patientId: patient1._id,
+      appointmentId: appt1._id,
+      items: [{ description: "Consultation", amount: 600, quantity: 1 }],
+      subtotal: 600,
+      totalAmount: 600,
+      amountPaid: 600,
+      status: "paid",
+    });
+    const explicitCancel = await app.inject({
+      method: "POST",
+      url: "/api/queue/session/end",
+      headers: { cookie: adminCookies.join("; ") },
+      payload: { clinicId, doctorId, standbyAction: "cancel_refund" },
+    });
+    expect(explicitCancel.statusCode).toBe(200);
+    expect((await Appointment.findById(appt1._id))?.status).toBe("cancelled");
+    expect((await Invoice.findById(invoice._id))?.status).toBe("paid");
   });
 
   it("4. Public Waiting Room TV endpoint should serve masked queue data without authentication", async () => {

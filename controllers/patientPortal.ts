@@ -356,6 +356,10 @@ export async function patientSelfBookAppointment(req: FastifyRequest, reply: Fas
     }
     const clinicAccess = await checkClinicAccess(req, clinicId);
     if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const { canCreateClinicBooking } = await import("../services/billing/SubscriptionAccess.ts");
+    if (!(await canCreateClinicBooking(clinicId))) {
+      return reply.code(409).send(errorResponse("Online booking is temporarily unavailable. Please contact the clinic directly."));
+    }
 
     const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
     let targetPatientId: string;

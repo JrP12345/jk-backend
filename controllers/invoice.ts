@@ -4,12 +4,24 @@ import { Invoice } from "../models/Invoice.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
+import { Clinic } from "../models/Clinic.ts";
+import { Organization } from "../models/Organization.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { checkClinicAccess, checkOperationalRecordAccess, getRequestClinicIds, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
+
+const INDIA_BILLING_ONLY = "Manual billing and GST calculations are not configured for this clinic's country";
+
+async function canUseIndianBilling(clinicId: string): Promise<boolean> {
+  const clinic = await Clinic.findById(clinicId).select("organizationId").lean();
+  const organization = clinic?.organizationId
+    ? await Organization.findById(clinic.organizationId).select("countryCode currency").lean()
+    : null;
+  return !!organization && (!organization.countryCode || organization.countryCode === "IN") && (!organization.currency || organization.currency === "INR");
+}
 
 export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -54,6 +66,7 @@ export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
     }
     if (!orgId && clinicAccess.organizationId) orgId = clinicAccess.organizationId;
+    if (!(await canUseIndianBilling(clinicId))) return reply.code(409).send(errorResponse(INDIA_BILLING_ONLY));
 
     // Verify patient profile
     const patient = await Patient.findById(patientId);
@@ -373,6 +386,10 @@ export async function collectPayment(req: FastifyRequest, reply: FastifyReply) {
       }
     }
 
+    if (paymentMethod === "upi" && (invoice.currency && invoice.currency !== "INR" || !(await canUseIndianBilling(String((invoice.clinicId as any)?._id || invoice.clinicId))))) {
+      return reply.code(409).send(errorResponse("UPI collection is only configured for INR clinics"));
+    }
+
     const remainingToPay = Number((invoice.totalAmount - (invoice.amountPaid || 0)).toFixed(2));
 
     invoice.status = "paid";
@@ -431,6 +448,10 @@ export async function getEncounterChargesPreview(req: FastifyRequest, reply: Fas
       return reply.code(access.statusCode).send(errorResponse(access.message));
     }
 
+    if (!(await canUseIndianBilling(encounter.clinicId.toString()))) {
+      return reply.code(409).send(errorResponse(INDIA_BILLING_ONLY));
+    }
+
     const { customConsultFee, customConsultationFee } = (req.query as any) || {};
     const parsedFee = customConsultFee !== undefined ? Number(customConsultFee) : (customConsultationFee !== undefined ? Number(customConsultationFee) : undefined);
     const { compileEncounterCharges } = await import("../services/ChargeCaptureService.ts");
@@ -462,6 +483,10 @@ export async function autoGenerateInvoiceForEncounter(req: FastifyRequest, reply
     const access = await checkOperationalRecordAccess(req, encounter);
     if (!access.allowed) {
       return reply.code(access.statusCode).send(errorResponse(access.message));
+    }
+
+    if (!(await canUseIndianBilling(encounter.clinicId.toString()))) {
+      return reply.code(409).send(errorResponse(INDIA_BILLING_ONLY));
     }
 
     const { autoGenerateEncounterInvoice } = await import("../services/ChargeCaptureService.ts");
@@ -518,6 +543,9 @@ export async function recordPartialPayment(req: FastifyRequest, reply: FastifyRe
     const validPaymentMethods = ["cash", "card", "upi", "net-banking", "insurance", "online"];
     if (!paymentMethod || !validPaymentMethods.includes(paymentMethod)) {
       return reply.code(400).send(errorResponse("Invalid or missing payment method"));
+    }
+    if (paymentMethod === "upi" && (invoice.currency && invoice.currency !== "INR" || !(await canUseIndianBilling(String(invoice.clinicId))))) {
+      return reply.code(409).send(errorResponse("UPI collection is only configured for INR clinics"));
     }
 
     const { updatedInvoice, newBalanceDue } = await withTransaction(async (session) => {
@@ -624,6 +652,10 @@ export async function getConsolidatedCheckoutPreview(req: FastifyRequest, reply:
       return reply.code(access.statusCode).send(errorResponse(access.message));
     }
 
+    if (!(await canUseIndianBilling(appointment.clinicId.toString()))) {
+      return reply.code(409).send(errorResponse(INDIA_BILLING_ONLY));
+    }
+
     const { customConsultFee, customConsultationFee } = (req.query as any) || {};
     const parsedFee = customConsultFee !== undefined ? Number(customConsultFee) : (customConsultationFee !== undefined ? Number(customConsultationFee) : undefined);
     const { compileAppointmentCharges } = await import("../services/ChargeCaptureService.ts");
@@ -682,6 +714,10 @@ export async function processConsolidatedCheckout(req: FastifyRequest, reply: Fa
     const access = await checkOperationalRecordAccess(req, appointment);
     if (!access.allowed) {
       return reply.code(access.statusCode).send(errorResponse(access.message));
+    }
+
+    if (!(await canUseIndianBilling(appointment.clinicId.toString()))) {
+      return reply.code(409).send(errorResponse(INDIA_BILLING_ONLY));
     }
 
     const parsedFee = customConsultFee !== undefined ? Number(customConsultFee) : (customConsultationFee !== undefined ? Number(customConsultationFee) : undefined);

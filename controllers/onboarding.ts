@@ -24,6 +24,7 @@ import { OnboardingDraft } from "../models/OnboardingDraft.ts";
 import { Subscription } from "../models/Subscription.ts";
 import { SubscriptionPayment } from "../models/SubscriptionPayment.ts";
 import { SaaSPlan } from "../models/SaaSPlan.ts";
+import { COUNTRY_SETTINGS, isCountryCode, isIanaTimezone, validateCountrySettings, type CountryCode } from "../utilities/countrySettings.ts";
 import { TwoFactorService } from "../services/TwoFactorService.ts";
 import { enqueueTransactionalEmail } from "../services/CommunicationOutbox.ts";
 import { validatePasswordStrength } from "../middleware/auth.ts";
@@ -208,13 +209,13 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
       org_name, city, address, org_phone, org_email, description, image_url, timings, working_days,
       admin_name, admin_email, admin_password, admin_phone,
       clinic_name, clinic_city, clinic_address, clinic_phone, clinic_email,
-      taxId, licenseNumber, currency, timezone, sendWelcomeEmail,
+      taxId, licenseNumber, countryCode, currency, timezone, sendWelcomeEmail,
     } = req.body as {
       org_name: string; city: string; address?: string; org_phone?: string; org_email?: string;
       description?: string; image_url?: string; timings?: string; working_days?: string;
       admin_name: string; admin_email: string; admin_password: string; admin_phone?: string;
       clinic_name?: string; clinic_city?: string; clinic_address?: string; clinic_phone?: string; clinic_email?: string;
-      taxId?: string; licenseNumber?: string; currency?: string; timezone?: string; sendWelcomeEmail?: boolean;
+      taxId?: string; licenseNumber?: string; countryCode?: CountryCode; currency?: string; timezone?: string; sendWelcomeEmail?: boolean;
     };
 
     if (!org_name || !city || !admin_name || !admin_email) {
@@ -223,6 +224,14 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
 
     if (/^[0-9+\s-]{6,}$/.test(city.trim())) {
       return reply.code(400).send(errorResponse("City appears to be a phone number. Please enter a valid city name (e.g. Mumbai, San Francisco)."));
+    }
+
+    if (countryCode && !isCountryCode(countryCode)) return reply.code(400).send(errorResponse("Unsupported country code"));
+    if (countryCode) {
+      const countryError = validateCountrySettings(countryCode, currency, timezone);
+      if (countryError) return reply.code(400).send(errorResponse(countryError));
+    } else if (timezone && !isIanaTimezone(timezone)) {
+      return reply.code(400).send(errorResponse("A valid IANA timezone is required"));
     }
 
     const existingOrg = await Organization.findOne({
@@ -238,11 +247,18 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
       // select a plan, and no caller can set quotas directly through onboarding.
       const canConfigureCommercialTerms = isRootUser || process.env.NODE_ENV === "test";
       const selectedPlan = canConfigureCommercialTerms ? ((req.body as any).plan || "starter") : "starter";
-      const planLimits = selectedPlan === "enterprise"
+      const configuredPlan = await SaaSPlan.findOne({ slug: selectedPlan, status: "active" }).lean()
+        || (selectedPlan === "pro" ? await SaaSPlan.findOne({ slug: "professional", status: "active" }).lean() : null);
+      const fallbackLimits = selectedPlan === "enterprise"
         ? { maxClinics: 99, maxDoctors: 999, maxStaff: 999 }
         : selectedPlan === "pro"
           ? { maxClinics: 5, maxDoctors: 15, maxStaff: 25 }
           : { maxClinics: 1, maxDoctors: 2, maxStaff: 5 };
+      const planLimits = {
+        maxClinics: configuredPlan?.limits?.maxClinics ?? fallbackLimits.maxClinics,
+        maxDoctors: configuredPlan?.limits?.maxDoctors ?? fallbackLimits.maxDoctors,
+        maxStaff: configuredPlan?.limits?.maxStaff ?? fallbackLimits.maxStaff,
+      };
 
       const org = await createWithSession(Organization, {
         name: org_name,
@@ -258,8 +274,9 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
         ...planLimits,
         taxId: taxId?.trim() || undefined,
         licenseNumber: licenseNumber?.trim() || undefined,
-        currency: currency || "INR",
-        timezone: timezone || "Asia/Kolkata",
+        countryCode,
+        currency: countryCode ? COUNTRY_SETTINGS[countryCode].currency : (currency || "INR"),
+        timezone: timezone || (countryCode ? COUNTRY_SETTINGS[countryCode].defaultTimezone : null) || "Asia/Kolkata",
         onboardingStatus: "CLINIC_CREATED",
         isOnboarded: false,
       }, session);
@@ -327,7 +344,7 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
       const orgIdStr = org._id.toString();
 
       // Trial duration is server-owned, not supplied by a browser request.
-      await subscriptionService.getOrInitializeSubscription(orgIdStr, 15);
+      await subscriptionService.getOrInitializeSubscription(orgIdStr, configuredPlan?.trialDays ?? 15);
 
       // Only set auth cookies if this is an initial unauthenticated onboarding flow (not a root admin adding orgs)
       if (!isRootUser) {
@@ -410,7 +427,7 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
     const { id } = req.params as { id: string };
     const {
       name, city, address, phone, email, plan, maxClinics, maxDoctors, maxStaff, status,
-      taxId, licenseNumber, currency, timezone, image_url, logo_url, images, description, timings, working_days
+      taxId, licenseNumber, countryCode, currency, timezone, image_url, logo_url, images, description, timings, working_days
     } = req.body as any;
 
     if (req.user?.role !== "root" && req.user?.organization_id !== id) {
@@ -421,6 +438,28 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
       return reply.code(400).send(errorResponse("City appears to be a phone number. Please enter a valid city name."));
     }
 
+    if (countryCode && !isCountryCode(countryCode)) return reply.code(400).send(errorResponse("Unsupported country code"));
+    let newCountryDefaultTimezone: string | null = null;
+    if (countryCode !== undefined || currency !== undefined || timezone !== undefined) {
+      const currentOrg = await Organization.findById(id).select("countryCode currency timezone").lean();
+      if (!currentOrg) return reply.code(404).send(errorResponse("Organization not found"));
+      if (currentOrg.countryCode && countryCode && currentOrg.countryCode !== countryCode) {
+        return reply.code(409).send(errorResponse("Changing an organization's legal country requires a reviewed migration"));
+      }
+      const effectiveCountry = (countryCode || currentOrg.countryCode) as CountryCode | undefined;
+      if (effectiveCountry) {
+        if (countryCode && !currentOrg.countryCode) newCountryDefaultTimezone = COUNTRY_SETTINGS[effectiveCountry].defaultTimezone;
+        const countryError = validateCountrySettings(
+          effectiveCountry,
+          currency || (countryCode ? undefined : currentOrg.currency),
+          timezone || (countryCode && !currentOrg.countryCode ? COUNTRY_SETTINGS[effectiveCountry].defaultTimezone || undefined : currentOrg.timezone),
+        );
+        if (countryError) return reply.code(400).send(errorResponse(countryError));
+      } else if (timezone && !isIanaTimezone(timezone)) {
+        return reply.code(400).send(errorResponse("A valid IANA timezone is required"));
+      }
+    }
+
     const updateData: any = {};
     if (name) updateData.name = name;
     if (city) updateData.city = city;
@@ -429,7 +468,11 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
     if (email !== undefined) updateData.email = email;
     if (taxId !== undefined) updateData.taxId = taxId;
     if (licenseNumber !== undefined) updateData.licenseNumber = licenseNumber;
-    if (currency) updateData.currency = currency;
+    if (countryCode) {
+      updateData.countryCode = countryCode;
+      updateData.currency = COUNTRY_SETTINGS[countryCode as CountryCode].currency;
+      if (!timezone && newCountryDefaultTimezone) updateData.timezone = newCountryDefaultTimezone;
+    } else if (currency) updateData.currency = currency;
     if (timezone) updateData.timezone = timezone;
     if (image_url !== undefined) updateData.image_url = image_url;
     if (logo_url !== undefined) updateData.logo_url = logo_url;
@@ -1217,9 +1260,9 @@ export async function enableAdminDoctorProfile(req: FastifyRequest, reply: Fasti
         organizationId: orgId,
         userId: req.user!.id,
         specialization: specialization.trim(),
-        qualification: qualification?.trim() || "MD / MBBS",
-        experience_years: experience_years ? Number(experience_years) : 5,
-        fees: fees ? Number(fees) : 500,
+        qualification: qualification?.trim() || null,
+        experience_years: experience_years !== undefined ? Number(experience_years) : null,
+        fees: fees !== undefined ? Number(fees) : 0,
         timings: timings || null,
         working_days: working_days || null,
         description: description || null,

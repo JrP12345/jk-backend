@@ -2,6 +2,8 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { Appointment } from "../models/Appointment.ts";
 import { AppointmentPayment } from "../models/AppointmentPayment.ts";
+import { Organization } from "../models/Organization.ts";
+import { Clinic } from "../models/Clinic.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { razorpayService } from "../services/billing/RazorpayService.ts";
@@ -58,10 +60,22 @@ export async function createAppointmentPaymentOrder(req: FastifyRequest, reply: 
       return reply.code(403).send(errorResponse("Unauthorized access to appointment"));
     }
 
+    const clinic = await Clinic.findById(appointment.clinicId).select("organizationId").lean();
+    const organizationId = clinic?.organizationId || appointment.organizationId;
+    const organization = organizationId
+      ? await Organization.findById(organizationId).select("countryCode currency").lean()
+      : null;
+    if (!organization || (organization.countryCode && organization.countryCode !== "IN") || (organization.currency && organization.currency !== "INR")) {
+      return reply.code(409).send(errorResponse("Online checkout is not configured for this organization's country and currency"));
+    }
+
     let invoice = await Invoice.findOne({ appointmentId: appointment._id });
     if (!invoice) {
       const assignment = await DoctorAssignment.findOne({ doctorId: appointment.doctorId, clinicId: appointment.clinicId });
-      const fees = assignment?.fees || 500;
+      const fees = Number(assignment?.fees ?? appointment.paymentAmount ?? 0);
+      if (!Number.isFinite(fees) || fees <= 0) {
+        return reply.code(409).send(errorResponse("No payable consultation fee is configured for this appointment"));
+      }
       const { generateClinicInvoiceNumber } = await import("../utilities/invoiceNumber.ts");
       const invoiceNumber = await generateClinicInvoiceNumber(appointment.clinicId.toString());
       invoice = await Invoice.create({
@@ -306,6 +320,16 @@ export async function collectCounterPayment(req: FastifyRequest, reply: FastifyR
     }
     if (!["upi", "cash", "card"].includes(paymentMethod)) {
       return reply.code(400).send(errorResponse("Unsupported counter payment method"));
+    }
+    if (paymentMethod === "upi") {
+      const clinic = await Clinic.findById(appointment.clinicId).select("organizationId").lean();
+      const organizationId = clinic?.organizationId || appointment.organizationId;
+      const organization = organizationId
+        ? await Organization.findById(organizationId).select("countryCode currency").lean()
+        : null;
+      if (!organization || (organization.countryCode && organization.countryCode !== "IN") || (organization.currency && organization.currency !== "INR")) {
+        return reply.code(409).send(errorResponse("UPI collection is only configured for INR clinics"));
+      }
     }
 
     let invoice: any = await Invoice.findOne({ appointmentId: appointment._id });
