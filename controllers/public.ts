@@ -36,6 +36,60 @@ import {
   formatCursorResult,
 } from "../utilities/cursorPagination.ts";
 
+export async function getPublicDoctorProfile(req: FastifyRequest, reply: FastifyReply) {
+  const { doctorId } = req.params as { doctorId: string };
+  if (!mongoose.isValidObjectId(doctorId)) return reply.code(400).send(errorResponse("Invalid doctor link"));
+  try {
+    const [user, profile] = await Promise.all([
+      User.findOne({ _id: doctorId, role: "doctor", isActive: { $ne: false } }).select("name").lean(),
+      Doctor.findOne({ userId: doctorId, isActive: { $ne: false } }).lean(),
+    ]);
+    // Clinic listings are based on active assignments. Older doctors may have
+    // an assignment without a separate Doctor profile record.
+    if (!user || profile?.isActive === false) return reply.code(404).send(errorResponse("Doctor profile is unavailable"));
+    const assignments = await DoctorAssignment.find({ doctorId, isActive: true }).lean();
+    if (assignments.length === 0) return reply.code(404).send(errorResponse("Doctor profile is unavailable"));
+    const organizations = await Organization.find({ _id: { $in: assignments.map((item) => item.organizationId) }, isActive: { $ne: false }, status: { $ne: "inactive" } })
+      .select("name logo_url image_url currency").lean();
+    const organizationMap = new Map(organizations.map((item) => [item._id.toString(), item]));
+    const clinics = await Clinic.find({ _id: { $in: assignments.map((item) => item.clinicId) }, isActive: { $ne: false } })
+      .select("name city address logo timezone brandColor organizationId").lean();
+    const clinicMap = new Map(clinics.map((clinic) => [clinic._id.toString(), clinic]));
+    const publicAssignments = assignments.filter((item) => {
+      const organizationId = item.organizationId.toString();
+      return organizationMap.has(organizationId) && clinicMap.get(item.clinicId.toString())?.organizationId?.toString() === organizationId;
+    });
+    const selectedAssignment = publicAssignments.find((item) => item.organizationId.toString() === profile?.organizationId?.toString()) || publicAssignments[0];
+    if (!selectedAssignment) return reply.code(404).send(errorResponse("Doctor profile is unavailable"));
+    const organization = organizationMap.get(selectedAssignment.organizationId.toString())!;
+    const organizationAssignments = publicAssignments.filter((item) => item.organizationId.toString() === organization._id.toString());
+    const locations = await Promise.all(organizationAssignments.map(async (assignment) => {
+      const clinic = clinicMap.get(assignment.clinicId.toString());
+      if (!clinic) return null;
+      return {
+        id: clinic._id.toString(), name: clinic.name, city: clinic.city, address: clinic.address || "",
+        logo: clinic.logo || organization.logo_url || null,
+        brandColor: clinic.brandColor || "#0F6F66",
+        fees: assignment.fees, feeType: assignment.feeType, bookingMode: assignment.bookingMode,
+        onlineBookingAvailable: await canCreateClinicBooking(clinic._id.toString()),
+      };
+    }));
+    const publicLocations = locations.filter((location) => location !== null);
+    if (publicLocations.length === 0) return reply.code(404).send(errorResponse("Doctor profile is unavailable"));
+    return reply.send(successResponse({
+      id: user._id.toString(), name: user.name, specialization: profile?.specialization || "General Medicine",
+      qualification: profile?.qualification || "", experienceYears: profile?.experience_years || 0,
+      description: profile?.description || "", imageUrl: profile?.image_url || null,
+      languages: profile?.languages || [], organizationName: organization.name,
+      organizationLogo: organization.logo_url || organization.image_url || null,
+      currency: organization.currency || "INR", locations: publicLocations,
+    }));
+  } catch (error) {
+    req.log.error({ error }, "Failed to load public doctor profile");
+    return reply.code(500).send(errorResponse("Doctor profile could not be loaded"));
+  }
+}
+
 export async function getOrganizations(req: FastifyRequest, reply: FastifyReply) {
   try {
     const query = req.query as { cursor?: string; limit?: string | number; format?: string };

@@ -8,9 +8,10 @@ import { isIanaTimezone } from "../utilities/countrySettings.ts";
 export async function createClinic(req: FastifyRequest, reply: FastifyReply) {
   try {
     const {
-      organizationId: reqOrgId, name, logo, description, phone, email, address, city, timezone, latitude, longitude, timings, facilities, upiVpa, merchantName
+      organizationId: reqOrgId, name, logo, description, brandColor, phone, email, address, city, timezone, latitude, longitude, timings, facilities, upiVpa, merchantName
     } = (req.body || {}) as {
       organizationId?: string; name: string; city: string; logo?: string; description?: string;
+      brandColor?: "#0F6F66" | "#1D4ED8" | "#6D28D9" | "#9A3412";
       phone?: string; email?: string; address?: string; timezone?: string; latitude?: number;
       longitude?: number; timings?: string; facilities?: string[]; upiVpa?: string; merchantName?: string;
     };
@@ -44,6 +45,7 @@ export async function createClinic(req: FastifyRequest, reply: FastifyReply) {
       name,
       logo: logo || null,
       description: description || null,
+      brandColor: brandColor || "#0F6F66",
       phone: phone || null,
       email: email || null,
       address: address || null,
@@ -116,9 +118,9 @@ export async function updateClinic(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const {
-      name, logo, image_url, description, phone, email, address, city, timezone, latitude, longitude, timings, facilities, upiVpa, merchantName
+      name, logo, image_url, description, brandColor, phone, email, address, city, timezone, latitude, longitude, timings, facilities, upiVpa, merchantName
     } = req.body as {
-      name: string; city: string; logo?: string; image_url?: string; description?: string;
+      name: string; city: string; logo?: string; image_url?: string; description?: string; brandColor?: string;
       phone?: string; email?: string; address?: string; timezone?: string; latitude?: number; longitude?: number;
       timings?: string; facilities?: string[]; upiVpa?: string; merchantName?: string;
     };
@@ -144,6 +146,7 @@ export async function updateClinic(req: FastifyRequest, reply: FastifyReply) {
         name,
         logo: logo || image_url || null,
         description: description || null,
+        ...(brandColor !== undefined && { brandColor }),
         phone: phone || null,
         email: email || null,
         address: address || null,

@@ -43,6 +43,7 @@ import { EVENT_TYPES } from "../events/types.ts";
 import { encrypt, decrypt } from "../utilities/encryption.ts";
 import { seedModulesForOrg } from "./moduleRegistry.ts";
 import { subscriptionService } from "../services/billing/SubscriptionService.ts";
+import { summarizeSubscription } from "../services/billing/subscriptionSummary.ts";
 import { getFrontendBaseUrl } from "../utilities/config.ts";
 import {
   ADMIN_PERMISSIONS,
@@ -409,9 +410,31 @@ export async function getAllOrganizations(req: FastifyRequest, reply: FastifyRep
     }
 
     const orgs = await Organization.find(query).sort({ createdAt: -1 }).lean();
+    const orgIds = orgs.map((o) => o._id);
+    const [subscriptions, payments, admins] = await Promise.all([
+      Subscription.find({ organizationId: { $in: orgIds } }).populate("planId", "name slug monthlyPrice annualPrice").lean(),
+      SubscriptionPayment.aggregate([
+        { $match: { organizationId: { $in: orgIds } } },
+        { $sort: { createdAt: -1, _id: -1 } },
+        { $group: {
+          _id: "$organizationId",
+          latestStatus: { $first: "$status" },
+          hasCapturedPayment: { $max: { $cond: [{ $eq: ["$status", "captured"] }, 1, 0] } },
+        } },
+      ]),
+      OrgMember.find({ organizationId: { $in: orgIds }, role: "admin" }).populate("userId", "name email").lean(),
+    ]);
+    const subscriptionsByOrg = new Map(subscriptions.map((sub) => [sub.organizationId.toString(), sub]));
+    const paidOrgs = new Set(payments.filter((payment) => payment.hasCapturedPayment).map((payment) => payment._id.toString()));
+    const latestPaymentByOrg = new Map<string, string>(payments.map((payment) => [payment._id.toString(), payment.latestStatus]));
+    const adminsByOrg = new Map(admins.map((member: any) => [member.organizationId.toString(), {
+      name: member.userId?.name || "Admin", email: member.userId?.email || null,
+    }]));
     const formattedOrgs = orgs.map((o: any) => ({
       ...o,
       id: o._id ? o._id.toString() : o.id,
+      primaryAdmin: adminsByOrg.get(o._id.toString()) || null,
+      subscriptionSummary: summarizeSubscription(o, subscriptionsByOrg.get(o._id.toString()) as any || null, paidOrgs.has(o._id.toString()), new Date(), latestPaymentByOrg.get(o._id.toString()) || null),
     }));
 
     return reply.send(successResponse(formattedOrgs, "Organizations fetched successfully"));
@@ -485,37 +508,15 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
       updateData.isActive = status === "active";
     }
 
-    // Synchronize subscription tier quotas and linked Subscription
     if (plan) {
-      updateData.plan = plan;
-
-      const planSlugs = [plan.toLowerCase()];
-      if (plan.toLowerCase() === "pro") planSlugs.push("professional");
-      if (plan.toLowerCase() === "professional") planSlugs.push("pro");
-
-      const saasPlan = await SaaSPlan.findOne({ slug: { $in: planSlugs } }).lean();
-
-      const defaultMaxClinics = plan === "enterprise" ? 99 : plan === "pro" ? 5 : 1;
-      const defaultMaxDoctors = plan === "enterprise" ? 999 : plan === "pro" ? 15 : 2;
-      const defaultMaxStaff = plan === "enterprise" ? 999 : plan === "pro" ? 25 : 5;
-
-      updateData.maxClinics = maxClinics !== undefined ? maxClinics : (saasPlan?.limits?.maxClinics ?? defaultMaxClinics);
-      updateData.maxDoctors = maxDoctors !== undefined ? maxDoctors : (saasPlan?.limits?.maxDoctors ?? defaultMaxDoctors);
-      updateData.maxStaff = maxStaff !== undefined ? maxStaff : (saasPlan?.limits?.maxStaff ?? defaultMaxStaff);
-
-      if (saasPlan) {
-        await Subscription.findOneAndUpdate(
-          { organizationId: id },
-          {
-            planId: saasPlan._id,
-            status: "active",
-          }
-        );
-      }
-    } else {
+      return reply.code(400).send(errorResponse("Change plans through Billing so payment and subscription dates stay in sync"));
+    }
+    if (req.user?.role === "root") {
       if (maxClinics !== undefined) updateData.maxClinics = maxClinics;
       if (maxDoctors !== undefined) updateData.maxDoctors = maxDoctors;
       if (maxStaff !== undefined) updateData.maxStaff = maxStaff;
+    } else if (maxClinics !== undefined || maxDoctors !== undefined || maxStaff !== undefined) {
+      return reply.code(403).send(errorResponse("Only Root can adjust organization quota overrides"));
     }
 
     const updatedOrg = await Organization.findByIdAndUpdate(id, updateData, { returnDocument: "after" }).lean();
@@ -1700,16 +1701,8 @@ export async function syncOrganizationPlanQuotas() {
         updatedCount++;
       }
 
-      // Ensure subscription is synced with matchedPlan if plan is upgraded
-      if (matchedPlan && (plan === "pro" || plan === "enterprise")) {
-        await Subscription.findOneAndUpdate(
-          { organizationId: org._id },
-          {
-            planId: matchedPlan._id,
-            status: "active",
-          }
-        );
-      }
+      // Subscription state is owned by Billing. A quota sync must not activate
+      // an unpaid or expired commercial plan.
     }
 
     if (updatedCount > 0) {

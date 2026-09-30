@@ -46,7 +46,7 @@ import {
 } from "../controllers/cashierShift.ts";
 
 export default async function billingRoutes(app: FastifyInstance) {
-  const auth = { preHandler: [authenticate] };
+  const manageSaaS = { preHandler: [authenticate, checkAnyPermission("MANAGE_ORGANIZATION")] };
   const rootAdminAuth = { preHandler: [authenticate, requirePlatformRoot()] };
   const viewInvoices = {
     preHandler: [authenticate, requireModule("billing"), checkAnyPermissionOrRoles(["patient", "family_member"], "VIEW_BILLING", "MANAGE_BILLING")],
@@ -68,16 +68,16 @@ export default async function billingRoutes(app: FastifyInstance) {
   app.get("/api/billing/plans", getSaaSPlans);
 
   // Authenticated Organization Subscription & Usage
-  app.get("/api/billing/subscription", auth, getSubscriptionDetails);
-  app.get("/api/billing/usage", auth, getOrganizationUsageMetrics);
-  app.get("/api/billing/saas-invoices", auth, getSaaSInvoices);
+  app.get("/api/billing/subscription", manageSaaS, getSubscriptionDetails);
+  app.get("/api/billing/usage", manageSaaS, getOrganizationUsageMetrics);
+  app.get("/api/billing/saas-invoices", manageSaaS, getSaaSInvoices);
 
   // Razorpay Checkout, Verification & Cancellation
-  app.post("/api/billing/checkout", auth, createCheckoutOrderController);
-  app.post("/api/billing/validate-downgrade", auth, validatePlanDowngradeController);
-  app.post("/api/billing/switch-plan", auth, directSwitchPlanController);
-  app.post("/api/billing/verify-payment", auth, verifyPaymentController);
-  app.post("/api/billing/cancel", auth, cancelSubscriptionController);
+  app.post("/api/billing/checkout", manageSaaS, createCheckoutOrderController);
+  app.post("/api/billing/validate-downgrade", manageSaaS, validatePlanDowngradeController);
+  app.post("/api/billing/switch-plan", manageSaaS, directSwitchPlanController);
+  app.post("/api/billing/verify-payment", manageSaaS, verifyPaymentController);
+  app.post("/api/billing/cancel", manageSaaS, cancelSubscriptionController);
 
   // Razorpay Webhook Endpoint (No Auth header, verified via HMAC signature)
   app.post("/api/billing/webhook", razorpayWebhookController);

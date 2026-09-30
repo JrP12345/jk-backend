@@ -74,7 +74,7 @@ export class RazorpayService {
   async createOrder(params: CreateOrderParams): Promise<RazorpayOrderResponse> {
     const { keyId, keySecret } = await this.getCredentials();
 
-    if (process.env.NODE_ENV === "test" || keyId.startsWith("rzp_test_mock")) {
+    if (process.env.NODE_ENV === "test") {
       return {
         id: `order_test_${Date.now()}`,
         entity: "order",
@@ -136,7 +136,9 @@ export class RazorpayService {
         .createHmac("sha256", keySecret)
         .update(`${orderId}|${paymentId}`)
         .digest("hex");
-      return generatedSignature === signature;
+      const received = Buffer.from(signature || "", "hex");
+      const expected = Buffer.from(generatedSignature, "hex");
+      return received.length === expected.length && crypto.timingSafeEqual(received, expected);
     } catch {
       if (process.env.NODE_ENV === "test") {
         const generatedSignature = crypto
@@ -147,6 +149,25 @@ export class RazorpayService {
       }
       return false;
     }
+  }
+
+  async isPaymentCaptured(paymentId: string, orderId: string, amountInRupees: number): Promise<boolean> {
+    const { keyId, keySecret } = await this.getCredentials();
+    if (process.env.NODE_ENV === "test") return true;
+    const auth = Buffer.from(`${keyId}:${keySecret}`).toString("base64");
+    const response = await resilientHttpClient.request<{
+      id: string; order_id: string; status: string; amount: number; currency: string;
+    }>(`https://api.razorpay.com/v1/payments/${encodeURIComponent(paymentId)}`, {
+      provider: "razorpay",
+      method: "GET",
+      headers: { Authorization: `Basic ${auth}` },
+      timeoutMs: 10_000,
+      enableCircuitBreaker: true,
+    });
+    const payment = response.data;
+    return payment.id === paymentId && payment.order_id === orderId &&
+      payment.status === "captured" && payment.currency === "INR" &&
+      payment.amount === Math.round(amountInRupees * 100);
   }
 
   /**
@@ -161,7 +182,9 @@ export class RazorpayService {
       .update(rawBody)
       .digest("hex");
 
-    return expectedSignature === signature;
+    const received = Buffer.from(signature || "", "hex");
+    const expected = Buffer.from(expectedSignature, "hex");
+    return received.length === expected.length && crypto.timingSafeEqual(received, expected);
   }
 
   /**

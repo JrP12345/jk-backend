@@ -9,7 +9,7 @@ import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { PatientFeedback } from "../models/PatientFeedback.ts";
 
 describe("Dynamic public clinic catalog", () => {
-  let top: string, cheap: string, unrated: string;
+  let top: string, cheap: string, unrated: string, hiddenClinicId: string, publicDoctorId: string, hiddenDoctorId: string, assignmentOnlyDoctorId: string;
   beforeAll(async () => {
     const org = await Organization.create({ name: "Published Catalog", city: "Surat", isActive: true });
     const hiddenOrg = await Organization.create({ name: "Hidden Catalog", city: "Hidden City", isActive: false });
@@ -30,9 +30,32 @@ describe("Dynamic public clinic catalog", () => {
         clinicId: clinic._id, doctorId: user._id, patientId: new mongoose.Types.ObjectId(), appointmentId: new mongoose.Types.ObjectId(), rating, npsScore: 8,
       })));
       if (definition.name === "Highest Rating") top = clinic.id;
+      if (definition.name === "Highest Rating") publicDoctorId = user.id;
+      if (definition.name === "Hidden Clinic") hiddenDoctorId = user.id;
+      if (definition.name === "Hidden Clinic") hiddenClinicId = clinic.id;
       if (definition.name === "Lowest Fee") cheap = clinic.id;
       if (definition.name === "Unrated Clinic") unrated = clinic.id;
     }
+    const assignmentOnlyDoctor = await User.create({ name: "Clinic listed doctor", role: "doctor", isActive: true });
+    assignmentOnlyDoctorId = assignmentOnlyDoctor.id;
+    await DoctorAssignment.create({ clinicId: hiddenClinicId, doctorId: assignmentOnlyDoctor._id, organizationId: hiddenOrg._id, fees: 50, workingHours: "{}" });
+    await DoctorAssignment.create({ clinicId: top, doctorId: assignmentOnlyDoctor._id, organizationId: org._id, fees: 250, workingHours: "{}" });
+  });
+
+  it("serves only active public doctor profiles and their clinic locations", async () => {
+    const response = await app.inject({ method: "GET", url: `/api/public/doctors/${publicDoctorId}/profile` });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().data).toMatchObject({ id: publicDoctorId, organizationName: "Published Catalog" });
+    expect(response.json().data.locations[0]).toMatchObject({ id: top, fees: 300 });
+    expect(response.body).not.toContain("password");
+    expect((await app.inject({ method: "GET", url: `/api/public/doctors/${hiddenDoctorId}/profile` })).statusCode).toBe(404);
+  });
+
+  it("serves a listed doctor even when the optional profile record is missing", async () => {
+    const response = await app.inject({ method: "GET", url: `/api/public/doctors/${assignmentOnlyDoctorId}/profile` });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().data).toMatchObject({ id: assignmentOnlyDoctorId, name: "Clinic listed doctor", locations: [{ id: top, fees: 250 }] });
+    expect(response.json().data.locations).toHaveLength(1);
   });
 
   it("publishes full-directory facets even when the result page has one clinic", async () => {

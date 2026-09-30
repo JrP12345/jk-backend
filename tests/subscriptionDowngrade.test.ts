@@ -65,8 +65,8 @@ describe("Subscription Plan Downgrade & Active Resource Quota Enforcement", () =
       name: "Starter Single Clinic",
       slug: "starter_1",
       description: "For solo clinics",
-      monthlyPrice: 999,
-      annualPrice: 9990,
+      monthlyPrice: 0,
+      annualPrice: 0,
       limits: {
         maxClinics: 1,
         maxDoctors: 2,
@@ -199,4 +199,3 @@ describe("Subscription Plan Downgrade & Active Resource Quota Enforcement", () =
     expect(activeClinic2?.isActive).toBe(true);
   });
 });
-

@@ -7,8 +7,10 @@ import { Organization } from "../models/Organization.ts";
 import { subscriptionService, PlanDowngradeViolationError } from "../services/billing/SubscriptionService.ts";
 import { razorpayService } from "../services/billing/RazorpayService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { resolveTargetOrganizationId, isRootRequest } from "../utilities/tenant.ts";
+import { resolveTargetOrganizationId } from "../utilities/tenant.ts";
 import { enqueueTransactionalEmail } from "../services/CommunicationOutbox.ts";
+import { summarizeSubscription } from "../services/billing/subscriptionSummary.ts";
+import { withTransaction } from "../utilities/transaction.ts";
 
 /**
  * Get active commercial SaaS plans
@@ -28,17 +30,22 @@ export async function getSaaSPlans(req: FastifyRequest, reply: FastifyReply) {
  */
 export async function getSubscriptionDetails(req: FastifyRequest, reply: FastifyReply) {
   try {
-    let orgId = await resolveTargetOrganizationId(req);
-    if (!orgId && isRootRequest(req)) {
-      const defaultOrg = await Organization.findOne({ isActive: { $ne: false } }).sort({ createdAt: 1 });
-      if (defaultOrg) orgId = defaultOrg._id.toString();
-    }
+    const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) {
       return reply.code(400).send(errorResponse("No organization linked to account"));
     }
 
     const subscription = await subscriptionService.getOrInitializeSubscription(orgId);
-    return reply.code(200).send(successResponse(subscription));
+    const [organization, paidPayment, latestPayment] = await Promise.all([
+      Organization.findById(orgId).select("plan isActive status").lean(),
+      SubscriptionPayment.exists({ organizationId: orgId, status: "captured" }),
+      SubscriptionPayment.findOne({ organizationId: orgId }).sort({ createdAt: -1 }).select("status").lean(),
+    ]);
+    if (!organization) return reply.code(404).send(errorResponse("Organization not found"));
+    return reply.code(200).send(successResponse({
+      ...subscription.toJSON(),
+      summary: summarizeSubscription(organization, subscription.toObject() as any, !!paidPayment, new Date(), latestPayment?.status || null),
+    }));
   } catch (err: any) {
     return reply.code(500).send(errorResponse("Failed to fetch subscription details", err.message));
   }
@@ -49,11 +56,7 @@ export async function getSubscriptionDetails(req: FastifyRequest, reply: Fastify
  */
 export async function getOrganizationUsageMetrics(req: FastifyRequest, reply: FastifyReply) {
   try {
-    let orgId = await resolveTargetOrganizationId(req);
-    if (!orgId && isRootRequest(req)) {
-      const defaultOrg = await Organization.findOne({ isActive: { $ne: false } }).sort({ createdAt: 1 });
-      if (defaultOrg) orgId = defaultOrg._id.toString();
-    }
+    const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) {
       return reply.code(400).send(errorResponse("No organization linked to account"));
     }
@@ -181,7 +184,7 @@ export async function verifyPaymentController(req: FastifyRequest, reply: Fastif
       razorpaySignature
     );
 
-    return reply.code(200).send(successResponse(result, "Subscription payment verified and activated successfully"));
+    return reply.code(200).send(successResponse(result, result.success ? "Subscription payment verified and activated successfully" : result.message));
   } catch (err: any) {
     return reply.code(400).send(errorResponse(err.message || "Payment verification failed"));
   }
@@ -225,11 +228,7 @@ export async function cancelSubscriptionController(req: FastifyRequest, reply: F
  */
 export async function getSaaSInvoices(req: FastifyRequest, reply: FastifyReply) {
   try {
-    let orgId = await resolveTargetOrganizationId(req);
-    if (!orgId && isRootRequest(req)) {
-      const defaultOrg = await Organization.findOne({ isActive: { $ne: false } }).sort({ createdAt: 1 });
-      if (defaultOrg) orgId = defaultOrg._id.toString();
-    }
+    const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) {
       return reply.code(400).send(errorResponse("No organization linked to account"));
     }
@@ -370,23 +369,18 @@ export async function adminExtendTrial(req: FastifyRequest, reply: FastifyReply)
 }
 
 /**
- * Platform Admin: Override & Manually Activate Subscription (Mark as Paid)
+ * Platform Admin: Explicit, attributed manual entitlement grant.
  */
 export async function adminActivateSubscription(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id } = req.params as { id: string };
-    const { planSlug, billingCycle = "monthly" } = (req.body || {}) as { planSlug?: string; billingCycle?: "monthly" | "annual" };
-
-    const subscription = await Subscription.findById(id);
-    if (!subscription) {
-      return reply.code(404).send(errorResponse("Subscription not found"));
+    const { planSlug, billingCycle = "monthly", reason } = (req.body || {}) as { planSlug?: string; billingCycle?: "monthly" | "annual"; reason?: string };
+    if (!planSlug || !reason?.trim() || reason.trim().length < 10) {
+      return reply.code(400).send(errorResponse("An active plan and a reason of at least 10 characters are required for a manual grant"));
     }
 
-    let plan = await SaaSPlan.findOne({ slug: planSlug || "starter" });
-    if (!plan) {
-      plan = await SaaSPlan.findOne({ status: "active" });
-    }
-    if (!plan) throw new Error("No active plan found");
+    const plan = await SaaSPlan.findOne({ slug: planSlug, status: "active" });
+    if (!plan) return reply.code(400).send(errorResponse("Selected plan is not active"));
 
     const now = new Date();
     const periodEnd = new Date(now);
@@ -396,22 +390,32 @@ export async function adminActivateSubscription(req: FastifyRequest, reply: Fast
       periodEnd.setMonth(periodEnd.getMonth() + 1);
     }
 
-    subscription.planId = plan._id;
-    subscription.status = "active";
-    subscription.billingCycle = billingCycle;
-    subscription.currentPeriodStart = now;
-    subscription.currentPeriodEnd = periodEnd;
-    await subscription.save();
-
-    // Sync Organization limits
-    await Organization.findByIdAndUpdate(subscription.organizationId, {
-      plan: plan.slug,
-      maxClinics: plan.limits?.maxClinics ?? 1,
-      maxDoctors: plan.limits?.maxDoctors ?? 2,
-      maxStaff: plan.limits?.maxStaff ?? 5,
+    const subscription = await withTransaction(async (session) => {
+      const target = await Subscription.findById(id).session(session);
+      if (!target) return null;
+      target.planId = plan._id;
+      target.status = "active";
+      target.entitlementSource = "manual";
+      target.manualGrantReason = reason.trim();
+      target.manualGrantedBy = req.user!.id as any;
+      target.manualGrantedAt = now;
+      target.cancelledAt = null;
+      target.billingCycle = billingCycle;
+      target.currentPeriodStart = now;
+      target.currentPeriodEnd = periodEnd;
+      await target.save({ session });
+      const organization = await Organization.findByIdAndUpdate(target.organizationId, {
+        plan: plan.slug,
+        maxClinics: plan.limits?.maxClinics ?? 1,
+        maxDoctors: plan.limits?.maxDoctors ?? 2,
+        maxStaff: plan.limits?.maxStaff ?? 5,
+      }, { session });
+      if (!organization) throw new Error("Subscription organization not found");
+      return target;
     });
+    if (!subscription) return reply.code(404).send(errorResponse("Subscription not found"));
 
-    return reply.code(200).send(successResponse(subscription, "Subscription activated successfully as paid"));
+    return reply.code(200).send(successResponse(subscription, "Manual subscription access granted"));
   } catch (err: any) {
     return reply.code(500).send(errorResponse("Failed to activate subscription", err.message));
   }

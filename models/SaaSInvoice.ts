@@ -4,7 +4,7 @@ const SaaSInvoiceSchema = new Schema({
   invoiceNumber: { type: String, required: true, unique: true, index: true },
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
   subscriptionId: { type: Schema.Types.ObjectId, ref: "Subscription", required: true, index: true },
-  paymentId: { type: Schema.Types.ObjectId, ref: "SubscriptionPayment", index: true },
+  paymentId: { type: Schema.Types.ObjectId, ref: "SubscriptionPayment", unique: true, sparse: true, index: true },
   planName: { type: String, required: true },
   billingCycle: { type: String, enum: ["monthly", "annual"], default: "monthly" },
   subtotal: { type: Number, required: true },

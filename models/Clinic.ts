@@ -6,6 +6,7 @@ const ClinicSchema = new Schema({
   logo: { type: String },
   images: [{ type: String }],
   description: { type: String },
+  brandColor: { type: String, enum: ["#0F6F66", "#1D4ED8", "#6D28D9", "#9A3412"], default: "#0F6F66" },
   phone: { type: String },
   email: { type: String },
   address: { type: String },

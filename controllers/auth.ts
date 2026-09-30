@@ -1301,8 +1301,14 @@ export async function impersonateUser(req: FastifyRequest, reply: FastifyReply) 
     }
 
     // Determine target user's organization context
-    const orgMember = await OrgMember.findOne({ userId: targetUser._id });
-    const targetOrgId = targetUser.organization_id?.toString() || orgMember?.organizationId?.toString();
+    const requestedOrgId = organizationId?.toString();
+    const orgMember = requestedOrgId
+      ? await OrgMember.findOne({ userId: targetUser._id, organizationId: requestedOrgId })
+      : await OrgMember.findOne({ userId: targetUser._id });
+    if (requestedOrgId && !orgMember && targetUser.organization_id?.toString() !== requestedOrgId) {
+      return reply.code(403).send(errorResponse("Target user is not a member of the selected organization"));
+    }
+    const targetOrgId = requestedOrgId || targetUser.organization_id?.toString() || orgMember?.organizationId?.toString();
 
     const roleConfig = await Role.findOne({ name: targetUser.role }).lean() as any;
     const permissions = roleConfig ? roleConfig.permissions : [];

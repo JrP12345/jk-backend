@@ -14,6 +14,7 @@ import { razorpayService } from "./RazorpayService.ts";
 import { eventBus } from "../../events/eventBus.ts";
 import { EVENT_TYPES } from "../../events/types.ts";
 import { enqueueTransactionalEmail } from "../CommunicationOutbox.ts";
+import { withTransaction, createWithSession } from "../../utilities/transaction.ts";
 
 export class PlanDowngradeViolationError extends Error {
   statusCode: number;
@@ -94,6 +95,7 @@ export class SubscriptionService {
         organizationId,
         planId: chosenPlan._id,
         status: existingOrg?.plan === "enterprise" ? "active" : "trialing",
+        entitlementSource: existingOrg?.plan === "enterprise" ? "manual" : "trial",
         billingCycle: "monthly",
         trialStartedAt: now,
         trialEndsAt,
@@ -117,8 +119,11 @@ export class SubscriptionService {
       sub = await Subscription.findById(sub._id).populate("planId");
     }
 
-    // Auto-expire trial if trial date passed
+    // Keep the stored status aligned with the effective access period.
     if (sub.status === "trialing" && sub.trialEndsAt < new Date()) {
+      sub.status = "expired";
+      await sub.save();
+    } else if (sub.status === "active" && sub.currentPeriodEnd < new Date()) {
       sub.status = "expired";
       await sub.save();
     }
@@ -268,6 +273,9 @@ export class SubscriptionService {
     if (!plan || plan.status !== "active") {
       throw new Error("Selected plan is not available");
     }
+    if (plan.monthlyPrice !== 0 || plan.annualPrice !== 0) {
+      throw new Error("Paid plans require a verified checkout payment");
+    }
 
     const validation = await this.validatePlanDowngrade(organizationId, planId);
     if (!validation.canDowngrade) {
@@ -286,6 +294,8 @@ export class SubscriptionService {
 
     subscription.planId = plan._id;
     subscription.status = "active";
+    subscription.entitlementSource = "free";
+    subscription.cancelledAt = null;
     subscription.billingCycle = billingCycle;
     subscription.currentPeriodStart = now;
     subscription.currentPeriodEnd = periodEnd;
@@ -332,6 +342,9 @@ export class SubscriptionService {
 
     const subscription = await this.getOrInitializeSubscription(organizationId);
     const basePrice = billingCycle === "annual" ? plan.annualPrice : plan.monthlyPrice;
+    if (!Number.isFinite(basePrice) || basePrice <= 0) {
+      throw new Error("This plan has no payable checkout amount; use the free plan switch instead");
+    }
     const taxRate = 0.18; // GST 18%
     const taxAmount = Math.round(basePrice * taxRate);
     const totalAmount = basePrice + taxAmount;
@@ -384,111 +397,114 @@ export class SubscriptionService {
     razorpaySignature: string
   ) {
     const payment = await SubscriptionPayment.findOne({ razorpayOrderId, organizationId });
-    if (!payment) {
-      throw new Error("Payment record not found");
-    }
+    if (!payment) throw new Error("Payment record not found");
 
-    if (payment.status === "captured") {
-      // Idempotency: Already processed cleanly
-      const sub = await Subscription.findById(payment.subscriptionId).populate("planId");
-      return { success: true, subscription: sub, message: "Subscription already activated" };
-    }
-
-    const isValid = razorpayService.verifyPaymentSignature(
+    const isValid = await razorpayService.verifyPaymentSignature(
       razorpayOrderId,
       razorpayPaymentId,
       razorpaySignature
     );
 
     if (!isValid) {
-      payment.status = "failed";
-      payment.failureReason = "Invalid HMAC payment signature";
-      await payment.save();
       throw new Error("Payment verification failed: Invalid signature");
     }
 
-    // Update payment record
-    payment.razorpayPaymentId = razorpayPaymentId;
-    payment.razorpaySignature = razorpaySignature;
-    payment.status = "captured";
-    payment.paidAt = new Date();
-    await payment.save();
+    const captured = await razorpayService.isPaymentCaptured(razorpayPaymentId, razorpayOrderId, payment.amount);
+    if (!captured) return { success: false, pending: true, message: "Payment is awaiting capture" };
 
-    // Activate subscription & calculate extended period
-    const plan = await SaaSPlan.findById(payment.planId);
-    if (!plan) throw new Error("Plan not found");
+    return this.activateCapturedPayment(payment, razorpayPaymentId, razorpaySignature);
+  }
 
-    const subscription = await Subscription.findById(payment.subscriptionId);
-    if (!subscription) throw new Error("Subscription not found");
+  private async activateCapturedPayment(payment: any, razorpayPaymentId: string, razorpaySignature?: string) {
+    const organizationId = payment.organizationId.toString();
+    const activation = await withTransaction(async (session) => {
+      const currentPayment = await SubscriptionPayment.findById(payment._id).session(session);
+      if (!currentPayment) throw new Error("Payment record not found");
+      if (currentPayment.status === "captured") {
+        const [sub, existingInvoice] = await Promise.all([
+          Subscription.findById(currentPayment.subscriptionId).populate("planId").session(session),
+          SaaSInvoice.findOne({ paymentId: currentPayment._id }).session(session),
+        ]);
+        if (!sub || !existingInvoice) throw new Error("Captured payment needs subscription reconciliation");
+        return { alreadyActivated: true, subscription: sub, invoice: existingInvoice, org: null, plan: null };
+      }
+      if (currentPayment.status === "refunded") throw new Error("Refunded payment cannot activate a subscription");
+      if (currentPayment.razorpayPaymentId && currentPayment.razorpayPaymentId !== razorpayPaymentId) {
+        throw new Error("Payment ID does not match this order");
+      }
+      const plan = await SaaSPlan.findById(currentPayment.planId).session(session);
+      const subscription = await Subscription.findById(currentPayment.subscriptionId).session(session);
+      const org = await Organization.findById(organizationId).session(session);
+      if (!plan || !subscription || !org) throw new Error("Payment plan, subscription or organization not found");
 
-    const now = new Date();
-    const periodStart = subscription.currentPeriodEnd > now ? subscription.currentPeriodEnd : now;
-    const periodEnd = new Date(periodStart);
+      const now = new Date();
+      const continuingSamePlan = subscription.status === "active" &&
+        subscription.planId.toString() === plan._id.toString() && subscription.currentPeriodEnd > now;
+      const periodStart = continuingSamePlan ? subscription.currentPeriodEnd : now;
+      const periodEnd = new Date(periodStart);
+      if (currentPayment.billingCycle === "annual") periodEnd.setFullYear(periodEnd.getFullYear() + 1);
+      else periodEnd.setMonth(periodEnd.getMonth() + 1);
 
-    if (payment.billingCycle === "annual") {
-      periodEnd.setFullYear(periodEnd.getFullYear() + 1);
-    } else {
-      periodEnd.setMonth(periodEnd.getMonth() + 1);
-    }
+      subscription.planId = plan._id;
+      subscription.status = "active";
+      subscription.entitlementSource = "paid";
+      subscription.cancelledAt = null;
+      subscription.billingCycle = currentPayment.billingCycle;
+      subscription.currentPeriodStart = periodStart;
+      subscription.currentPeriodEnd = periodEnd;
+      await subscription.save({ session });
+      await Organization.findByIdAndUpdate(organizationId, {
+        plan: plan.slug,
+        maxClinics: plan.limits?.maxClinics ?? 1,
+        maxDoctors: plan.limits?.maxDoctors ?? 2,
+        maxStaff: plan.limits?.maxStaff ?? 5,
+      }, { session });
 
-    subscription.planId = plan._id;
-    subscription.status = "active";
-    subscription.billingCycle = payment.billingCycle;
-    subscription.currentPeriodStart = periodStart;
-    subscription.currentPeriodEnd = periodEnd;
-    await subscription.save();
-
-    // Sync Organization resource quotas
-    await Organization.findByIdAndUpdate(organizationId, {
-      plan: plan.slug,
-      maxClinics: plan.limits?.maxClinics ?? 1,
-      maxDoctors: plan.limits?.maxDoctors ?? 2,
-      maxStaff: plan.limits?.maxStaff ?? 5,
+      const { getNextAtomicSequence } = await import("../../models/Counter.ts");
+      const currentYear = now.getFullYear();
+      const seq = await getNextAtomicSequence(`saas_invoice_${currentYear}`);
+      const invoiceNumber = `SAAS-${currentYear}-${seq.toString().padStart(6, "0")}`;
+      const subtotal = Math.round(currentPayment.amount / 1.18);
+      const invoice = await createWithSession(SaaSInvoice, {
+        invoiceNumber, organizationId, subscriptionId: subscription._id, paymentId: currentPayment._id,
+        planName: plan.name, billingCycle: currentPayment.billingCycle,
+        subtotal, taxAmount: currentPayment.amount - subtotal, totalAmount: currentPayment.amount,
+        currency: "INR", status: "paid",
+        billingDetails: {
+          orgName: org.name, gstin: (org as any).gstin || null, address: org.address || null,
+          city: org.city || null, email: org.email || null,
+        },
+        paidAt: now,
+      }, session) as any;
+      currentPayment.razorpayPaymentId = razorpayPaymentId;
+      if (razorpaySignature) currentPayment.razorpaySignature = razorpaySignature;
+      currentPayment.status = "captured";
+      currentPayment.paidAt = now;
+      await currentPayment.save({ session });
+      return { alreadyActivated: false, subscription, invoice, org, plan };
     });
-
-    // Generate SaaS Commercial Invoice
-    const { getNextAtomicSequence } = await import("../../models/Counter.ts");
-    const currentYear = new Date().getFullYear();
-    const seq = await getNextAtomicSequence(`saas_invoice_${currentYear}`);
-    const invoiceNumber = `SAAS-${currentYear}-${seq.toString().padStart(6, "0")}`;
-
-    const org = await Organization.findById(organizationId);
-
-    const subtotal = Math.round(payment.amount / 1.18);
-    const taxAmount = payment.amount - subtotal;
-
-    const invoice = await SaaSInvoice.create({
-      invoiceNumber,
-      organizationId,
-      subscriptionId: subscription._id,
-      paymentId: payment._id,
-      planName: plan.name,
-      billingCycle: payment.billingCycle,
-      subtotal,
-      taxAmount,
-      totalAmount: payment.amount,
-      currency: "INR",
-      status: "paid",
-      billingDetails: {
-        orgName: org?.name || "Organization",
-        gstin: (org as any)?.gstin || null,
-        address: org?.address || null,
-        city: org?.city || null,
-        email: org?.email || null,
-      },
-      paidAt: new Date(),
-    });
+    if (activation.alreadyActivated) return {
+      success: true, subscription: activation.subscription, invoice: activation.invoice,
+      message: "Subscription already activated",
+    };
+    if (!activation.plan || !activation.org) throw new Error("Subscription activation could not be completed");
+    const { invoice, org, plan } = activation;
+    const invoiceNumber = invoice.invoiceNumber;
 
     // Dispatch Event & Notifications
-    await eventBus.publishDurable({
-      eventType: EVENT_TYPES.BILLING_INVOICE_GENERATED,
-      category: "billing",
-      organizationId,
-      title: "Subscription Activated",
-      message: `Your ${plan.name} (${payment.billingCycle}) subscription is now active! Invoice #${invoiceNumber} generated.`,
-      severity: "success",
-      actionUrl: "/dashboard/settings/billing",
-    });
+    try {
+      await eventBus.publishDurable({
+        eventType: EVENT_TYPES.BILLING_INVOICE_GENERATED,
+        category: "billing",
+        organizationId,
+        title: "Subscription Activated",
+        message: `Your ${plan.name} (${payment.billingCycle}) subscription is now active! Invoice #${invoiceNumber} generated.`,
+        severity: "success",
+        actionUrl: "/dashboard/settings/billing",
+      });
+    } catch (eventError) {
+      console.error("Failed to publish subscription activation event:", eventError);
+    }
 
     // Send Commercial Invoice Email Notification
     const recipientEmail = org?.email || (invoice.billingDetails as any)?.email;
@@ -544,7 +560,7 @@ export class SubscriptionService {
       }
     }
 
-    const updatedSub = await Subscription.findById(subscription._id).populate("planId");
+    const updatedSub = await Subscription.findById(activation.subscription._id).populate("planId");
     return {
       success: true,
       subscription: updatedSub,
@@ -573,24 +589,19 @@ export class SubscriptionService {
 
         const existingPayment = await SubscriptionPayment.findOne({ razorpayOrderId: orderId });
         if (existingPayment && existingPayment.status !== "captured") {
-          await this.verifyAndActivateSubscription(
-            existingPayment.organizationId.toString(),
-            orderId,
-            paymentId,
-            "webhook_verified_signature"
-          );
+          if (paymentEntity.status === "captured" && paymentEntity.amount === Math.round(existingPayment.amount * 100) && paymentEntity.currency === existingPayment.currency) {
+            await this.activateCapturedPayment(existingPayment, paymentId);
+          }
         }
       }
     } else if (event === "payment.failed") {
       const paymentEntity = payload.payment?.entity;
       if (paymentEntity && paymentEntity.order_id) {
         const payment = await SubscriptionPayment.findOne({ razorpayOrderId: paymentEntity.order_id });
-        if (payment) {
+        if (payment && payment.status !== "captured") {
           payment.status = "failed";
           payment.failureReason = paymentEntity.error_description || "Payment failed at gateway";
           await payment.save();
-
-          await Subscription.findByIdAndUpdate(payment.subscriptionId, { status: "payment_failed" });
         }
       }
     }
