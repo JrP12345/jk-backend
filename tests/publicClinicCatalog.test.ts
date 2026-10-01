@@ -7,9 +7,10 @@ import { User } from "../models/User.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { PatientFeedback } from "../models/PatientFeedback.ts";
+import { Subscription } from "../models/Subscription.ts";
 
 describe("Dynamic public clinic catalog", () => {
-  let top: string, cheap: string, unrated: string, hiddenClinicId: string, publicDoctorId: string, hiddenDoctorId: string, assignmentOnlyDoctorId: string;
+  let top: string, cheap: string, unrated: string, disabledClinicId: string, hiddenClinicId: string, publicDoctorId: string, hiddenDoctorId: string, assignmentOnlyDoctorId: string;
   beforeAll(async () => {
     const org = await Organization.create({ name: "Published Catalog", city: "Surat", isActive: true });
     const hiddenOrg = await Organization.create({ name: "Hidden Catalog", city: "Hidden City", isActive: false });
@@ -25,7 +26,7 @@ describe("Dynamic public clinic catalog", () => {
       const clinic = await Clinic.create({ name: definition.name, city: definition.city, organizationId, createdAt: definition.createdAt });
       const user = await User.create({ name: `${definition.name} doctor`, role: "doctor", isActive: !definition.inactiveDoctor });
       await Doctor.create({ userId: user._id, organizationId, specialization: definition.specialization });
-      await DoctorAssignment.create({ clinicId: clinic._id, doctorId: user._id, organizationId, fees: definition.fees, workingHours: "{}" });
+      await DoctorAssignment.create({ clinicId: clinic._id, doctorId: user._id, organizationId, fees: definition.fees, feeType: definition.fees === 0 ? "free" : "fixed", workingHours: "{}" });
       if (definition.ratings.length) await PatientFeedback.collection.insertMany(definition.ratings.map(rating => ({
         clinicId: clinic._id, doctorId: user._id, patientId: new mongoose.Types.ObjectId(), appointmentId: new mongoose.Types.ObjectId(), rating, npsScore: 8,
       })));
@@ -35,8 +36,10 @@ describe("Dynamic public clinic catalog", () => {
       if (definition.name === "Hidden Clinic") hiddenClinicId = clinic.id;
       if (definition.name === "Lowest Fee") cheap = clinic.id;
       if (definition.name === "Unrated Clinic") unrated = clinic.id;
+      if (definition.name === "Disabled Doctor Clinic") disabledClinicId = clinic.id;
     }
-    const assignmentOnlyDoctor = await User.create({ name: "Clinic listed doctor", role: "doctor", isActive: true });
+    // An active clinician assignment can belong to an account with a clinic staff role.
+    const assignmentOnlyDoctor = await User.create({ name: "Clinic listed doctor", role: "admin", isActive: true });
     assignmentOnlyDoctorId = assignmentOnlyDoctor.id;
     await DoctorAssignment.create({ clinicId: hiddenClinicId, doctorId: assignmentOnlyDoctor._id, organizationId: hiddenOrg._id, fees: 50, workingHours: "{}" });
     await DoctorAssignment.create({ clinicId: top, doctorId: assignmentOnlyDoctor._id, organizationId: org._id, fees: 250, workingHours: "{}" });
@@ -56,6 +59,66 @@ describe("Dynamic public clinic catalog", () => {
     expect(response.statusCode, response.body).toBe(200);
     expect(response.json().data).toMatchObject({ id: assignmentOnlyDoctorId, name: "Clinic listed doctor", locations: [{ id: top, fees: 250 }] });
     expect(response.json().data.locations).toHaveLength(1);
+    const clinic = await app.inject({ method: "GET", url: `/api/public/clinics/${top}?doctorId=${assignmentOnlyDoctorId}` });
+    expect(clinic.statusCode, clinic.body).toBe(200);
+    expect(clinic.json().data.doctors.map((doctor: { id: string }) => doctor.id)).toEqual([assignmentOnlyDoctorId]);
+    const search = await app.inject({ method: "GET", url: "/api/public/clinics?search=Clinic%20listed%20doctor" });
+    expect(search.statusCode, search.body).toBe(200);
+    expect(search.json().data.map((item: { id: string }) => item.id)).toContain(top);
+  });
+
+  it("uses the linked clinic's organization when a doctor practices across organizations", async () => {
+    const otherOrg = await Organization.create({ name: "Other Practice", city: "Surat", isActive: true });
+    const otherClinic = await Clinic.create({ name: "Other Practice Branch", city: "Surat", organizationId: otherOrg._id });
+    try {
+      await DoctorAssignment.create({ clinicId: otherClinic._id, doctorId: publicDoctorId, organizationId: otherOrg._id, fees: 450, workingHours: "{}" });
+      const linked = await app.inject({ method: "GET", url: `/api/public/doctors/${publicDoctorId}/profile?clinicId=${otherClinic.id}` });
+      expect(linked.statusCode, linked.body).toBe(200);
+      expect(linked.json().data).toMatchObject({ organizationName: "Other Practice", locations: [{ id: otherClinic.id, fees: 450 }] });
+      const stale = await app.inject({ method: "GET", url: `/api/public/doctors/${publicDoctorId}/profile?clinicId=${cheap}` });
+      expect(stale.statusCode).toBe(404);
+    } finally {
+      await DoctorAssignment.deleteMany({ clinicId: otherClinic._id });
+      await Clinic.deleteOne({ _id: otherClinic._id });
+      await Organization.deleteOne({ _id: otherOrg._id });
+    }
+  });
+
+  it("limits doctor booking context to the selected assignment", async () => {
+    const response = await app.inject({ method: "GET", url: `/api/public/clinics/${top}?doctorId=${publicDoctorId}` });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().data.doctors.map((doctor: { id: string }) => doctor.id)).toEqual([publicDoctorId]);
+    expect(response.body).not.toContain(assignmentOnlyDoctorId);
+    const invalid = await app.inject({ method: "GET", url: `/api/public/clinics/${top}?doctorId=invalid` });
+    expect(invalid.statusCode).toBe(400);
+    const hidden = await app.inject({ method: "GET", url: `/api/public/clinics/${hiddenClinicId}` });
+    expect(hidden.statusCode).toBe(404);
+    const disabledDoctor = await app.inject({ method: "GET", url: `/api/public/clinics/${disabledClinicId}` });
+    expect(disabledDoctor.statusCode, disabledDoctor.body).toBe(200);
+    expect(disabledDoctor.json().data.doctors).toEqual([]);
+    expect(disabledDoctor.json().data.bookingStatus).toBe("no_doctors");
+  });
+
+  it("shows contact status consistently when the organization cannot accept bookings", async () => {
+    const clinic = await Clinic.findById(top).select("organizationId").lean();
+    await app.inject({ method: "GET", url: `/api/public/clinics/${top}` });
+    const subscription = await Subscription.findOne({ organizationId: clinic!.organizationId });
+    expect(subscription).toBeTruthy();
+    const previousStatus = subscription!.status;
+    try {
+      subscription!.status = "cancelled";
+      await subscription!.save();
+      const list = await app.inject({ method: "GET", url: "/api/public/clinics?search=Highest%20Rating" });
+      expect(list.statusCode, list.body).toBe(200);
+      expect(list.json().data[0]).toMatchObject({ id: top, bookingStatus: "contact_clinic", onlineBookingAvailable: false });
+      const detail = await app.inject({ method: "GET", url: `/api/public/clinics/${top}` });
+      expect(detail.json().data).toMatchObject({ bookingStatus: "contact_clinic", onlineBookingAvailable: false });
+      const doctor = await app.inject({ method: "GET", url: `/api/public/doctors/${publicDoctorId}/profile?clinicId=${top}` });
+      expect(doctor.json().data.locations[0]).toMatchObject({ bookingStatus: "contact_clinic", onlineBookingAvailable: false });
+    } finally {
+      subscription!.status = previousStatus;
+      await subscription!.save();
+    }
   });
 
   it("publishes full-directory facets even when the result page has one clinic", async () => {
@@ -66,6 +129,8 @@ describe("Dynamic public clinic catalog", () => {
     expect(data[0].id).toBe(top);
     expect(data[0].rating).toBe(4.5);
     expect(data[0].reviewsCount).toBe(2);
+    expect(data[0].bookingStatus).toBe(data[0].onlineBookingAvailable ? "check_availability" : "contact_clinic");
+    expect(data[0].doctorsSummary[0]).toMatchObject({ feeType: "fixed", fees: 300 });
     expect(filters.cities).toEqual(["Mumbai", "Pune", "Surat", "Valsad"]);
     expect(filters.specialties).toEqual(["Cardiology", "Dermatology", "General Physician / Consultant"]);
     expect(response.body).not.toContain("patientId");

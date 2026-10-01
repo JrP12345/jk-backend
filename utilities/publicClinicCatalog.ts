@@ -10,7 +10,7 @@ export function publicDoctorAssignments(): NonNullable<mongoose.PipelineStage.Lo
     { $match: { isActive: true } },
     { $lookup: { from: User.collection.name, localField: "doctorId", foreignField: "_id", as: "user" } },
     { $unwind: "$user" },
-    { $match: { "user.isActive": true, "user.role": "doctor" } },
+    { $match: { "user.isActive": true } },
     { $lookup: { from: Doctor.collection.name, localField: "doctorId", foreignField: "userId", as: "profile" } },
     { $unwind: { path: "$profile", preserveNullAndEmptyArrays: true } },
     { $match: { "profile.isActive": { $ne: false } } },
@@ -48,7 +48,7 @@ export async function getSortedPublicClinicPage(
   filter: Record<string, unknown>, sort: "rating" | "fee_low", limit: number, cursor?: string,
 ) {
   const metricStages: mongoose.PipelineStage[] = sort === "fee_low" ? [
-    { $lookup: { from: DoctorAssignment.collection.name, localField: "_id", foreignField: "clinicId", pipeline: [...publicDoctorAssignments(), { $group: { _id: null, value: { $min: "$fees" } } }], as: "metric" } },
+    { $lookup: { from: DoctorAssignment.collection.name, localField: "_id", foreignField: "clinicId", pipeline: [...publicDoctorAssignments(), { $match: { $or: [{ feeType: "free" }, { fees: { $gt: 0 } }] } }, { $group: { _id: null, value: { $min: "$fees" } } }], as: "metric" } },
   ] : [
     { $lookup: { from: PatientFeedback.collection.name, localField: "_id", foreignField: "clinicId", pipeline: [{ $match: { rating: { $gte: 1, $lte: 5 } } }, { $group: { _id: null, value: { $avg: "$rating" } } }], as: "metric" } },
   ];

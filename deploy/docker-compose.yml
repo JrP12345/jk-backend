@@ -1,22 +1,22 @@
-name: ekavyu-production
+name: ekavyu-dev
 
 x-backend-env: &backend-env
   NODE_ENV: production
   PORT: 5000
-  APP_URL: ${APP_URL:?Set APP_URL in .env}
-  FRONTEND_URL: ${FRONTEND_URL:-${APP_URL}}
-  PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:?Set PUBLIC_API_BASE_URL in .env}
-  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?Set CORS_ALLOWED_ORIGINS in .env}
+  APP_URL: ${APP_URL:-https://dev.ekavyu.com}
+  FRONTEND_URL: ${FRONTEND_URL:-https://dev.ekavyu.com}
+  PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-https://dev.ekavyu.com}
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://dev.ekavyu.com}
   MONGODB_URI: ${MONGODB_URI:?Set MONGODB_URI in .env}
   REDIS_URL: ${REDIS_URL:-redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379}
-  MONGODB_MIN_POOL_SIZE: ${MONGODB_MIN_POOL_SIZE:-10}
-  MONGODB_MAX_POOL_SIZE: ${MONGODB_MAX_POOL_SIZE:-50}
+  MONGODB_MIN_POOL_SIZE: ${MONGODB_MIN_POOL_SIZE:-2}
+  MONGODB_MAX_POOL_SIZE: ${MONGODB_MAX_POOL_SIZE:-10}
   RUN_INLINE_JOBS: "false"
   ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in .env}
   JWT_PRIVATE_KEY_BASE64: ${JWT_PRIVATE_KEY_BASE64:?Set JWT_PRIVATE_KEY_BASE64 in .env}
   JWT_PUBLIC_KEY_BASE64: ${JWT_PUBLIC_KEY_BASE64:?Set JWT_PUBLIC_KEY_BASE64 in .env}
-  WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:?Set WEBAUTHN_ORIGIN in .env}
-  WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:?Set WEBAUTHN_RP_ID in .env}
+  WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-https://dev.ekavyu.com}
+  WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-dev.ekavyu.com}
   CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
   R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
   R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
@@ -76,9 +76,9 @@ services:
 
   backend:
     build:
-      context: ../
+      context: ./backend
       dockerfile: Dockerfile
-    image: ${BACKEND_IMAGE:-ekavyu-backend:production}
+    image: ekavyu-backend:dev
     restart: unless-stopped
     environment:
       <<: *backend-env
@@ -96,9 +96,9 @@ services:
 
   notification-worker:
     build:
-      context: ../
+      context: ./backend
       dockerfile: Dockerfile
-    image: ${BACKEND_IMAGE:-ekavyu-backend:production}
+    image: ekavyu-backend:dev
     restart: unless-stopped
     command: ["node", "dist/workers/notificationDeliveryWorker.js"]
     environment:
@@ -119,9 +119,9 @@ services:
 
   outbound-message-worker:
     build:
-      context: ../
+      context: ./backend
       dockerfile: Dockerfile
-    image: ${BACKEND_IMAGE:-ekavyu-backend:production}
+    image: ekavyu-backend:dev
     restart: unless-stopped
     command: ["node", "dist/workers/outboundMessageWorker.js"]
     environment:
@@ -142,9 +142,9 @@ services:
 
   disruption-timeout-worker:
     build:
-      context: ../
+      context: ./backend
       dockerfile: Dockerfile
-    image: ${BACKEND_IMAGE:-ekavyu-backend:production}
+    image: ekavyu-backend:dev
     restart: unless-stopped
     command: ["node", "dist/workers/disruptionTimeoutWorker.js"]
     environment:
@@ -165,9 +165,9 @@ services:
 
   domain-event-worker:
     build:
-      context: ../
+      context: ./backend
       dockerfile: Dockerfile
-    image: ${BACKEND_IMAGE:-ekavyu-backend:production}
+    image: ekavyu-backend:dev
     restart: unless-stopped
     command: ["node", "dist/workers/domainEventWorker.js"]
     environment:
@@ -188,9 +188,9 @@ services:
 
   no-show-worker:
     build:
-      context: ../
+      context: ./backend
       dockerfile: Dockerfile
-    image: ${BACKEND_IMAGE:-ekavyu-backend:production}
+    image: ekavyu-backend:dev
     restart: unless-stopped
     command: ["node", "dist/workers/noShowSweepWorker.js"]
     environment:
@@ -211,11 +211,11 @@ services:
 
   frontend:
     build:
-      context: ../../frontend
+      context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?Set NEXT_PUBLIC_API_URL at build time}
-    image: ${FRONTEND_IMAGE:-ekavyu-frontend:production}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://dev.ekavyu.com/api}
+    image: ekavyu-frontend:dev
     restart: unless-stopped
     environment:
       NODE_ENV: production
@@ -239,8 +239,8 @@ networks:
 
 volumes:
   redis-data:
-    name: ekavyu-redis-data
+    name: ekavyu-dev-redis-data
   caddy-data:
-    name: ekavyu-caddy-data
+    name: ekavyu-dev-caddy-data
   caddy-config:
-    name: ekavyu-caddy-config
+    name: ekavyu-dev-caddy-config

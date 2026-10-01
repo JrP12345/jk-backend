@@ -1,0 +1,33 @@
+{
+    email ${ACME_EMAIL:-devops@ekavyu.com}
+    admin off
+}
+
+dev.ekavyu.com {
+    encode gzip zstd
+
+    log {
+        output stdout
+        format console
+    }
+
+    # API endpoints, WebSocket feeds, and Swagger/OpenAPI documentation
+    @backend_routes {
+        path /api /api/* /ws /ws/* /api/*/ws /documentation /documentation*
+    }
+
+    reverse_proxy @backend_routes backend:5000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # Next.js Frontend for all web application routes & static assets
+    reverse_proxy frontend:3000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}
