@@ -310,7 +310,9 @@ export async function updateUserRole(req: FastifyRequest, reply: FastifyReply) {
 
     const { id } = req.params as { id: string };
     const { role: newRole } = req.body as { role: string };
-    const requesterOrgId = getRequestOrganizationId(req);
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const requesterOrgId = scope.organizationId;
     const isRoot = isRootRequest(req);
 
     if (!newRole) {
@@ -323,7 +325,7 @@ export async function updateUserRole(req: FastifyRequest, reply: FastifyReply) {
     // Validate role is either a built-in system role or custom role belonging to this org
     if (!BUILT_IN_ROLE_NAMES.has(newRole)) {
       const roleFilter: any = { name: newRole };
-      if (!isRoot && requesterOrgId) {
+      if (requesterOrgId) {
         roleFilter.$or = [{ organizationId: requesterOrgId }, { organizationId: null }];
       }
       const configuredRole = await Role.findOne(roleFilter).select("_id").lean();
@@ -331,7 +333,7 @@ export async function updateUserRole(req: FastifyRequest, reply: FastifyReply) {
     }
 
     // Tenant isolation: verify target user belongs to requester's organization (unless root)
-    if (!isRoot) {
+    if (!isRoot || requesterOrgId) {
       if (!requesterOrgId) {
         return reply.code(403).send(errorResponse("Organization context is required to assign roles"));
       }
@@ -347,6 +349,17 @@ export async function updateUserRole(req: FastifyRequest, reply: FastifyReply) {
     }
     if (user.role === "root" && !isRoot) {
       return reply.code(403).send(errorResponse("Forbidden: Only Root Super-Admin can modify accounts with the Root role"));
+    }
+    if (requesterOrgId && (newRole === "root" || user.role === "root")) return reply.code(403).send(errorResponse("Root identities are managed at platform level"));
+    if (id === req.user!.id && newRole !== user.role) return reply.code(400).send(errorResponse("Cannot change your own active role"));
+    // Authentication still uses User.role. A tenant edit must not affect access
+    // to another organization; divergent per-membership roles require a migration.
+    if (requesterOrgId && newRole !== user.role && await OrgMember.exists({ userId: id, organizationId: { $ne: requesterOrgId } })) {
+      return reply.code(409).send(errorResponse("This identity belongs to multiple organizations. Its global role requires platform review."));
+    }
+    if (requesterOrgId && user.role === "admin" && newRole !== "admin") {
+      const others = await OrgMember.find({ organizationId: requesterOrgId, role: "admin", userId: { $ne: id } }).populate("userId", "isActive").lean();
+      if (!others.some((m: any) => m.userId?.isActive !== false)) return reply.code(409).send(errorResponse("Keep at least one active organization administrator"));
     }
 
     const previousRole = user.role;

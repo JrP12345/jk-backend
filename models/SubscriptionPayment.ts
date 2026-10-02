@@ -11,15 +11,19 @@ const SubscriptionPaymentSchema = new Schema({
   currency: { type: String, default: "INR" },
   status: {
     type: String,
-    enum: ["created", "captured", "failed", "refunded"],
+    enum: ["created", "captured", "failed", "abandoned", "captured_review", "refunded"],
     default: "created",
     index: true,
   },
   billingCycle: { type: String, enum: ["monthly", "annual"], default: "monthly" },
   idempotencyKey: { type: String, default: null, sparse: true, index: true },
   failureReason: { type: String, default: null },
+  failedPaymentId: { type: String, default: null },
+  subtotal: { type: Number, default: null },
+  taxAmount: { type: Number, default: null },
   rawWebhookPayload: { type: Schema.Types.Mixed, default: null },
   paidAt: { type: Date, default: null },
+  lastReconciledAt: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 

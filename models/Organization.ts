@@ -17,6 +17,11 @@ const OrganizationSchema = new Schema({
   maxDoctors: { type: Number, default: 2 },
   maxStaff: { type: Number, default: 2 },
   taxId: { type: String }, // GSTIN / EIN
+  billingDetails: {
+    gstin: { type: String, default: null },
+    email: { type: String, default: null },
+    address: { type: String, default: null },
+  },
   licenseNumber: { type: String }, // Operating License No.
   countryCode: { type: String, enum: ["IN", "US", "CA", "GB", "AE"] },
   currency: { type: String, enum: ["INR", "USD", "CAD", "EUR", "GBP", "AED"], default: "INR" },
@@ -30,6 +35,8 @@ const OrganizationSchema = new Schema({
   isActive: { type: Boolean, default: true },
   status: { type: String, enum: ["active", "inactive"], default: "active" },
   authVersion: { type: Number, default: 1 },
+  billingInitializationToken: { type: String, default: null, select: false },
+  billingInitializationAt: { type: Date, default: null, select: false },
   // ─── SMTP / Outbound Email Gateway Configuration ───────────────────────
   // If set, overrides backend .env SMTP credentials for this organization.
   smtp: {

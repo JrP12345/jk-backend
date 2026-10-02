@@ -103,6 +103,13 @@ export const deleteObjectFromStorage = async (fileKey: string): Promise<void> =>
   await s3Client.send(command);
 };
 
+export async function uploadOrganizationImage(buffer: Buffer, contentType: string, ownerId: string) {
+  const extension = contentType === "image/png" ? "png" : contentType === "image/webp" ? "webp" : "jpg";
+  const objectKey = `organization-branding/${ownerId}/${crypto.randomUUID()}.${extension}`;
+  await s3Client.send(new PutObjectCommand({ Bucket: BUCKET_NAME, Key: objectKey, ContentType: contentType, Body: buffer }));
+  return objectKey;
+}
+
 /**
  * Direct Base64 upload for avatars/prescriptions into private bucket.
  */

@@ -38,6 +38,7 @@ export class RazorpayService {
     let keyId = (process.env.RAZORPAY_KEY_ID || "").trim();
     let keySecret = (process.env.RAZORPAY_KEY_SECRET || "").trim();
     let webhookSecret = (process.env.RAZORPAY_WEBHOOK_SECRET || "").trim();
+    let configuredMode: boolean | null = null;
 
     try {
       const config = await SaaSConfig.findOne({ key: "platform_config" });
@@ -45,6 +46,7 @@ export class RazorpayService {
         keyId = config.razorpayKeyId.trim();
         keySecret = config.razorpayKeySecret.trim();
         webhookSecret = (config.razorpayWebhookSecret || webhookSecret).trim();
+        configuredMode = config.isLiveMode;
       }
     } catch (err) {
       console.warn("Failed to fetch dynamic SaaSConfig from MongoDB, checking process.env");
@@ -54,6 +56,11 @@ export class RazorpayService {
       throw new Error(
         "Razorpay Credentials Not Saved in MongoDB. Please go to Root Admin Console (Dashboard → Admin → Billing → Razorpay Platform Gateway tab), enter your Razorpay Key ID & Key Secret, and click 'Save Gateway Credentials'."
       );
+    }
+
+    if (!/^rzp_(test|live)_/.test(keyId)) throw new Error("Razorpay Key ID has an invalid mode prefix");
+    if (configuredMode !== null && configuredMode !== keyId.startsWith("rzp_live_")) {
+      throw new Error("Razorpay key mode does not match the configured gateway mode");
     }
 
     return { keyId, keySecret, webhookSecret };
@@ -72,11 +79,12 @@ export class RazorpayService {
    * Create an order directly in Razorpay REST API
    */
   async createOrder(params: CreateOrderParams): Promise<RazorpayOrderResponse> {
-    const { keyId, keySecret } = await this.getCredentials();
+    const { keyId, keySecret, webhookSecret } = await this.getCredentials();
+    if (!webhookSecret) throw new Error("Razorpay webhook secret must be configured before checkout");
 
     if (process.env.NODE_ENV === "test") {
       return {
-        id: `order_test_${Date.now()}`,
+        id: `order_test_${crypto.randomUUID()}`,
         entity: "order",
         amount: Math.round(params.amount * 100),
         amount_paid: 0,
@@ -111,6 +119,7 @@ export class RazorpayService {
           body: payload,
           timeoutMs: 10_000,
           idempotencyKey: params.receipt ? `rzp_order:${params.receipt}` : undefined,
+          isIdempotent: false,
           enableCircuitBreaker: true,
         },
       );
@@ -165,9 +174,35 @@ export class RazorpayService {
       enableCircuitBreaker: true,
     });
     const payment = response.data;
+    if (payment.id === paymentId && payment.order_id === orderId && payment.status === "captured" &&
+      (payment.currency !== "INR" || payment.amount !== Math.round(amountInRupees * 100))) {
+      throw new Error("Captured provider payment amount or currency differs from the stored Order");
+    }
     return payment.id === paymentId && payment.order_id === orderId &&
       payment.status === "captured" && payment.currency === "INR" &&
       payment.amount === Math.round(amountInRupees * 100);
+  }
+
+  async fetchCapturedPaymentForOrder(orderId: string, amountInRupees: number): Promise<string | null> {
+    const { keyId, keySecret } = await this.getCredentials();
+    if (process.env.NODE_ENV === "test") return null;
+    const auth = Buffer.from(`${keyId}:${keySecret}`).toString("base64");
+    const response = await resilientHttpClient.request<{ items: Array<{
+      id: string; order_id: string; status: string; amount: number; currency: string;
+    }> }>(`https://api.razorpay.com/v1/orders/${encodeURIComponent(orderId)}/payments`, {
+      provider: "razorpay", method: "GET",
+      headers: { Authorization: `Basic ${auth}` }, timeoutMs: 10_000,
+      enableCircuitBreaker: true,
+    });
+    const allCaptured = response.data.items?.filter((item) => item.order_id === orderId && item.status === "captured") || [];
+    if (allCaptured.some((item) => item.currency !== "INR" || item.amount !== Math.round(amountInRupees * 100))) {
+      throw new Error("Captured provider Order payment amount or currency needs review");
+    }
+    const captured = allCaptured.filter((item) => item.order_id === orderId &&
+      item.status === "captured" && item.currency === "INR" &&
+      item.amount === Math.round(amountInRupees * 100));
+    if (captured.length > 1) throw new Error("Multiple captured payments for one Razorpay Order require review");
+    return captured[0]?.id || null;
   }
 
   /**
@@ -210,6 +245,7 @@ export class RazorpayService {
         body: payload,
         timeoutMs: 10_000,
         idempotencyKey,
+        isIdempotent: false,
         enableCircuitBreaker: true,
       },
     );

@@ -6,6 +6,8 @@
  * can NEVER leak across the public API boundary.
  */
 
+import { organizationImageReference } from "../services/OrganizationBranding.ts";
+
 export interface PublicOrganizationSummary {
   id: string;
   name: string;
@@ -43,9 +45,9 @@ export function toPublicOrganizationSummary(raw: any): PublicOrganizationSummary
     phone: doc.phone || "",
     email: doc.email || "",
     description: doc.description || "",
-    image_url: doc.image_url || null,
-    logo_url: doc.logo_url || null,
-    images: Array.isArray(doc.images) ? doc.images : [],
+    image_url: organizationImageReference(doc, "image_url"),
+    logo_url: organizationImageReference(doc, "logo_url"),
+    images: Array.isArray(doc.images) ? doc.images.map((_: string, index: number) => organizationImageReference(doc, index)).filter(Boolean) : [],
     timings: doc.timings || "",
     working_days: doc.working_days || "",
     currency: doc.currency || "INR",

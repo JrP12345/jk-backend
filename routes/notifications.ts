@@ -9,12 +9,12 @@ import { Organization } from "../models/Organization.ts";
 import { emailProvider, type SmtpConfig } from "../notifications/providers/emailProvider.ts";
 import { decrypt } from "../utilities/encryption.ts";
 import { OrgMember } from "../models/OrgMember.ts";
-import { resolveTargetOrganizationId } from "../utilities/tenant.ts";
+import { resolveTargetOrganizationId, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { enqueueTransactionalEmail } from "../services/CommunicationOutbox.ts";
 
 async function getOrganizationSmtp(organizationId?: string | null): Promise<SmtpConfig | null> {
   if (!organizationId) return null;
-  const organization = await Organization.findById(organizationId).select("smtp +smtp.pass").lean();
+  const organization = await Organization.findById(organizationId).select("+smtp.pass").lean();
   const smtp = (organization as any)?.smtp;
   if (!smtp?.host || !smtp?.user || !smtp?.pass) return null;
 
@@ -376,7 +376,9 @@ export default async function notificationRoutes(app: FastifyInstance) {
   // ─── Test Direct Email Dispatch Endpoint ─────────────────────────
   app.post("/api/notifications/test-email", adminNotifications, async (req, reply) => {
     const userEmail = req.user?.email;
-    const orgId = req.user?.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send({ success: false, message: scope.message });
+    const orgId = scope.organizationId;
     const { targetEmail } = (req.body as any) || {};
     const recipient = targetEmail || userEmail;
 
@@ -389,23 +391,7 @@ export default async function notificationRoutes(app: FastifyInstance) {
       if (!member) return reply.code(404).send({ success: false, message: "Recipient is not an active organization member" });
     }
 
-    // Load org SMTP config if available — decrypt password before use
-    let orgSmtp: SmtpConfig | null = null;
-    if (orgId) {
-      const org = await Organization.findById(orgId).select("smtp +smtp.pass").lean();
-      const smtp = (org as any)?.smtp;
-      if (smtp?.host && smtp?.user && smtp?.pass) {
-        orgSmtp = {
-          host: smtp.host,
-          port: smtp.port || 587,
-          secure: smtp.secure || false,
-          user: smtp.user,
-          pass: decrypt(smtp.pass),   // ← AES-256-GCM decrypt before SMTP auth
-          fromEmail: smtp.fromEmail || smtp.user,
-          fromName: smtp.fromName || "Ekavyu",
-        };
-      }
-    }
+    const orgSmtp = await getOrganizationSmtp(orgId);
 
     const sent = await emailProvider.sendEmail({
       to: recipient,

@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { organizationImageReference } from "../services/OrganizationBranding.ts";
 import mongoose from "mongoose";
 import crypto from "node:crypto";
 import { Organization } from "../models/Organization.ts";
@@ -76,7 +77,7 @@ export async function getPublicDoctorProfile(req: FastifyRequest, reply: Fastify
       });
       return {
         id: clinic._id.toString(), name: clinic.name, city: clinic.city, address: clinic.address || "",
-        logo: clinic.logo || organization.logo_url || null,
+        logo: clinic.logo || organizationImageReference(organization, "logo_url") || null,
         brandColor: clinic.brandColor || "#0F6F66",
         fees: assignment.fees, feeType: assignment.feeType, bookingMode: assignment.bookingMode,
         onlineBookingAvailable,
@@ -90,7 +91,7 @@ export async function getPublicDoctorProfile(req: FastifyRequest, reply: Fastify
       qualification: profile?.qualification || "", experienceYears: profile?.experience_years || 0,
       description: profile?.description || "", imageUrl: profile?.image_url || null,
       languages: profile?.languages || [], organizationName: organization.name,
-      organizationLogo: organization.logo_url || organization.image_url || null,
+      organizationLogo: organizationImageReference(organization, "logo_url") || organizationImageReference(organization, "image_url") || null,
       currency: organization.currency || "INR", locations: publicLocations,
     }));
   } catch (error) {
@@ -334,9 +335,9 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
     const formattedClinics = clinics.map((c) => {
       const json = c.toJSON();
       const org = orgMap.get(String(c.organizationId));
-      const effectiveLogo = c.logo || org?.logo_url || org?.image_url || null;
+      const effectiveLogo = c.logo || organizationImageReference(org, "logo_url") || organizationImageReference(org, "image_url") || null;
       const effectiveImages = (Array.isArray(c.images) && c.images.length > 0) ? c.images : (org?.images || []);
-      const effectiveCover = c.images?.[0] || org?.image_url || effectiveLogo || null;
+      const effectiveCover = c.images?.[0] || organizationImageReference(org, "image_url") || effectiveLogo || null;
 
       const assignments = clinicAssignmentsMap.get(String(c._id)) || [];
       const doctorsSummary = assignments.map((a: any) => {
@@ -593,9 +594,9 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
 
     const cleanDoctors = formattedDoctors.filter(d => d !== null);
 
-    const effectiveLogo = clinic.logo || org?.logo_url || org?.image_url || null;
+    const effectiveLogo = clinic.logo || organizationImageReference(org, "logo_url") || organizationImageReference(org, "image_url") || null;
     const effectiveImages = (Array.isArray(clinic.images) && clinic.images.length > 0) ? clinic.images : (org?.images || []);
-    const effectiveCover = org?.image_url || clinic.images?.[0] || effectiveLogo || null;
+    const effectiveCover = organizationImageReference(org, "image_url") || clinic.images?.[0] || effectiveLogo || null;
 
     const clinicJson = clinic.toJSON();
     return reply.code(200).send(successResponse({
@@ -611,8 +612,8 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
       organization: org ? {
         id: (org as any)._id.toString(),
         name: org.name,
-        logo_url: org.logo_url,
-        image_url: org.image_url,
+        logo_url: organizationImageReference(org, "logo_url"),
+        image_url: organizationImageReference(org, "image_url"),
         images: org.images || [],
         description: org.description,
         currency: org.currency || "INR",

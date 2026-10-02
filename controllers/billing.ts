@@ -4,7 +4,7 @@ import { Subscription } from "../models/Subscription.ts";
 import { SubscriptionPayment } from "../models/SubscriptionPayment.ts";
 import { SaaSInvoice } from "../models/SaaSInvoice.ts";
 import { Organization } from "../models/Organization.ts";
-import { subscriptionService, PlanDowngradeViolationError } from "../services/billing/SubscriptionService.ts";
+import { subscriptionService, PlanDowngradeViolationError, addBillingPeriod } from "../services/billing/SubscriptionService.ts";
 import { razorpayService } from "../services/billing/RazorpayService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { resolveTargetOrganizationId } from "../utilities/tenant.ts";
@@ -78,16 +78,23 @@ export async function createCheckoutOrderController(req: FastifyRequest, reply: 
       return reply.code(400).send(errorResponse("No organization linked to account"));
     }
 
-    const { planId, billingCycle } = req.body as { planId: string; billingCycle?: "monthly" | "annual" };
+    const { planId, billingCycle, checkoutIntentId } = req.body as { planId: string; billingCycle?: "monthly" | "annual"; checkoutIntentId?: string };
     if (!planId) {
       return reply.code(400).send(errorResponse("planId is required"));
     }
 
+    req.log.info({ organizationId: orgId, planId, billingCycle: billingCycle || "monthly" }, "billing.create.started");
+
     const checkoutData = await subscriptionService.createCheckoutOrder(
       orgId,
       planId,
-      billingCycle || "monthly"
+      billingCycle || "monthly",
+      checkoutIntentId,
     );
+
+    req.log.info({ organizationId: orgId, paymentId: checkoutData.paymentId,
+      orderId: checkoutData.orderId, reused: checkoutData.reused || false,
+      alreadyCompleted: checkoutData.alreadyCompleted || false }, "billing.order.created");
 
     return reply.code(200).send(successResponse(checkoutData, "Checkout order created successfully"));
   } catch (err: any) {
@@ -184,9 +191,39 @@ export async function verifyPaymentController(req: FastifyRequest, reply: Fastif
       razorpaySignature
     );
 
+    req.log.info({ organizationId: orgId, orderId: razorpayOrderId, providerPaymentId: razorpayPaymentId,
+      activated: result.success, pending: "pending" in result && result.pending,
+      requiresReview: "requiresReview" in result && result.requiresReview }, "billing.payment.verified");
+
     return reply.code(200).send(successResponse(result, result.success ? "Subscription payment verified and activated successfully" : result.message));
   } catch (err: any) {
     return reply.code(400).send(errorResponse(err.message || "Payment verification failed"));
+  }
+}
+
+export async function getCheckoutStatusController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const orgId = await resolveTargetOrganizationId(req);
+    if (!orgId) return reply.code(400).send(errorResponse("No organization linked to account"));
+    const { orderId } = req.query as { orderId?: string };
+    const result = await subscriptionService.reconcileCheckout(orgId, orderId);
+    return reply.code(200).send(successResponse(result));
+  } catch (err: any) {
+    req.log.error({ err }, "billing.checkout.reconcile.failed");
+    return reply.code(503).send(errorResponse("Payment status could not be confirmed. Please try again."));
+  }
+}
+
+export async function abandonCheckoutController(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const orgId = await resolveTargetOrganizationId(req);
+    if (!orgId) return reply.code(400).send(errorResponse("No organization linked to account"));
+    const { orderId } = req.body as { orderId?: string };
+    if (!orderId) return reply.code(400).send(errorResponse("orderId is required"));
+    const result = await subscriptionService.abandonCheckout(orgId, orderId);
+    return reply.code(200).send(successResponse(result));
+  } catch (err: any) {
+    return reply.code(400).send(errorResponse(err.message || "Checkout could not be abandoned"));
   }
 }
 
@@ -196,9 +233,13 @@ export async function verifyPaymentController(req: FastifyRequest, reply: Fastif
 export async function razorpayWebhookController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const signature = req.headers["x-razorpay-signature"] as string;
-    const rawBody = (req as any).rawBody || (typeof req.body === "string" ? req.body : JSON.stringify(req.body));
+    const rawBody = (req as any).rawBody;
+    if (typeof rawBody !== "string") return reply.code(400).send({ error: "Raw webhook body is required" });
+
+    req.log.info({ event: (req.body as any)?.event, eventId: req.headers["x-razorpay-event-id"] }, "billing.webhook.received");
 
     const result = await subscriptionService.processRazorpayWebhook(rawBody, signature || "", req.body);
+    req.log.info({ event: (req.body as any)?.event, eventId: req.headers["x-razorpay-event-id"] }, "billing.webhook.verified");
     return reply.code(200).send(result);
   } catch (err: any) {
     req.log.error(`Razorpay webhook error: ${err.message}`);
@@ -238,6 +279,68 @@ export async function getSaaSInvoices(req: FastifyRequest, reply: FastifyReply) 
     return reply.code(200).send(successResponse(formatted));
   } catch (err: any) {
     return reply.code(500).send(errorResponse("Failed to fetch SaaS invoices", err.message));
+  }
+}
+
+export async function getPaymentAttempts(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const orgId = await resolveTargetOrganizationId(req);
+    if (!orgId) return reply.code(400).send(errorResponse("No organization linked to account"));
+    const attempts = await SubscriptionPayment.find({ organizationId: orgId }).sort({ createdAt: -1 }).limit(50)
+      .select("organizationId subscriptionId planId razorpayOrderId razorpayPaymentId amount currency status billingCycle failureReason paidAt createdAt")
+      .populate("planId", "name slug").lean();
+    return reply.code(200).send(successResponse(attempts));
+  } catch (err: any) {
+    return reply.code(500).send(errorResponse("Failed to fetch payment attempts", err.message));
+  }
+}
+
+export async function getBillingDetails(req: FastifyRequest, reply: FastifyReply) {
+  const orgId = await resolveTargetOrganizationId(req);
+  if (!orgId) return reply.code(400).send(errorResponse("No organization linked to account"));
+  const org = await Organization.findById(orgId).select("billingDetails taxId email address").lean();
+  if (!org) return reply.code(404).send(errorResponse("Organization not found"));
+  return reply.send(successResponse({
+    gstin: org.billingDetails?.gstin ?? org.taxId ?? "",
+    billingEmail: org.billingDetails?.email ?? org.email ?? "",
+    billingAddress: org.billingDetails?.address ?? org.address ?? "",
+  }));
+}
+
+export async function saveBillingDetails(req: FastifyRequest, reply: FastifyReply) {
+  const orgId = await resolveTargetOrganizationId(req);
+  if (!orgId) return reply.code(400).send(errorResponse("No organization linked to account"));
+  const body = (req.body || {}) as Record<string, unknown>;
+  if (typeof body.gstin !== "string" || typeof body.billingEmail !== "string" || typeof body.billingAddress !== "string") {
+    return reply.code(400).send(errorResponse("Billing details must be text"));
+  }
+  const gstin = body.gstin.trim().toUpperCase();
+  const billingEmail = body.billingEmail.trim();
+  const billingAddress = body.billingAddress.trim();
+  if (gstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(gstin)) {
+    return reply.code(400).send(errorResponse("Enter a valid 15-character Indian GSTIN"));
+  }
+  if (billingEmail && (billingEmail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(billingEmail))) {
+    return reply.code(400).send(errorResponse("Enter a valid billing email"));
+  }
+  if (billingAddress.length > 500) return reply.code(400).send(errorResponse("Billing address is too long"));
+  const org = await Organization.findByIdAndUpdate(orgId, { $set: {
+    "billingDetails.gstin": gstin,
+    "billingDetails.email": billingEmail,
+    "billingDetails.address": billingAddress,
+  } }, { returnDocument: "after" }).select("billingDetails");
+  if (!org) return reply.code(404).send(errorResponse("Organization not found"));
+  return reply.send(successResponse({ gstin, billingEmail, billingAddress }, "Billing details saved"));
+}
+
+export async function adminGetPaymentReviews(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const reviews = await SubscriptionPayment.find({ status: "captured_review" }).sort({ paidAt: -1 }).limit(100)
+      .select("organizationId planId razorpayOrderId razorpayPaymentId amount currency status paidAt")
+      .populate("organizationId", "name email").populate("planId", "name slug").lean();
+    return reply.code(200).send(successResponse(reviews));
+  } catch (err: any) {
+    return reply.code(500).send(errorResponse("Failed to fetch payment reviews", err.message));
   }
 }
 
@@ -383,16 +486,13 @@ export async function adminActivateSubscription(req: FastifyRequest, reply: Fast
     if (!plan) return reply.code(400).send(errorResponse("Selected plan is not active"));
 
     const now = new Date();
-    const periodEnd = new Date(now);
-    if (billingCycle === "annual") {
-      periodEnd.setFullYear(periodEnd.getFullYear() + 1);
-    } else {
-      periodEnd.setMonth(periodEnd.getMonth() + 1);
-    }
+    if (billingCycle !== "monthly" && billingCycle !== "annual") return reply.code(400).send(errorResponse("Invalid billing cycle"));
+    const periodEnd = addBillingPeriod(now, billingCycle);
 
     const subscription = await withTransaction(async (session) => {
       const target = await Subscription.findById(id).session(session);
       if (!target) return null;
+      if (target.pendingCheckout?.paymentId) throw new Error("A checkout is in progress for this organization");
       target.planId = plan._id;
       target.status = "active";
       target.entitlementSource = "manual";
@@ -403,6 +503,7 @@ export async function adminActivateSubscription(req: FastifyRequest, reply: Fast
       target.billingCycle = billingCycle;
       target.currentPeriodStart = now;
       target.currentPeriodEnd = periodEnd;
+      target.lastBillingChangeAt = now;
       await target.save({ session });
       const organization = await Organization.findByIdAndUpdate(target.organizationId, {
         plan: plan.slug,
@@ -431,9 +532,12 @@ export async function adminRefundPayment(req: FastifyRequest, reply: FastifyRepl
     if (!payment) {
       return reply.code(404).send(errorResponse("Payment record not found"));
     }
+    if ((payment.status !== "captured" && payment.status !== "captured_review") || !payment.razorpayPaymentId) {
+      return reply.code(409).send(errorResponse("Only a captured provider payment can be refunded"));
+    }
 
     const refund = await razorpayService.processRefund({
-      paymentId: payment.razorpayPaymentId || payment._id.toString(),
+      paymentId: payment.razorpayPaymentId,
       amount: payment.amount,
     });
 
@@ -488,6 +592,12 @@ export async function adminSaveRazorpayConfig(req: FastifyRequest, reply: Fastif
     };
 
     const existing = await SaaSConfig.findOne({ key: "platform_config" });
+    if (typeof keyId !== "string" || !/^rzp_(test|live)_/.test(keyId.trim())) {
+      return reply.code(400).send(errorResponse("A valid Razorpay test or live Key ID is required"));
+    }
+    if (Boolean(isLiveMode) !== keyId.trim().startsWith("rzp_live_")) {
+      return reply.code(400).send(errorResponse("Gateway mode must match the Razorpay Key ID"));
+    }
 
     const updateFields: any = {
       key: "platform_config",
@@ -507,6 +617,15 @@ export async function adminSaveRazorpayConfig(req: FastifyRequest, reply: Fastif
       updateFields.razorpayWebhookSecret = trimmedWebhookSecret;
     } else if (existing?.razorpayWebhookSecret) {
       updateFields.razorpayWebhookSecret = existing.razorpayWebhookSecret;
+    }
+
+    const changesCredentials = Boolean(existing && (
+      (existing.razorpayKeyId && existing.razorpayKeyId !== updateFields.razorpayKeyId) ||
+      (updateFields.razorpayKeySecret && updateFields.razorpayKeySecret !== existing.razorpayKeySecret) ||
+      (updateFields.razorpayWebhookSecret && updateFields.razorpayWebhookSecret !== existing.razorpayWebhookSecret)
+    ));
+    if (changesCredentials && await SubscriptionPayment.exists({ status: "created" })) {
+      return reply.code(409).send(errorResponse("Reconcile open checkout orders before rotating Razorpay credentials"));
     }
 
     const config = await SaaSConfig.findOneAndUpdate(

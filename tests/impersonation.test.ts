@@ -157,7 +157,7 @@ describe("Root Superadmin Impersonation Engine Tests", () => {
     const organization = response.json().data.find((item: any) => item.id === testOrgId);
     expect(organization.primaryAdmin.name).toBe("Organization Billing Admin");
     expect(organization.subscriptionSummary.basis).toBe("paid");
-    expect(organization.subscriptionSummary.paymentStatus).toBe("created");
+    expect(organization.subscriptionSummary.paymentStatus).toBe("captured");
     expect(organization.subscriptionSummary.bookingAvailable).toBe(true);
   });
 

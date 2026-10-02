@@ -5,6 +5,28 @@ import fs from "node:fs";
 import path from "node:path";
 import { getServerPort } from "../utilities/serverPort.ts";
 
+const lockPurpose = "ekavyu-backend-dev-watcher";
+
+function parseLock(contents) {
+  try {
+    const lock = JSON.parse(contents);
+    return Number.isInteger(lock.pid) ? lock : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isLockOwnerRunning(owner) {
+  try {
+    process.kill(owner.pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    if (error.code === "EPERM") return owner.purpose === lockPurpose;
+    throw error;
+  }
+}
+
 async function runDevelopment() {
   process.chdir(fileURLToPath(new URL("../", import.meta.url)));
   const port = getServerPort();
@@ -12,24 +34,21 @@ async function runDevelopment() {
   let ownsLock = false;
   for (let attempt = 0; attempt < 3 && !ownsLock; attempt++) {
     try {
-      fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid }), { flag: "wx" });
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, purpose: lockPurpose }), { flag: "wx" });
       ownsLock = true;
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
       const contents = fs.readFileSync(lockPath, "utf8");
-      let owner;
-      try { owner = JSON.parse(contents).pid; } catch {
+      const owner = parseLock(contents);
+      if (!owner) {
         console.log("Another development watcher is starting. Reuse its terminal.");
         return;
       }
-      try {
-        process.kill(owner, 0);
-        console.log(`A development watcher is already active (PID ${owner}). Reuse its terminal, including during API restarts.`);
+      if (isLockOwnerRunning(owner)) {
+        console.log(`A development watcher is already active (PID ${owner.pid}). Reuse its terminal, including during API restarts.`);
         return;
-      } catch (error) {
-        if (error.code !== "ESRCH") throw error;
-        if (fs.readFileSync(lockPath, "utf8") === contents) fs.unlinkSync(lockPath);
       }
+      if (fs.readFileSync(lockPath, "utf8") === contents) fs.unlinkSync(lockPath);
     }
   }
   if (!ownsLock) throw new Error("Could not acquire the development watcher lock. Try again.");

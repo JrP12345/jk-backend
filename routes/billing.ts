@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { authenticate, checkAnyPermission, checkAnyPermissionOrRoles, requirePlatformRoot } from "../middleware/auth.ts";
 import { requireModule } from "../middleware/moduleGuard.ts";
+import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { createInvoiceSchema, collectPaymentSchema } from "../schemas/billing.ts";
 import {
   createInvoice,
@@ -27,9 +28,15 @@ import {
   validatePlanDowngradeController,
   directSwitchPlanController,
   verifyPaymentController,
+  getCheckoutStatusController,
+  abandonCheckoutController,
   razorpayWebhookController,
   cancelSubscriptionController,
   getSaaSInvoices,
+  getPaymentAttempts,
+  getBillingDetails,
+  saveBillingDetails,
+  adminGetPaymentReviews,
   adminGetPlans,
   adminUpsertPlan,
   adminGetSubscriptions,
@@ -46,7 +53,16 @@ import {
 } from "../controllers/cashierShift.ts";
 
 export default async function billingRoutes(app: FastifyInstance) {
-  const manageSaaS = { preHandler: [authenticate, checkAnyPermission("MANAGE_ORGANIZATION")] };
+  const checkSaaSPermission = checkAnyPermission("MANAGE_ORGANIZATION");
+  const manageSaaS = { preHandler: [authenticate,
+    async (req: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => {
+      if (req.user?.impersonatedBy?.originalRole === "root" && req.user.organization_id) return;
+      return checkSaaSPermission(req, reply);
+    },
+    async (req: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => {
+      const scope = resolveAuthorizedOrganizationScope(req);
+      if (!scope.allowed) return reply.code(scope.statusCode).send({ error: scope.message });
+    }] };
   const rootAdminAuth = { preHandler: [authenticate, requirePlatformRoot()] };
   const viewInvoices = {
     preHandler: [authenticate, requireModule("billing"), checkAnyPermissionOrRoles(["patient", "family_member"], "VIEW_BILLING", "MANAGE_BILLING")],
@@ -71,12 +87,17 @@ export default async function billingRoutes(app: FastifyInstance) {
   app.get("/api/billing/subscription", manageSaaS, getSubscriptionDetails);
   app.get("/api/billing/usage", manageSaaS, getOrganizationUsageMetrics);
   app.get("/api/billing/saas-invoices", manageSaaS, getSaaSInvoices);
+  app.get("/api/billing/payment-attempts", manageSaaS, getPaymentAttempts);
+  app.get("/api/billing/details", manageSaaS, getBillingDetails);
+  app.put("/api/billing/details", manageSaaS, saveBillingDetails);
 
   // Razorpay Checkout, Verification & Cancellation
   app.post("/api/billing/checkout", manageSaaS, createCheckoutOrderController);
   app.post("/api/billing/validate-downgrade", manageSaaS, validatePlanDowngradeController);
   app.post("/api/billing/switch-plan", manageSaaS, directSwitchPlanController);
   app.post("/api/billing/verify-payment", manageSaaS, verifyPaymentController);
+  app.get("/api/billing/checkout-status", manageSaaS, getCheckoutStatusController);
+  app.post("/api/billing/checkout/abandon", manageSaaS, abandonCheckoutController);
   app.post("/api/billing/cancel", manageSaaS, cancelSubscriptionController);
 
   // Razorpay Webhook Endpoint (No Auth header, verified via HMAC signature)
@@ -86,6 +107,7 @@ export default async function billingRoutes(app: FastifyInstance) {
   app.get("/api/admin/billing/plans", rootAdminAuth, adminGetPlans);
   app.post("/api/admin/billing/plans", rootAdminAuth, adminUpsertPlan);
   app.get("/api/admin/billing/subscriptions", rootAdminAuth, adminGetSubscriptions);
+  app.get("/api/admin/billing/payment-reviews", rootAdminAuth, adminGetPaymentReviews);
   app.post("/api/admin/billing/subscriptions/:id/extend-trial", rootAdminAuth, adminExtendTrial);
   app.post("/api/admin/billing/subscriptions/:id/activate", rootAdminAuth, adminActivateSubscription);
   app.post("/api/admin/billing/payments/:paymentId/refund", rootAdminAuth, adminRefundPayment);

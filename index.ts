@@ -20,6 +20,8 @@ import websocket from "@fastify/websocket";
 import compress from "@fastify/compress";
 import authRoutes from "./routes/auth.ts";
 import onboardingRoutes from "./routes/onboarding.ts";
+import organizationBrandingRoutes from "./routes/organizationBranding.ts";
+import { startOrganizationBrandingJob, stopOrganizationBrandingJob } from "./jobs/organizationBrandingJob.ts";
 import staffRoutes from "./routes/staff.ts";
 import clinicRoutes from "./routes/clinics.ts";
 import appointmentRoutes from "./routes/appointments.ts";
@@ -62,6 +64,7 @@ import { whatsAppWebhookWorker } from "./services/WhatsAppWebhookService.ts";
 import { outboundMessageDeliveryWorker } from "./services/OutboundMessageDeliveryWorker.ts";
 import whatsappCreditsRoutes from "./routes/whatsappCredits.ts";
 import { startNoShowSweepJob, stopNoShowSweepJob } from "./jobs/noShowSweepJob.ts";
+import { startBillingReconciliationJob, stopBillingReconciliationJob } from "./jobs/billingReconciliationJob.ts";
 import upiWebhookRoutes from "./routes/upiWebhook.ts";
 import abdmRoutes from "./routes/abdm.ts";
 import syntheticHealthRoutes from "./routes/syntheticHealth.ts";
@@ -307,6 +310,7 @@ app.register(compress, {
 // ─── Register Domain Route Plugins ─────────────────────────────
 app.register(authRoutes);
 app.register(onboardingRoutes);
+app.register(organizationBrandingRoutes);
 app.register(staffRoutes);
 app.register(clinicRoutes);
 app.register(appointmentRoutes);
@@ -417,6 +421,8 @@ async function startServer(port = getServerPort()) {
     // 3. Start scheduled no-show sweeper if running inline background jobs
     if (process.env.NODE_ENV !== "test" && (process.env.RUN_INLINE_JOBS === "true" || process.env.NODE_ENV !== "production")) {
       startNoShowSweepJob();
+      startBillingReconciliationJob();
+      startOrganizationBrandingJob();
       whatsAppWebhookWorker.start();
       outboundMessageDeliveryWorker.start();
       app.log.info("✓ Scheduled no-show background sweeper started (inline mode).");
@@ -448,6 +454,8 @@ const gracefulShutdown = async (signal: string, exitCode = 0) => {
   try {
     // Step 0: Stop scheduled background sweepers
     stopNoShowSweepJob();
+    stopBillingReconciliationJob();
+    stopOrganizationBrandingJob();
     await whatsAppWebhookWorker.stop();
     await outboundMessageDeliveryWorker.stop();
 

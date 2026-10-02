@@ -4,6 +4,7 @@ import { Clinic } from "../models/Clinic.ts";
 import { Organization } from "../models/Organization.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { isIanaTimezone } from "../utilities/countrySettings.ts";
+import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 
 export async function createClinic(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -16,7 +17,9 @@ export async function createClinic(req: FastifyRequest, reply: FastifyReply) {
       longitude?: number; timings?: string; facilities?: string[]; upiVpa?: string; merchantName?: string;
     };
 
-    let orgId = reqOrgId || req.user!.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    let orgId = scope.organizationId;
     if (!orgId && req.user?.role === "root") {
       const firstOrg = await Organization.findOne().select("_id").lean();
       if (firstOrg) orgId = firstOrg._id.toString();
@@ -78,7 +81,9 @@ export async function getClinics(req: FastifyRequest, reply: FastifyReply) {
       }));
     };
     const { includeInactive, status } = (req.query || {}) as { includeInactive?: string; status?: string };
-    const orgId = req.user!.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
 
     const filter: any = {};
     if (status === "inactive") {

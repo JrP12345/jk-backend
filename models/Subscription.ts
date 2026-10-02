@@ -18,9 +18,14 @@ const SubscriptionSchema = new Schema({
   trialEndsAt: { type: Date, required: true },
   currentPeriodStart: { type: Date, default: Date.now },
   currentPeriodEnd: { type: Date, required: true },
+  lastBillingChangeAt: { type: Date, default: null },
   cancelledAt: { type: Date, default: null },
   razorpaySubscriptionId: { type: String, default: null, index: true },
   razorpayCustomerId: { type: String, default: null },
+  pendingCheckout: {
+    paymentId: { type: Schema.Types.ObjectId, ref: "SubscriptionPayment", default: null },
+    claimedAt: { type: Date, default: null },
+  },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
