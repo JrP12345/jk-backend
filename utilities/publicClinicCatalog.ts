@@ -43,24 +43,45 @@ export async function getPublicClinicFacets(visibility: Record<string, unknown>)
   };
 }
 
-/** Sort before limiting, so a highly rated/low-fee clinic cannot be hidden on a later page. */
+export interface ClinicOrigin { latitude: number; longitude: number }
+
+/** Great-circle distance, with invalid/unmapped clinics retained after mapped clinics. */
+function distanceStages(origin: ClinicOrigin): mongoose.PipelineStage[] {
+  const radians = Math.PI / 180;
+  return [
+    { $set: { validCoordinates: { $and: [
+      { $isNumber: "$latitude" }, { $isNumber: "$longitude" },
+      { $gte: ["$latitude", -90] }, { $lte: ["$latitude", 90] },
+      { $gte: ["$longitude", -180] }, { $lte: ["$longitude", 180] },
+    ] } } },
+    { $set: { value: { $cond: ["$validCoordinates", { $multiply: [6371, { $acos: { $max: [-1, { $min: [1, { $add: [
+      { $multiply: [Math.sin(origin.latitude * radians), { $sin: { $multiply: ["$latitude", radians] } }] },
+      { $multiply: [Math.cos(origin.latitude * radians), { $cos: { $multiply: ["$latitude", radians] } }, { $cos: { $multiply: [{ $subtract: ["$longitude", origin.longitude] }, radians] } }] },
+    ] }] }] } }] }, null] } } },
+  ];
+}
+
+/** Rank the full visible directory before limiting, including across city boundaries. */
 export async function getSortedPublicClinicPage(
-  filter: Record<string, unknown>, sort: "rating" | "fee_low", limit: number, cursor?: string,
+  filter: Record<string, unknown>, sort: "rating" | "fee_low" | "nearby", limit: number, cursor?: string, origin?: ClinicOrigin,
 ) {
+  if (sort === "nearby" && !origin) throw new Error("Nearby sort needs coordinates");
   const metricStages: mongoose.PipelineStage[] = sort === "fee_low" ? [
     { $lookup: { from: DoctorAssignment.collection.name, localField: "_id", foreignField: "clinicId", pipeline: [...publicDoctorAssignments(), { $match: { $or: [{ feeType: "free" }, { fees: { $gt: 0 } }] } }, { $group: { _id: null, value: { $min: "$fees" } } }], as: "metric" } },
   ] : [
     { $lookup: { from: PatientFeedback.collection.name, localField: "_id", foreignField: "clinicId", pipeline: [{ $match: { rating: { $gte: 1, $lte: 5 } } }, { $group: { _id: null, value: { $avg: "$rating" } } }], as: "metric" } },
   ];
   const pipeline: mongoose.PipelineStage[] = [
-    { $match: filter }, ...metricStages,
-    { $set: { value: { $ifNull: [{ $first: "$metric.value" }, null] } } },
+    { $match: filter }, ...(sort === "nearby" ? distanceStages(origin!) : [
+      ...metricStages, { $set: { value: { $ifNull: [{ $first: "$metric.value" }, null] } } } as mongoose.PipelineStage,
+    ]),
     { $set: { hasValue: { $cond: [{ $ne: ["$value", null] }, 1, 0] } } },
   ];
   if (cursor) {
     const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
     if (!decoded || typeof decoded !== "object" || decoded.sort !== sort || typeof decoded.id !== "string" || !mongoose.isValidObjectId(decoded.id) || ![0, 1].includes(decoded.hasValue) ||
-      (decoded.hasValue === 1 && !Number.isFinite(decoded.value)) || (decoded.hasValue === 0 && decoded.value !== null)) {
+      (decoded.hasValue === 1 && !Number.isFinite(decoded.value)) || (decoded.hasValue === 0 && decoded.value !== null) ||
+      (sort === "nearby" && (decoded.origin?.latitude !== origin!.latitude || decoded.origin?.longitude !== origin!.longitude))) {
       throw new Error("Invalid sorted clinic cursor");
     }
     pipeline.push({ $match: { $or: [
@@ -79,6 +100,7 @@ export async function getSortedPublicClinicPage(
   return {
     items: page.map(item => byId.get(String(item._id))!).filter(Boolean),
     hasNextPage, limit,
-    nextCursor: hasNextPage && last ? Buffer.from(JSON.stringify({ sort, id: String(last._id), value: last.value, hasValue: last.hasValue })).toString("base64url") : null,
+    distances: new Map<string, number | null>(sort === "nearby" ? page.map(item => [String(item._id), item.value]) : []),
+    nextCursor: hasNextPage && last ? Buffer.from(JSON.stringify({ sort, id: String(last._id), value: last.value, hasValue: last.hasValue, ...(sort === "nearby" ? { origin } : {}) })).toString("base64url") : null,
   };
 }

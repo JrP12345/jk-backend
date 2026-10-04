@@ -48,6 +48,39 @@ The API binds to `0.0.0.0` and honors that port. `npm start` runs the built API;
 it does not compile source, run nodemon or start a second listener on restart.
 The Docker liveness check also uses the actual `PORT` instead of assuming 5000.
 
+#### Missing prescription signing key on Render
+
+If the build succeeds but `npm start` exits with `PRESCRIPTION_SIGNING_KEY
+(or legacy JWT_SECRET) must be a persistent secret of at least 32 characters`,
+open the existing service's **Environment** page. Configure
+`PRESCRIPTION_SIGNING_KEY` with the persistent secret used for prescription seals.
+The same key must be available to every API instance and worker that uses it.
+An existing strong `JWT_SECRET` is accepted for legacy compatibility; the RS256
+JWT private/public key pair does not replace this prescription signing secret.
+
+If prescriptions were already sealed, recover their actual previous signing key
+from the secret store or deployment environment. Do not replace it with a newly
+generated value or the former public fallback constant. Historical seals need an
+explicit migration/retirement plan when their original key is unavailable.
+
+For a new installation with no existing sealed prescriptions, generate a secret
+once in a private local terminal:
+
+```sh
+node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+```
+
+Store the generated value in Render and the secret manager; do not commit it or
+generate a different value on every startup. Choose **Save and deploy** to use
+the already successful build with the corrected environment. Confirm that startup
+passes configuration validation and `/api/health/readiness` returns HTTP 200.
+The `No open ports detected` message accompanies this early process exit; changing
+`PORT` cannot repair a missing signing key. Retain the readiness health check.
+
+See [Render environment variable management](https://render.com/docs/configure-environment-variables).
+Editing `.env.example` or `render.yaml` alone does not update an existing manually
+configured Render service's environment.
+
 #### Missing `dist/index.js` on Render
 
 The September 27 deployment at commit `97ab1e8` ran build command `npm install`

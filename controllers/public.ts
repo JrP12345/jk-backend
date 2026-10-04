@@ -192,10 +192,15 @@ export async function getOrganizationDetails(req: FastifyRequest, reply: Fastify
 
 export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { search, city, specialization, sort } = req.query as {
-      search?: string; city?: string; specialization?: string; sort?: string;
+    const { search, city, specialization, sort, latitude, longitude } = req.query as {
+      search?: string; city?: string; specialization?: string; sort?: string; latitude?: string; longitude?: string;
     };
-    if (sort && sort !== "rating" && sort !== "fee_low") return reply.code(400).send(errorResponse("Unsupported clinic sort"));
+    if (sort && sort !== "rating" && sort !== "fee_low" && sort !== "nearby") return reply.code(400).send(errorResponse("Unsupported clinic sort"));
+    const origin = sort === "nearby" ? { latitude: Number(latitude), longitude: Number(longitude) } : undefined;
+    if (origin && (typeof latitude !== "string" || !latitude.trim() || typeof longitude !== "string" || !longitude.trim() ||
+      !Number.isFinite(origin.latitude) || Math.abs(origin.latitude) > 90 || !Number.isFinite(origin.longitude) || Math.abs(origin.longitude) > 180)) {
+      return reply.code(400).send(errorResponse("Valid latitude and longitude are required for nearby clinics"));
+    }
 
     // Filter out orphan clinics belonging to deleted organizations
     const activeOrgs = await Organization.find({ isActive: true, status: { $ne: "inactive" } }).select("_id").lean();
@@ -285,8 +290,8 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
 
     let paginatedResult;
     try {
-      paginatedResult = sort === "rating" || sort === "fee_low"
-        ? await getSortedPublicClinicPage(filter, sort, pagination.limit, pagination.cursor)
+      paginatedResult = sort === "rating" || sort === "fee_low" || sort === "nearby"
+        ? await getSortedPublicClinicPage(filter, sort, pagination.limit, pagination.cursor, origin)
         : formatCursorResult(rawClinics as any[], pagination.limit, "createdAt");
     } catch (error) {
       if (pagination.cursor && error instanceof Error && (error.message === "Invalid sorted clinic cursor" || error instanceof SyntaxError)) {
@@ -361,6 +366,7 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
 
       return {
         ...json,
+        ...(sort === "nearby" && "distances" in paginatedResult && paginatedResult.distances instanceof Map ? { distanceKm: paginatedResult.distances.get(String(c._id)) ?? null } : {}),
         logo_url: effectiveLogo,
         image_url: effectiveCover,
         images: effectiveImages,

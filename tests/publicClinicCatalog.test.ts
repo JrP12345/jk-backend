@@ -23,7 +23,8 @@ describe("Dynamic public clinic catalog", () => {
     ];
     for (const definition of definitions) {
       const organizationId = definition.hidden ? hiddenOrg._id : org._id;
-      const clinic = await Clinic.create({ name: definition.name, city: definition.city, organizationId, createdAt: definition.createdAt });
+      const coordinates = definition.inactiveDoctor ? {} : { latitude: 0, longitude: definition.hidden ? 0.001 : definition.name === "Lowest Fee" ? 0.04 : definition.name === "Unrated Clinic" ? 0.12 : 0.3 };
+      const clinic = await Clinic.create({ name: definition.name, city: definition.city, organizationId, createdAt: definition.createdAt, ...coordinates });
       const user = await User.create({ name: `${definition.name} doctor`, role: "doctor", isActive: !definition.inactiveDoctor });
       await Doctor.create({ userId: user._id, organizationId, specialization: definition.specialization });
       await DoctorAssignment.create({ clinicId: clinic._id, doctorId: user._id, organizationId, fees: definition.fees, feeType: definition.fees === 0 ? "free" : "fixed", workingHours: "{}" });
@@ -159,6 +160,54 @@ describe("Dynamic public clinic catalog", () => {
     ]);
     const filtered = await app.inject({ method: "GET", url: "/api/public/clinics?specialization=Cardiology&sort=fee_low" });
     expect(filtered.json().data.map((clinic: { id: string }) => clinic.id)).toEqual([cheap]);
+  });
+
+  it("ranks nearby clinics across cities before pagination and keeps unmapped clinics last", async () => {
+    const all = await app.inject({ method: "GET", url: "/api/public/clinics?sort=nearby&latitude=0&longitude=0" });
+    expect(all.statusCode, all.body).toBe(200);
+    const data = all.json().data;
+    expect(data.map((clinic: { id: string }) => clinic.id)).toEqual([cheap, unrated, top, disabledClinicId]);
+    expect(data[0].distanceKm).toBeCloseTo(4.448, 2);
+    expect(data[1].distanceKm).toBeCloseTo(13.343, 2);
+    expect(data[2].distanceKm).toBeGreaterThan(20);
+    expect(data[3].distanceKm).toBeNull();
+    expect(all.body).not.toContain(hiddenClinicId);
+    const ids: string[] = [];
+    let cursor = "";
+    do {
+      const page = await app.inject({ method: "GET", url: `/api/public/clinics?sort=nearby&latitude=0&longitude=0&limit=1&format=paginated${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}` });
+      expect(page.statusCode, page.body).toBe(200);
+      ids.push(...page.json().data.items.map((clinic: { id: string }) => clinic.id));
+      cursor = page.json().data.nextCursor;
+    } while (cursor);
+    expect(ids).toEqual([cheap, unrated, top, disabledClinicId]);
+    const filter = await app.inject({ method: "GET", url: "/api/public/clinics?sort=nearby&latitude=0&longitude=0&city=Valsad" });
+    expect(filter.json().data.map((clinic: { id: string }) => clinic.id)).toEqual([top]);
+  });
+
+  it("rejects invalid origins and location-mismatched cursors", async () => {
+    for (const query of ["", "&latitude=0", "&latitude=91&longitude=0", "&latitude=0&longitude=-181", "&latitude=NaN&longitude=0", "&latitude=&longitude=0"]) {
+      expect((await app.inject({ method: "GET", url: `/api/public/clinics?sort=nearby${query}` })).statusCode).toBe(400);
+    }
+    const first = await app.inject({ method: "GET", url: "/api/public/clinics?sort=nearby&latitude=0&longitude=0&limit=1&format=paginated" });
+    const cursor = encodeURIComponent(first.json().data.nextCursor);
+    expect((await app.inject({ method: "GET", url: `/api/public/clinics?sort=nearby&latitude=1&longitude=0&cursor=${cursor}` })).statusCode).toBe(400);
+  });
+
+  it("handles negative coordinates and distances across the date line without hiding unlocated clinics", async () => {
+    const clinic = await Clinic.findById(cheap);
+    const original = { latitude: clinic!.latitude, longitude: clinic!.longitude };
+    try {
+      await Clinic.updateOne({ _id: cheap }, { latitude: -10, longitude: -179.99 });
+      const result = await app.inject({ method: "GET", url: "/api/public/clinics?sort=nearby&latitude=-10&longitude=179.99" });
+      expect(result.statusCode, result.body).toBe(200);
+      expect(result.json().data[0].id).toBe(cheap);
+      expect(result.json().data[0].distanceKm).toBeCloseTo(2.19, 1);
+      await Clinic.updateOne({ _id: cheap }, { latitude: 100, longitude: 0 });
+      const invalid = await app.inject({ method: "GET", url: "/api/public/clinics?sort=nearby&latitude=0&longitude=0" });
+      expect(invalid.statusCode, invalid.body).toBe(200);
+      expect(invalid.json().data.find((item: { id: string }) => item.id === cheap).distanceKm).toBeNull();
+    } finally { await Clinic.updateOne({ _id: cheap }, original); }
   });
 
   it("rejects unsupported sorts and cursors from another sort", async () => {
