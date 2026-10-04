@@ -2,8 +2,11 @@
 
 The final source/configuration gate and cross-repository launch actions are in
 the frontend [Phase 1 final report](../frontend/docs/phase1-final-production-gate.md).
-The known frontend dependency-audit blocker remains open; no new tests or build
-were run in that final pass.
+The frontend dependency-audit blocker is now closed; full frontend/backend npm
+audits report zero vulnerabilities and the source/configuration code gate is
+PASS. No new tests or build were run in that final pass or dependency closure.
+Complete the report's hosting, provider, worker and recovery requirements before
+launch; a repository gate does not certify the deployed environment.
 
 Use Node.js 24. MongoDB must support transactions through an authenticated replica
 set or managed equivalent. Production replicas require authenticated Redis and

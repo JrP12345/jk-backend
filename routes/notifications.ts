@@ -11,6 +11,7 @@ import { decrypt } from "../utilities/encryption.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { resolveTargetOrganizationId, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { enqueueTransactionalEmail } from "../services/CommunicationOutbox.ts";
+import { escapeHtml, normalizeManualNotificationActionUrl } from "../utilities/manualNotificationContent.ts";
 
 async function getOrganizationSmtp(organizationId?: string | null): Promise<SmtpConfig | null> {
   if (!organizationId) return null;
@@ -234,16 +235,26 @@ export default async function notificationRoutes(app: FastifyInstance) {
       message,
       severity = "info",
       priority = "medium",
-      actionUrl,
+      actionUrl: requestedActionUrl,
       channels = { inApp: true, email: true },
     } = (req.body as any) || {};
 
-    if (!title || !message) {
+    if (typeof title !== "string" || !title.trim() || title.length > 160 ||
+      typeof message !== "string" || !message.trim() || message.length > 5000) {
       return reply.code(400).send({ success: false, message: "Title and message are required" });
     }
     if (!organizationId) {
       return reply.code(403).send({ success: false, message: "Organization context is required" });
     }
+
+    const actionUrl = normalizeManualNotificationActionUrl(requestedActionUrl);
+    if (requestedActionUrl && !actionUrl) {
+      return reply.code(400).send({ success: false, message: "Action URL must be an internal dashboard or tracker path" });
+    }
+    const safeTitle = escapeHtml(title);
+    const safeMessage = escapeHtml(message).replace(/\n/g, "<br/>");
+    const safeCategory = escapeHtml(category);
+    const safeActionUrl = actionUrl ? escapeHtml(actionUrl) : undefined;
 
     let targetUsers: any[] = [];
 
@@ -303,13 +314,13 @@ export default async function notificationRoutes(app: FastifyInstance) {
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
               <div style="display: flex; items-center; justify-content: space-between; border-bottom: 2px solid #3b82f6; padding-bottom: 12px; margin-bottom: 20px;">
                 <h2 style="color: #1e293b; margin: 0; font-size: 20px;">Ekavyu Health Alert</h2>
-                <span style="background-color: #3b82f6; color: #ffffff; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; text-transform: uppercase;">${category}</span>
+                <span style="background-color: #3b82f6; color: #ffffff; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; text-transform: uppercase;">${safeCategory}</span>
               </div>
-              <h3 style="color: #0f172a; margin-top: 0; font-size: 16px;">${title}</h3>
+              <h3 style="color: #0f172a; margin-top: 0; font-size: 16px;">${safeTitle}</h3>
               <div style="background-color: #f8fafc; padding: 16px; border-left: 4px solid #3b82f6; border-radius: 6px; margin: 16px 0;">
-                <p style="margin: 0; font-size: 14px; color: #334155; line-height: 1.6;">${message.replace(/\n/g, "<br/>")}</p>
+                <p style="margin: 0; font-size: 14px; color: #334155; line-height: 1.6;">${safeMessage}</p>
               </div>
-              ${actionUrl ? `<div style="margin: 24px 0;"><a href="${actionUrl}" style="background-color: #2563eb; color: #ffffff; padding: 10px 20px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 13px; display: inline-block;">View Action Destination &rarr;</a></div>` : ""}
+              ${safeActionUrl ? `<div style="margin: 24px 0;"><a href="${safeActionUrl}" style="background-color: #2563eb; color: #ffffff; padding: 10px 20px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 13px; display: inline-block;">View Action Destination &rarr;</a></div>` : ""}
               <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0 16px 0;" />
               <p style="font-size: 11px; color: #94a3b8; text-align: center; margin: 0;">Sent by Ekavyu Health Intelligence System &bull; Confidential Medical Telemetry</p>
             </div>
