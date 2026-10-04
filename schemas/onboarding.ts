@@ -59,6 +59,13 @@ export const updateOrganizationSchema = {
     type: "object",
     minProperties: 1,
     properties: {
+      workflowPreferences: {
+        type: "object", minProperties: 1, additionalProperties: false,
+        properties: {
+          registration: { type: "string", enum: ["full", "essential"] },
+          consultation: { type: "string", enum: ["full", "focused"] },
+        },
+      },
       name: { type: "string", minLength: 1 },
       city: { type: "string", minLength: 1 },
       address: { type: ["string", "null"] },

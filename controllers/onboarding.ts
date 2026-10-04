@@ -448,7 +448,7 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
     const { id } = req.params as { id: string };
     const {
       name, city, address, phone, email, plan, maxClinics, maxDoctors, maxStaff, status,
-      taxId, licenseNumber, countryCode, currency, timezone, image_url, logo_url, images, description, timings, working_days
+      taxId, licenseNumber, countryCode, currency, timezone, image_url, logo_url, images, description, timings, working_days, workflowPreferences
     } = req.body as any;
 
     if (req.user?.role !== "root" && req.user?.organization_id !== id) {
@@ -488,6 +488,9 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
     }
 
     const updateData: any = {};
+    for (const key of ["registration", "consultation"] as const) {
+      if (workflowPreferences?.[key] !== undefined) updateData[`workflowPreferences.${key}`] = workflowPreferences[key];
+    }
     if (name) updateData.name = name;
     if (city) updateData.city = city;
     if (address !== undefined) updateData.address = address;
@@ -1354,6 +1357,20 @@ export async function deleteStaff(req: FastifyRequest, reply: FastifyReply) {
 }
 
 // ─── Organization Settings ───────────────────────────────────────────────
+export async function getOrganizationWorkflowPreferences(req: FastifyRequest, reply: FastifyReply) {
+  const scope = resolveAuthorizedOrganizationScope(req);
+  if (!scope.allowed || !scope.organizationId || ["patient", "family_member", "guest"].includes(req.user!.role)) {
+    return reply.code(403).send(errorResponse("Staff organization context is required"));
+  }
+  const org = await Organization.findById(scope.organizationId).select("workflowPreferences currency").lean();
+  if (!org) return reply.code(404).send(errorResponse("Organization not found"));
+  return reply.send(successResponse({
+    registration: org.workflowPreferences?.registration || "full",
+    consultation: org.workflowPreferences?.consultation || "full",
+    currency: org.currency || "INR",
+  }));
+}
+
 export async function getOrganizationSettings(req: FastifyRequest, reply: FastifyReply) {
   try {
     let orgId = await resolveTargetOrganizationId(req);

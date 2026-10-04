@@ -9,6 +9,10 @@ import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { Invoice } from "../models/Invoice.ts";
+import { Organization } from "../models/Organization.ts";
+import { Encounter } from "../models/Encounter.ts";
+import { ClinicalNote } from "../models/ClinicalNote.ts";
+import { getEffectivePermissions, isPrivilegedRole } from "../utilities/permissions.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { sendBookingNotification } from "../utilities/notifications.ts";
@@ -242,7 +246,7 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
       const users = await User.find({ name: pattern, _id: { $in: doctorIds } }).select("_id").lean();
       const patientUsers = await User.find({ _id: { $in: linkedPatients.map(p => p.userId).filter(Boolean) }, $or: [{ name: pattern }, { phone: pattern }] }).select("_id").lean();
       const patients = await Patient.find({ _id: { $in: patientIds }, $or: [
-        { name: pattern }, { phone: pattern }, { userId: { $in: patientUsers.map(u => u._id) } }
+        { name: pattern }, { phone: pattern }, { mrn: pattern }, { globalPatientID: pattern }, { userId: { $in: patientUsers.map(u => u._id) } }
       ] }).select("_id").lean();
       filter.$and = [{ $or: [
         { patientId: { $in: patients.map(p => p._id) } },
@@ -298,6 +302,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
       dispatchWhatsAppRx,
       recipientPhone,
       cdsOverrideReason,
+      documentationMode,
     } = (req.body || {}) as {
       status: string;
       notes?: string;
@@ -310,6 +315,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
       dispatchWhatsAppRx?: boolean;
       recipientPhone?: string;
       cdsOverrideReason?: string;
+      documentationMode?: "optional";
     };
 
     if (!status) return reply.code(400).send(errorResponse("status is required"));
@@ -325,13 +331,36 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
 
     if (!(await ensureAppointmentObjectAccess(req, reply, appointment, "staff-mutation"))) return;
 
+    const optionalDocumentation = documentationMode === "optional";
+    if (optionalDocumentation) {
+      const { isModuleEnabledForOrganization } = await import("../utilities/moduleAccess.ts");
+      if (!await isModuleEnabledForOrganization(String(appointment.organizationId), "consultations")) return reply.code(403).send(errorResponse("Consultations module is not enabled"));
+      const preferences = await Organization.findById(appointment.organizationId).select("workflowPreferences").lean();
+      if (status !== "completed" || preferences?.workflowPreferences?.consultation !== "focused") {
+        return reply.code(409).send(errorResponse("Enable focused consultations in organization preferences to complete without a SOAP note."));
+      }
+      const permissions = await getEffectivePermissions(req.user!.role, req.user!.organization_id, req.user?.authVersion);
+      if (!isPrivilegedRole(req.user!.role) && !permissions.has("MANAGE_CLINICAL_NOTES")) {
+        return reply.code(403).send(errorResponse("Clinical completion permission is required"));
+      }
+      if (prescriptions?.length && String(appointment.doctorId) !== req.user!.id) {
+        return reply.code(403).send(errorResponse("Only the attending doctor can issue prescriptions"));
+      }
+      if (prescriptions?.some((p) => !p.name?.trim() || !p.dosage?.trim() || !p.frequency?.trim() || !p.duration?.trim())) {
+        return reply.code(400).send(errorResponse("Each medicine requires name, dosage, frequency and duration."));
+      }
+    }
+
     if (appointment.status === status) {
       if (status === "completed") {
         const { Encounter } = await import("../models/Encounter.ts");
         const { ClinicalNote } = await import("../models/ClinicalNote.ts");
         const encounter = await Encounter.findOne({ appointmentId: appointment._id, status: "completed" });
         const note = encounter && await ClinicalNote.exists({ encounterId: encounter._id, isLatest: true, status: "signed" });
-        const explicitClosure = encounter && await AuditLog.exists({ targetId: appointment._id, action: "CONSULTATION_AUTO_COMPLETED_ON_NEXT" });
+        const explicitClosure = encounter && await AuditLog.exists({ targetId: appointment._id, $or: [
+          { action: "CONSULTATION_AUTO_COMPLETED_ON_NEXT" },
+          { action: "CONSULTATION_COMPLETED_WITHOUT_CLINICAL_NOTE", organizationId: appointment.organizationId },
+        ] });
         if (!note && !explicitClosure) return reply.code(409).send(errorResponse("This completed visit needs clinical-record review. Required completion records are missing; no records were rewritten.", "CLINICAL_COMPLETION_INCOMPLETE"));
       }
       return reply.code(200).send(successResponse(appointment, `Appointment is already ${status}`));
@@ -437,6 +466,13 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
     let afterCommit: Array<() => Promise<unknown>> = [];
     await withClinicalTransaction(async () => {
       afterCommit = [];
+    if (optionalDocumentation) {
+      const existingEncounter = await Encounter.findOne({ appointmentId: appointment._id });
+      if (existingEncounter && (await ClinicalNote.exists({ encounterId: existingEncounter._id }) ||
+          await (await import("../models/Prescription.ts")).Prescription.exists({ encounterId: existingEncounter._id }))) {
+        throw Object.assign(new Error("This encounter has saved clinical work. Finish and sign it using the full consultation editor."), { statusCode: 409 });
+      }
+    }
     const transitionedAppointment = await Appointment.findOneAndUpdate(
       { _id: appointment._id, status: originalStatus },
       {
@@ -507,10 +543,14 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
             dosage: p.dosage || "As directed",
             frequency: p.frequency || "1-0-1",
             duration: p.duration || "5 days",
-            instructions: p.instructions || "Follow prescribed meal instructions",
+            instructions: optionalDocumentation ? (p.instructions || "") : (p.instructions || "Follow prescribed meal instructions"),
             status: "active",
           });
           createdPrescriptionIds.push((rxDoc as any)._id);
+          if (optionalDocumentation) {
+            const { PrescriptionSealingService } = await import("../services/PrescriptionSealingService.ts");
+            await PrescriptionSealingService.sealPrescription(String(rxDoc._id), req.user!.id, { diagnosisDescription: diagnosis });
+          }
         }
       }
 
@@ -570,8 +610,20 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
         followUpDate = target;
       }
 
-      // Create / update ClinicalNote
-      try {
+      // The explicit focused path records the visit without fabricating a SOAP note.
+      if (optionalDocumentation) {
+        await AuditLog.create({
+          userId: req.user!.id, organizationId: appointment.organizationId,
+          action: "CONSULTATION_COMPLETED_WITHOUT_CLINICAL_NOTE", category: "CLINICAL_WRITE",
+          targetId: appointment._id, targetModel: "Appointment",
+          details: { encounterId: encounter._id, documentationMode, prescriptionsCount: createdPrescriptionIds.length },
+        });
+        const { isModuleEnabledForOrganization } = await import("../utilities/moduleAccess.ts");
+        if (await isModuleEnabledForOrganization(String(appointment.organizationId), "billing")) {
+          const { autoGenerateEncounterInvoice } = await import("../services/ChargeCaptureService.ts");
+          await autoGenerateEncounterInvoice(String(encounter._id));
+        }
+      } else try {
         const { ClinicalNote } = await import("../models/ClinicalNote.ts");
         const docUser = await User.findById(appointment.doctorId).select("name").lean();
         const docName = docUser?.name || "Doctor";
@@ -713,7 +765,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
                 dosage: p.dosage || "As directed",
                 frequency: p.frequency || "1-0-1",
                 duration: p.duration || "5 days",
-                instructions: p.instructions || "Follow prescribed meal instructions",
+                instructions: optionalDocumentation ? (p.instructions || "") : (p.instructions || "Follow prescribed meal instructions"),
               })),
               clinicId: appointment.clinicId.toString(),
             },

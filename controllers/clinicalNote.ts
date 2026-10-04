@@ -41,6 +41,8 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
 
     let finalClinicId = clinicId;
     let finalPatientId = patientId;
+    let finalDoctorId = doctorId || userId;
+    let appointmentStatus: string | undefined;
 
     if (appointmentId && !mongoose.Types.ObjectId.isValid(appointmentId)) {
       return reply.code(400).send(errorResponse("Invalid appointment ID"));
@@ -51,6 +53,10 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
       if (!appt) return reply.code(404).send(errorResponse("Appointment not found"));
       const appointmentAccess = await checkOperationalRecordAccess(req, appt);
       if (!appointmentAccess.allowed) return sendTenantError(reply, appointmentAccess);
+      if (doctorId && doctorId !== String(appt.doctorId)) return reply.code(400).send(errorResponse("Appointment doctor does not match doctorId"));
+      if (req.user?.role === "doctor" && String(appt.doctorId) !== userId) return reply.code(403).send(errorResponse("This visit belongs to another doctor"));
+      finalDoctorId = String(appt.doctorId);
+      appointmentStatus = appt.status;
       if (finalClinicId && mongoose.Types.ObjectId.isValid(finalClinicId) && finalClinicId !== appt.clinicId?.toString()) {
         return reply.code(400).send(errorResponse("Appointment clinic does not match clinicId"));
       }
@@ -93,6 +99,7 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
     const existingFilter: any = { status: "in_progress" };
     if (appointmentId && mongoose.Types.ObjectId.isValid(appointmentId)) {
       existingFilter.appointmentId = appointmentId;
+      delete existingFilter.status;
     } else {
       existingFilter.patientId = finalPatientId;
       existingFilter.clinicId = finalClinicId;
@@ -103,13 +110,16 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
     if (existingEncounter) {
       return reply.code(200).send(successResponse(existingEncounter, "Active encounter retrieved"));
     }
+    if (appointmentStatus && ["completed", "cancelled", "no-show"].includes(appointmentStatus)) {
+      return reply.code(409).send(errorResponse("A closed visit cannot start another encounter"));
+    }
 
     const encounter = await Encounter.create({
       organizationId: clinicAccess.organizationId || orgId,
       clinicId: finalClinicId,
       appointmentId: appointmentId || null,
       patientId: finalPatientId,
-      doctorId: doctorId || userId,
+      doctorId: finalDoctorId,
       encounterType: (encounterType as any) || "opd",
       status: "in_progress",
       startedAt: new Date(),
@@ -163,6 +173,14 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
     if (clinicId && encounter.clinicId.toString() !== clinicId) return reply.code(400).send(errorResponse("Encounter clinic does not match clinicId"));
     const effectiveClinicId = encounter.clinicId.toString();
 
+    const savedNote = await withClinicalTransaction(async () => {
+    // Completion and draft persistence both write this encounter, so concurrent
+    // transactions cannot append new clinical work after a focused completion.
+    const editableEncounter = await Encounter.findOneAndUpdate(
+      { _id: encounterId, status: { $in: ["in_progress", "scheduled"] } },
+      { $set: { updatedAt: new Date() }, $inc: { __v: 1 } }, { returnDocument: "after" },
+    );
+    if (!editableEncounter) throw Object.assign(new Error("This encounter is closed. Use the clinical amendment workflow."), { statusCode: 409 });
     // 1. Record Generic Observations (vitals)
     const observationIds: mongoose.Types.ObjectId[] = [];
     if (vitals && typeof vitals === "object") {
@@ -254,10 +272,12 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
       });
     }
 
-    return reply.code(200).send(successResponse(note, "Draft clinical note saved"));
-  } catch (err) {
+    return note;
+    });
+    return reply.code(200).send(successResponse(savedNote, "Draft clinical note saved"));
+  } catch (err: any) {
     console.error("saveDraftClinicalNoteController error:", err);
-    return reply.code(500).send(errorResponse("Internal server error"));
+    return reply.code(err.statusCode || 500).send(errorResponse(err.statusCode ? err.message : "Internal server error"));
   }
 }
 
@@ -495,7 +515,7 @@ export async function amendClinicalNoteController(req: FastifyRequest, reply: Fa
 export async function getClinicalNoteHistoryController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id } = req.params as { id: string }; // patientId
-    const queryParams = req.query as { cursor?: string; limit?: string | number; format?: string };
+    const queryParams = req.query as { cursor?: string; limit?: string | number; format?: string; encounterId?: string };
     let orgId = await resolveTargetOrganizationId(req);
 
     if (!mongoose.Types.ObjectId.isValid(id)) return reply.code(400).send(errorResponse("Invalid patient ID"));
@@ -525,6 +545,11 @@ export async function getClinicalNoteHistoryController(req: FastifyRequest, repl
     const cursorFilter = buildCursorFilter(decoded, { timeField: "createdAt", sortDirection: "desc" });
 
     const query: any = { patientId: patient._id, ...cursorFilter };
+    if (queryParams.encounterId) {
+      if (!mongoose.Types.ObjectId.isValid(queryParams.encounterId)) return reply.code(400).send(errorResponse("Invalid encounter ID"));
+      query.encounterId = queryParams.encounterId;
+      query.isLatest = true;
+    }
     if (orgId && !isPortal && !fullHistory) {
       query.organizationId = orgId;
     }

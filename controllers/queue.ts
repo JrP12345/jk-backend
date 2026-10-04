@@ -674,11 +674,13 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
       return reply.code(400).send(errorResponse("Invalid doctor ID"));
     }
 
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
+    const now = new Date();
+    const timezone = clinicId ? await getClinicTimezone(clinicId) : undefined;
+    const { start: startOfDay, end: endOfDay } = timezone
+      ? clinicDayRange(clinicDateKey(now, timezone), timezone)
+      : { start: new Date(now.getFullYear(), now.getMonth(), now.getDate()), end: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999) };
 
+    // Use the same clinic calendar day as the operational patient list.
     // 1. Single Active Consultation Guard: Prevent orphan/concurrent in-consultation appointments
     const activeConsultation = await Appointment.findOne({
       doctorId: targetDoctorId,

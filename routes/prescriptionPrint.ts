@@ -26,13 +26,13 @@ export default async function prescriptionPrintRoutes(fastify: FastifyInstance) 
       try {
         const note = await ClinicalNote.findOne({ encounterId, isLatest: true })
           .populate("patientId")
-          .populate("doctorId", "name role")
+          .populate("doctorId", "name role specialization")
           .populate("clinicId", "name address phone")
           .lean() as any;
 
         const prescriptions = await Prescription.find({ encounterId, deletedAt: null })
           .populate("patientId")
-          .populate("doctorId", "name role")
+          .populate("doctorId", "name role specialization")
           .populate("clinicId", "name address phone")
           .lean() as any[];
 
@@ -51,7 +51,8 @@ export default async function prescriptionPrintRoutes(fastify: FastifyInstance) 
           return reply.code(422).send({ error: "Prescription is missing patient, clinician, or clinic identity" });
         }
         const patientUser = patient.userId ? await User.findById(patient.userId).lean() : null;
-        if (!patientUser?.name || !doctorUser.name || !clinic.name) {
+        const patientName = patientUser?.name || patient.name;
+        if (!patientName || !doctorUser.name || !clinic.name) {
           return reply.code(422).send({ error: "Prescription identity references are incomplete" });
         }
 
@@ -60,11 +61,11 @@ export default async function prescriptionPrintRoutes(fastify: FastifyInstance) 
           clinicAddress: clinic.address || "",
           clinicPhone: clinic.phone || "",
           doctorName: doctorUser.name,
-          doctorSpecialty: "General Medicine & Primary Care",
-          patientName: patientUser.name,
+          doctorSpecialty: doctorUser.specialization || "",
+          patientName,
           patientAge: patient.dob ? new Date().getFullYear() - new Date(patient.dob).getFullYear() : undefined,
           patientGender: patient.gender,
-          encounterDate: note?.createdAt ? new Date(note.createdAt).toLocaleDateString() : "",
+          encounterDate: new Date(note?.createdAt || prescriptions[0].createdAt).toLocaleDateString(),
           diagnoses: note?.assessment?.diagnoses?.map((d: any) => d.description || d.code) || [],
           medications: prescriptions.map((p) => ({
             medicineName: p.medicineName,

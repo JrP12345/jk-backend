@@ -26,6 +26,10 @@ const OrganizationSchema = new Schema({
   countryCode: { type: String, enum: ["IN", "US", "CA", "GB", "AE"] },
   currency: { type: String, enum: ["INR", "USD", "CAD", "EUR", "GBP", "AED"], default: "INR" },
   timezone: { type: String, default: "Asia/Kolkata" },
+  workflowPreferences: {
+    registration: { type: String, enum: ["full", "essential"], default: "full" },
+    consultation: { type: String, enum: ["full", "focused"], default: "full" },
+  },
   onboardingStatus: {
     type: String,
     enum: ["NOT_STARTED", "ORGANIZATION_CREATED", "ADMIN_CREATED", "CLINIC_CREATED", "TWO_FACTOR_PENDING", "COMPLETED"],

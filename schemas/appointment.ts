@@ -69,6 +69,7 @@ export const updateAppointmentStatusSchema = {
       dispatchWhatsAppRx: { type: "boolean" },
       recipientPhone: { type: "string" },
       cdsOverrideReason: { type: "string" },
+      documentationMode: { type: "string", enum: ["optional"] },
       prescriptions: {
         type: "array",
         items: {

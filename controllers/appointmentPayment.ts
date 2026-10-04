@@ -334,6 +334,11 @@ export async function collectCounterPayment(req: FastifyRequest, reply: FastifyR
 
     let invoice: any = await Invoice.findOne({ appointmentId: appointment._id });
     if (!invoice) {
+      const { Encounter } = await import("../models/Encounter.ts");
+      const encounter = await Encounter.findOne({ appointmentId: appointment._id, organizationId: appointment.organizationId });
+      if (encounter) invoice = await Invoice.findOne({ encounterId: encounter._id, organizationId: appointment.organizationId });
+    }
+    if (!invoice) {
       const assignment = await DoctorAssignment.findOne({ doctorId: appointment.doctorId, clinicId: appointment.clinicId });
       const feeAmount = Number(assignment?.fees ?? appointment.paymentAmount ?? 500);
       const { generateClinicInvoiceNumber } = await import("../utilities/invoiceNumber.ts");

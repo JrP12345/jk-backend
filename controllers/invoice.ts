@@ -211,7 +211,7 @@ export async function getInvoices(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(scope.statusCode).send(errorResponse(scope.message));
     }
     const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
-    const { status, patientId, clinicId, page, limit } = req.query as any;
+    const { status, patientId, clinicId, appointmentId, page, limit } = req.query as any;
 
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
 
@@ -247,6 +247,12 @@ export async function getInvoices(req: FastifyRequest, reply: FastifyReply) {
     }
 
     if (status) filter.status = status;
+    if (appointmentId) {
+      if (!mongoose.Types.ObjectId.isValid(appointmentId)) return reply.code(400).send(errorResponse("Invalid appointment ID"));
+      const { Encounter } = await import("../models/Encounter.ts");
+      const encounters = await Encounter.find({ appointmentId, organizationId: orgId }).select("_id").lean();
+      filter.$and = [{ $or: [{ appointmentId }, { encounterId: { $in: encounters.map(encounter => encounter._id) } }] }];
+    }
 
     const [totalCount, rawInvoices] = await Promise.all([
       Invoice.countDocuments(filter),
@@ -598,6 +604,25 @@ export async function recordPartialPayment(req: FastifyRequest, reply: FastifyRe
       });
 
       await invoice.save(option);
+
+      // Keep the existing visit projection consistent with canonical invoices.
+      // Include encounter invoices so post-consultation fees are not collected twice.
+      const { Encounter } = await import("../models/Encounter.ts");
+      const { Appointment } = await import("../models/Appointment.ts");
+      const encounter = invoice.encounterId ? await Encounter.findById(invoice.encounterId, null, option) : null;
+      const linkedAppointmentId = invoice.appointmentId || encounter?.appointmentId;
+      if (linkedAppointmentId) {
+        const linkedEncounters = await Encounter.find({ appointmentId: linkedAppointmentId, organizationId: invoice.organizationId }, null, option).select("_id").lean();
+        const visitInvoices = await Invoice.find({ organizationId: invoice.organizationId, deletedAt: null, status: { $nin: ["cancelled", "refunded"] },
+          $or: [{ appointmentId: linkedAppointmentId }, { encounterId: { $in: linkedEncounters.map(value => value._id) } }],
+        }, null, option).lean();
+        const outstanding = visitInvoices.reduce((sum, value) => sum + Math.max(0, value.totalAmount - (value.amountPaid || 0)), 0);
+        const totalPaid = visitInvoices.reduce((sum, value) => sum + (value.amountPaid || 0), 0);
+        await Appointment.updateOne({ _id: linkedAppointmentId, organizationId: invoice.organizationId }, {
+          $set: { paymentStatus: outstanding <= 0 ? "paid" : totalPaid > 0 ? "partially_paid" : "unpaid" },
+        }, option);
+        if (outstanding <= 0) await Appointment.updateOne({ _id: linkedAppointmentId, organizationId: invoice.organizationId, status: "pending_payment" }, { $set: { status: "confirmed" } }, option);
+      }
 
       await createWithSession(AuditLog, {
         userId,

@@ -17,6 +17,7 @@ import {
   setupOnboardingTOTP,
   verifyOnboardingTOTP,
   getOrganizationSettings,
+  getOrganizationWorkflowPreferences,
   updateOrganizationSettings,
   getOrganizationSmtp,
   updateOrganizationSmtp,
@@ -65,6 +66,7 @@ export default async function onboardingRoutes(app: FastifyInstance) {
   app.delete("/api/organizations/:id", { ...platformRoot, schema: organizationIdParamSchema }, deleteOrganizationById);
 
   // Organization Settings
+  app.get("/api/onboarding/organization/preferences", { preHandler: [authenticate] }, getOrganizationWorkflowPreferences);
   app.get("/api/onboarding/organization/me", manageOrg, getOrganizationSettings);
   app.put("/api/onboarding/organization/me", { ...manageOrg, schema: { body: updateOrganizationSchema.body } }, updateOrganizationSettings);
 

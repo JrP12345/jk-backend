@@ -132,7 +132,7 @@ export class ConsultationProvider implements TimelineProvider {
         patientId: query.patientId,
         organizationId: appt.organizationId?.toString() || query.organizationId,
         title: appt.diagnosis ? `OPD Consultation: ${appt.diagnosis}` : "Outpatient Consultation",
-        summary: appt.symptoms ? `Symptoms: ${appt.symptoms}` : "Outpatient clinical consultation completed.",
+        summary: appt.notes || (appt.symptoms ? `Symptoms: ${appt.symptoms}` : "Outpatient clinical consultation completed."),
         actor: {
           id: doctorId,
           name: doctorName,
