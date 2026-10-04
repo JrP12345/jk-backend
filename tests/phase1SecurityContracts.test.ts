@@ -43,7 +43,7 @@ describe('Phase 1 file and clinical authority', () => {
     expect(referrerOrigin('javascript:fixture')).toBe('');
     const event: any = scrubTelemetry({ type: 'transaction', transaction: 'GET /patients/111111111111111111111111?token=fixture',
       request: { cookies: { token: 'fixture' } }, user: { email: 'fixture@example.test' }, contexts: { private: { secret: 'fixture' } },
-      spans: [{ span_id: '0123456789abcdef', trace_id: '0123456789abcdef0123456789abcdef', start_timestamp: 1,
+      spans: [{ span_id: '0123456789abcdef', trace_id: '0123456789abcdef0123456789abcdef', start_timestamp: 1, status: 'ok',
         op: 'db', description: 'private query', data: { patient: 'fixture' } }], tags: { private: 'fixture' } });
     expect(event.request).toBeUndefined();
     expect(event.contexts).toBeUndefined();

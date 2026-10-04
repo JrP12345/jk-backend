@@ -68,7 +68,22 @@ if (sentryDsn) {
     dsn: sentryDsn,
     environment: process.env.NODE_ENV || "development",
     tracesSampleRate: process.env.NODE_ENV === "production" ? 0.2 : 1.0,
-    sendDefaultPii: false, // Never send IP, headers, or cookies
+    // Preserve beforeSendTransaction so every transaction reaches the
+    // healthcare data minimizer instead of using v11's streamed-span default.
+    traceLifecycle: "static",
+    // Sentry v11 collects broader request data by default. Keep the former
+    // sendDefaultPii: false posture explicitly for healthcare telemetry.
+    dataCollection: {
+      userInfo: false,
+      cookies: false,
+      httpHeaders: false,
+      httpBodies: [],
+      urlQueryParams: false,
+      genAI: { inputs: false, outputs: false },
+      databaseQueryData: false,
+      queues: false,
+      graphQL: { document: false, variables: false },
+    },
     beforeSend: scrubTelemetry,
     beforeSendTransaction: scrubTelemetry,
   });

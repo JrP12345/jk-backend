@@ -22,7 +22,7 @@ versions were upgraded during cleanup.
 | `@fastify/swagger` | 9.9.1 | MIT | OpenAPI schemas |
 | `@fastify/swagger-ui` | 6.1.1 | MIT | API documentation UI |
 | `@fastify/websocket` | 11.3.1 | MIT | Queue/notification sockets |
-| `@sentry/node` | 10.75.3 | MIT | Optional error telemetry |
+| `@sentry/node` | 11.4.0 | MIT | Optional error telemetry |
 | `@simplewebauthn/server` | 14.0.3 | MIT | Passkeys |
 | `bcryptjs` | 3.0.3 | BSD-3-Clause | Password hashing |
 | `fastify` | 5.12.5 | MIT | API/hooks |
@@ -46,7 +46,7 @@ versions were upgraded during cleanup.
 | `@types/ws` | 8.18.2 | MIT | Types for ws APIs |
 | `esbuild` | 0.28.2 | MIT | API and five-worker bundles |
 | `mongodb-memory-server` | 11.3.0 | MIT | Disposable test and scale-measurement databases |
-| `typescript` | 5.9.3 | Apache-2.0 | Type compiler |
+| `typescript` | 7.0.2 | Apache-2.0 | Type compiler |
 | `vitest` | 5.0.3 | MIT | Test runner |
 
 ## Non-MIT dependencies and services
