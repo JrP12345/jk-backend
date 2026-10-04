@@ -1,5 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
+import { randomUUID } from "node:crypto";
 import { TeleconsultationSession } from "../models/TeleconsultationSession.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { getActiveConsultationDoctorDayKey, isActiveConsultationLockConflict } from "../utilities/consultationLock.ts";
@@ -43,11 +44,18 @@ export async function createTeleSession(req: FastifyRequest, reply: FastifyReply
       return reply.code(200).send(successResponse(existing, "Existing teleconsultation session retrieved"));
     }
 
-    const sessionRoomId = `TELE-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const sessionRoomId = `TELE-${randomUUID()}`;
     const meetingBaseUrl = process.env.TELECONSULTATION_BASE_URL?.trim() || "/dashboard/teleconsultation";
-    const meetingUrl = meetingBaseUrl.includes("://")
-      ? `${meetingBaseUrl.replace(/\/$/, "")}/${sessionRoomId}`
-      : `${meetingBaseUrl}?room=${sessionRoomId}`;
+    let meetingUrl = `/dashboard/teleconsultation?room=${sessionRoomId}`;
+    if (meetingBaseUrl.includes("://")) {
+      const base = new URL(meetingBaseUrl);
+      const local = ["localhost", "127.0.0.1", "[::1]"].includes(base.hostname);
+      if ((base.protocol !== "https:" && !(base.protocol === "http:" && local)) || base.username || base.password || base.search || base.hash) {
+        return reply.code(503).send(errorResponse("Video service configuration is invalid"));
+      }
+      base.pathname = `${base.pathname.replace(/\/$/, "")}/${sessionRoomId}`;
+      meetingUrl = base.href;
+    }
 
     const session = await TeleconsultationSession.create({
       sessionRoomId,

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { imagingPreview } from "../controllers/imagingPreview.ts";
 import { authenticate, checkAnyPermission, checkPermission, denyRoles } from "../middleware/auth.ts";
 import {
   createImagingStudy,
@@ -21,6 +22,7 @@ export default async function imagingRoutes(app: FastifyInstance) {
 
   app.post("/api/radiology/studies", { ...manageImaging, schema: createImagingStudySchema }, createImagingStudy);
   app.get("/api/radiology/studies", { ...viewImaging, schema: imagingStudiesQuerySchema }, getImagingStudies);
+  app.get("/api/radiology/studies/:id/preview", viewImaging, imagingPreview);
   app.put("/api/radiology/studies/:id/status", { ...manageImaging, schema: updateImagingStudyStatusSchema }, updateImagingStudyStatus);
   app.put("/api/radiology/studies/:id/report", { ...reportImaging, schema: signRadiologyReportSchema }, signRadiologyReport);
 }

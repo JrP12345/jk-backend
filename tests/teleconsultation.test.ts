@@ -130,7 +130,7 @@ describe("Teleconsultation & Virtual Care Integration Tests", () => {
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
-    expect(body.data.sessionRoomId).toMatch(/^TELE-\d+-\d+$/);
+    expect(body.data.sessionRoomId).toMatch(/^TELE-[0-9a-f-]{36}$/);
     expect(body.data.meetingUrl).toContain("https://telehealth.test/");
     expect(body.data.status).toBe("scheduled");
     sessionId = body.data._id || body.data.id;
