@@ -4,7 +4,7 @@ import { Subscription } from "../models/Subscription.ts";
 import { SubscriptionPayment } from "../models/SubscriptionPayment.ts";
 import { SaaSInvoice } from "../models/SaaSInvoice.ts";
 import { Organization } from "../models/Organization.ts";
-import { subscriptionService, PlanDowngradeViolationError, addBillingPeriod } from "../services/billing/SubscriptionService.ts";
+import { subscriptionService, addBillingPeriod } from "../services/billing/SubscriptionService.ts";
 import { razorpayService } from "../services/billing/RazorpayService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { resolveTargetOrganizationId } from "../utilities/tenant.ts";

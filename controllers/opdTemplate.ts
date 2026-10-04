@@ -1,6 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
-import { OpdTemplate, type IOpdTemplate } from "../models/OpdTemplate.ts";
+import { OpdTemplate } from "../models/OpdTemplate.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";

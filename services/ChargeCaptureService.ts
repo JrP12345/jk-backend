@@ -1,4 +1,3 @@
-import mongoose from "mongoose";
 import { Encounter } from "../models/Encounter.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { LabOrder } from "../models/LabOrder.ts";

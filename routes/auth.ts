@@ -142,7 +142,7 @@ export default async function authRoutes(app: FastifyInstance) {
   app.post("/api/auth/logout", logout);
 
   // GET /api/auth/me            — Get current authenticated user details
-  app.get("/api/auth/me", { preHandler: [authenticate] }, me);
+  app.get("/api/auth/me", { config: { allowGuest: true }, preHandler: [authenticate] }, me);
 
   // POST /api/auth/switch-org   — Switch active organization context (Root Admin only)
   app.post(

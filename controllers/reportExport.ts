@@ -7,6 +7,7 @@ import {
   checkClinicAccess,
 } from "../utilities/tenant.ts";
 import { MAX_REPORT_RANGE_DAYS } from "../utilities/scalability.ts";
+import { requestHasAnyPermission } from '../utilities/permissions.ts';
 
 export async function exportReport(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -18,6 +19,9 @@ export async function exportReport(req: FastifyRequest, reply: FastifyReply) {
       startDate?: string;
       endDate?: string;
     };
+
+    const required = reportType === 'clinical' ? ['VIEW_EHR'] : reportType === 'pharmacy' ? ['MANAGE_MEDICINES'] : ['VIEW_BILLING', 'MANAGE_BILLING'];
+    if (!await requestHasAnyPermission(req, ...required)) return reply.code(403).send(errorResponse('Report permission is required'));
 
     if (startDate && endDate) {
       const start = new Date(startDate).getTime();

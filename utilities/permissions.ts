@@ -2,7 +2,6 @@ import type { FastifyRequest } from "fastify";
 import mongoose from "mongoose";
 import { Role } from "../models/Role.ts";
 import { redisClient, publishRedisEvent, createRedisSubscriber } from "./redis.ts";
-import { logger } from "./logger.ts";
 
 export const ADMIN_PERMISSIONS = [
   "MANAGE_STAFF",

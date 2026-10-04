@@ -30,7 +30,7 @@ export function registerProfilingHooks(app: FastifyInstance) {
       const elapsedNs = process.hrtime.bigint() - startNs;
       const durationMs = Number(elapsedNs) / 1_000_000;
 
-      const route = req.routeOptions?.url || req.url.split("?")[0] || "unknown";
+      const route = req.routeOptions?.url || "unmatched";
       const method = req.method;
       const statusCode = reply.statusCode;
       const key = `${method} ${route}`;

@@ -4,7 +4,7 @@ import { exportReport } from "../controllers/reportExport.ts";
 import { reportExportSchema } from "../schemas/operations.ts";
 
 export default async function reportExportRoutes(app: FastifyInstance) {
-  const reportAccess = { preHandler: [authenticate, checkAnyPermission("VIEW_ANALYTICS", "VIEW_BILLING", "MANAGE_BILLING", "MANAGE_ORGANIZATION")] };
+  const reportAccess = { preHandler: [authenticate, checkAnyPermission("VIEW_ANALYTICS", "VIEW_EHR", "VIEW_BILLING", "MANAGE_BILLING", "MANAGE_MEDICINES", "MANAGE_ORGANIZATION")] };
 
   app.get("/api/reports/export", { ...reportAccess, schema: reportExportSchema }, exportReport);
 }

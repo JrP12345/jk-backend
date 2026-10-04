@@ -64,6 +64,7 @@ try {
     JWT_PRIVATE_KEY_BASE64: Buffer.from(keys.privateKey).toString("base64"),
     JWT_PUBLIC_KEY_BASE64: Buffer.from(keys.publicKey).toString("base64"),
     ENCRYPTION_KEY: crypto.randomBytes(32).toString("hex"),
+    PRESCRIPTION_SIGNING_KEY: crypto.randomBytes(32).toString("hex"),
     UPI_WEBHOOK_SECRET: crypto.randomBytes(32).toString("hex"),
     ALLOW_SINGLE_NODE_IN_PRODUCTION: "true", RUN_INLINE_JOBS: "false",
     LOG_LEVEL: "info", SHUTDOWN_DRAIN_MS: "1",

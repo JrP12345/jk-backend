@@ -1,6 +1,5 @@
 import { User } from "../models/User.ts";
 import { OrgMember } from "../models/OrgMember.ts";
-import { generateAccessToken, createRefreshToken } from "../utilities/helpers.ts";
 
 export interface SsoIdentityPayload {
   email: string;
@@ -18,25 +17,5 @@ export async function processSsoLogin(identity: SsoIdentityPayload) {
   const membership = await OrgMember.findOne({ userId: user._id, status: { $ne: "inactive" } }).sort({ createdAt: 1 }).lean();
   if (!membership) throw new Error("SSO identity has no active organization membership");
 
-  const tokenPayload = {
-    id: user._id.toString(),
-    email: user.email || "",
-    role: user.role,
-    organization_id: membership.organizationId.toString(),
-  };
-
-  const accessToken = generateAccessToken(tokenPayload);
-  const refreshToken = await createRefreshToken(user._id.toString());
-
-  return {
-    user: {
-      id: user._id.toString(),
-      email: user.email,
-      name: user.name,
-      role: user.role,
-      organization_id: membership.organizationId.toString(),
-    },
-    accessToken,
-    refreshToken,
-  };
+  return { userRecord: user };
 }

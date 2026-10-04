@@ -7,7 +7,6 @@
  *   npm run replay:dead-letters -- --replay --kind=domain_event --id=<ID> --actor=<USER_ID>
  *   npm run replay:dead-letters -- --replay-all --kind=domain_event --actor=<USER_ID>
  */
-import mongoose from "mongoose";
 import { verifyEnv } from "../utilities/config.ts";
 import {
   DEAD_LETTER_KINDS,

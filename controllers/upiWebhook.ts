@@ -221,6 +221,10 @@ export async function handleInboundUpiWebhook(req: FastifyRequest, reply: Fastif
         throw new PaymentSettlementConflict("Payment order is not eligible for capture");
       }
 
+      const currentAppointment = await Appointment.findById(appointment._id).session(session);
+      if (!currentAppointment || currentAppointment.status === "cancelled" || ["refunded", "refund_pending"].includes(currentAppointment.paymentStatus || "")) {
+        throw new PaymentSettlementConflict("Appointment is no longer eligible for payment settlement");
+      }
       const currentInvoice = await Invoice.findById(invoice._id).session(session);
       if (!currentInvoice || !isSameId(currentInvoice.appointmentId, appointment._id)) {
         throw new PaymentSettlementConflict("Invoice is no longer linked to this appointment");

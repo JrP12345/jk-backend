@@ -1,14 +1,22 @@
 {
-    email ${ACME_EMAIL:-devops@ekavyu.com}
+    email {$ACME_EMAIL}
     admin off
 }
 
-dev.ekavyu.com {
+{$CADDY_SITE_ADDRESS} {
     encode gzip zstd
 
     log {
         output stdout
-        format console
+        # Tracker/identity proofs and clinical searches must not reach edge logs.
+        format filter {
+            wrap json
+            fields {
+                request>uri delete
+                request>headers delete
+                resp_headers delete
+            }
+        }
     }
 
     # API endpoints, WebSocket feeds, and Swagger/OpenAPI documentation

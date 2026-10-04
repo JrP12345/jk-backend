@@ -8,7 +8,6 @@
  * 4. Personal Data Breach Incident Management & DPBI Statutory Dossier (Section 8(6))
  */
 
-import mongoose from "mongoose";
 import { Patient } from "../models/Patient.ts";
 import { User } from "../models/User.ts";
 import { Appointment } from "../models/Appointment.ts";

@@ -250,97 +250,72 @@ export class ResilientHttpClient {
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
       const attemptStart = Date.now();
 
+      let response: Response;
       try {
-        const response = await fetch(url, {
+        response = await fetch(url, {
           method,
           headers,
           body: requestBody,
           signal: controller.signal,
         });
-
-        clearTimeout(timeoutId);
-        const latencyMs = Date.now() - attemptStart;
-        metric.totalLatencyMs += latencyMs;
-        metric.averageLatencyMs = Math.round(metric.totalLatencyMs / metric.totalRequests);
-
-        // Success responses (2xx / 3xx)
-        if (response.ok) {
-          breaker?.recordSuccess();
-          metric.successfulRequests++;
-
-          let data: any;
-          const contentType = response.headers.get("content-type") || "";
-          if (contentType.includes("application/json")) {
-            data = await response.json();
-          } else {
-            data = await response.text();
-          }
-
-          return {
-            status: response.status,
-            headers: response.headers,
-            data,
-            latencyMs,
-            retries: attempt - 1,
-          };
-        }
-
-        // Retryable Server Errors: 502, 503, 504, or 429
-        const isRetryableStatus = [502, 503, 504, 429].includes(response.status);
-
-        if (isRetryableStatus && attempt <= maxRetries && safeToRetry) {
-          breaker?.recordFailure();
-          metric.failedRequests++;
-
-          // Respect Retry-After header or compute exponential jitter backoff
-          const retryAfterMs = this.parseRetryAfter(response);
-          const backoffDelay = retryAfterMs ?? Math.min(10_000, 500 * Math.pow(2, attempt - 1) + Math.random() * 200);
-
-          await new Promise((resolve) => setTimeout(resolve, backoffDelay));
-          continue;
-        }
-
-        // Non-retryable error or retries exhausted
-        breaker?.recordFailure();
-        metric.failedRequests++;
-        metric.lastError = `HTTP ${response.status}: ${response.statusText}`;
-        metric.lastErrorTime = new Date().toISOString();
-
-        // If this was a non-idempotent mutation that received a 5xx error, mark as ambiguous
-        if (!safeToRetry && [500, 502, 503, 504].includes(response.status)) {
-          throw new AmbiguousOutcomeError(provider, options.idempotencyKey, new Error(`HTTP ${response.status}`));
-        }
-
-        const errText = await response.text().catch(() => "");
-        const error = new Error(`Provider '${provider}' request failed with status ${response.status}: ${errText.slice(0, 300)}`);
-        (error as any).status = response.status;
-        (error as any).responseBody = errText;
-        throw error;
       } catch (err: any) {
         clearTimeout(timeoutId);
         metric.failedRequests++;
         metric.lastError = err?.message || "Outbound HTTP failed";
         metric.lastErrorTime = new Date().toISOString();
-
-        const isTimeout = err.name === "AbortError" || err.message?.includes("abort");
+        breaker?.recordFailure();
 
         // Safe retry on network or timeout failure
         if (safeToRetry && attempt <= maxRetries) {
-          breaker?.recordFailure();
           const backoff = Math.min(10_000, 500 * Math.pow(2, attempt - 1) + Math.random() * 200);
           await new Promise((resolve) => setTimeout(resolve, backoff));
           continue;
         }
 
-        breaker?.recordFailure();
-
-        // If non-idempotent operation timed out or crashed at network level, outcome is ambiguous!
-        if (!safeToRetry && (isTimeout || err.code === "ECONNRESET")) {
+        // A transport failure cannot prove whether a non-idempotent mutation took effect.
+        if (!safeToRetry) {
           throw new AmbiguousOutcomeError(provider, options.idempotencyKey, err);
         }
 
         throw err;
       }
+
+      clearTimeout(timeoutId);
+      const latencyMs = Date.now() - attemptStart;
+      metric.totalLatencyMs += latencyMs;
+      metric.averageLatencyMs = Math.round(metric.totalLatencyMs / metric.totalRequests);
+
+      if (response.ok) {
+        breaker?.recordSuccess();
+        metric.successfulRequests++;
+        const contentType = response.headers.get("content-type") || "";
+        const data = contentType.includes("application/json") ? await response.json() : await response.text();
+        return { status: response.status, headers: response.headers, data, latencyMs, retries: attempt - 1 };
+      }
+
+      // Client errors prove the provider responded; they do not indicate an outage.
+      if (response.status >= 500 || response.status === 429) breaker?.recordFailure();
+      else breaker?.recordSuccess();
+      metric.failedRequests++;
+      metric.lastError = `HTTP ${response.status}: ${response.statusText}`;
+      metric.lastErrorTime = new Date().toISOString();
+
+      if ([500, 502, 503, 504, 429].includes(response.status) && safeToRetry && attempt <= maxRetries) {
+        const retryAfterMs = this.parseRetryAfter(response);
+        const backoffDelay = retryAfterMs ?? Math.min(10_000, 500 * Math.pow(2, attempt - 1) + Math.random() * 200);
+        await new Promise((resolve) => setTimeout(resolve, backoffDelay));
+        continue;
+      }
+
+      if (!safeToRetry && response.status >= 500) {
+        throw new AmbiguousOutcomeError(provider, options.idempotencyKey, new Error(`HTTP ${response.status}`));
+      }
+
+      const errText = await response.text().catch(() => "");
+      const error = new Error(`Provider '${provider}' request failed with status ${response.status}: ${errText.slice(0, 300)}`);
+      (error as any).status = response.status;
+      (error as any).responseBody = errText;
+      throw error;
     }
 
     throw new Error(`Outbound request to provider '${provider}' exceeded maximum retry attempts (${maxRetries}).`);

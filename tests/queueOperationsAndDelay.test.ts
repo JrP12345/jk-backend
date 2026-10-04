@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { Patient } from "../models/Patient.ts";
@@ -21,6 +21,9 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
   let appt3: any;
 
   beforeAll(async () => {
+    // Keep capacity/transfer fixtures inside clinic hours regardless of run time.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-04T05:00:00Z"));
     // 1. Setup Organization & Admin
     const bootstrapRes = await app.inject({
       method: "POST",
@@ -112,6 +115,8 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
       gender: "male",
     });
   });
+
+  afterAll(() => vi.useRealTimers());
 
   it("Scenario 1: Park patient into Standby state and re-index active waiting queue", async () => {
     const today = new Date();

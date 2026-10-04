@@ -1,6 +1,5 @@
 import mongoose, { type Model, type QueryFilter, type UpdateQuery, type QueryOptions, type PipelineStage } from "mongoose";
 import { requestContextStore } from "../utilities/context.ts";
-import { logger } from "../utilities/logger.ts";
 
 export class TenantContextError extends Error {
   constructor(message: string) {

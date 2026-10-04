@@ -1,5 +1,4 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import mongoose from "mongoose";
 import { InsuranceTariff } from "../models/InsuranceTariff.ts";
 import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";

@@ -162,6 +162,7 @@ describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration
 
   it("3. should prevent duplicate tokens when same patient re-scans QR poster on the same day", async () => {
     const patientPhone = "9876543210";
+    const before = await Appointment.countDocuments({ clinicId, doctorId: doctor1Id });
 
     // Second scan attempt for the same doctor today
     const res = await app.inject({
@@ -176,13 +177,13 @@ describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration
       },
     });
 
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(409);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
-    // Should return the EXISTING token, without creating a duplicate
-    expect(body.data.isExisting).toBe(true);
-    expect(body.message).toContain("already hold active Token");
-    expect(body.data.trackingUrl).toContain("/track/");
+    expect(body.success).toBe(false);
+    expect(body.message).toContain("An active token already exists");
+    expect(body.data?.trackingUrl).toBeUndefined();
+    expect(body.data?.appointmentId).toBeUndefined();
+    expect(await Appointment.countDocuments({ clinicId, doctorId: doctor1Id })).toBe(before);
   });
 
   it("4. should reject queue join if doctor is marked unavailable/on-leave today via DoctorDayOverride", async () => {

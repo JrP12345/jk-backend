@@ -16,7 +16,6 @@ import type { ChatTurn } from "../services/ai/AIProvider.ts";
 import { AIServiceUnavailableError } from "../services/ai/AIService.ts";
 import { aiGateway } from "../services/ai/AIGateway.ts";
 import { timelineService } from "../services/TimelineService.ts";
-import { PHIAnonymizer } from "../utilities/phiAnonymizer.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { checkClinicAccess, getRequestClinicIds, resolveTargetOrganizationId } from "../utilities/tenant.ts";
 import {

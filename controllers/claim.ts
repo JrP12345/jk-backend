@@ -6,7 +6,7 @@ import { paymentProvider } from "../services/payment/PaymentProvider.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import crypto from "node:crypto";
 import mongoose from "mongoose";
-import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds, resolveAuthorizedOrganizationScope, resolveTargetOrganizationId } from "../utilities/tenant.ts";
+import { checkClinicAccess, checkOperationalRecordAccess, resolveAuthorizedOrganizationScope, resolveTargetOrganizationId } from "../utilities/tenant.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));

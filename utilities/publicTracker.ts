@@ -59,6 +59,19 @@ export function getTrackerCapability(req: FastifyRequest): string | undefined {
   return candidate && candidate.length <= 256 ? candidate : undefined;
 }
 
+/** Strict proof for private actions; unlike legacy reads, IDs never suffice. */
+export function hasValidTrackerCapability(
+  req: FastifyRequest,
+  appointment: { trackerTokenHash?: string | null; trackerTokenExpiresAt?: Date | null },
+): boolean {
+  const token = getTrackerCapability(req);
+  if (!token || !appointment.trackerTokenHash || !appointment.trackerTokenExpiresAt
+    || appointment.trackerTokenExpiresAt.getTime() <= Date.now()) return false;
+  const suppliedHash = hashTrackerCapability(token);
+  return suppliedHash.length === appointment.trackerTokenHash.length
+    && crypto.timingSafeEqual(Buffer.from(suppliedHash), Buffer.from(appointment.trackerTokenHash));
+}
+
 /** A separate, short-lived capability for the state-changing check-in action. */
 export function getCheckInCapability(req: FastifyRequest): string | undefined {
   const header = req.headers["x-check-in-token"];

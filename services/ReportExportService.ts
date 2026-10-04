@@ -42,7 +42,9 @@ export interface PharmacyReportRowDTO {
 
 export function escapeCsv(val: any): string {
   if (val === null || val === undefined) return "";
-  const str = String(val);
+  // Spreadsheet applications interpret these leading characters as formulas.
+  const raw = String(val);
+  const str = /^[\s]*[=+@-]|^[\t\r\n]/.test(raw) ? `'${raw}` : raw;
   if (str.includes(",") || str.includes('"') || str.includes("\n")) {
     return `"${str.replace(/"/g, '""')}"`;
   }

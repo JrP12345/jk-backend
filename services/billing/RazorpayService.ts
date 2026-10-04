@@ -29,6 +29,14 @@ export interface RefundParams {
   notes?: Record<string, string>;
 }
 
+export interface RazorpayRefund {
+  id: string;
+  payment_id: string;
+  amount: number;
+  currency: string;
+  status: string;
+}
+
 export class RazorpayService {
   /**
    * Fetch active platform Razorpay credentials dynamically from MongoDB (SaaSConfig)
@@ -220,6 +228,18 @@ export class RazorpayService {
     const received = Buffer.from(signature || "", "hex");
     const expected = Buffer.from(expectedSignature, "hex");
     return received.length === expected.length && crypto.timingSafeEqual(received, expected);
+  }
+
+  async fetchPaymentRefunds(paymentId: string): Promise<{ items: RazorpayRefund[] }> {
+    if (!/^pay_[A-Za-z0-9]+$/.test(paymentId)) throw new Error("Invalid provider payment reference");
+    const { keyId, keySecret } = await this.getCredentials();
+    const auth = Buffer.from(`${keyId}:${keySecret}`).toString("base64");
+    const response = await resilientHttpClient.request<{ items: RazorpayRefund[] }>(
+      `https://api.razorpay.com/v1/payments/${encodeURIComponent(paymentId)}/refunds?count=100`,
+      { provider: "razorpay", method: "GET", headers: { Authorization: `Basic ${auth}` },
+        timeoutMs: 10_000, enableCircuitBreaker: true },
+    );
+    return response.data;
   }
 
   /**

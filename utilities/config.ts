@@ -74,6 +74,11 @@ export function validateConfig(): { valid: boolean; errors: string[] } {
         "UPI_WEBHOOK_SECRET or RAZORPAY_WEBHOOK_SECRET (Required in production to verify payment callbacks)"
       );
     }
+
+    const prescriptionKey = process.env.PRESCRIPTION_SIGNING_KEY || process.env.JWT_SECRET;
+    if (!prescriptionKey || prescriptionKey.length < 32 || prescriptionKey === "healthos-prescription-sealing-key") {
+      missing.push("PRESCRIPTION_SIGNING_KEY (or legacy JWT_SECRET) must be a persistent secret of at least 32 characters for prescription integrity");
+    }
   }
 
   const encryptionKey = process.env.DATA_ENCRYPTION_KEY || process.env.ENCRYPTION_KEY || process.env.APP_ENCRYPTION_KEY;

@@ -203,4 +203,21 @@ describe("Patient Mobile Tracker 1-Tap UPI, Inbound Webhook & Digital Receipts T
       })
     ).resolves.not.toThrow();
   });
+
+  it("rejects a signed late capture after disruption cancellation", async () => {
+    const appointment = await Appointment.create({ organizationId: orgId, clinicId, doctorId, patientId: patient._id,
+      appointmentTime: new Date(), appointmentType: "online", status: "cancelled", paymentStatus: "refund_pending", tokenNumber: 54 });
+    const invoice = await Invoice.create({ organizationId: orgId, clinicId, doctorId, patientId: patient._id,
+      appointmentId: appointment._id, invoiceNumber: `INV-LATE-${appointment.id}`, items: [{ description: "Consultation", amount: 600, quantity: 1 }], subtotal: 600, totalAmount: 600, amountPaid: 0, balanceDue: 600, status: "unpaid" });
+    const orderId = `order_late_${appointment.id}`;
+    const payment = await AppointmentPayment.create({ appointmentId: appointment._id, invoiceId: invoice._id, patientId: patient._id,
+      amount: 600, paymentMethod: "razorpay", razorpayOrderId: orderId, status: "created" });
+    const payload = { transactionId: `NPCI-LATE-${appointment.id}`, orderId, invoiceId: invoice.id, appointmentId: appointment.id,
+      amount: 600, status: "SUCCESS", paymentMethod: "upi" };
+    const signature = crypto.createHmac("sha256", webhookSecret).update(JSON.stringify(payload)).digest("hex");
+    expect((await app.inject({ method: "POST", url: "/api/webhooks/upi", headers: { "x-webhook-signature": signature }, payload })).statusCode).toBe(409);
+    expect((await Appointment.findById(appointment.id))?.paymentStatus).toBe("refund_pending");
+    expect((await Invoice.findById(invoice.id))?.status).toBe("unpaid");
+    expect((await AppointmentPayment.findById(payment.id))?.status).toBe("created");
+  });
 });

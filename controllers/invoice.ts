@@ -242,7 +242,9 @@ export async function getInvoices(req: FastifyRequest, reply: FastifyReply) {
       }
       filter.clinicId = clinicId;
     } else if (orgId && userRole !== "patient" && userRole !== "family_member") {
-      const clinicIds = await getRequestClinicIds(req);
+      const clinicIds = userRole === "root"
+        ? (await Clinic.find({ organizationId: orgId, isActive: { $ne: false } }).select("_id").lean()).map((clinic: any) => clinic._id)
+        : await getRequestClinicIds(req);
       filter.clinicId = { $in: clinicIds };
     }
 
@@ -270,7 +272,16 @@ export async function getInvoices(req: FastifyRequest, reply: FastifyReply) {
     ]);
 
     const totalPages = Math.ceil(totalCount / pageSize);
-    const invoices = rawInvoices.map((inv: any) => ({ ...inv, id: inv._id.toString() }));
+    const appointmentIds = rawInvoices.map((inv: any) => inv.appointmentId).filter(Boolean);
+    const pendingRefunds = appointmentIds.length ? await Appointment.find({ _id: { $in: appointmentIds },
+      paymentStatus: "refund_pending", status: "cancelled" }).select("_id clinicId patientId").lean() : [];
+    const pendingById = new Map(pendingRefunds.map((visit: any) => [visit._id.toString(), visit]));
+    const invoices = rawInvoices.map((inv: any) => {
+      const pending = pendingById.get(String(inv.appointmentId));
+      return { ...inv, id: inv._id.toString(), refundPending: Boolean(pending
+        && String(pending.clinicId) === String(inv.clinicId?._id || inv.clinicId)
+        && String(pending.patientId) === String(inv.patientId?._id || inv.patientId)) };
+    });
 
     setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
 

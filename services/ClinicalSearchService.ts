@@ -67,7 +67,8 @@ export class ClinicalSearchService {
     const items: SearchResultItem[] = [];
 
     // 1. Search ClinicalNotes
-    const notes = await ClinicalNote.find({ patientId, isLatest: true })
+    const notes = options.category && !['all', 'notes'].includes(options.category) ? [] : await ClinicalNote.find({ patientId, isLatest: true })
+      .select('subjective.chiefComplaint subjective.historyOfPresentIllness objective.physicalExamination assessment.diagnoses plan.treatmentPlan createdAt')
       .sort({ createdAt: -1 })
       .lean() as any[];
 
@@ -99,7 +100,8 @@ export class ClinicalSearchService {
     }
 
     // 2. Search Observations
-    const obsList = await Observation.find({ patientId })
+    const obsList = options.category && !['all', 'observation'].includes(options.category) ? [] : await Observation.find({ patientId })
+      .select('name code value unit recordedAt createdAt')
       .sort({ recordedAt: -1 })
       .lean() as any[];
 
@@ -124,7 +126,8 @@ export class ClinicalSearchService {
     }
 
     // 3. Search Diagnostic Lab Orders
-    const labList = await LabOrder.find({ patientId })
+    const labList = options.category && !['all', 'lab'].includes(options.category) ? [] : await LabOrder.find({ patientId })
+      .select('testId result clinicalReason resultedAt orderDate createdAt status')
       .populate("testId", "name code department")
       .sort({ orderDate: -1 })
       .lean() as any[];
@@ -257,19 +260,24 @@ export class ClinicalSearchService {
     const held = 0;
     const complianceRatePercentage = 100;
 
-    // Group 2: Diagnostic Quality Metrics
-    const labOrders = await LabOrder.find({ organizationId }).lean() as any[];
-    const totalOrders = labOrders.length;
-    const completedResults = labOrders.filter((l) => l.status === "result-uploaded").length;
-    const abnormalResults = labOrders.filter((l) => l.result?.isAbnormal).length;
-    const abnormalRatePercentage = completedResults > 0 ? Math.round((abnormalResults / completedResults) * 100) : 0;
-
-    // Group 3: Clinical Deterioration (NEWS2) Metrics
-    const news2Scores = await ObservationScore.find({ organizationId }).lean() as any[];
-    const totalNews2Evaluations = news2Scores.length;
-    const totalScoreSum = news2Scores.reduce((acc, s) => acc + (s.totalScore || 0), 0);
-    const averageNews2Score = totalNews2Evaluations > 0 ? parseFloat((totalScoreSum / totalNews2Evaluations).toFixed(1)) : 0;
-    const highRiskEvaluationsCount = news2Scores.filter((s) => s.riskCategory === "High" || s.totalScore >= 7).length;
+    // Return counters rather than materializing every historical clinical document.
+    const organization = new mongoose.Types.ObjectId(organizationId);
+    const [diagnostics, scores] = await Promise.all([
+      LabOrder.aggregate([{ $match: { organizationId: organization } }, { $group: { _id: null,
+        totalOrders: { $sum: 1 },
+        completedResults: { $sum: { $cond: [{ $eq: ['$status', 'result-uploaded'] }, 1, 0] } },
+        abnormalResults: { $sum: { $cond: ['$result.isAbnormal', 1, 0] } },
+      } }]),
+      ObservationScore.aggregate([{ $match: { organizationId: organization } }, { $group: { _id: null,
+        total: { $sum: 1 }, sum: { $sum: { $ifNull: ['$totalScore', 0] } },
+        high: { $sum: { $cond: [{ $or: [{ $eq: ['$riskCategory', 'High'] }, { $gte: ['$totalScore', 7] }] }, 1, 0] } },
+      } }]),
+    ]);
+    const { totalOrders = 0, completedResults = 0, abnormalResults = 0 } = diagnostics[0] || {};
+    const abnormalRatePercentage = completedResults > 0 ? Math.round(abnormalResults / completedResults * 100) : 0;
+    const totalNews2Evaluations = scores[0]?.total || 0;
+    const averageNews2Score = totalNews2Evaluations ? parseFloat((scores[0].sum / totalNews2Evaluations).toFixed(1)) : 0;
+    const highRiskEvaluationsCount = scores[0]?.high || 0;
 
     return {
       medication: {

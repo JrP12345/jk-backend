@@ -23,7 +23,7 @@ export interface PaymentRefundRequest {
 
 export interface PaymentRefundResponse {
   refundId: string;
-  status: "processed" | "failed";
+  status: "processed" | "pending" | "failed";
   amount: number;
 }
 
@@ -76,6 +76,8 @@ class LiveRazorpayPaymentProvider implements PaymentProvider {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(10_000),
+        redirect: "error",
       });
 
       if (response.ok) {
@@ -89,13 +91,14 @@ class LiveRazorpayPaymentProvider implements PaymentProvider {
             : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
         };
       } else {
-        const errBody = await response.text();
-        throw new Error(`Razorpay API responded with status ${response.status}: ${errBody}`);
+        throw new Error(`Razorpay API responded with status ${response.status}`);
       }
     } catch (err: any) {
-      console.error("[PaymentProvider] Live Razorpay payment link generation failed:", err.message || err);
+      console.error("[PaymentProvider] Live Razorpay payment link generation failed", {
+        reason: err?.name === "TimeoutError" ? "timeout" : "gateway_error",
+      });
       if (process.env.NODE_ENV === "production") {
-        throw new Error(`Failed to generate online payment link: ${err.message || "Payment gateway unavailable"}`);
+        throw new Error("Failed to generate online payment link: Payment gateway unavailable");
       }
     }
 
@@ -125,8 +128,8 @@ class LiveRazorpayPaymentProvider implements PaymentProvider {
         notes: { reason: request.reason || "Patient Refund" },
       });
       return {
-        refundId: refundResult.id || `rfnd_${Date.now()}`,
-        status: "processed",
+        refundId: refundResult.id || "",
+        status: refundResult.status === "processed" && refundResult.id ? "processed" : refundResult.status === "failed" ? "failed" : "pending",
         amount: request.amount,
       };
     } catch (err: any) {

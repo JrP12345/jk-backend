@@ -62,6 +62,7 @@ describe("Milestone 5: AI Platform Infrastructure Tests", () => {
       password: await bcrypt.hash("Password123!", 10),
       role: "doctor",
     });
+    await OrgMember.create({ organizationId: org._id, userId: doctorUser._id, role: "doctor" });
 
     const patientUser = await User.create({
       name: "RAG Patient",

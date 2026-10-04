@@ -1,4 +1,3 @@
-import mongoose from "mongoose";
 import { Patient } from "../models/Patient.ts";
 import { User } from "../models/User.ts";
 import { Clinic } from "../models/Clinic.ts";

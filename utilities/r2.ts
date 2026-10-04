@@ -24,20 +24,23 @@ export const generatePresignedUrl = async (
   originalFilename: string,
   contentType: string,
   organizationId?: string,
-  maxSizeBytes: number = 15 * 1024 * 1024
+  maxSizeBytes: number = 15 * 1024 * 1024,
+  contentLength?: number,
 ) => {
+  if (!Number.isSafeInteger(contentLength) || contentLength! <= 0 || contentLength! > maxSizeBytes) throw new Error('Valid upload content length is required');
   const fileExtension = originalFilename.split('.').pop()?.toLowerCase() || 'bin';
-  const prefix = organizationId ? `tenants/${organizationId}/` : "quarantine/";
+  const prefix = organizationId ? `upload-staging/${organizationId}/` : "quarantine/";
   const uniqueFilename = `${prefix}${crypto.randomUUID()}.${fileExtension}`;
 
   const command = new PutObjectCommand({
     Bucket: BUCKET_NAME,
     Key: uniqueFilename,
     ContentType: contentType,
+    ContentLength: contentLength,
   });
 
   // Short-lived upload URL: 120 seconds
-  const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 120 });
+  const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 120, signableHeaders: new Set(['content-type', 'content-length']) });
 
   return {
     uploadUrl: signedUrl,
@@ -56,6 +59,7 @@ export const generatePresignedDownloadUrl = async (
   const command = new GetObjectCommand({
     Bucket: BUCKET_NAME,
     Key: fileKey,
+    ResponseContentDisposition: 'attachment',
   });
 
   return getSignedUrl(s3Client, command, { expiresIn: expiresInSeconds });
@@ -76,20 +80,44 @@ export const getObjectMetadata = async (fileKey: string) => {
 /**
  * Downloads object bytes for magic byte verification and malware scanning.
  */
-export const getObjectBuffer = async (fileKey: string): Promise<Buffer> => {
+export const getObjectBuffer = async (fileKey: string, maxBytes = 50 * 1024 * 1024): Promise<Buffer> => {
   const command = new GetObjectCommand({
     Bucket: BUCKET_NAME,
     Key: fileKey,
   });
 
-  const response = await s3Client.send(command);
-  const stream = response.Body as any;
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  const abort = new AbortController();
+  let stream: any;
+  const timer = setTimeout(() => { abort.abort(); stream?.destroy?.(new Error('UPLOAD_TIMEOUT')); }, 30000);
+  try {
+  const response = await s3Client.send(command, { abortSignal: abort.signal });
+  stream = response.Body as any;
+  if (!stream || (response.ContentLength !== undefined && response.ContentLength > maxBytes)) {
+    stream?.destroy?.();
+    throw new Error('UPLOAD_TOO_LARGE');
   }
-  return Buffer.concat(chunks);
+  const chunks: Buffer[] = [];
+  let length = 0;
+  for await (const chunk of stream) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    length += bytes.length;
+    if (length > maxBytes || abort.signal.aborted) {
+      stream.destroy?.();
+      throw new Error(length > maxBytes ? 'UPLOAD_TOO_LARGE' : 'UPLOAD_TIMEOUT');
+    }
+    chunks.push(bytes);
+  }
+  return Buffer.concat(chunks, length);
+  } finally { clearTimeout(timer); }
 };
+
+/** Server-generated destination has never been exposed through a writable URL. */
+export async function storeVerifiedObject(buffer: Buffer, contentType: string, organizationId: string) {
+  const extensions: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'application/pdf': 'pdf', 'application/dicom': 'dcm', 'text/plain': 'txt', 'text/csv': 'csv' };
+  const objectKey = `tenants/${organizationId}/verified/${crypto.randomUUID()}.${extensions[contentType] || 'bin'}`;
+  await s3Client.send(new PutObjectCommand({ Bucket: BUCKET_NAME, Key: objectKey, ContentType: contentType, Body: buffer }), { abortSignal: AbortSignal.timeout(30000) });
+  return objectKey;
+}
 
 /**
  * Deletes a file from the private storage bucket.
@@ -113,29 +141,13 @@ export async function uploadOrganizationImage(buffer: Buffer, contentType: strin
 /**
  * Direct Base64 upload for avatars/prescriptions into private bucket.
  */
-export const uploadBase64ToR2 = async (
-  base64Data: string,
-  originalFilename: string,
-  contentType: string,
-  organizationId?: string
-) => {
-  const fileExtension = originalFilename.split('.').pop()?.toLowerCase() || 'bin';
-  const prefix = organizationId ? `tenants/${organizationId}/` : "";
-  const uniqueFilename = `${prefix}${crypto.randomUUID()}.${fileExtension}`;
-
-  const base64String = base64Data.replace(/^data:[^;]+;base64,/, '');
-  const buffer = Buffer.from(base64String, 'base64');
-
-  const command = new PutObjectCommand({
-    Bucket: BUCKET_NAME,
-    Key: uniqueFilename,
-    ContentType: contentType,
-    Body: buffer,
-  });
-
-  await s3Client.send(command);
-
-  return {
-    fileKey: uniqueFilename,
-  };
+/** Compatibility helper; request authority must be checked by its caller. */
+export const uploadBase64ToR2 = async (base64Data: string, originalFilename: string, contentType: string, organizationId?: string) => {
+  const { validateUploadMetadata, validateUploadBytes, normalizeUploadMime } = await import('./uploadPolicy.ts');
+  const maxBytes = 10 * 1024 * 1024;
+  if (!organizationId || validateUploadMetadata(originalFilename, contentType, 'other') ||
+      typeof base64Data !== 'string' || base64Data.length > Math.ceil(maxBytes / 3) * 4 + 256) throw new Error('Invalid upload');
+  const buffer = Buffer.from(base64Data.replace(/^data:[^;]+;base64,/, ''), 'base64');
+  validateUploadBytes(buffer, contentType, maxBytes);
+  return { fileKey: await storeVerifiedObject(buffer, normalizeUploadMime(contentType), organizationId) };
 };

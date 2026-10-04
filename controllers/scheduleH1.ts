@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { escapeRegex } from '../utilities/helpers.ts';
 import { ScheduleH1Register } from "../models/ScheduleH1Register.ts";
 import { getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 
@@ -29,12 +30,13 @@ export async function getScheduleH1Entries(request: FastifyRequest, reply: Fasti
     if (query.startDate) filter.dispensedAt.$gte = new Date(query.startDate);
     if (query.endDate) filter.dispensedAt.$lte = new Date(query.endDate);
   }
-  if (query.search) {
-    filter.$or = [
-      { medicineName: { $regex: query.search, $options: "i" } },
-      { patientName: { $regex: query.search, $options: "i" } },
-      { doctorName: { $regex: query.search, $options: "i" } },
-      { batchNumber: { $regex: query.search, $options: "i" } },
+    if (query.search) {
+      const search = escapeRegex(String(query.search).slice(0, 200));
+      filter.$or = [
+        { medicineName: { $regex: search, $options: "i" } },
+        { patientName: { $regex: search, $options: "i" } },
+        { doctorName: { $regex: search, $options: "i" } },
+        { batchNumber: { $regex: search, $options: "i" } },
     ];
   }
 

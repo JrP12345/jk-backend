@@ -1,3 +1,5 @@
+import { SearchEngine } from '../platform/search/SearchEngine.ts';
+import { revokeUserSessions } from '../utilities/sessionResolver.ts';
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
@@ -29,9 +31,8 @@ import { TwoFactorService } from "../services/TwoFactorService.ts";
 import { enqueueTransactionalEmail } from "../services/CommunicationOutbox.ts";
 import { validatePasswordStrength } from "../middleware/auth.ts";
 import {
-  generateAccessToken,
   verifyAccessToken,
-  createRefreshToken,
+  createAuthSession,
   successResponse,
   errorResponse,
 } from "../utilities/helpers.ts";
@@ -238,8 +239,8 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
     }
 
     const existingOrg = await Organization.findOne({
-      name: new RegExp(`^${org_name.trim()}$`, "i"),
-      city: new RegExp(`^${city.trim()}$`, "i"),
+      name: new RegExp('^' + SearchEngine.escapeRegex(org_name.trim()) + '$', 'i'),
+      city: new RegExp('^' + SearchEngine.escapeRegex(city.trim()) + '$', 'i'),
     });
     if (existingOrg) {
       return reply.code(409).send(errorResponse(`An organization named "${org_name.trim()}" already exists in ${city.trim()}`));
@@ -348,8 +349,7 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
       if (!isRootUser) {
         const userIdStr = adminUser._id.toString();
         const payload = { id: userIdStr, email: adminUser.email, role: adminUser.role, organization_id: orgIdStr };
-        const accessToken = generateAccessToken(payload);
-        const refreshToken = await createRefreshToken(userIdStr, { organizationId: orgIdStr });
+        const { accessToken, refreshToken } = await createAuthSession(payload);
         setAuthCookies(reply, accessToken, refreshToken);
       }
 
@@ -1113,8 +1113,7 @@ export async function acceptInvitation(req: FastifyRequest, reply: FastifyReply)
       const permissions = [...await getEffectivePermissions(invite.role, invite.organizationId.toString())];
 
       const payload = { id: newUser.id, email: newUser.email, role: invite.role, organization_id: invite.organizationId.toString() };
-      const accessToken = generateAccessToken(payload);
-      const refreshToken = await createRefreshToken(newUser.id, { organizationId: invite.organizationId.toString() });
+      const { accessToken, refreshToken } = await createAuthSession(payload);
       setAuthCookies(reply, accessToken, refreshToken);
 
       return reply.code(201).send(
@@ -1521,6 +1520,8 @@ export async function setupOnboardingTOTP(req: FastifyRequest, reply: FastifyRep
     const user = await User.findById(userId);
     if (!user) return reply.code(404).send(errorResponse("User not found"));
 
+    if (user.twoFactorEnabled) return reply.code(409).send(errorResponse("Two-factor authentication is already enabled; use account recovery to replace it"));
+
     // Generate fresh TOTP secret for Google Authenticator using TwoFactorService
     const { base32, otpauthUrl } = TwoFactorService.generateSecret(user.email || user.name || "user", "Ekavyu");
     const qrCodeDataUrl = otpauthUrl ? await TwoFactorService.generateQRCodeDataURI(otpauthUrl) : "";
@@ -1561,7 +1562,7 @@ export async function verifyOnboardingTOTP(req: FastifyRequest, reply: FastifyRe
   try {
     const userId = req.user!.id;
     const orgId = req.user!.organization_id;
-    const { token, secret } = (req.body as any) || {};
+    const { token } = (req.body as any) || {};
 
     if (!token) {
       return reply.code(400).send(errorResponse("6-digit authenticator code is required"));
@@ -1570,8 +1571,10 @@ export async function verifyOnboardingTOTP(req: FastifyRequest, reply: FastifyRe
     const cleanToken = token.toString().trim().replace(/\s+/g, "");
 
     // Look up pending 2FA setup record
-    const pendingSetup = await PendingTwoFactorSetup.findOne({ userId });
-    const activeSecret = secret || pendingSetup?.secret;
+    const user = await User.findById(userId);
+    if (!user || user.twoFactorEnabled) return reply.code(409).send(errorResponse("Two-factor setup is unavailable"));
+    const pendingSetup = await PendingTwoFactorSetup.findOne({ userId, expiresAt: { $gt: new Date() } });
+    const activeSecret = pendingSetup?.secret;
     if (!activeSecret) {
       return reply.code(400).send(errorResponse("No active 2FA secret found. Please scan the QR code first."));
     }
@@ -1583,11 +1586,19 @@ export async function verifyOnboardingTOTP(req: FastifyRequest, reply: FastifyRe
       return reply.code(400).send(errorResponse("Invalid 6-digit Google Authenticator code. Please check your app."));
     }
 
+    const consumed = await PendingTwoFactorSetup.findOneAndDelete({ _id: pendingSetup!._id, userId, expiresAt: { $gt: new Date() } });
+    if (!consumed) return reply.code(409).send(errorResponse("Two-factor setup has expired or was already used"));
+
     // 1. Mark User 2FA as enabled and save verified secret (encrypted at rest)
     await User.findByIdAndUpdate(userId, {
       twoFactorEnabled: true,
       twoFactorSecret: encrypt(activeSecret),
     });
+    await revokeUserSessions(userId, 'two_factor_enabled');
+    const auth = await createAuthSession({ id: userId, email: user.email || '', role: user.role, organization_id: orgId }, {
+      ipAddress: req.ip, userAgent: req.headers['user-agent'],
+    });
+    setAuthCookies(reply, auth.accessToken, auth.refreshToken);
 
     // 2. Delete temporary pending setup record
     await PendingTwoFactorSetup.deleteMany({ userId });
@@ -1937,7 +1948,7 @@ export async function getGlobalUsers(req: FastifyRequest, reply: FastifyReply) {
     }
 
     if (q && q.trim()) {
-      const searchRegex = new RegExp(q.trim(), "i");
+      const searchRegex = new RegExp(SearchEngine.escapeRegex(q.trim().slice(0, 200)), "i");
       filter.$or = [
         { name: searchRegex },
         { email: searchRegex },

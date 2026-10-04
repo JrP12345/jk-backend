@@ -133,7 +133,7 @@ export async function sendTurnApproachingNotification(appointmentId: any, people
         populate: { path: "userId", select: "name email phone" },
       });
 
-    if (!appt) return;
+    if (!appt) throw new Error("Queue notification appointment not found");
 
     const targetUserId =
       appt.patientId?.userId?._id?.toString() ||
@@ -147,6 +147,8 @@ export async function sendTurnApproachingNotification(appointmentId: any, people
 
     if (targetUserId) {
       await eventBus.publishDurable({
+        eventId: `turn-approaching:${appt._id}`,
+        organizationId: appt.organizationId?.toString() || appt.clinicId?.organizationId?.toString(),
         eventType: EVENT_TYPES.PATIENT_CALL_NEXT,
         category: "patient",
         targetUserId: targetUserId.toString(),
@@ -161,7 +163,7 @@ export async function sendTurnApproachingNotification(appointmentId: any, people
     const patientPhone = appt.patientId?.phone || appt.patientId?.userId?.phone;
     if (patientPhone) {
       const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
-      sendSmsWhatsAppNotification({
+      await sendSmsWhatsAppNotification({
         organizationId: appt.clinicId?.organizationId?.toString() || appt.organizationId?.toString(),
         appointmentId: appt._id?.toString() || appointmentId?.toString(),
         phone: patientPhone,
@@ -175,10 +177,11 @@ export async function sendTurnApproachingNotification(appointmentId: any, people
           doctorName,
           trackingUrl,
         },
-      }).catch((err) => console.error("SMS/WhatsApp turn approaching dispatch failed:", err));
+      });
     }
   } catch (err) {
     console.error("sendTurnApproachingNotification error:", err);
+    throw err;
   }
 }
 

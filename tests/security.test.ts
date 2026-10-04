@@ -13,8 +13,13 @@ describe("Security & Compliance Verification Tests", () => {
     // Ensure raw cardForm state is absent from page source
     expect(source).not.toContain("cardForm");
     
-    // Ensure SAQ A PCI compliance annotation is present
-    expect(source).toContain("PCI-DSS");
+    // Verify the real hosted-checkout boundary rather than a compliance comment.
+    expect(source).not.toContain("cardNumber");
+    expect(source).not.toContain("cvc");
+    expect(source).toContain("loadRazorpayScript");
+    expect(source).toContain("/appointment-payments/create-order");
+    expect(source).toContain("/appointment-payments/verify");
+    for (const proof of ["razorpayOrderId", "razorpayPaymentId", "razorpaySignature"]) expect(source).toContain(proof);
   });
 
   it("should ensure user model does not store privateKey or publicKey fields", () => {

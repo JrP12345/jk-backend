@@ -10,6 +10,7 @@ export interface JwtPayload {
   role: string;
   organization_id?: string;
   sessionId?: string;
+  exp?: number;
   bookingPatientId?: string;
   authVersion?: number;
   impersonatedBy?: {
@@ -62,6 +63,7 @@ const SESSION_INDICATOR_OPTIONS = {
  */
 export function setAuthCookies(reply: FastifyReply, accessToken: string, refreshToken: string, isGuest = false) {
   reply
+    .header('Cache-Control', 'no-store')
     .setCookie("access_token", accessToken, ACCESS_COOKIE_OPTIONS)
     .setCookie("refresh_token", refreshToken, REFRESH_COOKIE_OPTIONS)
     .setCookie("ananta_session", isGuest ? "guest" : "1", SESSION_INDICATOR_OPTIONS);

@@ -624,7 +624,10 @@ export class SubscriptionService {
       return { status: payment.status, success: false, orderId: payment.razorpayOrderId };
     }
     const capturedId = await razorpayService.fetchCapturedPaymentForOrder(payment.razorpayOrderId, payment.amount);
-    await SubscriptionPayment.updateOne({ _id: payment._id }, { $set: { lastReconciledAt: new Date() } });
+    await SubscriptionPayment.updateOne({ _id: payment._id }, {
+      $set: { lastReconciledAt: new Date() },
+      $unset: { reconcileAfter: "", reconciliationIssue: "" },
+    });
     if (capturedId) {
       const activated = await this.activateCapturedPayment(payment, capturedId);
       return { status: activated.success ? "captured" : "captured_review", success: activated.success,

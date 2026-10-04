@@ -1,8 +1,8 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
-import { authenticate, checkAnyPermissionOrRoles } from "../middleware/auth.ts";
+import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import { authenticate, checkAnyPermission, checkAnyPermissionOrRoles, denyRoles } from "../middleware/auth.ts";
 import { requireModule } from "../middleware/moduleGuard.ts";
 import { enforceSubscriptionActive } from "../middleware/subscriptionGuard.ts";
-import { verifyAccessToken } from "../utilities/helpers.ts";
+import { getTrackerCapability } from "../utilities/publicTracker.ts";
 import {
   setDoctorDayOverride,
   getDoctorDayOverrides,
@@ -21,11 +21,10 @@ export default async function doctorAvailabilityRoutes(app: FastifyInstance) {
     preHandler: [
       authenticate,
       requireModule("appointments"),
-      checkAnyPermissionOrRoles(
-        ["doctor", "receptionist", "admin", "root"],
+      denyRoles("patient", "family_member", "guest"),
+      checkAnyPermission(
         "MANAGE_APPOINTMENTS",
         "MANAGE_QUEUE",
-        "VIEW_APPOINTMENTS"
       ),
       enforceSubscriptionActive,
     ],
@@ -36,24 +35,21 @@ export default async function doctorAvailabilityRoutes(app: FastifyInstance) {
       authenticate,
       requireModule("appointments"),
       checkAnyPermissionOrRoles(
-        ["doctor", "receptionist", "admin", "root", "patient", "family_member"],
+        ["patient", "family_member"],
         "VIEW_APPOINTMENTS",
         "MANAGE_APPOINTMENTS"
       ),
     ],
   };
+  const viewTriage = { preHandler: [authenticate, requireModule("appointments"),
+    denyRoles("patient", "family_member", "guest"),
+    checkAnyPermission("VIEW_APPOINTMENTS", "MANAGE_APPOINTMENTS", "MANAGE_QUEUE"), enforceSubscriptionActive] };
 
-  const optionalAuth = async (req: FastifyRequest) => {
-    try {
-      const token =
-        req.cookies?.access_token ||
-        (req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.split(" ")[1] : undefined);
-      if (token) {
-        req.user = verifyAccessToken(token);
-      }
-    } catch {
-      // Allow unauthenticated / guest access
-    }
+  const optionalAuth = async (req: FastifyRequest, reply: FastifyReply) => {
+    // Public tracker proof is independent of cookies. Otherwise resolve the
+    // complete authenticated session, including revocation, before owner access.
+    if (getTrackerCapability(req)) return;
+    return authenticate(req, reply);
   };
 
   // Day Overrides CRUD
@@ -62,8 +58,8 @@ export default async function doctorAvailabilityRoutes(app: FastifyInstance) {
   app.delete("/api/doctor-overrides/:id", staffOrDoctor, deleteDoctorDayOverride);
 
   // Doctor Disruption & Patient Triage Endpoints
-  app.get("/api/doctor-overrides/triage", staffOrDoctor, getTriageAppointments);
-  app.get("/api/doctor-overrides/eligible-replacements", staffOrDoctor, getEligibleReplacements);
+  app.get("/api/doctor-overrides/triage", viewTriage, getTriageAppointments);
+  app.get("/api/doctor-overrides/eligible-replacements", viewTriage, getEligibleReplacements);
   app.post("/api/doctor-overrides/triage/transfer", staffOrDoctor, triageTransferAppointment);
   app.post("/api/doctor-overrides/triage/cancel", staffOrDoctor, triageCancelAppointment);
   app.post("/api/doctor-overrides/triage/reschedule", staffOrDoctor, triageRescheduleAppointment);

@@ -8,6 +8,7 @@ describe("Production Environment Configuration Guards", () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    process.env.PRESCRIPTION_SIGNING_KEY = "00".repeat(32); // test-only configuration fixture
     exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {}) as any);
     errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
   });

@@ -5,10 +5,9 @@ import { OrgMember } from "../models/OrgMember.ts";
 import { Organization } from "../models/Organization.ts";
 import { Clinic } from "../models/Clinic.ts";
 import { Patient } from "../models/Patient.ts";
-import { Role } from "../models/Role.ts";
 import {
   generateAccessToken,
-  createRefreshToken,
+  createAuthSession,
   createRefreshTokenDetails,
   validateRefreshToken,
   revokeAllRefreshTokens,
@@ -36,6 +35,7 @@ import mongoose from "mongoose";
 import { encrypt, decrypt, isEncrypted } from "../utilities/encryption.ts";
 import { verifyGoogleIdToken, authenticateWithGoogleProfile, exchangeGoogleAuthCode } from "../services/GoogleAuthService.ts";
 import { getFrontendBaseUrl } from "../utilities/config.ts";
+import { getEffectivePermissions } from "../utilities/permissions.ts";
 
 // ─── Request OTP ────────────────────────────────────────────────
 export async function requestOtpController(req: FastifyRequest, reply: FastifyReply) {
@@ -164,7 +164,7 @@ export async function createPublicBookingSession(req: FastifyRequest, reply: Fas
       organization_id: (user as any).organization_id,
       permissions: guestPermissions,
     };
-    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
+    const ipAddress = req.ip || "";
     const userAgent = (req.headers["user-agent"] as string) || "";
     const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
 
@@ -240,7 +240,8 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
     }
 
     const normEmail = trimmedEmail ? trimmedEmail.toLowerCase() : undefined;
-    const normPhone = trimmedPhone ? normalizePhone(trimmedPhone) : undefined;
+    // Only the channel that received the OTP establishes account identity.
+    const normPhone = !trimmedEmail && trimmedPhone ? normalizePhone(trimmedPhone) : undefined;
     const nameInput = name?.trim();
 
     let user: any = null;
@@ -258,6 +259,9 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
       user = await User.findOne({ phone: normPhone });
       if (!user && /^\d{10}$/.test(normPhone)) {
         user = await User.findOne({ phone: { $in: [`+91${normPhone}`, `91${normPhone}`] } });
+      }
+      if (user && !['patient', 'family_member'].includes(user.role)) {
+        return reply.code(403).send(errorResponse('Staff accounts must use staff sign-in'));
       }
       if (user && user.phone !== normPhone) {
         user.phone = normPhone;
@@ -402,36 +406,7 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
     }
 
 
-    const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
-    const permissions = roleConfig ? roleConfig.permissions : [];
-
-    const payload = { id: user.id, email: user.email || "", role: user.role, organization_id: (user as any).organization_id };
-    const accessToken = generateAccessToken(payload);
-    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
-    const userAgent = (req.headers["user-agent"] as string) || "";
-    const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
-
-    const refreshToken = await createRefreshToken(user.id, { ipAddress, userAgent, deviceName });
-    setAuthCookies(reply, accessToken, refreshToken);
-
-    return reply.code(200).send(
-      successResponse(
-        {
-          user: {
-            id: user.id,
-            name: user.name,
-            email: user.email || null,
-            phone: user.phone,
-            role: user.role,
-            permissions,
-          },
-          patient: patient || null,
-          potentialMatch: potentialMatch || null,
-          isNewUser,
-        },
-        "OTP verified — logged in successfully"
-      )
-    );
+    return completeVerifiedLogin(req, reply, user, { patient: patient || null, potentialMatch: potentialMatch || null, isNewUser });
   } catch (err) {
     console.error("verifyOtpController error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -547,9 +522,8 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
       }
     }
 
-    const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
-    const permissions = roleConfig?.permissions || [];
-    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
+    const permissions = [...await getEffectivePermissions(user.role, organization_id, user.authVersion)];
+    const ipAddress = req.ip || "";
     const userAgent = (req.headers["user-agent"] as string) || "";
     const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
     const { rawToken: refreshToken, sessionId } = await createRefreshTokenDetails(user.id, {
@@ -924,7 +898,7 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
     }
 
     // Issue new rotated refresh token + access token only AFTER successful atomic consumption
-    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || currentRecord.ipAddress;
+    const ipAddress = req.ip || currentRecord.ipAddress;
     const userAgent = (req.headers["user-agent"] as string) || currentRecord.userAgent;
     const deviceName = currentRecord.deviceName || (userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser");
     const isGuestToken = (currentRecord as any).isGuest === true;
@@ -1113,13 +1087,10 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
       idempotencyKey: `transactional-email:email-verification:${newUser._id}:${emailVerificationTokenHash}`,
     });
 
-    const roleConfig = await Role.findOne({ name: "patient" }).lean() as any;
-    const permissions = roleConfig ? roleConfig.permissions : [];
-
     const organization_id = selectedClinic?.organizationId?.toString();
+    const permissions = [...await getEffectivePermissions("patient", organization_id, newUser.authVersion)];
     const payload = { id: newUser.id, email: normalizedEmail, role: "patient", organization_id };
-    const accessToken = generateAccessToken(payload);
-    const refreshToken = await createRefreshToken(newUser.id, { organizationId: organization_id });
+    const { accessToken, refreshToken } = await createAuthSession(payload);
 
     // Set httpOnly cookies
     setAuthCookies(reply, accessToken, refreshToken);
@@ -1164,8 +1135,7 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
       }
     }
 
-    const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
-    const permissions = roleConfig ? roleConfig.permissions : [];
+    const permissions = [...await getEffectivePermissions(user.role, organization_id, user.authVersion)];
 
     const rawImpersonatedBy = req.user?.impersonatedBy;
     const impersonatedBy = (rawImpersonatedBy && rawImpersonatedBy.id) ? {
@@ -1228,8 +1198,7 @@ export async function switchOrganization(req: FastifyRequest, reply: FastifyRepl
       organization_id: organizationId || undefined,
     };
 
-    const accessToken = generateAccessToken(payload);
-    const refreshToken = await createRefreshToken(userId, { organizationId: organizationId || undefined });
+    const { accessToken, refreshToken } = await createAuthSession(payload);
 
     setAuthCookies(reply, accessToken, refreshToken);
 
@@ -1310,8 +1279,7 @@ export async function impersonateUser(req: FastifyRequest, reply: FastifyReply) 
     }
     const targetOrgId = requestedOrgId || targetUser.organization_id?.toString() || orgMember?.organizationId?.toString();
 
-    const roleConfig = await Role.findOne({ name: targetUser.role }).lean() as any;
-    const permissions = roleConfig ? roleConfig.permissions : [];
+    const permissions = [...await getEffectivePermissions(targetUser.role, targetOrgId, targetUser.authVersion)];
 
     const impersonationData = {
       id: rootAdmin._id.toString(),
@@ -1328,12 +1296,11 @@ export async function impersonateUser(req: FastifyRequest, reply: FastifyReply) 
       impersonatedBy: impersonationData,
     };
 
-    const accessToken = generateAccessToken(payload);
-    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
+    const ipAddress = req.ip || "";
     const userAgent = (req.headers["user-agent"] as string) || "";
     const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser (Impersonation)" : "Desktop Browser (Impersonation)";
 
-    const refreshToken = await createRefreshToken(targetUser._id.toString(), {
+    const { accessToken, refreshToken } = await createAuthSession(payload, {
       ipAddress,
       userAgent,
       deviceName,
@@ -1393,7 +1360,7 @@ export async function stopImpersonation(req: FastifyRequest, reply: FastifyReply
     if (!rootAdminId && req.user?.role === "root") {
       const rootUser = await User.findById(req.user.id);
       if (rootUser && rootUser.isActive) {
-        const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
+        const ipAddress = req.ip || "";
         const userAgent = (req.headers["user-agent"] as string) || "";
         const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
 
@@ -1450,7 +1417,7 @@ export async function stopImpersonation(req: FastifyRequest, reply: FastifyReply
       await RefreshToken.updateOne({ tokenHash: oldHash }, { revoked: true, revocationReason: "logout" });
     }
 
-    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
+    const ipAddress = req.ip || "";
     const userAgent = (req.headers["user-agent"] as string) || "";
     const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
 
@@ -1511,24 +1478,9 @@ export async function googleLoginController(req: FastifyRequest, reply: FastifyR
       return reply.code(401).send(errorResponse("Invalid Google authentication credentials"));
     }
 
-    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
-    const userAgent = (req.headers["user-agent"] as string) || "";
-    const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
-
-    const authResult = await authenticateWithGoogleProfile(profile, { ipAddress, userAgent, deviceName });
-
-    setAuthCookies(reply, authResult.accessToken, authResult.refreshToken);
-
-    return reply.code(200).send(
-      successResponse(
-        {
-          user: authResult.user,
-          patient: authResult.patient,
-          isNewUser: authResult.isNewUser,
-        },
-        "Google authentication successful"
-      )
-    );
+    const authResult = await authenticateWithGoogleProfile(profile);
+    return await completeVerifiedLogin(req, reply, authResult.userRecord,
+      { patient: authResult.patient, isNewUser: authResult.isNewUser });
   } catch (err: any) {
     console.error("googleLoginController error:", err);
     return reply.code(400).send(errorResponse(err.message || "Failed to authenticate with Google"));
@@ -1537,7 +1489,7 @@ export async function googleLoginController(req: FastifyRequest, reply: FastifyR
 
 
 // Shared session issuance for verified passwords and passkeys; existing 2FA remains required.
-export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyReply, user: any) {
+export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyReply, user: any, extra: Record<string, unknown> = {}) {
     if (!user.isActive) return reply.code(403).send(errorResponse("Account is deactivated"));
     const orgMember = await OrgMember.findOne({ userId: user._id });
     const organization_id = orgMember?.organizationId?.toString() || (user as any).organization_id?.toString();
@@ -1550,10 +1502,10 @@ export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyR
       }
     }
 
-    const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
-    const permissions = roleConfig ? roleConfig.permissions : [];
+    const permissions = [...await getEffectivePermissions(user.role, organization_id, user.authVersion)];
 
-    if (user.twoFactorEnabled && user.twoFactorSecret) {
+    if (user.twoFactorEnabled) {
+      if (!user.twoFactorSecret) return reply.code(403).send(errorResponse("Two-factor configuration requires account recovery"));
       clearAuthCookies(reply);
       const twoFactorToken = generateTwoFactorChallenge(user.id);
       return reply.code(200).send(
@@ -1569,7 +1521,7 @@ export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyR
     }
 
     // Extract device metadata for session tracking
-    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
+    const ipAddress = req.ip || "";
     const userAgent = (req.headers["user-agent"] as string) || "";
     const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
 
@@ -1601,6 +1553,7 @@ export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyR
     return reply.code(200).send(
       successResponse(
         {
+          ...extra,
           user: { id: user.id, name: user.name, email: user.email || null, role: user.role, image_url: user.image_url || null, organization_id, permissions },
         },
         "Login successful"

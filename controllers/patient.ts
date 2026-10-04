@@ -41,7 +41,7 @@ export async function searchPatients(req: FastifyRequest, reply: FastifyReply) {
       }
       andConditions.push({
         $or: [
-          { organizationId: orgId },
+          { organizationId: new mongoose.Types.ObjectId(orgId) },
           { createdBy: new mongoose.Types.ObjectId(req.user!.id), organizationId: { $exists: false } },
         ],
       });
@@ -52,18 +52,7 @@ export async function searchPatients(req: FastifyRequest, reply: FastifyReply) {
     }
 
     if (search && search.trim()) {
-      const safeSearch = escapeRegex(search.trim());
-
-      const matchingUsers = await User.find({
-        role: "patient",
-        isActive: true,
-        $or: [
-          { name: { $regex: safeSearch, $options: "i" } },
-          { email: { $regex: safeSearch, $options: "i" } },
-          { phone: { $regex: safeSearch, $options: "i" } },
-        ],
-      }).select("_id");
-      const matchingUserIds = matchingUsers.map((u) => u._id);
+      const safeSearch = escapeRegex(search.trim().slice(0, 200));
 
       // Compose search criteria without replacing the tenant scope filter above.
       andConditions.push({
@@ -71,7 +60,11 @@ export async function searchPatients(req: FastifyRequest, reply: FastifyReply) {
           { name: { $regex: safeSearch, $options: "i" } },
           { phone: { $regex: safeSearch, $options: "i" } },
           { email: { $regex: safeSearch, $options: "i" } },
-          { userId: { $in: matchingUserIds } },
+          { $and: [{ 'searchUser.role': 'patient' }, { 'searchUser.isActive': true }, { $or: [
+            { 'searchUser.name': { $regex: safeSearch, $options: 'i' } },
+            { 'searchUser.email': { $regex: safeSearch, $options: 'i' } },
+            { 'searchUser.phone': { $regex: safeSearch, $options: 'i' } },
+          ] }] },
           { mrn: { $regex: safeSearch, $options: "i" } },
           { abdmHealthId: { $regex: safeSearch, $options: "i" } },
           { allergies: { $regex: safeSearch, $options: "i" } },
@@ -86,15 +79,35 @@ export async function searchPatients(req: FastifyRequest, reply: FastifyReply) {
 
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
 
-    const [totalCount, rawPatients] = await Promise.all([
-      Patient.countDocuments(patientFilter),
-      Patient.find(patientFilter)
-        .populate("userId", "name email phone")
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(pageSize)
-        .lean(),
-    ]);
+    let totalCount: number;
+    let rawPatients: any[];
+    if (search?.trim()) {
+      // Restrict the patient set before joining identities. No global User regex scan
+      // or unbounded list of matching IDs is transferred into the API process.
+      const searchCondition = andConditions.pop()!;
+      const scopedFilter: Record<string, unknown> = { ...patientFilter, $and: andConditions };
+      if (!andConditions.length) delete scopedFilter.$and;
+      const [result] = await Patient.aggregate([
+        { $match: scopedFilter },
+        { $lookup: { from: User.collection.name, localField: 'userId', foreignField: '_id',
+          pipeline: [{ $project: { name: 1, email: 1, phone: 1, role: 1, isActive: 1 } }], as: 'searchUser' } },
+        { $match: searchCondition },
+        { $facet: {
+          count: [{ $count: 'total' }],
+          items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: skip }, { $limit: pageSize },
+            { $set: { userId: { $ifNull: [{ $arrayElemAt: ['$searchUser', 0] }, null] } } },
+            { $project: { searchUser: 0, 'userId.role': 0, 'userId.isActive': 0 } }],
+        } },
+      ]);
+      totalCount = result?.count[0]?.total || 0;
+      rawPatients = result?.items || [];
+    } else {
+      [totalCount, rawPatients] = await Promise.all([
+        Patient.countDocuments(patientFilter),
+        Patient.find(patientFilter).populate('userId', 'name email phone')
+          .sort({ createdAt: -1 }).skip(skip).limit(pageSize).lean(),
+      ]);
+    }
 
     const totalPages = Math.ceil(totalCount / pageSize);
     const patients = rawPatients.map((p: any) => ({ ...p, id: p._id.toString() }));
@@ -505,4 +518,3 @@ export async function createPatient(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(500).send(errorResponse(err.message || "Internal server error"));
   }
 }
-

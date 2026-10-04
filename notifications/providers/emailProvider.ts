@@ -43,9 +43,13 @@ export class EmailProvider {
         port,
         secure,
         auth: { user, pass },
-        tls: { rejectUnauthorized: false },
+        tls: { rejectUnauthorized: process.env.NODE_ENV === "production" },
+        requireTLS: process.env.NODE_ENV === "production" && !secure,
+        connectionTimeout: 10_000,
+        greetingTimeout: 10_000,
+        socketTimeout: 30_000,
       });
-      console.log(`[EmailProvider] Nodemailer initialized for SMTP Host: ${host}:${port} (${user})`);
+      console.log("[EmailProvider] Nodemailer initialized");
     } else {
       this.transporter = null;
       console.log("[EmailProvider] SMTP credentials are not configured; outbound email is unavailable.");
@@ -62,7 +66,11 @@ export class EmailProvider {
       port: cfg.port || 587,
       secure: cfg.secure || false,
       auth: { user: cfg.user, pass: rawPass },
-      tls: { rejectUnauthorized: false },
+      tls: { rejectUnauthorized: process.env.NODE_ENV === "production" },
+      requireTLS: process.env.NODE_ENV === "production" && !cfg.secure,
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 30_000,
     });
   }
 
@@ -85,17 +93,19 @@ export class EmailProvider {
     if (orgSmtp?.host && orgSmtp?.user && orgSmtp?.pass) {
       const transporter = this.buildTransientTransporter(orgSmtp);
       try {
-        const info = await transporter.sendMail({
+        await transporter.sendMail({
           from: formattedFrom,
           to: options.to,
           subject: options.subject,
           text: options.text || options.html.replace(/<[^>]*>?/gm, ""),
           html: options.html,
         });
-        console.log(`[EmailProvider] Sent via org SMTP to ${options.to}. MessageId: ${info.messageId}`);
+        console.log("[EmailProvider] Sent via org SMTP");
         return true;
       } catch (err: any) {
-        console.error(`[EmailProvider] Org SMTP failed for ${options.to}:`, err?.message || err);
+        console.error("[EmailProvider] Org SMTP delivery failed", {
+          code: typeof err?.code === "string" && /^[A-Z_]{1,32}$/.test(err.code) ? err.code : "SMTP_FAILED",
+        });
         return false;
       }
     }
@@ -114,17 +124,19 @@ export class EmailProvider {
 
     if (this.transporter) {
       try {
-        const info = await this.transporter.sendMail({
+        await this.transporter.sendMail({
           from: formattedFrom,
           to: options.to,
           subject: options.subject,
           text: options.text || options.html.replace(/<[^>]*>?/gm, ""),
           html: options.html,
         });
-        console.log(`[EmailProvider] Email sent to ${options.to}. MessageId: ${info.messageId}`);
+        console.log("[EmailProvider] Email sent");
         return true;
       } catch (err: any) {
-        console.error(`[EmailProvider] Failed to send to ${options.to}:`, err?.message || err);
+        console.error("[EmailProvider] Email delivery failed", {
+          code: typeof err?.code === "string" && /^[A-Z_]{1,32}$/.test(err.code) ? err.code : "SMTP_FAILED",
+        });
         return false;
       }
     }

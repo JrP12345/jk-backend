@@ -7,9 +7,11 @@ import {
   getEffectivePermissions,
   isPrivilegedRole,
 } from "../utilities/permissions.ts";
+import { tenantRateLimiter } from "./tenantRateLimiter.ts";
 
 // Extend FastifyRequest to carry the decoded user
 declare module "fastify" {
+  interface FastifyContextConfig { allowGuest?: boolean }
   interface FastifyRequest {
     user?: JwtPayload;
   }
@@ -19,8 +21,7 @@ declare module "fastify" {
  * Asymmetric JWT authentication middleware.
  *
  * Reads the access token from the `access_token` httpOnly cookie.
- * Performs fast, in-memory RS256 signature verification using the
- * service-level public key (zero DB lookups).
+ * Verifies the RS256 signature, then reads persisted session and user authority.
  */
 export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -34,6 +35,11 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
 
     // Verify signature in-memory using service public key
     const decoded = verifyAccessToken(token);
+    // Existing fixture-only JWTs remain available in tests; deployed callers
+    // must refresh legacy tokens into a revocable session before proceeding.
+    if (!decoded.sessionId && process.env.NODE_ENV !== "test") {
+      return reply.code(401).send({ error: "Session refresh required" });
+    }
 
     // Distributed session resolution across replicas (Finding: AUTH-002)
     if (decoded.sessionId) {
@@ -41,15 +47,20 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
       if (!resolution.valid) {
         return reply.code(401).send({ error: resolution.reason || "Session has been terminated or logged in from another device" });
       }
-      if (resolution.session?.userId !== decoded.id || (resolution.session?.role === "guest" && decoded.role !== "guest")) {
+      if (resolution.session?.userId !== decoded.id || resolution.session?.role !== decoded.role ||
+        resolution.session?.organizationId !== decoded.organization_id) {
         return reply.code(401).send({ error: "Session identity mismatch" });
       }
     }
 
     req.user = decoded;
+    reply.header('Cache-Control', 'no-store');
+    if (decoded.role === 'guest' && !req.routeOptions.config.allowGuest) {
+      return reply.code(403).send({ error: 'Guest session is limited to its booking and payment' });
+    }
 
     // Set the context store for audit logging & tenant isolation
-    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "127.0.0.1";
+    const ipAddress = req.ip || "127.0.0.1";
     const userAgent = req.headers["user-agent"] || "unknown";
     const cleanIp = Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(",")[0].trim();
 
@@ -60,6 +71,7 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
       ipAddress: cleanIp,
       userAgent,
     });
+    await tenantRateLimiter(req, reply);
   } catch {
     return reply.code(401).send({ error: "Invalid or expired token" });
   }

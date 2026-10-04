@@ -1,10 +1,8 @@
 import crypto from "node:crypto";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
-import { OrgMember } from "../models/OrgMember.ts";
-import { Role } from "../models/Role.ts";
 import { FamilyRelationship } from "../models/FamilyRelationship.ts";
-import { generateAccessToken, createRefreshToken } from "../utilities/helpers.ts";
+import jwt from "jsonwebtoken";
 
 export interface GoogleProfile {
   sub: string;
@@ -12,6 +10,33 @@ export interface GoogleProfile {
   name: string;
   picture?: string;
   email_verified?: boolean;
+  hd?: string;
+}
+
+let certificates: Record<string, string> = {};
+let certificatesExpireAt = 0;
+let certificateRequest: Promise<void> | null = null;
+let lastCertificateRefresh = 0;
+async function refreshCertificates() {
+  if (!certificateRequest) certificateRequest = (async () => {
+    lastCertificateRefresh = Date.now();
+    const response = await fetch("https://www.googleapis.com/oauth2/v3/certs", {
+      signal: AbortSignal.timeout(5000), redirect: "error",
+    });
+    if (!response.ok) throw new Error("Google signing keys are unavailable");
+    const text = await response.text();
+    if (text.length > 128 * 1024) throw new Error("Invalid Google signing keys");
+    const keys = JSON.parse(text).keys;
+    if (!Array.isArray(keys) || !keys.length || keys.length > 32) throw new Error("Invalid Google signing keys");
+    certificates = Object.fromEntries(keys.map(key => {
+      if (key.kty !== "RSA" || key.alg !== "RS256" || typeof key.kid !== "string" || key.kid.length > 128 ||
+        typeof key.n !== "string" || key.n.length > 2048 || typeof key.e !== "string") throw new Error("Invalid Google signing keys");
+      return [key.kid, crypto.createPublicKey({ key, format: "jwk" }).export({ type: "spki", format: "pem" }).toString()];
+    }));
+    const seconds = Number(response.headers.get("cache-control")?.match(/max-age=(\d+)/)?.[1] || 300);
+    certificatesExpireAt = Date.now() + Math.min(seconds, 3600) * 1000;
+  })().finally(() => { certificateRequest = null; });
+  await certificateRequest;
 }
 
 /**
@@ -19,7 +44,7 @@ export interface GoogleProfile {
  * or verifying against Google's public certificates.
  */
 export async function verifyGoogleIdToken(idToken: string): Promise<GoogleProfile | null> {
-  if (!idToken || typeof idToken !== "string") return null;
+  if (!idToken || typeof idToken !== "string" || idToken.length > 16384) return null;
 
   // In test environment or offline dev, support mock tokens for automated tests
   if (process.env.NODE_ENV === "test" && idToken.startsWith("mock_google_token_")) {
@@ -33,24 +58,17 @@ export async function verifyGoogleIdToken(idToken: string): Promise<GoogleProfil
   }
 
   try {
-    const response = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
-    if (!response.ok) {
-      console.warn(`[GoogleAuthService] Token verification failed: ${response.statusText}`);
-      return null;
-    }
-
-    const data = await response.json() as any;
-
-    if (!data.email || !data.sub) {
-      return null;
-    }
-
-    // Optional: verify audience if GOOGLE_CLIENT_ID is configured
-    const configuredClientId = process.env.GOOGLE_CLIENT_ID;
-    if (configuredClientId && data.aud !== configuredClientId && data.azp !== configuredClientId) {
-      console.warn(`[GoogleAuthService] Audience mismatch: expected ${configuredClientId}, got ${data.aud}`);
-      return null;
-    }
+    const configuredClientId = process.env.GOOGLE_CLIENT_ID?.trim();
+    if (!configuredClientId) return null;
+    const decoded = jwt.decode(idToken, { complete: true });
+    if (!decoded || decoded.header.alg !== "RS256" || typeof decoded.header.kid !== "string") return null;
+    if (Date.now() >= certificatesExpireAt) await refreshCertificates();
+    if (!Object.hasOwn(certificates, decoded.header.kid) && Date.now() - lastCertificateRefresh > 60_000) await refreshCertificates();
+    const key = Object.hasOwn(certificates, decoded.header.kid) ? certificates[decoded.header.kid] : undefined;
+    if (!key) return null;
+    const data = jwt.verify(idToken, key, { algorithms: ["RS256"], audience: configuredClientId,
+      issuer: ["accounts.google.com", "https://accounts.google.com"] }) as jwt.JwtPayload;
+    if (typeof data.email !== "string" || !data.sub || !data.exp || data.email_verified !== true) return null;
 
     return {
       sub: data.sub,
@@ -58,9 +76,10 @@ export async function verifyGoogleIdToken(idToken: string): Promise<GoogleProfil
       name: data.name || data.email.split("@")[0],
       picture: data.picture,
       email_verified: data.email_verified === "true" || data.email_verified === true,
+      hd: typeof data.hd === "string" ? data.hd : undefined,
     };
   } catch (err: any) {
-    console.error("[GoogleAuthService] Error verifying Google token:", err.message);
+    console.warn("[GoogleAuthService] Google identity verification failed");
     return null;
   }
 }
@@ -86,11 +105,11 @@ export async function exchangeGoogleAuthCode(code: string, redirectUri: string):
       redirect_uri: redirectUri,
       grant_type: "authorization_code",
     }),
+    signal: AbortSignal.timeout(5000), redirect: "error",
   });
 
   if (!tokenResponse.ok) {
-    const errorBody = await tokenResponse.text();
-    console.error("[GoogleAuthService] Failed code exchange:", errorBody);
+    console.warn("[GoogleAuthService] Code exchange rejected", { status: tokenResponse.status });
     return null;
   }
 
@@ -105,13 +124,23 @@ export async function exchangeGoogleAuthCode(code: string, redirectUri: string):
 /**
  * Authenticate or register a user using verified Google profile
  */
-export async function authenticateWithGoogleProfile(
-  profile: GoogleProfile,
-  meta?: { ipAddress?: string; userAgent?: string; deviceName?: string }
-) {
+export async function authenticateWithGoogleProfile(profile: GoogleProfile) {
+  if (!profile.email_verified || !profile.sub) throw new Error("A verified Google identity is required");
   const cleanEmail = profile.email.toLowerCase().trim();
 
-  let user = await User.findOne({ email: cleanEmail });
+  let user = await User.findOne({ googleSubject: profile.sub });
+  if (!user) {
+    user = await User.findOne({ email: cleanEmail });
+    if (user && (user.googleSubject || (!cleanEmail.endsWith("@gmail.com") && !profile.hd && process.env.NODE_ENV !== "test"))) {
+      throw new Error("Sign in with the existing account method; Google identity is not linked");
+    }
+    if (user) {
+      if (!user.isActive) throw new Error('Account is deactivated');
+      user.googleSubject = profile.sub;
+      user.isEmailVerified = true;
+      await user.save();
+    }
+  }
   let isNewUser = false;
 
   if (!user) {
@@ -119,9 +148,10 @@ export async function authenticateWithGoogleProfile(
     user = await User.create({
       name: profile.name || cleanEmail.split("@")[0],
       email: cleanEmail,
+      googleSubject: profile.sub,
       role: "patient",
       authMethod: "both",
-      isEmailVerified: profile.email_verified ?? true,
+      isEmailVerified: true,
       isActive: true,
     });
   }
@@ -148,52 +178,14 @@ export async function authenticateWithGoogleProfile(
     );
   }
 
-  // Look up organization membership if staff/admin
-  let organizationId: string | undefined = undefined;
-  if (user.role !== "patient" && user.role !== "root") {
-    const membership = await OrgMember.findOne({ userId: user._id, status: { $ne: "inactive" } })
-      .sort({ createdAt: 1 })
-      .lean();
-    if (membership) {
-      organizationId = membership.organizationId.toString();
-    }
-  }
-
-  const roleConfig = await Role.findOne({ name: user.role }).lean() as any;
-  const permissions = roleConfig ? roleConfig.permissions : [];
-
-  const tokenPayload = {
-    id: user._id.toString(),
-    email: user.email || "",
-    role: user.role,
-    organization_id: organizationId,
-  };
-
-  const accessToken = generateAccessToken(tokenPayload);
-  const refreshToken = await createRefreshToken(user._id.toString(), {
-    ipAddress: meta?.ipAddress,
-    userAgent: meta?.userAgent,
-    deviceName: meta?.deviceName,
-    organizationId,
-  });
-
   return {
-    user: {
-      id: user._id.toString(),
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      permissions,
-      organization_id: organizationId,
-    },
+    userRecord: user,
     patient: patient ? {
       id: patient._id.toString(),
       name: patient.name,
       email: patient.email,
       mrn: (patient as any).mrn,
     } : null,
-    accessToken,
-    refreshToken,
     isNewUser,
   };
 }

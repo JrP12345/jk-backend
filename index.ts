@@ -77,8 +77,8 @@ import fastifySwagger from "@fastify/swagger";
 import fastifySwaggerUi from "@fastify/swagger-ui";
 import { apiV1VersioningPlugin } from "./utilities/versioningPlugin.ts";
 import { csrfProtection } from "./middleware/csrf.ts";
+import { authenticate, requirePlatformRoot } from './middleware/auth.ts';
 import { sanitizeMiddleware } from "./middleware/sanitize.ts";
-import { tenantRateLimiter } from "./middleware/tenantRateLimiter.ts";
 import { registerProfilingHooks, getHandlerProfilingMetrics } from "./utilities/profiling.ts";
 import {
   MAX_REQUEST_BODY_BYTES,
@@ -89,6 +89,9 @@ import {
 const app = fastify({
   logger: {
     level: process.env.LOG_LEVEL || "info",
+    serializers: {
+      req: (req: any) => ({ method: req.method, url: String(req.url || '').split('?')[0].replace(/[a-f\d]{24}/gi, ':id'), remoteAddress: req.ip }),
+    },
     redact: [
       "req.headers.authorization",
       "req.headers.cookie",
@@ -223,8 +226,7 @@ app.addHook("preValidation", sanitizeMiddleware);
 // Register CSRF protection guard on state-changing requests
 app.addHook("preHandler", csrfProtection);
 
-// Register per-tenant rate limit guard (Step 6.4)
-app.addHook("preHandler", tenantRateLimiter);
+// Tenant budgets are applied by authenticate after session/tenant resolution.
 
 app.setErrorHandler(async (error: any, request, reply) => {
   if (error.validation) {
@@ -237,8 +239,9 @@ app.setErrorHandler(async (error: any, request, reply) => {
   
   const statusCode = error.statusCode || 500;
   if (statusCode >= 500) {
-    await reportCriticalError(`Unhandled Server Error: ${request.method} ${request.url}`, error, {
-      route: request.url,
+    const route = request.routeOptions.url || 'unmatched';
+    await reportCriticalError(`Unhandled Server Error: ${request.method} ${route}`, error, {
+      route,
       method: request.method,
       statusCode: String(statusCode),
     });
@@ -400,7 +403,7 @@ const readinessHandler = async (_request: FastifyRequest, reply: FastifyReply) =
 app.get("/api/health", healthCheckHandler);
 app.get("/api/health/liveness", livenessHandler);
 app.get("/api/health/readiness", readinessHandler);
-app.get("/api/admin/operations/profiling", async (_req, reply) => {
+app.get("/api/admin/operations/profiling", { preHandler: [authenticate, requirePlatformRoot()] }, async (_req, reply) => {
   return reply.code(200).send(getHandlerProfilingMetrics());
 });
 

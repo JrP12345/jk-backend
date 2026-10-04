@@ -2,13 +2,17 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
 import { Appointment } from "../models/Appointment.ts";
+import { Clinic } from "../models/Clinic.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { checkClinicAccess } from "../utilities/tenant.ts";
+import { checkClinicAccess, checkPatientAccess, checkOperationalRecordAccess, getRequestClinicIds, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+import { hasValidTrackerCapability } from "../utilities/publicTracker.ts";
+import { clinicDateKey, clinicDayRange, clinicLocalTimeToDate, getClinicTimezone } from "../utilities/clinicTime.ts";
 import { broadcastQueueUpdate } from "../notifications/websocket.ts";
 import { sendBookingNotification } from "../utilities/notifications.ts";
 import { disruptionService } from "../services/disruptionService.ts";
+import { AppointmentDomainError } from "../services/AppointmentService.ts";
 
 export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -35,6 +39,7 @@ export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyRe
     if (!clinicId || !doctorId || !date || !status) {
       return reply.code(400).send(errorResponse("clinicId, doctorId, date, and status are required"));
     }
+    if (!mongoose.Types.ObjectId.isValid(doctorId)) return reply.code(400).send(errorResponse("Invalid doctor ID"));
 
     if (!["available", "unavailable", "delayed", "extended"].includes(status)) {
       return reply.code(400).send(errorResponse("Invalid status value"));
@@ -46,11 +51,14 @@ export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyRe
     }
 
     const { DoctorAssignment } = await import("../models/DoctorAssignment.ts");
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
     let targetClinics: string[] = [];
     if (clinicId === "all") {
       const assignments = await DoctorAssignment.find({
         $or: [{ doctorId }, { doctorId: mongoose.Types.ObjectId.isValid(doctorId) ? new mongoose.Types.ObjectId(doctorId) : doctorId }],
         isActive: true,
+        ...(scope.organizationId ? { organizationId: scope.organizationId } : {}),
       });
       targetClinics = Array.from(new Set(assignments.map((a) => a.clinicId.toString())));
       if (targetClinics.length === 0) {
@@ -62,6 +70,26 @@ export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyRe
         return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
       }
       targetClinics = [clinicId];
+    }
+
+    // An override must target an active assignment, not merely a known user ID.
+    const assigned = await DoctorAssignment.find({ doctorId, clinicId: { $in: targetClinics }, isActive: true }).select("clinicId").lean();
+    const assignedClinics = new Set(assigned.map(assignment => String(assignment.clinicId)));
+    if (targetClinics.some(id => !assignedClinics.has(id))) {
+      return reply.code(404).send(errorResponse("Active doctor assignment not found"));
+    }
+    const clinicChecks = await Promise.all(targetClinics.map(id => checkClinicAccess(req, id)));
+    for (const check of clinicChecks) {
+      if (!check.allowed) return reply.code(check.statusCode).send(errorResponse(check.message));
+      if (scope.organizationId && check.organizationId !== scope.organizationId) return reply.code(404).send(errorResponse("Clinic not found"));
+    }
+    for (const targetClinic of targetClinics) {
+      const timezone = await getClinicTimezone(targetClinic);
+      try {
+        clinicDayRange(date, timezone);
+        if (effectiveStartTime) clinicLocalTimeToDate(date, effectiveStartTime, timezone);
+        if (effectiveEndTime) clinicLocalTimeToDate(date, effectiveEndTime, timezone);
+      } catch { return reply.code(400).send(errorResponse("Invalid clinic date or time")); }
     }
 
     const createdOverrides = [];
@@ -179,8 +207,22 @@ export async function getDoctorDayOverrides(req: FastifyRequest, reply: FastifyR
       }
     }
 
+    const consumer = ["patient", "family_member", "guest"].includes(req.user?.role || "");
+    if (consumer && (!clinicId || clinicId === "all" || !doctorId)) {
+      return reply.code(400).send(errorResponse("A clinic and doctor are required"));
+    }
     const filter: any = {};
-    if (clinicId && clinicId !== "all") filter.clinicId = clinicId;
+    if (!consumer) {
+      const scope = resolveAuthorizedOrganizationScope(req);
+      if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+      // Older overrides omit organizationId; their owning clinic remains authority.
+      if (scope.organizationId) filter.$or = [{ organizationId: scope.organizationId }, { organizationId: null }];
+      const clinicIds = scope.organizationId
+        ? (await Clinic.find({ organizationId: scope.organizationId, isActive: { $ne: false } }).select("_id").lean()).map(clinic => String(clinic._id))
+        : await getRequestClinicIds(req);
+      if (clinicIds) filter.clinicId = { $in: clinicIds };
+    }
+    if (clinicId && clinicId !== "all") filter.clinicId = filter.clinicId ? { ...filter.clinicId, $eq: clinicId } : clinicId;
     if (doctorId) filter.doctorId = doctorId;
 
     if (date) {
@@ -192,7 +234,8 @@ export async function getDoctorDayOverrides(req: FastifyRequest, reply: FastifyR
     }
 
     const overrides = await DoctorDayOverride.find(filter)
-      .populate("doctorId", "name email phone specialization")
+      .select(consumer ? "clinicId doctorId date status effectiveStartTime effectiveEndTime" : "")
+      .populate("doctorId", consumer ? "name specialization" : "name email phone specialization")
       .populate("clinicId", "name city")
       .sort({ date: 1 });
 
@@ -218,7 +261,7 @@ export async function deleteDoctorDayOverride(req: FastifyRequest, reply: Fastif
       return reply.code(404).send(errorResponse("Override not found"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, override.clinicId.toString());
+    const clinicCheck = await checkOperationalRecordAccess(req, override);
     if (!clinicCheck.allowed) {
       return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
     }
@@ -275,16 +318,18 @@ export async function getTriageAppointments(req: FastifyRequest, reply: FastifyR
 
     const query: any = {
       clinicId,
+      organizationId: clinicCheck.organizationId,
       status: "disruption_triage",
     };
 
     if (doctorId) query.doctorId = doctorId;
 
     if (date) {
-      const [y, m, d] = date.split("-").map(Number);
-      const startOfDay = new Date(y, m - 1, d, 0, 0, 0, 0);
-      const endOfDay = new Date(y, m - 1, d, 23, 59, 59, 999);
-      query.appointmentTime = { $gte: startOfDay, $lte: endOfDay };
+      const timezone = await getClinicTimezone(clinicId);
+      try {
+        const { start, end } = clinicDayRange(date, timezone);
+        query.appointmentTime = { $gte: start, $lte: end };
+      } catch { return reply.code(400).send(errorResponse("Invalid clinic date")); }
     }
 
     const appointments = await Appointment.find(query)
@@ -319,7 +364,10 @@ export async function getEligibleReplacements(req: FastifyRequest, reply: Fastif
       return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
     }
 
-    const targetDate = date || new Date().toISOString().slice(0, 10);
+    const timezone = await getClinicTimezone(clinicId);
+    const targetDate = date || clinicDateKey(new Date(), timezone);
+    try { clinicDayRange(targetDate, timezone); }
+    catch { return reply.code(400).send(errorResponse("Invalid clinic date")); }
     const eligible = await disruptionService.getEligibleReplacementDoctors(clinicId, targetDate, doctorId);
 
     return reply.code(200).send(successResponse(eligible));
@@ -347,7 +395,7 @@ export async function triageTransferAppointment(req: FastifyRequest, reply: Fast
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, appt.clinicId.toString());
+    const clinicCheck = await checkOperationalRecordAccess(req, appt);
     if (!clinicCheck.allowed) {
       return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
     }
@@ -362,7 +410,7 @@ export async function triageTransferAppointment(req: FastifyRequest, reply: Fast
     return reply.code(200).send(successResponse(updated, "Patient transferred to replacement doctor successfully"));
   } catch (err: any) {
     console.error("triageTransferAppointment error:", err);
-    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+    return reply.code(err instanceof AppointmentDomainError ? err.statusCode : err.code === 11000 ? 409 : 500).send(errorResponse(err instanceof AppointmentDomainError ? err.message : err.code === 11000 ? "The selected appointment slot is no longer available" : "Internal server error"));
   }
 }
 
@@ -383,7 +431,7 @@ export async function triageCancelAppointment(req: FastifyRequest, reply: Fastif
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, appt.clinicId.toString());
+    const clinicCheck = await checkOperationalRecordAccess(req, appt);
     if (!clinicCheck.allowed) {
       return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
     }
@@ -397,7 +445,7 @@ export async function triageCancelAppointment(req: FastifyRequest, reply: Fastif
     return reply.code(200).send(successResponse(updated, "Appointment cancelled successfully"));
   } catch (err: any) {
     console.error("triageCancelAppointment error:", err);
-    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+    return reply.code(err instanceof AppointmentDomainError ? err.statusCode : err.code === 11000 ? 409 : 500).send(errorResponse(err instanceof AppointmentDomainError ? err.message : err.code === 11000 ? "The selected appointment slot is no longer available" : "Internal server error"));
   }
 }
 
@@ -421,7 +469,7 @@ export async function triageRescheduleAppointment(req: FastifyRequest, reply: Fa
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, appt.clinicId.toString());
+    const clinicCheck = await checkOperationalRecordAccess(req, appt);
     if (!clinicCheck.allowed) {
       return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
     }
@@ -438,7 +486,7 @@ export async function triageRescheduleAppointment(req: FastifyRequest, reply: Fa
     return reply.code(200).send(successResponse(result, "Appointment rescheduled successfully with high priority"));
   } catch (err: any) {
     console.error("triageRescheduleAppointment error:", err);
-    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+    return reply.code(err instanceof AppointmentDomainError ? err.statusCode : err.code === 11000 ? 409 : 500).send(errorResponse(err instanceof AppointmentDomainError ? err.message : err.code === 11000 ? "The selected appointment slot is no longer available" : "Internal server error"));
   }
 }
 
@@ -458,18 +506,35 @@ export async function triageBatchAction(req: FastifyRequest, reply: FastifyReply
       return reply.code(400).send(errorResponse("action and non-empty appointmentIds array are required"));
     }
 
-    // Verify access on first appointment
-    const sampleAppt = await Appointment.findById(appointmentIds[0]);
-    if (sampleAppt) {
-      const clinicCheck = await checkClinicAccess(req, sampleAppt.clinicId.toString());
-      if (!clinicCheck.allowed) {
-        return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    if (!["transfer", "cancel", "reschedule"].includes(action) || appointmentIds.length > 100
+      || appointmentIds.some(id => typeof id !== "string" || !mongoose.Types.ObjectId.isValid(id))) {
+      return reply.code(400).send(errorResponse("Use a valid action and at most 100 appointment IDs"));
+    }
+    if (action === "transfer" && !replacementDoctorId || action === "reschedule" && !targetDate) {
+      return reply.code(400).send(errorResponse("The target doctor or date is required for this action"));
+    }
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const uniqueIds = Array.from(new Set(appointmentIds));
+    const records = await Appointment.find({ _id: { $in: uniqueIds } }).select("clinicId organizationId").lean();
+    if (records.length !== uniqueIds.length) return reply.code(404).send(errorResponse("Appointment not found"));
+    // All targets must be authorized before the first mutation or refund.
+    const allowedClinics = new Set<string>();
+    for (const record of records) {
+      if (scope.organizationId && String(record.organizationId) !== scope.organizationId) {
+        return reply.code(404).send(errorResponse("Appointment not found"));
+      }
+      const clinic = String(record.clinicId);
+      if (!allowedClinics.has(clinic)) {
+        const check = await checkOperationalRecordAccess(req, record);
+        if (!check.allowed) return reply.code(check.statusCode).send(errorResponse(check.message));
+        allowedClinics.add(clinic);
       }
     }
 
     const result = await disruptionService.batchTriageAction({
       action,
-      appointmentIds,
+      appointmentIds: uniqueIds,
       actorUserId: userId,
       replacementDoctorId,
       targetDate,
@@ -480,7 +545,7 @@ export async function triageBatchAction(req: FastifyRequest, reply: FastifyReply
     return reply.code(200).send(successResponse(result, "Batch triage action completed"));
   } catch (err: any) {
     console.error("triageBatchAction error:", err);
-    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+    return reply.code(err instanceof AppointmentDomainError ? err.statusCode : err.code === 11000 ? 409 : 500).send(errorResponse(err instanceof AppointmentDomainError ? err.message : err.code === 11000 ? "The selected appointment slot is no longer available" : "Internal server error"));
   }
 }
 
@@ -502,23 +567,18 @@ export async function patientDisruptionAction(req: FastifyRequest, reply: Fastif
       return reply.code(400).send(errorResponse("Invalid appointment ID"));
     }
 
-    const appt = await Appointment.findById(appointmentId);
+    const appt = await Appointment.findById(appointmentId).select("+trackerTokenHash");
     if (!appt) {
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    if (appt.status !== "disruption_triage") {
-      return reply.code(400).send(errorResponse(`Appointment is not in disruption triage (current status: ${appt.status})`));
+    let authorized = hasValidTrackerCapability(req, appt);
+    if (!authorized && req.user && ["patient", "family_member", "guest"].includes(req.user.role)) {
+      authorized = appt.bookedByUserId?.toString() === req.user.id;
+      if (!authorized && req.user.role !== "guest") authorized = (await checkPatientAccess(req, String(appt.patientId))).allowed;
     }
-
-    // Check patient authorization if user is authenticated
-    if (req.user && req.user.role === "patient") {
-      const { Patient } = await import("../models/Patient.ts");
-      const patient = await Patient.findOne({ userId: req.user.id });
-      if (patient && appt.patientId.toString() !== patient._id.toString() && appt.bookedByUserId?.toString() !== req.user.id) {
-        return reply.code(403).send(errorResponse("Unauthorized to action this appointment"));
-      }
-    }
+    if (!authorized) return reply.code(403).send(errorResponse("A valid private tracker link or appointment owner session is required"));
+    if (appt.status !== "disruption_triage") return reply.code(409).send(errorResponse("Appointment is no longer awaiting a disruption response"));
 
     const actorId = req.user?.id || "patient";
 
@@ -546,6 +606,6 @@ export async function patientDisruptionAction(req: FastifyRequest, reply: Fastif
     }
   } catch (err: any) {
     console.error("patientDisruptionAction error:", err);
-    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+    return reply.code(err instanceof AppointmentDomainError ? err.statusCode : err.code === 11000 ? 409 : 500).send(errorResponse(err instanceof AppointmentDomainError ? err.message : err.code === 11000 ? "The selected appointment slot is no longer available" : "Internal server error"));
   }
 }

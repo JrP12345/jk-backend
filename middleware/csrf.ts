@@ -1,14 +1,13 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 
-const isDev = process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test" || !process.env.NODE_ENV;
-
 /**
  * Check if candidate origin/referer is allowed:
  * 1. Explicitly listed in CORS_ALLOWED_ORIGINS (or defaults: http://localhost:3000, http://localhost:3001)
  * 2. Matches Host or X-Forwarded-Host header (same-origin Next.js rewrite proxy or reverse proxy)
  * 3. In development/test mode: matches localhost, 127.0.0.1, or private LAN/hotspot IPs (10.x, 192.168.x, 172.16-31.x)
  */
-function isOriginAllowed(candidateOrigin: string, req: FastifyRequest): boolean {
+export function isOriginAllowed(candidateOrigin: string, req: FastifyRequest): boolean {
+  const isDev = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test' || !process.env.NODE_ENV;
   if (!candidateOrigin) return false;
 
   const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS
@@ -25,7 +24,7 @@ function isOriginAllowed(candidateOrigin: string, req: FastifyRequest): boolean 
   // 2. Same-origin match against Host or X-Forwarded-Host (Next.js rewrite proxy or reverse proxy)
   const forwardedHost = req.headers["x-forwarded-host"] as string | undefined;
   const host = forwardedHost || (req.headers.host as string | undefined);
-  if (host) {
+  if (isDev && host) {
     const cleanHost = host.trim().toLowerCase();
     const candidateLower = cleanCandidate.toLowerCase();
     if (

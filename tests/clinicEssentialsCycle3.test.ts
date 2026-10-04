@@ -1,6 +1,6 @@
 import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
 import crypto from "node:crypto";
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { app } from "../index.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { AppointmentPayment } from "../models/AppointmentPayment.ts";
@@ -13,6 +13,14 @@ import { generateAccessToken } from "../utilities/helpers.ts";
 function testPaymentSignature(orderId: string, paymentId: string): string {
   return crypto.createHmac("sha256", "test_secret").update(`${orderId}|${paymentId}`).digest("hex");
 }
+
+beforeAll(() => {
+  // Same-day booking fixtures need clinic capacity; payment/IDOR tests do not
+  // depend on the wall-clock closing time. Network and Mongo timers stay real.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-04T05:00:00Z"));
+});
+afterAll(() => vi.useRealTimers());
 
 describe("Clinic Essentials Cycle 3 — Patient Self Check-In", () => {
   let patientToken: string;

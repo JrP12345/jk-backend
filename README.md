@@ -20,6 +20,7 @@ The standalone repository uses an empty Render root directory.
 - [Production validation](docs/production-readiness-tracker.md)
 - [Backup and recovery](DISASTER_RECOVERY.md)
 - [WhatsApp setup](docs/whatsapp-setup.md)
+- [Dependencies and licenses](docs/dependencies.md)
 - [Optional combined Docker deployment](deploy/README.md)
 - [Frontend repository](https://github.com/JrP12345/jk-frontend)
 

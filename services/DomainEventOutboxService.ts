@@ -54,13 +54,16 @@ export async function enqueueDomainEvent(
         upsert: true,
         returnDocument: "after",
         setDefaultsOnInsert: true,
-        session: session || undefined,
+        // An explicit undefined session suppresses Mongoose's transaction
+        // context. Omit the option so nested business writes share that session.
+        ...(session !== undefined ? { session } : {}),
       },
     );
     return doc;
   } catch (error: any) {
     if (error?.code === 11000) {
-      const existing = await DomainEventOutbox.findOne({ idempotencyKey }).session(session || null);
+      const query = DomainEventOutbox.findOne({ idempotencyKey });
+      const existing = await (session !== undefined ? query.session(session) : query);
       if (existing) return existing;
     }
     throw error;

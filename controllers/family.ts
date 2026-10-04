@@ -5,7 +5,6 @@ import { Patient } from "../models/Patient.ts";
 import { User } from "../models/User.ts";
 import { successResponse, errorResponse, normalizePhone } from "../utilities/helpers.ts";
 import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
-import { patientMatchingService } from "../services/PatientMatchingService.ts";
 import { otpService } from "../services/OtpService.ts";
 
 // ─── GET /api/family — List all family members managed by authenticated user ───

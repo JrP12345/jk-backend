@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { Clinic } from "../models/Clinic.ts";
@@ -18,6 +18,10 @@ describe("Variable & Post-Consultation Doctor Fee Workflow Suite", () => {
   let encounterId: string;
 
   beforeAll(async () => {
+    // Billing assertions need an eligible walk-in, independent of the actual
+    // closing time. Fake only Date so Mongo and network timers stay real.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-04T05:00:00Z"));
     // 1. Setup Organization & Super Admin
     const bootstrapRes = await app.inject({
       method: "POST",
@@ -108,6 +112,8 @@ describe("Variable & Post-Consultation Doctor Fee Workflow Suite", () => {
     expect(patientRes.statusCode).toBe(201);
     patientId = JSON.parse(patientRes.body).data.id;
   });
+
+  afterAll(() => vi.useRealTimers());
 
   it("1. Public clinic details API reflects feeType: 'post_consultation'", async () => {
     const res = await app.inject({
@@ -232,7 +238,7 @@ describe("Variable & Post-Consultation Doctor Fee Workflow Suite", () => {
         notes: "Walk-in consultation",
       },
     });
-    expect(appt2Res.statusCode).toBe(201);
+    expect(appt2Res.statusCode, appt2Res.body).toBe(201);
     const appt2Id = JSON.parse(appt2Res.body).data.id;
 
     // Checkout preview

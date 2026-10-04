@@ -1,5 +1,4 @@
 import crypto from "node:crypto";
-import mongoose from "mongoose";
 import { Prescription } from "../models/Prescription.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { AuditLog } from "../models/AuditLog.ts";
@@ -48,8 +47,11 @@ export function computePrescriptionHash(data: {
 }
 
 function computePrescriptionSignature(hash: string): string {
-  const secret = process.env.PRESCRIPTION_SIGNING_KEY || process.env.JWT_SECRET || "healthos-prescription-sealing-key";
-  return crypto.createHmac("sha256", secret).update(hash).digest("hex");
+  const secret = process.env.PRESCRIPTION_SIGNING_KEY || process.env.JWT_SECRET;
+  if (process.env.NODE_ENV === "production" && (!secret || secret.length < 32 || secret === "healthos-prescription-sealing-key")) {
+    throw new Error("A persistent prescription signing key of at least 32 characters is required in production");
+  }
+  return crypto.createHmac("sha256", secret || "healthos-prescription-sealing-key").update(hash).digest("hex");
 }
 
 export class PrescriptionSealingService {
@@ -300,4 +302,3 @@ export class PrescriptionSealingService {
     return sealedNew;
   }
 }
-

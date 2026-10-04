@@ -1,7 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { SoapTemplate } from "../models/SoapTemplate.ts";
-import { successResponse, errorResponse } from "../utilities/helpers.ts";
+import { successResponse, errorResponse, escapeRegex } from "../utilities/helpers.ts";
 import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 
 export async function getSoapTemplates(req: FastifyRequest, reply: FastifyReply) {
@@ -20,7 +20,7 @@ export async function getSoapTemplates(req: FastifyRequest, reply: FastifyReply)
     }
 
     if (specialty) {
-      filter.specialty = new RegExp(specialty, "i");
+      filter.specialty = new RegExp(escapeRegex(specialty.slice(0, 200)), "i");
     }
 
     const templates = await SoapTemplate.find(filter).sort({ title: 1 });

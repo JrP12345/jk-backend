@@ -8,7 +8,7 @@ import { MedicineBatch } from "../models/MedicineBatch.ts";
 import { Prescription } from "../models/Prescription.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
-import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds } from "../utilities/tenant.ts";
+import { checkClinicAccess, checkOperationalRecordAccess, getRequestClinicIds } from "../utilities/tenant.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
 import { dispenseMedicineFEFO } from "../services/PharmacyInventoryService.ts";
 import { generateClinicInvoiceNumber } from "../utilities/invoiceNumber.ts";

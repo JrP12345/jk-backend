@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import mongoose from "mongoose";
-import { Notification, type INotification } from "../../models/Notification.ts";
+import { Notification } from "../../models/Notification.ts";
 import { NotificationPreference } from "../../models/NotificationPreference.ts";
 import { NotificationDelivery } from "../../models/NotificationDelivery.ts";
 import { User } from "../../models/User.ts";

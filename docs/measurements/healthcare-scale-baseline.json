@@ -1,0 +1,168 @@
+{
+  "generatedAt": "2026-10-04T10:40:40.272Z",
+  "synthetic": true,
+  "deploymentCertification": false,
+  "environment": {
+    "node": "v24.7.0",
+    "platform": "win32",
+    "cpu": "Intel(R) Core(TM) i5-10300H CPU @ 2.50GHz",
+    "logicalCpus": 8,
+    "mongodb": "8.2.6",
+    "replicaNodes": 1
+  },
+  "method": "Single sequential caller, one warm-up and seven timed samples; local replica-set indexes; API injection for replacements, service calls for ROOT. No real patient/provider data, network RTT, browser, distributed load, or production SLA inference.",
+  "samples": [
+    {
+      "label": "10 providers: replacement API",
+      "fixture": {
+        "providers": 10,
+        "appointments": 1000,
+        "appointmentsPerProviderOnDay": 100
+      },
+      "samples": 7,
+      "medianMs": 16.66,
+      "maxMs": 35.86,
+      "payloadBytes": 2304,
+      "queryPlans": {
+        "replacementLoad": {
+          "stages": [
+            "GROUP",
+            "FETCH",
+            "IXSCAN",
+            "project",
+            "group",
+            "filter",
+            "nlj",
+            "unwind",
+            "limit",
+            "coscan",
+            "ixseek",
+            "seek"
+          ],
+          "indexes": [
+            "clinicId_1_status_1_appointmentTime_-1"
+          ],
+          "docsExamined": 1000,
+          "keysExamined": 1000,
+          "returned": 10
+        }
+      }
+    },
+    {
+      "label": "100 providers: replacement API",
+      "fixture": {
+        "providers": 100,
+        "appointments": 10000,
+        "appointmentsPerProviderOnDay": 100
+      },
+      "samples": 7,
+      "medianMs": 38.33,
+      "maxMs": 80.29,
+      "payloadBytes": 24984,
+      "queryPlans": {
+        "replacementLoad": {
+          "stages": [
+            "GROUP",
+            "FETCH",
+            "IXSCAN",
+            "project",
+            "group",
+            "filter",
+            "nlj",
+            "unwind",
+            "limit",
+            "coscan",
+            "ixseek",
+            "seek"
+          ],
+          "indexes": [
+            "clinicId_1_status_1_appointmentTime_-1"
+          ],
+          "docsExamined": 10000,
+          "keysExamined": 10000,
+          "returned": 100
+        }
+      }
+    },
+    {
+      "label": "50 organizations: ROOT dashboard service",
+      "fixture": {
+        "organizations": 50,
+        "providers": 500,
+        "clinics": 50,
+        "appointments": 15000,
+        "recentAppointments": 5000,
+        "retainedAppointments": 10000,
+        "subscriptions": 50,
+        "capturedPayments": 33
+      },
+      "samples": 7,
+      "medianMs": 75.15,
+      "maxMs": 91.7,
+      "payloadBytes": 8549,
+      "queryPlans": {
+        "organizations": {
+          "stages": [
+            "COLLSCAN"
+          ],
+          "indexes": [],
+          "docsExamined": 50,
+          "keysExamined": 0,
+          "returned": 50
+        },
+        "bookings": {
+          "stages": [
+            "FETCH",
+            "IXSCAN"
+          ],
+          "indexes": [
+            "organizationId_1"
+          ],
+          "docsExamined": 15000,
+          "keysExamined": 15000,
+          "returned": 5000
+        }
+      }
+    },
+    {
+      "label": "500 organizations: ROOT dashboard service",
+      "fixture": {
+        "organizations": 500,
+        "providers": 5000,
+        "clinics": 500,
+        "appointments": 150000,
+        "recentAppointments": 50000,
+        "retainedAppointments": 100000,
+        "subscriptions": 500,
+        "capturedPayments": 333
+      },
+      "samples": 7,
+      "medianMs": 570.75,
+      "maxMs": 663.23,
+      "payloadBytes": 8597,
+      "queryPlans": {
+        "organizations": {
+          "stages": [
+            "COLLSCAN"
+          ],
+          "indexes": [],
+          "docsExamined": 500,
+          "keysExamined": 0,
+          "returned": 500
+        },
+        "bookings": {
+          "stages": [
+            "FETCH",
+            "IXSCAN"
+          ],
+          "indexes": [
+            "organizationId_1"
+          ],
+          "docsExamined": 150000,
+          "keysExamined": 150000,
+          "returned": 50000
+        }
+      }
+    }
+  ]
+}

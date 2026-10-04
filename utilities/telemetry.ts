@@ -2,13 +2,13 @@
  * Ekavyu Telemetry, Error Tracking & Alert Dispatcher
  *
  * Implements:
- * 1. Sentry APM with a strict ALLOWLIST PHI scrubber (drops untrusted request data,
- *    cookies, query params, and sanitizes error messages per DPDP 2023 guidelines).
+ * 1. Sentry APM with request/span data minimization and error-value redaction.
  * 2. Severity-tiered Ops Paging (P0 Critical immediately pages Slack / PagerDuty / Ops Webhook).
  */
 
 import * as Sentry from "@sentry/node";
 import { NODE_ID } from "../notifications/websocket.ts";
+import type { Event } from '@sentry/node';
 
 export type AlertSeverity = "P0_CRITICAL" | "P1_WARNING" | "P2_INFO";
 
@@ -21,8 +21,7 @@ export interface AlertContext {
 }
 
 // ─── Allowlist PHI / PII Scrubber ──────────────────────────────────────────
-// Denylists are inherently leaky for complex clinical domains.
-// We strictly permit only approved technical fields and scrub all runtime values.
+// Pattern redaction complements data minimization; it is not a PHI classifier.
 function sanitizeErrorMessage(msg: string): string {
   if (!msg) return "";
   return msg
@@ -36,11 +35,33 @@ function sanitizeErrorMessage(msg: string): string {
     .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, "[REDACTED_EMAIL]")
     // Redact bearer tokens and hex secrets
     .replace(/bearer\s+[a-zA-Z0-9._-]+/gi, "Bearer [REDACTED_TOKEN]")
+    .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[REDACTED_JWT]")
     .replace(/\b[0-9a-fA-F]{32,64}\b/g, "[REDACTED_HASH]");
 }
 
 // ─── Sentry Initialization ────────────────────────────────────────────────
 const sentryDsn = process.env.SENTRY_DSN;
+
+export function scrubTelemetry<T extends Event>(event: T): T {
+  event.request = undefined;
+  event.user = undefined;
+  event.breadcrumbs = undefined;
+  event.extra = undefined;
+  event.contexts = undefined;
+  event.logentry = undefined;
+  if (event.message) event.message = sanitizeErrorMessage(event.message);
+  // A URL-derived transaction name may include private route identifiers.
+  if (event.transaction) event.transaction = event.transaction.split(/[?#]/, 1)[0].replace(/\b[a-f\d]{24}\b/gi, ':id');
+  for (const span of event.spans || []) {
+    span.description = span.op || 'operation';
+    span.data = {};
+  }
+  for (const ex of event.exception?.values || []) {
+    if (ex.value) ex.value = sanitizeErrorMessage(ex.value);
+  }
+  event.tags = { nodeId: NODE_ID, service: 'healthos-backend' };
+  return event;
+}
 
 if (sentryDsn) {
   Sentry.init({
@@ -48,43 +69,10 @@ if (sentryDsn) {
     environment: process.env.NODE_ENV || "development",
     tracesSampleRate: process.env.NODE_ENV === "production" ? 0.2 : 1.0,
     sendDefaultPii: false, // Never send IP, headers, or cookies
-    beforeSend(event) {
-      // 1. Drop all request body / form data completely
-      if (event.request) {
-        event.request.data = undefined;
-        event.request.cookies = undefined;
-        event.request.headers = {
-          "user-agent": event.request.headers?.["user-agent"] || "",
-        };
-        // Sanitize query string
-        if (event.request.query_string) {
-          event.request.query_string = "[STRIPPED_QUERY]";
-        }
-      }
-
-      // 2. Drop user identity objects (names, emails, IPs)
-      event.user = undefined;
-
-      // 3. Scrub exception messages per allowlist rules
-      if (event.exception?.values) {
-        for (const ex of event.exception.values) {
-          if (ex.value) {
-            ex.value = sanitizeErrorMessage(ex.value);
-          }
-        }
-      }
-
-      // 4. Tag with process Node ID
-      event.tags = {
-        ...event.tags,
-        nodeId: NODE_ID,
-        service: "healthos-backend",
-      };
-
-      return event;
-    },
+    beforeSend: scrubTelemetry,
+    beforeSendTransaction: scrubTelemetry,
   });
-  console.log("[Telemetry] Sentry initialized with strict allowlist PHI scrubber.");
+  console.log("[Telemetry] Sentry initialized with minimized request/span data.");
 } else {
   console.log("[Telemetry] SENTRY_DSN not configured. Local telemetry fallback active.");
 }
@@ -102,7 +90,7 @@ export async function dispatchOpsAlert(
   const webhookUrl = process.env.OPS_ALERT_WEBHOOK_URL;
   const rawErrorMessage = typeof error === "string" ? error : error.message;
   const sanitizedMsg = sanitizeErrorMessage(rawErrorMessage);
-  const errorStack = typeof error !== "string" && error.stack ? error.stack.split("\n").slice(0, 4).join("\n") : "";
+  const errorStack = typeof error !== "string" && error.stack ? sanitizeErrorMessage(error.stack.split("\n").slice(1, 4).join("\n")) : "";
 
   const dedupeKey = `${severity}:${title}:${sanitizedMsg}`;
   const now = Date.now();
@@ -110,6 +98,10 @@ export async function dispatchOpsAlert(
   if (now - lastSent < DEDUPE_WINDOW_MS) {
     return; // Suppress alert flood
   }
+  for (const [key, timestamp] of recentAlertTimestamps) {
+    if (now - timestamp >= DEDUPE_WINDOW_MS) recentAlertTimestamps.delete(key);
+  }
+  if (recentAlertTimestamps.size >= 1000) recentAlertTimestamps.delete(recentAlertTimestamps.keys().next().value!);
   recentAlertTimestamps.set(dedupeKey, now);
 
   const payload = {

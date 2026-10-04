@@ -5,6 +5,7 @@ export const AUTH_METHOD_OPTIONS = ["email_password", "phone_otp", "email_otp", 
 const UserSchema = new Schema({
   name: { type: String, required: true },
   email: { type: String, unique: true, sparse: true, index: true },
+  googleSubject: { type: String, unique: true, sparse: true, index: true },
   password: { type: String },
   phone: { type: String, index: true },
   authMethod: { type: String, enum: AUTH_METHOD_OPTIONS, default: AUTH_METHOD_OPTIONS[0] },
@@ -34,7 +35,8 @@ UserSchema.set("toJSON", {
     ret.id = ret._id.toString();
     delete ret._id;
     delete ret.__v;
-    delete ret.password;
+    for (const field of ["password", "twoFactorSecret", "passwordResetToken", "passwordResetExpires",
+      "emailVerificationToken", "emailVerificationExpires", "googleSubject"]) delete ret[field];
     return ret;
   }
 });

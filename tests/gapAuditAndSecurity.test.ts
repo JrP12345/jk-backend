@@ -6,6 +6,8 @@ import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { FamilyRelationship } from "../models/FamilyRelationship.ts";
+import { Organization } from "../models/Organization.ts";
+import { Clinic } from "../models/Clinic.ts";
 import { generateAccessToken } from "../utilities/helpers.ts";
 
 let userAToken: string;
@@ -19,9 +21,14 @@ let clinicId: string;
 let orgId: string;
 
 beforeAll(async () => {
-  orgId = new mongoose.Types.ObjectId().toString();
-  clinicId = new mongoose.Types.ObjectId().toString();
-  doctorId = new mongoose.Types.ObjectId().toString();
+  const org = await Organization.create({ name: "Patient access fixture", city: "Surat" });
+  const clinic = await Clinic.create({ organizationId: org._id, name: "Patient access clinic", city: "Surat" });
+  const doctor = await User.create({ name: "Patient access doctor", role: "doctor" });
+  orgId = org.id;
+  clinicId = clinic.id;
+  doctorId = doctor.id;
+  await DoctorAssignment.create({ doctorId, clinicId, organizationId: orgId,
+    workingHours: JSON.stringify({ all: { start: "00:00", end: "23:59" } }), bookingMode: "sequential_queue" });
 
   // Create User A
   const userA = await User.create({
@@ -87,6 +94,8 @@ describe("Comprehensive Gap Audit & Security Test Suite", () => {
   });
 
   it("should prevent User A from booking an appointment using User B's patient ID (IDOR)", async () => {
+    const visitTime = new Date(Date.now() + 3 * 86400000).toISOString();
+    const before = await Appointment.countDocuments({ patientId: patientBId });
     const res = await app.inject({
       method: "POST",
       url: "/api/appointments",
@@ -95,13 +104,13 @@ describe("Comprehensive Gap Audit & Security Test Suite", () => {
         doctorId,
         clinicId,
         patientId: patientBId,
-        appointmentDate: "2026-08-15",
-        appointmentTime: "2026-08-15T10:00:00Z",
+        appointmentTime: visitTime,
         appointmentType: "online",
         slotTime: "10:00 AM",
       },
     });
     expect([403, 404]).toContain(res.statusCode);
+    expect(await Appointment.countDocuments({ patientId: patientBId })).toBe(before);
   });
 
   it("should enforce OTP rate limiting after 5 requests", async () => {
@@ -192,14 +201,8 @@ describe("Comprehensive Gap Audit & Security Test Suite", () => {
   });
 
   it("should reject pay at clinic if allowPayAtClinic is set to false", async () => {
-    await DoctorAssignment.create({
-      doctorId,
-      clinicId,
-      organizationId: orgId,
-      fees: 600,
-      allowPayAtClinic: false,
-      paymentRequired: true,
-      workingHours: "09:00-17:00",
+    await DoctorAssignment.updateOne({ doctorId, clinicId }, {
+      $set: { fees: 600, allowPayAtClinic: false, paymentRequired: true },
     });
 
     const appt: any = await Appointment.create({

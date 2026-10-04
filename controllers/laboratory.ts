@@ -8,9 +8,10 @@ import { AuditLog } from "../models/AuditLog.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { OrdersService } from "../services/OrdersService.ts";
-import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds, getRequestOrganizationId, isRootRequest, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds, getRequestOrganizationId, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
 import { requestHasAnyPermission } from "../utilities/permissions.ts";
+import { isVerifiedClinicalAttachment } from '../utilities/uploadPolicy.ts';
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));
@@ -522,6 +523,10 @@ export async function uploadLabResult(req: FastifyRequest, reply: FastifyReply) 
     const orderAccess = await checkOperationalRecordAccess(req, order);
     if (!orderAccess.allowed) return sendTenantError(reply, orderAccess);
 
+    if (!await isVerifiedClinicalAttachment(attachmentUrl, order.organizationId || orderAccess.organizationId, order.patientId)) {
+      return reply.code(400).send(errorResponse('Attachment must be a verified upload for this patient'));
+    }
+
     if (!["ordered", "sample-collected", "processing"].includes(order.status)) {
       return reply.code(400).send(errorResponse(`Cannot upload result for order in ${order.status} state.`));
     }
@@ -951,6 +956,10 @@ export async function recordResultController(req: FastifyRequest, reply: Fastify
 
     if (!value) {
       return reply.code(400).send(errorResponse("Result value is required"));
+    }
+
+    if (!await isVerifiedClinicalAttachment(attachmentUrl, existingOrder.organizationId || orderAccess.organizationId, existingOrder.patientId)) {
+      return reply.code(400).send(errorResponse('Attachment must be a verified upload for this patient'));
     }
 
     const { order, abnormalSignal } = await OrdersService.recordResult(orderId, {

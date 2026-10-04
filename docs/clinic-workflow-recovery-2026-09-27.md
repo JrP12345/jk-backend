@@ -1,7 +1,7 @@
 # Clinic workflow fixes — implementation and verification
 
-Implemented locally on 2026-09-27 following
-[the product audit](clinic-workflow-product-audit-2026-09-27.md). Existing routes,
+Implemented locally on 2026-09-27 following the G1–G10 source-traced product
+review. The table below retains its findings and resulting behavior. Existing routes,
 status names, clinical identities and permission boundaries are retained. No
 production deployment, database migration or live provider transaction was run.
 

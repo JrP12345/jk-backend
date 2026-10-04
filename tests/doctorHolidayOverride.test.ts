@@ -70,6 +70,7 @@ describe("Doctor Holiday & Leave Override Workflow Suite", () => {
     await DoctorAssignment.findOneAndUpdate(
       { doctorId, clinicId },
       {
+        organizationId: orgId,
         fees: 600,
         feeType: "fixed",
         bookingMode: "time_slot",
@@ -142,7 +143,7 @@ describe("Doctor Holiday & Leave Override Workflow Suite", () => {
 
     expect(clinicRes.statusCode).toBe(200);
     const body = JSON.parse(clinicRes.body);
-    const doc = body.data.doctors.find((d: any) => d.id === doctorId);
+    const doc = body.data.doctors.find((d: any) => d.doctorId === doctorId);
     expect(doc).toBeDefined();
     expect(doc.upcomingHolidays).toBeDefined();
     expect(Array.isArray(doc.upcomingHolidays)).toBe(true);

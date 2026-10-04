@@ -61,6 +61,7 @@ export default async function appointmentRoutes(app: FastifyInstance) {
     preHandler: [authenticate, requireModule("appointments"), checkAnyPermissionOrRoles(["patient", "family_member"], "VIEW_APPOINTMENTS", "MANAGE_APPOINTMENTS")],
   };
   const bookAppointments = {
+    config: { allowGuest: true },
     preHandler: [authenticate, requireModule("appointments"), checkAnyPermissionOrRoles(["patient", "family_member", "guest"], "MANAGE_APPOINTMENTS", "CREATE_APPOINTMENTS"), enforceNewBookingAllowed],
   };
   const manageAppointments = {

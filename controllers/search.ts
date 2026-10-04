@@ -1,6 +1,9 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { ClinicalSearchService } from "../services/ClinicalSearchService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
+import { checkPatientAccess, checkOperationalRecordAccess } from '../utilities/tenant.ts';
+import { Encounter } from '../models/Encounter.ts';
+import mongoose from 'mongoose';
 
 /**
  * GET /api/patients/:id/search?q=...&category=...&limit=...&cursor=...
@@ -10,6 +13,8 @@ import { successResponse, errorResponse } from "../utilities/helpers.ts";
 export async function searchPatientRecordController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id: patientId } = req.params as { id: string };
+    const access = await checkPatientAccess(req, patientId);
+    if (!access.allowed) return reply.code(access.statusCode).send(errorResponse(access.message));
     const { q, category, dateFrom, dateTo, limit, cursor } = req.query as {
       q?: string;
       category?: string;
@@ -19,6 +24,9 @@ export async function searchPatientRecordController(req: FastifyRequest, reply: 
       cursor?: string;
     };
 
+    if (q !== undefined && (typeof q !== 'string' || q.length > 200)) return reply.code(400).send(errorResponse('Search query is too long'));
+    if ((limit !== undefined && (!Number.isInteger(Number(limit)) || Number(limit) < 1 || Number(limit) > 100)) || (cursor && cursor.length > 512) || (category && !['all', 'notes', 'observation', 'lab'].includes(category))) return reply.code(400).send(errorResponse('Invalid search pagination or category'));
+    if ((dateFrom && !Number.isFinite(new Date(dateFrom).getTime())) || (dateTo && !Number.isFinite(new Date(dateTo).getTime()))) return reply.code(400).send(errorResponse('Invalid search dates'));
     const options = {
       q,
       category,
@@ -31,7 +39,7 @@ export async function searchPatientRecordController(req: FastifyRequest, reply: 
     const results = await ClinicalSearchService.searchPatientRecord(patientId, options);
     return reply.code(200).send(successResponse(results));
   } catch (err: any) {
-    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+    return reply.code(500).send(errorResponse("Clinical search failed"));
   }
 }
 
@@ -43,11 +51,21 @@ export async function searchPatientRecordController(req: FastifyRequest, reply: 
 export async function getEncounterSummaryReportController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id: encounterId } = req.params as { id: string };
-    const report = await ClinicalSearchService.getEncounterSummaryReport(encounterId);
+    if (!mongoose.Types.ObjectId.isValid(encounterId)) return reply.code(400).send(errorResponse('Invalid encounter ID'));
+    const encounter = await Encounter.findById(encounterId).select('patientId clinicId organizationId').lean()
+      || await Encounter.findOne({ appointmentId: encounterId }).select('patientId clinicId organizationId').lean();
+    if (!encounter) return reply.code(404).send(errorResponse('Encounter not found'));
+    const patientAccess = await checkPatientAccess(req, encounter.patientId.toString());
+    if (!patientAccess.allowed) return reply.code(patientAccess.statusCode).send(errorResponse(patientAccess.message));
+    if (!['patient', 'family_member'].includes(req.user!.role)) {
+      const recordAccess = await checkOperationalRecordAccess(req, encounter);
+      if (!recordAccess.allowed) return reply.code(recordAccess.statusCode).send(errorResponse(recordAccess.message));
+    }
+    const report = await ClinicalSearchService.getEncounterSummaryReport(encounter._id.toString());
     return reply.code(200).send(successResponse(report));
   } catch (err: any) {
     const code = err.message?.includes("not found") ? 404 : 500;
-    return reply.code(code).send(errorResponse(err.message || "Internal server error"));
+    return reply.code(code).send(errorResponse(code === 404 ? 'Encounter not found' : 'Encounter report failed'));
   }
 }
 
@@ -68,6 +86,6 @@ export async function getOrganizationQualityMetricsController(req: FastifyReques
     const metrics = await ClinicalSearchService.getQualityMetrics(orgId);
     return reply.code(200).send(successResponse(metrics));
   } catch (err: any) {
-    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+    return reply.code(500).send(errorResponse('Quality metrics failed'));
   }
 }

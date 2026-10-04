@@ -590,10 +590,8 @@ export async function triggerTurnApproachingPacing(clinicId: any, doctorId: any)
   try {
     if (!clinicId || !doctorId) return;
 
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
+    const timezone = await getClinicTimezone(clinicId);
+    const { start: startOfDay, end: endOfDay } = clinicDayRange(clinicDateKey(new Date(), timezone), timezone);
 
     const waitingAppts = await Appointment.find({
       clinicId,
@@ -622,22 +620,15 @@ export async function triggerTurnApproachingPacing(clinicId: any, doctorId: any)
 
     const { sendTurnApproachingNotification } = await import("../utilities/notifications.ts");
 
-    // Upcoming Patient #1 (Immediate Next Up: 1 ahead)
-    if (waitingAppts[0] && !(waitingAppts[0] as any).turnApproachingNotifiedAt) {
-      await sendTurnApproachingNotification(waitingAppts[0]._id, 1);
-      await Appointment.updateOne(
-        { _id: waitingAppts[0]._id },
-        { $set: { turnApproachingNotifiedAt: new Date() } }
-      );
-    }
-
-    // Upcoming Patient #2 (Standby Outside: 2 ahead)
-    if (waitingAppts[1] && !(waitingAppts[1] as any).turnApproachingNotifiedAt) {
-      await sendTurnApproachingNotification(waitingAppts[1]._id, 2);
-      await Appointment.updateOne(
-        { _id: waitingAppts[1]._id },
-        { $set: { turnApproachingNotifiedAt: new Date() } }
-      );
+    for (const [index, appointment] of waitingAppts.slice(0, 2).entries()) {
+      await withClinicalTransaction(async () => {
+        // Claim before enqueueing. Concurrent pacing calls have one winner;
+        // failed outbox writes roll back the claim on the production replica set.
+        const claimed = await Appointment.updateOne({ _id: appointment._id, clinicId, doctorId,
+          status: { $in: ["checked-in", "confirmed"] }, turnApproachingNotifiedAt: null },
+        { $set: { turnApproachingNotifiedAt: new Date() } });
+        if (claimed.modifiedCount) await sendTurnApproachingNotification(appointment._id, index + 1);
+      });
     }
   } catch (err) {
     console.error("triggerTurnApproachingPacing error:", err);

@@ -42,7 +42,7 @@ export function verifyTwoFactorChallenge(token: string): { userId: string; purpo
 
 
 import { User } from "../models/User.ts";
-import { registerSession, revokeSession } from "./sessionResolver.ts";
+import { revokeSession } from "./sessionResolver.ts";
 
 /**
  * Create an opaque refresh token, store its SHA-256 hash in the DB.
@@ -65,7 +65,7 @@ export async function createRefreshTokenDetails(
     authVersion?: number;
     impersonatedBy?: { id: string; email: string; name: string; originalRole: string };
   }
-): Promise<{ rawToken: string; sessionId: string; familyId: string; generation: number }> {
+): Promise<{ rawToken: string; sessionId: string; familyId: string; generation: number; authVersion: number }> {
   const rawToken = crypto.randomBytes(48).toString("hex");
   const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -136,23 +136,20 @@ export async function createRefreshTokenDetails(
 
   const sessionId = sessionRecord._id.toString();
 
-  // Centrally register active session into Redis cluster
-  await registerSession({
-    sessionId,
-    userId,
-    organizationId: meta?.organizationId,
-    role: meta?.isGuest ? "guest" : userRole,
-    authVersion: effectiveAuthVersion,
-    status: "active",
-    expiresAt: expiresAt.getTime(),
-  });
-
   // Recheck owner limits after creating a session so simultaneous logins cannot leave excess sessions active.
   if (userRole === "admin" && sessionLimit !== null && !meta?.isGuest) {
     const sessions = await RefreshToken.find({ userId, revoked: false, expiresAt: { $gt: new Date() } }).sort({ createdAt: -1, _id: -1 }).select("_id").lean();
     for (const session of sessions.slice(sessionLimit)) await revokeSession(session._id.toString(), "displaced");
   }
-  return { rawToken, sessionId, familyId, generation };
+  return { rawToken, sessionId, familyId, generation, authVersion: effectiveAuthVersion };
+}
+
+/** Every issued access token shares the lifetime/revocation authority of its session. */
+export async function createAuthSession(payload: JwtPayload, meta?: Parameters<typeof createRefreshTokenDetails>[1]) {
+  const session = await createRefreshTokenDetails(payload.id, { ...meta,
+    organizationId: payload.organization_id, isGuest: payload.role === "guest" });
+  return { accessToken: generateAccessToken({ ...payload, sessionId: session.sessionId, authVersion: session.authVersion }),
+    refreshToken: session.rawToken, sessionId: session.sessionId };
 }
 
 export async function createRefreshToken(

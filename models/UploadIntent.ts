@@ -1,7 +1,7 @@
 import mongoose, { Schema, Document } from "mongoose";
 
 export type ContentClass = "clinical_document" | "avatar" | "prescription" | "lab_report" | "radiology" | "other";
-export type UploadIntentStatus = "pending" | "quarantined" | "completed" | "rejected" | "expired";
+export type UploadIntentStatus = "pending" | "verifying" | "quarantined" | "completed" | "rejected" | "expired";
 
 export interface IUploadIntent extends Document {
   organizationId: mongoose.Types.ObjectId;
@@ -19,7 +19,7 @@ export interface IUploadIntent extends Document {
   magicBytesVerified: boolean;
   malwareClean: boolean;
   downloadUrlExpiresAt?: Date;
-  expiresAt: Date;
+  expiresAt?: Date;
   registeredDocumentId?: mongoose.Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
@@ -44,14 +44,15 @@ const UploadIntentSchema = new Schema<IUploadIntent>(
     actualMimeType: { type: String },
     status: {
       type: String,
-      enum: ["pending", "quarantined", "completed", "rejected", "expired"],
+      enum: ["pending", "verifying", "quarantined", "completed", "rejected", "expired"],
       default: "pending",
       index: true,
     },
     rejectionReason: { type: String },
     magicBytesVerified: { type: Boolean, default: false },
     malwareClean: { type: Boolean, default: false },
-    expiresAt: { type: Date, required: true },
+    // Unfinished uploads expire. Completed clinical authority must survive the TTL.
+    expiresAt: { type: Date },
     registeredDocumentId: { type: Schema.Types.ObjectId, ref: "DocumentUpload" },
   },
   { timestamps: true }

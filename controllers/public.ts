@@ -15,6 +15,7 @@ import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { SiteVisit } from "../models/SiteVisit.ts";
+import { analyticsPath, referrerOrigin } from "../utilities/trafficPrivacy.ts";
 import { getAdaptiveConsultationDuration } from "./queue.ts";
 import { broadcastQueueUpdate } from "../notifications/websocket.ts";
 import { eventBus } from "../events/eventBus.ts";
@@ -25,6 +26,7 @@ import {
   getCheckInCapability,
   getTrackerCapability,
   hashTrackerCapability,
+  hasValidTrackerCapability,
   isTrackerCapabilityEnforced,
 } from "../utilities/publicTracker.ts";
 import { toPublicOrganizationSummary, toPublicOrganizationDetail } from "../types/publicDtos.ts";
@@ -820,10 +822,7 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
 
 function publicTrackerAccessAllowed(req: FastifyRequest, appointment: { trackerTokenHash?: string | null; trackerTokenExpiresAt?: Date | null }): boolean {
   if (!isTrackerCapabilityEnforced()) return true;
-  const token = getTrackerCapability(req);
-  if (!token || !appointment.trackerTokenHash || !appointment.trackerTokenExpiresAt || appointment.trackerTokenExpiresAt.getTime() <= Date.now()) return false;
-  const suppliedHash = hashTrackerCapability(token);
-  return suppliedHash.length === appointment.trackerTokenHash.length && crypto.timingSafeEqual(Buffer.from(suppliedHash), Buffer.from(appointment.trackerTokenHash));
+  return hasValidTrackerCapability(req, appointment);
 }
 
 function publicCheckInCapabilityAllowed(
@@ -1015,7 +1014,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
     const etag = `W/"${crypto.createHash("sha1").update(etagSource).digest("hex")}"`;
 
     reply.header("ETag", etag);
-    reply.header("Cache-Control", "private, no-cache, must-revalidate");
+    reply.header("Cache-Control", "no-store");
 
     const ifNoneMatch = req.headers["if-none-match"];
     if (ifNoneMatch && ifNoneMatch === etag) {
@@ -1761,12 +1760,11 @@ export async function trackSiteVisitController(req: FastifyRequest, reply: Fasti
       referrer?: string;
     };
 
-    if (!path) {
+    const routePath = analyticsPath(path);
+    if (!routePath) {
       return reply.code(400).send(errorResponse("Path is required"));
     }
 
-    const ipAddress = (req.headers["x-forwarded-for"] as string) || req.ip || "";
-    const cleanIp = Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(",")[0].trim();
     const userAgent = (req.headers["user-agent"] as string) || "";
 
     let device: "Desktop" | "Mobile" | "Tablet" | "Other" = "Desktop";
@@ -1790,16 +1788,16 @@ export async function trackSiteVisitController(req: FastifyRequest, reply: Fasti
 
     await SiteVisit.create({
       date: todayStr,
-      path: path.slice(0, 200),
+      path: routePath,
       clinicId: clinicId && mongoose.Types.ObjectId.isValid(clinicId) ? clinicId : undefined,
       organizationId: organizationId && mongoose.Types.ObjectId.isValid(organizationId) ? organizationId : undefined,
       visitorId: visitorId ? String(visitorId).slice(0, 100) : undefined,
-      ipAddress: cleanIp,
+      ipAddress: req.ip,
       userAgent: userAgent.slice(0, 300),
       device,
       browser,
       os,
-      referrer: referrer ? String(referrer).slice(0, 300) : "",
+      referrer: referrerOrigin(referrer),
     });
 
     return reply.code(200).send(successResponse({ recorded: true }));

@@ -24,6 +24,10 @@ const SubscriptionPaymentSchema = new Schema({
   rawWebhookPayload: { type: Schema.Types.Mixed, default: null },
   paidAt: { type: Date, default: null },
   lastReconciledAt: { type: Date, default: null },
+  // Lookup failures do not prove a payment failed. Keep financial status intact
+  // while deferring orders absent from the currently configured provider account.
+  reconcileAfter: { type: Date, default: null },
+  reconciliationIssue: { type: String, enum: ["provider_order_not_found"], default: null },
   createdAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 

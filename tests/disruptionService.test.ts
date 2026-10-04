@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { Patient } from "../models/Patient.ts";
@@ -10,6 +10,8 @@ import { AuditLog } from "../models/AuditLog.ts";
 import { runDisruptionTimeoutSweep } from "../jobs/disruptionTimeoutJob.ts";
 import { disruptionService } from "../services/disruptionService.ts";
 import { eventBus } from "../events/eventBus.ts";
+import { createTrackerCapability } from "../utilities/publicTracker.ts";
+import { clinicDateKey } from "../utilities/clinicTime.ts";
 
 describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () => {
   let adminCookies: string[] = [];
@@ -22,10 +24,12 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
   let patient3: any;
   let patient4: any;
 
-  const today = new Date();
+  const today = new Date("2026-10-04T05:00:00Z");
   const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
 
   beforeAll(async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(today);
     // 1. Setup Organization & Admin
     const bootstrapRes = await app.inject({
       method: "POST",
@@ -143,6 +147,8 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
       dob: "1988-11-04",
     });
   });
+
+  afterAll(() => vi.useRealTimers());
 
   let apptInConsultation: any;
   let apptCheckedIn: any;
@@ -407,7 +413,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
         {
           amount: 600,
           paymentMethod: "online",
-          referenceNumber: `tx_mock_${Date.now()}`,
+          referenceNumber: `pay_fixture${Date.now()}`,
           paidAt: new Date(),
         },
       ],
@@ -452,7 +458,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
   });
 
   it("Scenario G: Priority reschedules disrupted appointment, carrying over payments and persisting AuditLog", async () => {
-    const targetDate = "2026-09-15";
+    const targetDate = clinicDateKey(new Date(Date.now() + 7 * 86400000), "Asia/Kolkata");
     const rescheduleRes = await app.inject({
       method: "POST",
       url: "/api/doctor-overrides/triage/reschedule",
@@ -538,6 +544,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
   });
 
   it("Scenario I: Patient self-service endpoint handles action from live tracker", async () => {
+    const capability = createTrackerCapability();
     // Create an appointment currently in disruption triage
     const triageAppt = await Appointment.create({
       organizationId: orgId,
@@ -550,15 +557,18 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
       triageAction: "pending",
       disruptionResponseDeadline: new Date(Date.now() + 30 * 60 * 1000),
       tokenNumber: 50,
+      trackerTokenHash: capability.hash,
+      trackerTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
     });
 
     const selfServiceRes = await app.inject({
       method: "POST",
       url: "/api/doctor-overrides/patient-action",
+      headers: { "x-tracker-token": capability.token },
       payload: {
         appointmentId: triageAppt._id.toString(),
         action: "reschedule",
-        targetDate: "2026-09-18",
+        targetDate: clinicDateKey(new Date(Date.now() + 10 * 86400000), "Asia/Kolkata"),
         reason: "Patient clicked reschedule on live tracker",
       },
     });

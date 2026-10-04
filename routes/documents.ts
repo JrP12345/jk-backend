@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { uploadDocument, getPatientDocuments } from "../controllers/documentUpload.ts";
+import { uploadDocument, getPatientDocuments, downloadDocument } from "../controllers/documentUpload.ts";
 import { authenticate, checkAnyPermission } from "../middleware/auth.ts";
 import { requireModule } from "../middleware/moduleGuard.ts";
 
@@ -8,7 +8,7 @@ export default async function documentRoutes(fastify: FastifyInstance) {
     preHandler: [
       authenticate,
       requireModule("patients"),
-      checkAnyPermission("VIEW_PATIENTS", "VIEW_EHR", "MANAGE_PATIENTS"),
+      checkAnyPermission("VIEW_EHR"),
     ],
   };
   const uploadDocuments = {
@@ -30,4 +30,5 @@ export default async function documentRoutes(fastify: FastifyInstance) {
     viewDocuments,
     getPatientDocuments
   );
+  fastify.get('/api/documents/:documentId/download', viewDocuments, downloadDocument);
 }

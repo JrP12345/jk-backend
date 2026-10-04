@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { removeOrganizationMember, updateGlobalUserStatus } from "../controllers/organizationMembers.ts";
+import { getPlatformDashboard } from "../controllers/platformDashboard.ts";
 import { authenticate, checkPermission, requirePlatformRoot } from "../middleware/auth.ts";
 import {
   createOrganizationSchema,
@@ -62,6 +63,9 @@ export default async function onboardingRoutes(app: FastifyInstance) {
     params: { type: "object", required: ["id", "userId"], properties: { id: { type: "string", pattern: "^[a-fA-F0-9]{24}$" }, userId: { type: "string", pattern: "^[a-fA-F0-9]{24}$" } }, additionalProperties: false },
   } }, removeOrganizationMember);
   app.get("/api/admin/hierarchy", platformRoot, getPlatformHierarchy);
+  app.get("/api/admin/dashboard", { ...platformRoot, schema: {
+    querystring: { type: "object", properties: { range: { type: "string", enum: ["7D", "30D", "90D"], default: "30D" } }, additionalProperties: false },
+  } }, getPlatformDashboard);
   app.put("/api/organizations/:id", { ...manageOrg, schema: updateOrganizationSchema }, updateOrganizationById);
   app.delete("/api/organizations/:id", { ...platformRoot, schema: organizationIdParamSchema }, deleteOrganizationById);
 

@@ -5,6 +5,9 @@ import { redisClient } from "../utilities/redis.ts";
 import { Redis } from "ioredis";
 import { verifyAccessToken } from "../utilities/helpers.ts";
 import { Clinic } from "../models/Clinic.ts";
+import { resolveSession } from '../utilities/sessionResolver.ts';
+import { getEffectivePermissions } from '../utilities/permissions.ts';
+import { isOriginAllowed } from '../middleware/csrf.ts';
 
 export interface RealtimeMessage {
   type: "NOTIFICATION_RECEIVED" | "UNREAD_COUNT_UPDATED" | "QUEUE_UPDATED" | "QUEUE_CALL_NEXT" | "DISRUPTION_TRIAGE_REQUIRED" | "QUEUE_EMERGENCY_STAT" | "PATIENT_RETURNED" | "LAB_RESULTS_READY" | "LAB_ORDER_PLACED" | "PAYMENT_RECEIVED" | "PRESCRIPTION_ISSUED" | "PRESCRIPTION_DISPENSED" | "CLINICAL_PANIC_ALERT" | "PATIENT_RECALLED_TO_CABIN" | "HEARTBEAT" | "CONNECTED" | "ERROR" | "PONG";
@@ -32,6 +35,36 @@ export const NODE_ID: string = process.env.POD_NAME || process.env.HOSTNAME || `
 const sseStreamsMap = new Map<string, Set<FastifyReply>>();
 const userWebSocketsMap = new Map<string, Set<WebSocket>>();
 const clinicQueueWebSocketsMap = new Map<string, Set<WebSocket>>();
+type RealtimeIdentity = { id: string; role?: string; organization_id?: string; sessionId?: string; authVersion?: number; exp?: number };
+const privateGuards = new WeakMap<object, () => Promise<boolean>>();
+const privateClosers = new Map<string, Set<() => void>>();
+function bindPrivateConnection(user: RealtimeIdentity, connection: object, close: () => void, extra?: () => Promise<boolean>) {
+  if (!privateClosers.has(user.id)) privateClosers.set(user.id, new Set());
+  privateClosers.get(user.id)!.add(close);
+  let pending: Promise<boolean> | undefined;
+  const validate = async () => {
+    if (user.exp && user.exp * 1000 <= Date.now()) return false;
+    if (!user.sessionId) return process.env.NODE_ENV === 'test';
+    const result = await resolveSession(user.sessionId, user.authVersion);
+    return result.valid && result.session?.userId === user.id && result.session?.role === user.role &&
+      result.session?.organizationId === user.organization_id && (!extra || await extra());
+  };
+  privateGuards.set(connection, () => {
+    if (!pending) pending = validate().catch(() => false).then(valid => { if (!valid) close(); return valid; }).finally(() => { pending = undefined; });
+    return pending;
+  });
+  const emitter = connection as any;
+  (emitter.raw || emitter).on('close', () => {
+    privateGuards.delete(connection);
+    privateClosers.get(user.id)?.delete(close);
+    if (!privateClosers.get(user.id)?.size) privateClosers.delete(user.id);
+  });
+}
+function sendPrivate(connection: object, send: () => void) {
+  const guard = privateGuards.get(connection);
+  if (!guard) { if (process.env.NODE_ENV === 'test') send(); return; }
+  void guard().then(valid => { if (valid && privateGuards.has(connection)) send(); }).catch(() => {});
+}
 const clinicClinicalWebSocketsMap = new Map<string, Set<WebSocket>>();
 
 export function getActiveSseConnectionsCount(): number {
@@ -44,6 +77,10 @@ export function getActiveSseConnectionsCount(): number {
  * Force-terminates all active WebSockets associated with a revoked user session.
  */
 export function disconnectUserWebSockets(userId: string, code: number = 4001, reason: string = "Session revoked"): void {
+  for (const close of privateClosers.get(userId) || []) { try { close(); } catch {} }
+  privateClosers.delete(userId);
+  for (const stream of sseStreamsMap.get(userId) || []) stream.raw.end();
+  sseStreamsMap.delete(userId);
   const sockets = userWebSocketsMap.get(userId);
   if (sockets) {
     for (const ws of sockets) {
@@ -187,7 +224,7 @@ export function sendToUserLocally(userId: string, payload: RealtimeMessage) {
     sseStreams.forEach((reply) => {
       try {
         if (!reply.raw.writableEnded) {
-          reply.raw.write(dataString);
+          sendPrivate(reply, () => { if (!reply.raw.writableEnded) reply.raw.write(dataString); });
         }
       } catch (err) {
         console.error(`[SSE Stream Error] Failed writing to user ${userId} stream:`, err);
@@ -202,7 +239,7 @@ export function sendToUserLocally(userId: string, payload: RealtimeMessage) {
     webSockets.forEach((socket) => {
       try {
         if (socket.readyState === 1 /* OPEN */) {
-          socket.send(wsString);
+          sendPrivate(socket, () => { if (socket.readyState === 1) socket.send(wsString); });
         }
       } catch (err) {
         console.error(`[WebSocket Error] Failed writing to user ${userId} websocket:`, err);
@@ -268,7 +305,7 @@ export function sendToClinicClinicalLocally(clinicId: string, payload: RealtimeM
     webSockets.forEach((socket) => {
       try {
         if (socket.readyState === 1 /* OPEN */) {
-          socket.send(wsString);
+          sendPrivate(socket, () => { if (socket.readyState === 1) socket.send(wsString); });
         }
       } catch (err) {
         console.error(`[Clinical WebSocket Error] Failed writing to clinic ${clinicId} clinical websocket:`, err);
@@ -475,13 +512,14 @@ export function broadcastClinicRealtime(clinicId: string, payload: RealtimeMessa
 /**
  * Extract auth user from WebSocket request cookies, Authorization header, or token query param.
  */
-export async function resolveWebSocketAuth(req: FastifyRequest): Promise<{ id: string; role?: string; organization_id?: string; sessionId?: string } | null> {
+export async function resolveWebSocketAuth(req: FastifyRequest): Promise<RealtimeIdentity | null> {
+  if (req.headers.origin && !isOriginAllowed(req.headers.origin, req)) return null;
   let token = req.cookies?.access_token || (req.headers.authorization?.replace(/^Bearer\s+/i, ""));
 
   if (!token && req.headers.cookie) {
     const match = req.headers.cookie.match(/(?:^|;\s*)access_token=([^;]+)/);
     if (match) {
-      token = decodeURIComponent(match[1]);
+      try { token = decodeURIComponent(match[1]); } catch { return null; }
     }
   }
 
@@ -495,7 +533,7 @@ export async function resolveWebSocketAuth(req: FastifyRequest): Promise<{ id: s
     for (const p of protocols) {
       const trimmed = p.trim();
       if (trimmed.startsWith("bearer.") || trimmed.startsWith("token.")) {
-        token = trimmed.split(".")[1];
+        token = trimmed.slice(trimmed.indexOf(".") + 1);
         break;
       }
     }
@@ -505,15 +543,15 @@ export async function resolveWebSocketAuth(req: FastifyRequest): Promise<{ id: s
 
   try {
     const payload = verifyAccessToken(token);
-    if (payload?.id) {
+    if (payload?.id && payload.role !== "guest") {
+      if (!payload.sessionId && process.env.NODE_ENV !== "test") return null;
       if (payload.sessionId) {
-        const { resolveSession } = await import("../utilities/sessionResolver.ts");
         const resolution = await resolveSession(payload.sessionId, payload.authVersion);
-        if (!resolution.valid) {
+        if (!resolution.valid || resolution.session?.userId !== payload.id || resolution.session?.role !== payload.role || resolution.session?.organizationId !== payload.organization_id) {
           return null;
         }
       }
-      return { id: payload.id, role: payload.role, organization_id: payload.organization_id, sessionId: payload.sessionId };
+      return { id: payload.id, role: payload.role, organization_id: payload.organization_id, sessionId: payload.sessionId, authVersion: payload.authVersion, exp: payload.exp };
     }
   } catch (err) {
     return null;
@@ -573,6 +611,7 @@ export async function handleNotificationWebSocket(socket: WebSocket, req: Fastif
     return;
   }
 
+  bindPrivateConnection(user, socket, () => socket.close(4001, "Session expired or revoked"));
   registerUserWebSocket(user.id, socket);
 
   socket.send(JSON.stringify({
@@ -587,7 +626,7 @@ export async function handleNotificationWebSocket(socket: WebSocket, req: Fastif
     buffered.forEach((alert) => {
       try {
         if (socket.readyState === 1) {
-          socket.send(JSON.stringify(alert));
+          sendPrivate(socket, () => { if (socket.readyState === 1) socket.send(JSON.stringify(alert)); });
         }
       } catch {
         // Safe ignore
@@ -599,7 +638,7 @@ export async function handleNotificationWebSocket(socket: WebSocket, req: Fastif
   const pingInterval = setInterval(() => {
     if (socket.readyState === 1 /* OPEN */) {
       try {
-        socket.ping();
+        sendPrivate(socket, () => socket.ping());
       } catch {
         clearInterval(pingInterval);
       }
@@ -748,6 +787,12 @@ export async function handleClinicalWebSocket(socket: WebSocket, req: FastifyReq
     return;
   }
 
+  const permitted = async () => {
+    try { return user.role === 'root' || (await getEffectivePermissions(user.role!, user.organization_id, user.authVersion)).has('VIEW_EHR'); }
+    catch { return false; }
+  };
+  if (!await permitted()) { socket.close(4003, 'Clinical permission required'); return; }
+  bindPrivateConnection(user, socket, () => socket.close(4001, 'Clinical authority expired or revoked'), permitted);
   registerClinicClinicalWebSocket(clinicId, socket);
 
   socket.send(JSON.stringify({
@@ -763,7 +808,7 @@ export async function handleClinicalWebSocket(socket: WebSocket, req: FastifyReq
     buffered.forEach((alert) => {
       try {
         if (socket.readyState === 1) {
-          socket.send(JSON.stringify(alert));
+          sendPrivate(socket, () => { if (socket.readyState === 1) socket.send(JSON.stringify(alert)); });
         }
       } catch {
         // Safe ignore
@@ -773,7 +818,7 @@ export async function handleClinicalWebSocket(socket: WebSocket, req: FastifyReq
 
   const pingInterval = setInterval(() => {
     if (socket.readyState === 1) {
-      try { socket.ping(); } catch { clearInterval(pingInterval); }
+      try { sendPrivate(socket, () => socket.ping()); } catch { clearInterval(pingInterval); }
     } else {
       clearInterval(pingInterval);
     }
@@ -819,13 +864,14 @@ export async function notificationStreamHandler(req: FastifyRequest, reply: Fast
   // Initial connection message
   reply.raw.write(`data: ${JSON.stringify({ type: "CONNECTED", transport: "sse", message: "Notification stream established" })}\n\n`);
 
+  bindPrivateConnection(req.user!, reply, () => reply.raw.end());
   registerUserSseStream(userId, reply);
 
   // 15-Second Keep-Alive Heartbeat Timer
   const heartbeatTimer = setInterval(() => {
     try {
       if (!reply.raw.writableEnded) {
-        reply.raw.write(": keep-alive\n\n");
+        sendPrivate(reply, () => { if (!reply.raw.writableEnded) reply.raw.write(": keep-alive\n\n"); });
       } else {
         clearInterval(heartbeatTimer);
       }

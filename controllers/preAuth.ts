@@ -4,7 +4,7 @@ import { PreAuthorization } from "../models/PreAuthorization.ts";
 import { Patient } from "../models/Patient.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { getNextAtomicSequence } from "../models/Counter.ts";
-import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
+import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { checkClinicAccess, checkOperationalRecordAccess, getRequestClinicIds, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
@@ -101,13 +101,13 @@ export async function getPreAuthList(req: FastifyRequest, reply: FastifyReply) {
     if (!scope.allowed) return sendTenantError(reply, scope);
     if (scope.organizationId && req.user?.role !== "root") filter.organizationId = scope.organizationId;
     if (status) filter.status = status;
-    if (tpaName) filter.tpaName = new RegExp(tpaName, "i");
+    if (tpaName) filter.tpaName = new RegExp(escapeRegex(tpaName.slice(0, 200)), "i");
 
     if (search) {
       filter.$or = [
-        { preAuthNumber: new RegExp(search, "i") },
-        { policyNumber: new RegExp(search, "i") },
-        { diagnosisCode: new RegExp(search, "i") },
+        { preAuthNumber: new RegExp(escapeRegex(search.slice(0, 200)), "i") },
+        { policyNumber: new RegExp(escapeRegex(search.slice(0, 200)), "i") },
+        { diagnosisCode: new RegExp(escapeRegex(search.slice(0, 200)), "i") },
       ];
     }
 

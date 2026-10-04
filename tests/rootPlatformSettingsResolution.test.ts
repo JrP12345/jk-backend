@@ -124,17 +124,23 @@ describe("Root Super-Admin Platform Settings Fallback & Context Resolution", () 
     expect(body.data).toBeDefined();
   });
 
-  it("6. Root without organizationId resolves billing subscription on /api/billing/subscription", async () => {
+  it("6. Root billing requires an explicit organization and resolves the selected tenant", async () => {
     const res = await app.inject({
       method: "GET",
       url: "/api/billing/subscription",
       headers: { cookie: rootCookie },
     });
 
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toBe("No organization linked to account");
+    const selected = await app.inject({ method: "GET",
+      url: `/api/billing/subscription?organizationId=${secondaryOrg._id}`,
+      headers: { cookie: rootCookie } });
+    expect(selected.statusCode, selected.body).toBe(200);
+    const body = selected.json();
     expect(body.success).toBe(true);
     expect(body.data).toBeDefined();
+    expect(String(body.data.organizationId)).toBe(String(secondaryOrg._id));
   });
 
   it("7. Non-root user without organization context is rejected with 403", async () => {

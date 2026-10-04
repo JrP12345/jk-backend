@@ -1,9 +1,19 @@
 # Ekavyu deployment
 
+The final source/configuration gate and cross-repository launch actions are in
+the frontend [Phase 1 final report](../frontend/docs/phase1-final-production-gate.md).
+The known frontend dependency-audit blocker remains open; no new tests or build
+were run in that final pass.
+
 Use Node.js 24. MongoDB must support transactions through an authenticated replica
 set or managed equivalent. Production replicas require authenticated Redis and
 persistent signing/encryption keys. Configure the backend's environment verifier;
 do not use local development fallbacks as production credentials.
+Production also requires `PRESCRIPTION_SIGNING_KEY` (at least 32 characters), or
+the actual strong legacy `JWT_SECRET` used to seal existing prescriptions.
+Preserve historical key compatibility deliberately; never use the old public
+sealing constant or silently re-sign historical records. Compose requires the
+explicit prescription-key variable for API and all workers.
 
 ## Build
 
@@ -147,6 +157,9 @@ and required production environment values; run Compose from `deploy/`. It does 
 The matching npm worker:* commands load a local .env only if present. Build first.
 Production normally uses separate workers; RUN_INLINE_JOBS=true is an explicit
 alternative and must not accidentally duplicate scheduled processing.
+The outbound worker also owns the existing lease-protected subscription billing
+reconciliation (five-minute schedule) and branding cleanup (ten-minute schedule).
+Keep RUN_INLINE_JOBS=false on the API when using these standalone workers.
 
 API probes: /api/health/liveness and /api/health/readiness. Each executable worker has its own /health and /ready server on ports 5001-5005
 (notification, outbound, disruption, domain-event, no-show respectively).

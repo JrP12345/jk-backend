@@ -8,13 +8,30 @@ import { Invoice } from "../models/Invoice.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { razorpayService } from "../services/billing/RazorpayService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { FamilyRelationship } from "../models/FamilyRelationship.ts";
-import { checkClinicAccess } from "../utilities/tenant.ts";
+import { checkOperationalRecordAccess, checkPatientAccess } from "../utilities/tenant.ts";
 import { requestHasAnyPermission, BILLING_STAFF_PAYMENT_PERMISSIONS } from "../utilities/permissions.ts";
 import { broadcastQueueUpdate } from "../notifications/websocket.ts";
-import { withTransaction } from "../utilities/transaction.ts";
+import { withClinicalTransaction } from "../utilities/transaction.ts";
+import { AppointmentDomainError } from "../services/AppointmentService.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { resilientHttpClient } from "../utilities/resilientHttpClient.ts";
+import { reconcileAppointmentRefund } from "../services/AppointmentRefundService.ts";
+
+export async function reconcileRefund(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { appointmentId } = req.body as { appointmentId?: string };
+    if (!appointmentId || !mongoose.Types.ObjectId.isValid(appointmentId)) return reply.code(400).send(errorResponse("Invalid appointment ID"));
+    const appointment = await Appointment.findById(appointmentId);
+    if (!appointment) return reply.code(404).send(errorResponse("Appointment not found"));
+    const access = await checkOperationalRecordAccess(req, appointment);
+    if (!access.allowed) return reply.code(access.statusCode).send(errorResponse(access.message));
+    return reply.send(successResponse(await reconcileAppointmentRefund(appointmentId, req.user!.id)));
+  } catch (error) {
+    if (error instanceof AppointmentDomainError) return reply.code(error.statusCode).send(errorResponse(error.message));
+    req.log.error({ err: error }, "Refund reconciliation failed");
+    return reply.code(502).send(errorResponse("Could not confirm the provider refund. Payment remains pending review."));
+  }
+}
 
 async function authorizeAppointmentAccess(
   req: FastifyRequest,
@@ -22,6 +39,7 @@ async function authorizeAppointmentAccess(
     bookedByUserId?: mongoose.Types.ObjectId | string | null;
     patientId: mongoose.Types.ObjectId | string;
     clinicId?: mongoose.Types.ObjectId | string;
+    organizationId?: mongoose.Types.ObjectId | string | null;
   }
 ): Promise<boolean> {
   const userId = req.user!.id;
@@ -29,17 +47,62 @@ async function authorizeAppointmentAccess(
 
   if (userRole === "root") return true;
 
-  if (appointment.bookedByUserId?.toString() === userId) return true;
-
-  const rel = await FamilyRelationship.findOne({ userId, patientId: appointment.patientId, status: "active" });
-  if (rel) return true;
-
-  if (!appointment.clinicId) return false;
-  const clinicCheck = await checkClinicAccess(req, appointment.clinicId);
+  if (["patient", "family_member", "guest"].includes(userRole)) {
+    if (appointment.bookedByUserId?.toString() === userId) return true;
+    return userRole !== "guest" && (await checkPatientAccess(req, String(appointment.patientId))).allowed;
+  }
+  const clinicCheck = await checkOperationalRecordAccess(req, appointment);
   if (!clinicCheck.allowed) return false;
-
-  if (userRole === "admin") return true;
   return requestHasAnyPermission(req, ...BILLING_STAFF_PAYMENT_PERMISSIONS);
+}
+
+/** One settlement owner for browser verification and staff reconciliation. */
+async function settleAppointmentPayment(paymentId: string, transactionId: string, actorId: string, signature?: string,
+  capture?: { amount: number; currency: string; order_id: string }) {
+  return withClinicalTransaction(async () => {
+    const payment = await AppointmentPayment.findById(paymentId);
+    if (!payment) throw new AppointmentDomainError("Payment record not found", 404);
+    const appointment = await Appointment.findById(payment.appointmentId);
+    if (!appointment) throw new AppointmentDomainError("Appointment not found", 404);
+    if (payment.status === "captured") {
+      if (payment.razorpayPaymentId !== transactionId) throw new AppointmentDomainError("Payment order was captured by another transaction", 409);
+      return { replayed: true, appointment };
+    }
+    if (!["created", "authorized"].includes(payment.status) || appointment.status === "cancelled"
+      || ["refunded", "refund_pending", "paid"].includes(appointment.paymentStatus || "")) {
+      throw new AppointmentDomainError("This visit is not eligible for payment settlement; contact billing", 409);
+    }
+    const invoice = payment.invoiceId ? await Invoice.findById(payment.invoiceId) : await Invoice.findOne({ appointmentId: appointment._id });
+    if (!invoice || String(invoice.appointmentId) !== appointment.id || String(invoice.clinicId) !== String(appointment.clinicId)
+      || String(payment.patientId) !== String(appointment.patientId) || String(invoice.patientId) !== String(appointment.patientId)
+      || ["refunded", "cancelled"].includes(invoice.status)) {
+      throw new AppointmentDomainError("Invoice is no longer eligible for this payment", 409);
+    }
+    const amount = Number(payment.amount);
+    const outstanding = Number(invoice.balanceDue ?? Math.max(0, Number(invoice.totalAmount) - Number(invoice.amountPaid || 0)));
+    if (!Number.isFinite(amount) || amount <= 0 || Math.round(amount * 100) !== Math.round(outstanding * 100)
+      || payment.currency !== (invoice.currency || "INR") || (capture && (capture.amount !== Math.round(amount * 100)
+        || capture.currency !== payment.currency || capture.order_id !== payment.razorpayOrderId))) {
+      throw new AppointmentDomainError("Payment amount, currency or order does not match the invoice", 409);
+    }
+    const claimed = await AppointmentPayment.updateOne({ _id: payment._id, status: payment.status },
+      { $set: { status: "captured", razorpayPaymentId: transactionId, ...(signature ? { razorpaySignature: signature } : {}) } });
+    if (!claimed.modifiedCount) throw new AppointmentDomainError("Payment changed while settling; refresh and retry", 409);
+    appointment.paymentStatus = "paid";
+    if (["pending_payment", "pending"].includes(appointment.status)) appointment.status = "confirmed";
+    await appointment.save();
+    invoice.status = "paid";
+    invoice.amountPaid = Number(invoice.amountPaid || 0) + amount;
+    invoice.balanceDue = 0;
+    invoice.paymentMethod = "online";
+    invoice.paymentDate = new Date();
+    invoice.payments.push({ amount, paymentMethod: "online", referenceNumber: transactionId, paidAt: new Date() });
+    await invoice.save();
+    await AuditLog.create({ userId: actorId, organizationId: appointment.organizationId, action: "PAYMENT_RECONCILED",
+      targetId: payment._id, targetModel: "AppointmentPayment", category: "ADMIN",
+      details: { appointmentId: appointment._id, razorpayOrderId: payment.razorpayOrderId, razorpayPaymentId: transactionId, reconciliationOutcome: "captured_settled" } });
+    return { replayed: false, appointment };
+  });
 }
 
 // ─── POST /api/appointment-payments/create-order ─────────────────────
@@ -58,6 +121,10 @@ export async function createAppointmentPaymentOrder(req: FastifyRequest, reply: 
 
     if (!(await authorizeAppointmentAccess(req, appointment))) {
       return reply.code(403).send(errorResponse("Unauthorized access to appointment"));
+    }
+
+    if (appointment.status === "cancelled" || ["refunded", "refund_pending"].includes(appointment.paymentStatus || "")) {
+      return reply.code(409).send(errorResponse("This visit is not eligible for checkout"));
     }
 
     const clinic = await Clinic.findById(appointment.clinicId).select("organizationId").lean();
@@ -96,7 +163,15 @@ export async function createAppointmentPaymentOrder(req: FastifyRequest, reply: 
       return reply.code(400).send(errorResponse("This appointment invoice has already been paid"));
     }
 
-    const idempotencyKey = `pay_order_${appointment._id.toString()}_${invoice.totalAmount}`;
+    if (!["unpaid", "partially_paid"].includes(invoice.status) || (invoice.currency || "INR") !== "INR"
+      || String(invoice.patientId) !== String(appointment.patientId) || String(invoice.clinicId) !== String(appointment.clinicId)) {
+      return reply.code(409).send(errorResponse("Invoice is not eligible for this checkout"));
+    }
+    const amountDue = Number(invoice.balanceDue ?? Math.max(0, invoice.totalAmount - Number(invoice.amountPaid || 0)));
+    if (!Number.isFinite(amountDue) || amountDue <= 0) {
+      return reply.code(409).send(errorResponse("Invoice has no payable balance"));
+    }
+    const idempotencyKey = `pay_order_${appointment._id.toString()}_${amountDue}`;
 
     const existingPayment = await AppointmentPayment.findOne({ idempotencyKey, status: "created" });
     if (existingPayment?.razorpayOrderId) {
@@ -113,7 +188,7 @@ export async function createAppointmentPaymentOrder(req: FastifyRequest, reply: 
     }
 
     const razorpayOrder = await razorpayService.createOrder({
-      amount: invoice.totalAmount,
+      amount: amountDue,
       currency: "INR",
       receipt: invoice.invoiceNumber,
       notes: {
@@ -126,7 +201,7 @@ export async function createAppointmentPaymentOrder(req: FastifyRequest, reply: 
       appointmentId: appointment._id,
       invoiceId: invoice._id,
       patientId: appointment.patientId,
-      amount: invoice.totalAmount,
+      amount: amountDue,
       currency: "INR",
       paymentMethod: "razorpay",
       razorpayOrderId: razorpayOrder.id,
@@ -140,7 +215,7 @@ export async function createAppointmentPaymentOrder(req: FastifyRequest, reply: 
       successResponse({
         razorpayOrderId: razorpayOrder.id,
         keyId: publicParams.keyId,
-        amount: invoice.totalAmount,
+        amount: amountDue,
         currency: "INR",
         appointmentId: appointment.id,
         paymentRecordId: paymentRecord.id,
@@ -194,32 +269,8 @@ export async function verifyAppointmentPayment(req: FastifyRequest, reply: Fasti
       return reply.code(403).send(errorResponse("Unauthorized access to appointment"));
     }
 
-    await withTransaction(async (session) => {
-      paymentRecord.status = "captured";
-      paymentRecord.razorpayPaymentId = razorpayPaymentId;
-      paymentRecord.razorpaySignature = razorpaySignature;
-      await paymentRecord.save({ session });
-
-      appointment.paymentStatus = "paid";
-      if (appointment.status === "pending_payment" || appointment.status === "pending") {
-        appointment.status = "confirmed";
-      }
-      await appointment.save({ session });
-
-      await Invoice.updateOne(
-        { appointmentId: appointment._id },
-        {
-          $set: {
-            status: "paid",
-            amountPaid: paymentRecord.amount || 0,
-            paymentMethod: "online",
-            paymentDate: new Date(),
-          },
-        },
-        { session: session || undefined },
-      );
-    });
-
+    const settlement = await settleAppointmentPayment(paymentRecord.id, razorpayPaymentId, req.user!.id, razorpaySignature);
+    if (settlement.replayed) return reply.code(200).send(successResponse(null, "Payment already verified"));
     const clinicIdStr = appointment.clinicId?.toString();
     if (clinicIdStr) {
       broadcastQueueUpdate(clinicIdStr, {
@@ -246,7 +297,7 @@ export async function verifyAppointmentPayment(req: FastifyRequest, reply: Fasti
     return reply.code(200).send(successResponse(null, "Appointment payment verified and confirmed successfully!"));
   } catch (err: any) {
     console.error("verifyAppointmentPayment error:", err);
-    return reply.code(500).send(errorResponse(err.message || "Payment verification failed"));
+    return reply.code(err instanceof AppointmentDomainError ? err.statusCode : 500).send(errorResponse(err instanceof AppointmentDomainError ? err.message : "Payment verification failed"));
   }
 }
 
@@ -273,11 +324,10 @@ export async function selectPayAtClinic(req: FastifyRequest, reply: FastifyReply
       return reply.code(400).send(errorResponse("Pay at clinic is disabled for this doctor. Online payment is required."));
     }
 
-    appointment.paymentStatus = "pay_at_clinic";
-    if (appointment.status === "pending_payment" || appointment.status === "pending") {
-      appointment.status = "confirmed";
-    }
-    await appointment.save();
+    if (appointment.status === "cancelled" || ["paid", "refunded", "refund_pending"].includes(appointment.paymentStatus || "")) return reply.code(409).send(errorResponse("This visit's payment cannot be changed"));
+    const selected = await Appointment.findOneAndUpdate({ _id: appointment._id, status: appointment.status, paymentStatus: appointment.paymentStatus },
+      { $set: { paymentStatus: "pay_at_clinic", ...(["pending_payment", "pending"].includes(appointment.status) ? { status: "confirmed" } : {}) } }, { returnDocument: "after" });
+    if (!selected) return reply.code(409).send(errorResponse("The visit changed; refresh and try again"));
 
     await AppointmentPayment.create({
       appointmentId: appointment._id,
@@ -287,7 +337,7 @@ export async function selectPayAtClinic(req: FastifyRequest, reply: FastifyReply
       status: "pay_at_clinic",
     });
 
-    return reply.code(200).send(successResponse(appointment, "Pay at clinic option selected. Appointment confirmed!"));
+    return reply.code(200).send(successResponse(selected, "Pay at clinic option selected. Appointment confirmed!"));
   } catch (err: any) {
     console.error("selectPayAtClinic error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -314,7 +364,7 @@ export async function collectCounterPayment(req: FastifyRequest, reply: FastifyR
     if (!(await requestHasAnyPermission(req, ...BILLING_STAFF_PAYMENT_PERMISSIONS))) {
       return reply.code(403).send(errorResponse("Counter payment requires billing staff access"));
     }
-    const clinicAccess = await checkClinicAccess(req, appointment.clinicId);
+    const clinicAccess = await checkOperationalRecordAccess(req, appointment);
     if (!clinicAccess.allowed) {
       return reply.code(403).send(errorResponse("Unauthorized clinic access"));
     }
@@ -369,47 +419,24 @@ export async function collectCounterPayment(req: FastifyRequest, reply: FastifyR
     // The conditional update is the single settlement gate: a concurrent or
     // replayed request observes the already-paid status and cannot append an
     // additional payment record.
-    const settledInvoice: any = await Invoice.findOneAndUpdate(
-      { _id: invoice._id, status: { $ne: "paid" } },
-      {
-        $set: {
-          status: "paid",
-          amountPaid: Number(invoice.amountPaid || 0) + feeAmount,
-          balanceDue: 0,
-          paymentMethod,
-          paymentDate: new Date(),
-        },
-        $push: {
-          payments: {
-            amount: feeAmount,
-            paymentMethod,
-            paidAt: new Date(),
-            notes: "Settled via authenticated front-desk payment flow",
-          },
-        },
-      },
-      { new: true },
-    );
-    if (!settledInvoice) {
-      return reply.code(409).send(errorResponse("This appointment invoice has already been paid"));
-    }
-    invoice = settledInvoice;
-
-    appointment.paymentStatus = "paid";
-    appointment.paymentAmount = feeAmount;
-    appointment.invoiceId = invoice._id;
-    await appointment.save();
-
-    await AppointmentPayment.create({
-      appointmentId: appointment._id,
-      invoiceId: invoice._id,
-      patientId: appointment.patientId,
-      amount: feeAmount,
-      paymentMethod,
-      status: "captured",
-      idempotencyKey: `counter_payment_${invoice._id.toString()}`,
+    const collection = await withClinicalTransaction(async () => {
+      const claimedVisit = await Appointment.findOneAndUpdate({ _id: appointment._id, status: { $ne: "cancelled" }, paymentStatus: { $nin: ["paid", "refunded", "refund_pending"] } },
+        { $set: { paymentStatus: "paid", paymentAmount: feeAmount, invoiceId: invoice._id } }, { returnDocument: "after" });
+      if (!claimedVisit) throw new AppointmentDomainError("This visit's payment cannot be collected", 409);
+      const settledInvoice = await Invoice.findOneAndUpdate(
+        { _id: invoice._id, status: { $in: ["unpaid", "partially_paid"] }, amountPaid: invoice.amountPaid },
+        { $set: { status: "paid", amountPaid: Number(invoice.amountPaid || 0) + feeAmount, balanceDue: 0, paymentMethod, paymentDate: new Date() },
+          $push: { payments: { amount: feeAmount, paymentMethod, paidAt: new Date(), notes: "Settled via authenticated front-desk payment flow" } } },
+        { returnDocument: "after" },
+      );
+      if (!settledInvoice) throw new AppointmentDomainError("This invoice has already been settled or changed", 409);
+      await AppointmentPayment.create({ appointmentId: appointment._id, invoiceId: settledInvoice._id, patientId: appointment.patientId,
+        amount: feeAmount, currency: settledInvoice.currency, paymentMethod, status: "captured", idempotencyKey: `counter_payment_${settledInvoice._id}` });
+      return { invoice: settledInvoice, appointment: claimedVisit };
     });
-
+    invoice = collection.invoice;
+    invoice.$session(null);
+    collection.appointment.$session(null);
     const clinicIdStr = appointment.clinicId.toString();
     broadcastQueueUpdate(clinicIdStr, {
       type: "PAYMENT_RECEIVED",
@@ -435,13 +462,13 @@ export async function collectCounterPayment(req: FastifyRequest, reply: FastifyR
 
     return reply.code(200).send(
       successResponse(
-        { invoice, appointment },
+        { invoice, appointment: collection.appointment },
         `Payment of ₹${feeAmount} collected successfully via ${paymentMethod.toUpperCase()}!`
       )
     );
   } catch (err: any) {
     console.error("collectCounterPayment error:", err);
-    return reply.code(500).send(errorResponse(err.message || "Failed to collect counter payment"));
+    return reply.code(err instanceof AppointmentDomainError ? err.statusCode : 500).send(errorResponse(err instanceof AppointmentDomainError ? err.message : "Failed to collect counter payment"));
   }
 }
 
@@ -475,10 +502,12 @@ export async function reconcileAppointmentPayment(req: FastifyRequest, reply: Fa
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, appointment.clinicId);
+    const clinicCheck = await checkOperationalRecordAccess(req, appointment);
     if (!clinicCheck.allowed) {
       return reply.code(403).send(errorResponse("Unauthorized clinic access"));
     }
+
+    if (paymentRecord.status === "captured") return reply.code(200).send(successResponse({ status: "captured", paymentStatus: appointment.paymentStatus }, "Payment already reconciled"));
 
     // Query gateway using resilientHttpClient with explicit timeout & credentials
     const { keyId, keySecret } = await razorpayService.getCredentials();
@@ -500,51 +529,8 @@ export async function reconcileAppointmentPayment(req: FastifyRequest, reply: Fa
 
     if (capturedItem) {
       // Reconcile and settle atomically in transaction
-      await withTransaction(async (session) => {
-        paymentRecord.status = "captured";
-        paymentRecord.razorpayPaymentId = capturedItem.id;
-        await paymentRecord.save({ session });
-
-        appointment.paymentStatus = "paid";
-        if (appointment.status === "pending_payment" || appointment.status === "pending") {
-          appointment.status = "confirmed";
-        }
-        await appointment.save({ session });
-
-        await Invoice.updateOne(
-          { appointmentId: appointment._id },
-          {
-            $set: {
-              status: "paid",
-              amountPaid: paymentRecord.amount || 0,
-              paymentMethod: capturedItem.method || "online",
-              paymentDate: new Date(),
-            },
-          },
-          { session: session || undefined },
-        );
-
-        await AuditLog.create(
-          [
-            {
-              userId: req.user!.id,
-              organizationId: clinicCheck.organizationId || undefined,
-              action: "PAYMENT_RECONCILED",
-              targetId: paymentRecord._id,
-              targetModel: "AppointmentPayment",
-              category: "ADMIN",
-              details: {
-                appointmentId: appointment._id,
-                razorpayOrderId: paymentRecord.razorpayOrderId,
-                razorpayPaymentId: capturedItem.id,
-                reconciliationOutcome: "captured_settled",
-              },
-            },
-          ],
-          { session: session || undefined },
-        );
-      });
-
+      const settlement = await settleAppointmentPayment(paymentRecord.id, capturedItem.id, req.user!.id, undefined, capturedItem);
+      if (settlement.replayed) return reply.code(200).send(successResponse({ status: paymentRecord.status, paymentStatus: settlement.appointment.paymentStatus }, "Payment already reconciled"));
       // Post-commit side effects
       const { sendPaymentReceiptNotification } = await import("../utilities/notifications.ts");
       sendPaymentReceiptNotification({
@@ -569,6 +555,6 @@ export async function reconcileAppointmentPayment(req: FastifyRequest, reply: Fa
     );
   } catch (err: any) {
     console.error("reconcileAppointmentPayment error:", err);
-    return reply.code(500).send(errorResponse(err.message || "Reconciliation failed"));
+    return reply.code(err instanceof AppointmentDomainError ? err.statusCode : 500).send(errorResponse(err instanceof AppointmentDomainError ? err.message : "Reconciliation failed"));
   }
 }

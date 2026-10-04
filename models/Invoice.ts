@@ -54,7 +54,7 @@ const InvoiceSchema = new Schema({
 
   status: { 
     type: String, 
-    enum: ["unpaid", "partially_paid", "paid", "refunded"], 
+    enum: ["unpaid", "partially_paid", "paid", "refunded", "cancelled"],
     default: "unpaid",
     index: true 
   },
