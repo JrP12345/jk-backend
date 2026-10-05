@@ -18,6 +18,9 @@ export interface IUploadIntent extends Document {
   rejectionReason?: string;
   magicBytesVerified: boolean;
   malwareClean: boolean;
+  contentValidationPassed: boolean;
+  verificationToken?: string;
+  verifyingUntil?: Date;
   downloadUrlExpiresAt?: Date;
   expiresAt?: Date;
   registeredDocumentId?: mongoose.Types.ObjectId;
@@ -51,6 +54,9 @@ const UploadIntentSchema = new Schema<IUploadIntent>(
     rejectionReason: { type: String },
     magicBytesVerified: { type: Boolean, default: false },
     malwareClean: { type: Boolean, default: false },
+    contentValidationPassed: { type: Boolean, default: false },
+    verificationToken: { type: String },
+    verifyingUntil: { type: Date },
     // Unfinished uploads expire. Completed clinical authority must survive the TTL.
     expiresAt: { type: Date },
     registeredDocumentId: { type: Schema.Types.ObjectId, ref: "DocumentUpload" },
@@ -59,6 +65,6 @@ const UploadIntentSchema = new Schema<IUploadIntent>(
 );
 
 UploadIntentSchema.index({ organizationId: 1, status: 1 });
-UploadIntentSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 86400 }); // TTL after 24h of expiry
+UploadIntentSchema.index({ expiresAt: 1, status: 1 }); // Cleanup removes the object before deleting authority.
 
 export const UploadIntent = mongoose.model<IUploadIntent>("UploadIntent", UploadIntentSchema);

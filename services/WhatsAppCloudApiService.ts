@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { withConcurrencyBudget } from "../utilities/concurrencyBudget.ts";
+import { MAX_WHATSAPP_CONCURRENCY } from "../utilities/scalability.ts";
 import { getPlatformAccount, type WhatsAppCredentials } from "./WhatsAppAccountService.ts";
 
 export interface MetaWhatsAppMessagePayload {
@@ -33,6 +35,9 @@ export class WhatsAppCloudApiService {
   }
 
   public async request(path: string, credentials: WhatsAppCredentials, method = "GET", body?: unknown): Promise<any> {
+    return withConcurrencyBudget("whatsapp-provider", MAX_WHATSAPP_CONCURRENCY, () => this.requestBounded(path, credentials, method, body));
+  }
+  private async requestBounded(path: string, credentials: WhatsAppCredentials, method = "GET", body?: unknown): Promise<any> {
     if (!/^[A-Za-z0-9_/?=&%,.-]+$/.test(path) || path.includes("..")) throw new Error("INVALID_GRAPH_PATH");
     const version = process.env.WHATSAPP_API_VERSION || "v25.0";
     if (!/^v\d+\.\d+$/.test(version)) throw new Error("INVALID_GRAPH_VERSION");

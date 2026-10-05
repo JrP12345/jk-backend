@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import { requestContextStore } from "./context.ts";
+import { withConcurrencyBudget } from "./concurrencyBudget.ts";
+import { MAX_PROVIDER_CONCURRENCY } from "./scalability.ts";
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
 
@@ -14,6 +16,7 @@ class CircuitBreaker {
   public failures = 0;
   public successes = 0;
   public lastFailureTime = 0;
+  private halfOpenInFlight = false;
   public readonly name: string;
   public readonly options: Required<CircuitBreakerOptions>;
 
@@ -35,14 +38,20 @@ class CircuitBreaker {
       if (now - this.lastFailureTime > this.options.resetTimeoutMs) {
         this.state = "HALF_OPEN";
         this.successes = 0;
+        this.halfOpenInFlight = true;
         return true;
       }
       return false;
+    }
+    if (this.state === "HALF_OPEN") {
+      if (this.halfOpenInFlight) return false;
+      this.halfOpenInFlight = true;
     }
     return true;
   }
 
   public recordSuccess(): void {
+    this.halfOpenInFlight = false;
     if (this.state === "HALF_OPEN") {
       this.successes++;
       if (this.successes >= this.options.halfOpenSuccessThreshold) {
@@ -55,6 +64,7 @@ class CircuitBreaker {
   }
 
   public recordFailure(): void {
+    this.halfOpenInFlight = false;
     this.failures++;
     this.lastFailureTime = Date.now();
     if (this.state === "HALF_OPEN" || this.failures >= this.options.failureThreshold) {
@@ -110,6 +120,7 @@ export interface ResilientRequestOptions {
   headers?: Record<string, string>;
   body?: any;
   timeoutMs?: number; // Explicit timeout (mandatory default 10s)
+  totalTimeoutMs?: number;
   idempotencyKey?: string;
   correlationId?: string;
   isIdempotent?: boolean; // Override automated classification
@@ -193,6 +204,9 @@ export class ResilientHttpClient {
    * Execute outbound HTTP call with explicit timeout, circuit breaker, bounded retry, and telemetry.
    */
   public async request<T = any>(url: string, options: ResilientRequestOptions): Promise<ResilientResponse<T>> {
+    return withConcurrencyBudget(`provider:${options.provider}`, MAX_PROVIDER_CONCURRENCY, () => this.requestBounded<T>(url, options));
+  }
+  private async requestBounded<T = any>(url: string, options: ResilientRequestOptions): Promise<ResilientResponse<T>> {
     const provider = options.provider;
     const method = (options.method || "GET").toUpperCase() as HttpMethod;
     const timeoutMs = options.timeoutMs || 10_000;
@@ -241,16 +255,19 @@ export class ResilientHttpClient {
 
     let attempt = 0;
     const startTime = Date.now();
+    const deadline = startTime + (options.totalTimeoutMs || 8_000);
 
     while (attempt <= maxRetries) {
+      if (Date.now() >= deadline) { breaker?.recordFailure(); throw new Error("Provider total deadline exceeded"); }
       attempt++;
       metric.totalRequests++;
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      const timeoutId = setTimeout(() => controller.abort(), Math.max(1, Math.min(timeoutMs, deadline - Date.now())));
       const attemptStart = Date.now();
 
       let response: Response;
+      let data: any;
       try {
         response = await fetch(url, {
           method,
@@ -258,6 +275,8 @@ export class ResilientHttpClient {
           body: requestBody,
           signal: controller.signal,
         });
+        const contentType = response.headers.get("content-type") || "";
+        data = contentType.includes("application/json") ? await response.json() : await response.text();
       } catch (err: any) {
         clearTimeout(timeoutId);
         metric.failedRequests++;
@@ -268,7 +287,7 @@ export class ResilientHttpClient {
         // Safe retry on network or timeout failure
         if (safeToRetry && attempt <= maxRetries) {
           const backoff = Math.min(10_000, 500 * Math.pow(2, attempt - 1) + Math.random() * 200);
-          await new Promise((resolve) => setTimeout(resolve, backoff));
+          await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.min(backoff, deadline - Date.now()))));
           continue;
         }
 
@@ -288,8 +307,6 @@ export class ResilientHttpClient {
       if (response.ok) {
         breaker?.recordSuccess();
         metric.successfulRequests++;
-        const contentType = response.headers.get("content-type") || "";
-        const data = contentType.includes("application/json") ? await response.json() : await response.text();
         return { status: response.status, headers: response.headers, data, latencyMs, retries: attempt - 1 };
       }
 
@@ -303,7 +320,7 @@ export class ResilientHttpClient {
       if ([500, 502, 503, 504, 429].includes(response.status) && safeToRetry && attempt <= maxRetries) {
         const retryAfterMs = this.parseRetryAfter(response);
         const backoffDelay = retryAfterMs ?? Math.min(10_000, 500 * Math.pow(2, attempt - 1) + Math.random() * 200);
-        await new Promise((resolve) => setTimeout(resolve, backoffDelay));
+        await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.min(backoffDelay, deadline - Date.now()))));
         continue;
       }
 
@@ -311,8 +328,8 @@ export class ResilientHttpClient {
         throw new AmbiguousOutcomeError(provider, options.idempotencyKey, new Error(`HTTP ${response.status}`));
       }
 
-      const errText = await response.text().catch(() => "");
-      const error = new Error(`Provider '${provider}' request failed with status ${response.status}: ${errText.slice(0, 300)}`);
+      const errText = typeof data === "string" ? data : JSON.stringify(data);
+      const error = new Error(`Provider '${provider}' request failed with status ${response.status}`);
       (error as any).status = response.status;
       (error as any).responseBody = errText;
       throw error;

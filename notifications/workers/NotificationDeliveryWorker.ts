@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { WorkerLoop } from "../../utilities/workerLoop.ts";
 import { NotificationDelivery } from "../../models/NotificationDelivery.ts";
 import { emailProvider } from "../providers/emailProvider.ts";
 
@@ -9,24 +10,18 @@ const LOCK_DURATION_MS = 60_000;
  * cannot send the same delivery simultaneously; an expired lease is retried.
  */
 export class NotificationDeliveryWorker {
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private loop = new WorkerLoop();
+  public getProgress() { return this.loop.progress(); }
   private stopped = false;
 
   public start(intervalMs = 500) {
-    if (this.timer) return;
     this.stopped = false;
-    this.timer = setInterval(() => {
-      this.processBatch().catch((error) => {
-        console.error("[NotificationDeliveryWorker] Batch failed:", error);
-      });
-    }, intervalMs);
-    this.timer.unref?.();
+    this.loop.start(() => this.processBatch(Number(process.env.MAX_NOTIFICATION_CONCURRENCY) || 5), intervalMs);
   }
 
   public async stop() {
     this.stopped = true;
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    await this.loop.stop();
   }
 
   public async processBatch(batchSize = 15) {
@@ -63,6 +58,8 @@ export class NotificationDeliveryWorker {
       { sort: { nextAttemptAt: 1, createdAt: 1 }, returnDocument: "after" },
     );
     if (!job) return false;
+    const heartbeat = setInterval(() => { void NotificationDelivery.updateOne({ _id: job._id, status: "processing", lockedBy }, { $set: { lockedUntil: new Date(Date.now() + LOCK_DURATION_MS) } }).catch(() => console.error("[NotificationDeliveryWorker] Lease renewal failed")); }, 20_000);
+    heartbeat.unref?.();
 
     try {
       const sent = await emailProvider.sendEmail({
@@ -103,7 +100,7 @@ export class NotificationDeliveryWorker {
               $unset: { lockedAt: 1, lockedUntil: 1, lockedBy: 1, nextAttemptAt: 1 },
             },
       );
-    }
+    } finally { clearInterval(heartbeat); }
     return true;
   }
 }

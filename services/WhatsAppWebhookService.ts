@@ -1,3 +1,4 @@
+import { WorkerLoop } from "../utilities/workerLoop.ts";
 import crypto from "node:crypto";
 import type { FastifyRequest } from "fastify";
 import { WhatsAppWebhookInbox } from "../models/WhatsAppWebhookInbox.ts";
@@ -42,16 +43,15 @@ export async function enqueueWhatsAppWebhook(req: FastifyRequest) {
 }
 
 export class WhatsAppWebhookWorker {
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private loop = new WorkerLoop();
+  public getProgress() { return this.loop.progress(); }
   private busy = false;
-  start() {
-    if (!this.timer) this.timer = setInterval(() => { void this.processBatch().catch(() => console.error("[WhatsAppWebhookWorker] Processing failed")); }, 500);
-    this.timer.unref?.();
-  }
-  async stop() { if (this.timer) clearInterval(this.timer); this.timer = null; }
+  start() {  this.loop.start(() => this.processBatch(), 500); }
+  async stop() {  await this.loop.stop(); }
   async processBatch(limit = 10) {
     if (this.busy) return;
     this.busy = true;
+    let processed = 0;
     try {
       for (let n = 0; n < limit; n++) {
         const now = new Date();
@@ -59,6 +59,9 @@ export class WhatsAppWebhookWorker {
         const row = await WhatsAppWebhookInbox.findOneAndUpdate({ status: { $in: ["pending", "processing"] }, nextAttemptAt: { $lte: now }, $or: [{ lockedUntil: null }, { lockedUntil: { $lte: now } }] },
           { $set: { status: "processing", lockedUntil: new Date(Date.now() + 120_000), lockedBy }, $inc: { attempts: 1 } }, { returnDocument: "before", sort: { createdAt: 1 } }).select("+payloadCiphertext");
         if (!row) break;
+        processed++;
+        const heartbeat = setInterval(() => { void WhatsAppWebhookInbox.updateOne({ _id: row._id, status: "processing", lockedBy }, { $set: { lockedUntil: new Date(Date.now() + 120_000) } }).catch(() => console.error("[WhatsAppWebhookWorker] Lease renewal failed")); }, 30_000);
+        heartbeat.unref?.();
         let inboundCommand = false;
         try {
           const body = JSON.parse(decrypt(row.payloadCiphertext));
@@ -71,8 +74,9 @@ export class WhatsAppWebhookWorker {
         } catch (error: any) {
           const retry = !inboundCommand && row.attempts < 9 && error.message !== "AMBIGUOUS_INBOUND_COMMAND";
           await WhatsAppWebhookInbox.updateOne({ _id: row._id, lockedBy }, { $set: { status: retry ? "pending" : "failed", error: error.message === "ORPHAN_STATUS" ? "ORPHAN_STATUS" : "WEBHOOK_PROCESSING_FAILED", nextAttemptAt: new Date(Date.now() + Math.min(300_000, 1000 * 2 ** row.attempts)) }, $unset: { lockedUntil: 1, lockedBy: 1 } });
-        }
+        } finally { clearInterval(heartbeat); }
       }
+      return { processed };
     } finally { this.busy = false; }
   }
 }

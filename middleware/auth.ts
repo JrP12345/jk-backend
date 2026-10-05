@@ -45,7 +45,9 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
     if (decoded.sessionId) {
       const resolution = await resolveSession(decoded.sessionId, decoded.authVersion);
       if (!resolution.valid) {
-        return reply.code(401).send({ error: resolution.reason || "Session has been terminated or logged in from another device" });
+        const unavailable = resolution.reason === "Authentication infrastructure unavailable";
+        if (unavailable) reply.header("Retry-After", "5");
+        return reply.code(unavailable ? 503 : 401).send({ error: resolution.reason || "Session has been terminated or logged in from another device" });
       }
       if (resolution.session?.userId !== decoded.id || resolution.session?.role !== decoded.role ||
         resolution.session?.organizationId !== decoded.organization_id) {
@@ -65,6 +67,7 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
     const cleanIp = Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(",")[0].trim();
 
     requestContextStore.enterWith({
+      ...requestContextStore.getStore(),
       userId: decoded.id,
       organizationId: decoded.organization_id,
       isRoot: decoded.role === "root",

@@ -1,3 +1,4 @@
+import { WorkerLoop } from "../utilities/workerLoop.ts";
 import crypto from "node:crypto";
 import { OutboundMessage } from "../models/OutboundMessage.ts";
 import { sendPaymentReceiptNotification } from "../utilities/notifications.ts";
@@ -36,6 +37,7 @@ const PERMANENT_COMMUNICATION_FAILURES = new Set([
 class PermanentDeliveryError extends Error {}
 
 export interface OutboundMessageMetrics {
+  countsCapped?: boolean;
   oldestMessageAgeMs: number | null;
   pendingCount: number;
   retryingCount: number;
@@ -47,29 +49,15 @@ export interface OutboundMessageMetrics {
 
 /** Durable dispatcher for receipts and encrypted clinical communication templates. */
 export class OutboundMessageDeliveryWorker {
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private loop = new WorkerLoop();
+  public getProgress() { return this.loop.progress(); }
   private stopped = false;
   private inBackpressure = false;
   private busy = false;
 
-  public start(intervalMs = OUTBOUND_MESSAGE_WORKER_POLL_MS) {
-    if (this.timer) return;
-    this.stopped = false;
-    this.timer = setInterval(() => {
-      const batchSize = this.inBackpressure
-        ? Math.max(1, Math.floor(OUTBOUND_MESSAGE_WORKER_BATCH_SIZE / WORKER_BACKPRESSURE_POLL_MULTIPLIER))
-        : OUTBOUND_MESSAGE_WORKER_BATCH_SIZE;
+  public start(intervalMs = OUTBOUND_MESSAGE_WORKER_POLL_MS) { this.stopped = false; this.loop.start(() => this.processBatch(OUTBOUND_MESSAGE_WORKER_BATCH_SIZE), intervalMs); }
 
-      this.processBatch(batchSize).catch((error) => console.error("[OutboundMessageWorker] Batch failed:", error));
-    }, intervalMs);
-    this.timer.unref?.();
-  }
-
-  public async stop() {
-    this.stopped = true;
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
-  }
+  public async stop() { this.stopped = true; await this.loop.stop(); }
 
   public async processBatch(batchSize = OUTBOUND_MESSAGE_WORKER_BATCH_SIZE) {
     if (this.stopped || this.busy) return { processed: 0 };
@@ -193,8 +181,10 @@ export class OutboundMessageDeliveryWorker {
    */
   public async getMetrics(): Promise<OutboundMessageMetrics> {
     const stats = await OutboundMessage.aggregate([
+      { $match: { status: { $in: ["pending", "retrying", "processing", "failed"] } } },
+      { $limit: 5000 },
       { $group: { _id: "$status", count: { $sum: 1 } } },
-    ]);
+    ]).option({ maxTimeMS: 2_000 });
 
     const counts: Record<string, number> = {
       pending: 0,
@@ -227,6 +217,7 @@ export class OutboundMessageDeliveryWorker {
 
     return {
       oldestMessageAgeMs,
+      countsCapped: stats.reduce((sum, item) => sum + item.count, 0) >= 5000,
       pendingCount: counts.pending,
       retryingCount: counts.retrying,
       processingCount: counts.processing,

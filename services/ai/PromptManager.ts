@@ -11,6 +11,9 @@ export interface CompiledPrompt {
 export class PromptManager {
   private static instance: PromptManager;
   private memoryCache: Map<string, any> = new Map();
+  private activeCache = new Map<string, { template: any; expiresAt: number }>();
+
+  invalidate(key: string) { this.activeCache.delete(key); }
 
   private constructor() {
     this.seedDefaults();
@@ -61,10 +64,17 @@ Role & Behavioral Rules:
    * Fetches active prompt template for a key and compiles user query and context.
    */
   async getCompiledPrompt(key: string, variables: Record<string, any>): Promise<CompiledPrompt> {
-    let template = null;
-    try {
-      template = await AIPromptTemplate.findOne({ key, status: "active" }).sort({ createdAt: -1 }).lean();
-    } catch {}
+    let template = this.activeCache.get(key)?.expiresAt! > Date.now() ? this.activeCache.get(key)!.template : null;
+    if (!template) {
+      this.activeCache.delete(key);
+      try {
+        template = await AIPromptTemplate.findOne({ key, organizationId: null, status: "active" }).sort({ createdAt: -1 }).lean();
+        if (template) {
+          if (this.activeCache.size >= 100) this.activeCache.delete(this.activeCache.keys().next().value!);
+          this.activeCache.set(key, { template, expiresAt: Date.now() + 30_000 });
+        }
+      } catch {}
+    }
 
     if (!template) {
       template = this.memoryCache.get(`${key}:active`) || this.memoryCache.get("CLINICAL_HEALTH_ASSISTANT:active");
@@ -77,7 +87,7 @@ Role & Behavioral Rules:
       version: template.version || "1.0.0",
       systemPrompt: template.systemPrompt,
       userPrompt: compiledUserPrompt,
-      temperature: template.temperature || 0.2
+      temperature: template.temperature ?? 0.2
     };
   }
 }

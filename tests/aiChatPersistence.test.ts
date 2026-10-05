@@ -105,7 +105,9 @@ describe("Milestone 5: Enterprise DB-Backed AI Chat Persistence Tests", () => {
     expect(body.data.sessionId).toBe(testSessionId);
     expect(body.data.userMessage.text).toBe("How many patients do I have in system?");
     expect(body.data.aiMessage.text).toBeDefined();
-    expect(body.data.allMessages.length).toBe(3); // Initial welcome + user + AI
+    expect(body.data.incremental).toBe(true);
+    expect(body.data.revision).toBe(3);
+    expect(body.data).not.toHaveProperty("allMessages");
 
     // Verify directly in MongoDB
     const sessionInDb = await AIChatSession.findById(testSessionId);

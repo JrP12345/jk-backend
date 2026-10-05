@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import { LatencyHistogram, databaseLatency, databasePoolMetrics } from "./latencyHistogram.ts";
 
 interface RouteMetric {
   route: string;
@@ -13,6 +14,7 @@ interface RouteMetric {
 }
 
 const metricsMap = new Map<string, RouteMetric>();
+const histograms = new Map<string, LatencyHistogram>();
 const SLOW_REQUEST_THRESHOLD_MS = 500;
 
 /**
@@ -52,6 +54,8 @@ export function registerProfilingHooks(app: FastifyInstance) {
       }
 
       metric.totalCalls += 1;
+      if (!histograms.has(key)) histograms.set(key, new LatencyHistogram());
+      histograms.get(key)!.observe(durationMs);
       metric.totalDurationMs += durationMs;
       metric.minDurationMs = Math.min(metric.minDurationMs, durationMs);
       metric.maxDurationMs = Math.max(metric.maxDurationMs, durationMs);
@@ -80,11 +84,13 @@ export function getHandlerProfilingMetrics(): {
   recordedAt: string;
   totalRoutesProfiled: number;
   routes: RouteMetric[];
+  database: Record<string, any>;
 } {
   const routes = Array.from(metricsMap.values()).sort((a, b) => b.avgDurationMs - a.avgDurationMs);
   return {
     recordedAt: new Date().toISOString(),
     totalRoutesProfiled: routes.length,
-    routes,
+    routes: routes.map(metric => ({ ...metric, latency: histograms.get(`${metric.method} ${metric.route}`)?.snapshot() })),
+    database: { latency: databaseLatency.snapshot(), pool: { ...databasePoolMetrics } },
   };
 }

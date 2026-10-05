@@ -48,7 +48,8 @@ export function validateConfig(): { valid: boolean; errors: string[] } {
     const publicPath = process.env.JWT_PUBLIC_KEY_PATH || path.join(keysDir, "public.pem");
     const hasKeyFiles = fs.existsSync(privatePath) && fs.existsSync(publicPath);
 
-    if (!hasBase64Keys && !hasPemKeys && !hasKeyFiles) {
+    const workerPublicKey = process.env.WORKLOAD_ROLE === "worker" && !!(process.env.JWT_PUBLIC_KEY_BASE64 || process.env.JWT_PUBLIC_KEY || fs.existsSync(publicPath));
+    if (!hasBase64Keys && !hasPemKeys && !hasKeyFiles && !workerPublicKey) {
       missing.push("JWT_PRIVATE_KEY_BASE64 & JWT_PUBLIC_KEY_BASE64 (or JWT_PRIVATE_KEY & JWT_PUBLIC_KEY) - run 'npm run generate:keys'");
     }
 
@@ -76,7 +77,7 @@ export function validateConfig(): { valid: boolean; errors: string[] } {
     }
 
     const prescriptionKey = process.env.PRESCRIPTION_SIGNING_KEY || process.env.JWT_SECRET;
-    if (!prescriptionKey || prescriptionKey.length < 32 || prescriptionKey === "healthos-prescription-sealing-key") {
+    if (process.env.WORKLOAD_ROLE !== "worker" && (!prescriptionKey || prescriptionKey.length < 32 || prescriptionKey === "healthos-prescription-sealing-key")) {
       missing.push("PRESCRIPTION_SIGNING_KEY (or legacy JWT_SECRET) must be a persistent secret of at least 32 characters for prescription integrity");
     }
   }

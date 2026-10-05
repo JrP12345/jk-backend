@@ -1,10 +1,13 @@
+import { WorkerLoop } from "../utilities/workerLoop.ts";
+import { reconcileAppointmentOrderIntents } from "../services/AppointmentOrderReconciliationService.ts";
+import { releaseWorkerLease } from "../utilities/workerLease.ts";
 import crypto from "node:crypto";
 import { SubscriptionPayment } from "../models/SubscriptionPayment.ts";
 import { subscriptionService } from "../services/billing/SubscriptionService.ts";
 import { acquireOrRenewWorkerLease } from "../utilities/workerLease.ts";
 
 const holderId = `${process.env.HOSTNAME || "api"}:${process.pid}:${crypto.randomUUID()}`;
-let timer: NodeJS.Timeout | null = null;
+const loop = new WorkerLoop();
 
 export async function runBillingReconciliation() {
   const now = Date.now();
@@ -50,20 +53,12 @@ export async function runBillingReconciliation() {
 }
 
 export function startBillingReconciliationJob(intervalMs = 5 * 60_000) {
-  if (timer) return;
-  timer = setInterval(async () => {
-    try {
-      if (await acquireOrRenewWorkerLease({ name: "billing-reconciliation", holderId, leaseMs: intervalMs * 2 })) {
-        await runBillingReconciliation();
-      }
-    } catch (err) {
-      console.error("billing.reconcile.job.failed", err);
-    }
+  loop.start(async () => {
+    if (!await acquireOrRenewWorkerLease({ name: "billing-reconciliation", holderId, leaseMs: 120_000 })) return { processed: 1 };
+    const heartbeat = setInterval(() => { void acquireOrRenewWorkerLease({ name: "billing-reconciliation", holderId, leaseMs: 120_000 }).catch(() => console.error("billing.reconcile.lease.failed")); }, 20_000);
+    heartbeat.unref?.();
+    try { await reconcileAppointmentOrderIntents(); await runBillingReconciliation(); return { processed: 1 }; }
+    finally { clearInterval(heartbeat); await releaseWorkerLease("billing-reconciliation", holderId); }
   }, intervalMs);
-  timer.unref?.();
 }
-
-export function stopBillingReconciliationJob() {
-  if (timer) clearInterval(timer);
-  timer = null;
-}
+export async function stopBillingReconciliationJob() { await loop.stop(); }

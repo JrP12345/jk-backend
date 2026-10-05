@@ -29,7 +29,7 @@ describe("Phase 2: Prompt Governance System Tests", () => {
       email,
       name: "Dr. Prompt Governance",
       password: await bcrypt.hash(password, 10),
-      role: "admin",
+      role: "root",
       organizationId: org._id
     });
     testUserId = (user as any)._id.toString();
@@ -106,6 +106,12 @@ describe("Phase 2: Prompt Governance System Tests", () => {
   });
 
   it("should test prompt compilation sandbox endpoint (POST /api/ai/prompts/test)", async () => {
+    const draft = await app.inject({ method: "POST", url: "/api/ai/prompts", headers: { authorization: `Bearer ${accessToken}` }, payload: { key: "TEST_CLINICAL_PROMPT", version: "2.0.0", systemPrompt: "Updated platform prompt" } });
+    expect(draft.statusCode).toBe(201);
+    const approved = await app.inject({ method: "PUT", url: `/api/ai/prompts/${draft.json().data._id}/approve`, headers: { authorization: `Bearer ${accessToken}` } });
+    expect(approved.statusCode, approved.body).toBe(200);
+    expect(await AIPromptTemplate.countDocuments({ key: "TEST_CLINICAL_PROMPT", organizationId: null, status: "active" })).toBe(1);
+    expect((await promptManager.getCompiledPrompt("TEST_CLINICAL_PROMPT", {})).version).toBe("2.0.0");
     const res = await app.inject({
       method: "POST",
       url: "/api/ai/prompts/test",

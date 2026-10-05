@@ -1,6 +1,4 @@
 import mongoose, { Schema } from "mongoose";
-import { computeAuditHash, GENESIS_HASH } from "../utilities/auditCrypto.ts";
-import { withChainLock } from "../utilities/auditLock.ts";
 import { redactAuditDetails } from "../utilities/auditRedaction.ts";
 
 const AuditLogSchema = new Schema({
@@ -35,36 +33,9 @@ AuditLogSchema.pre("validate", function() {
   this.details = redactAuditDetails(this.details);
 });
 
-// Automatic cryptographic hash chaining for all audit creations
+// All creation paths are routed through the atomic append service below.
 AuditLogSchema.pre("save", async function() {
-  if (this.isNew && (!this.sequence || !this.hash)) {
-    const orgKey = this.organizationId ? String(this.organizationId) : "GLOBAL";
-    await withChainLock(orgKey, async () => {
-      const orgFilter = this.organizationId ? this.organizationId : null;
-      const AuditLogModel = mongoose.models.AuditLog || mongoose.model("AuditLog");
-      const lastEntry: any = await AuditLogModel.findOne({ organizationId: orgFilter })
-        .sort({ sequence: -1 })
-        .select("sequence hash")
-        .lean();
-
-      const sequence = (lastEntry?.sequence || 0) + 1;
-      const prevHash = lastEntry?.hash || GENESIS_HASH;
-      this.sequence = sequence;
-      this.prevHash = prevHash;
-      this.hash = computeAuditHash({
-        sequence,
-        prevHash,
-        organizationId: this.organizationId,
-        userId: this.userId,
-        action: this.action as string,
-        category: this.category as string,
-        targetId: this.targetId,
-        targetModel: this.targetModel as string,
-        details: this.details,
-        createdAt: this.createdAt || new Date(),
-      });
-    });
-  }
+  if (this.isNew && (!this.sequence || !this.hash)) throw new Error("Use AuditLog.create or recordAuditLog to append an audit entry");
 });
 
 AuditLogSchema.virtual("id").get(function() {
@@ -91,3 +62,14 @@ AuditLogSchema.set("toJSON", {
 });
 
 export const AuditLog = mongoose.models.AuditLog || mongoose.model("AuditLog", AuditLogSchema);
+
+// Preserve the existing create API while giving every caller the same boundary.
+(AuditLog as any).create = async function(documents: any, options?: any) {
+  const { recordAuditLog } = await import("../services/AuditTrailService.ts");
+  if (Array.isArray(documents)) {
+    const results = [];
+    for (const document of documents) results.push(await recordAuditLog(document, options));
+    return results;
+  }
+  return recordAuditLog(documents, options);
+};

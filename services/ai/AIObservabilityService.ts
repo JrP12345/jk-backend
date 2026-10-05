@@ -37,7 +37,8 @@ export class AIObservabilityService {
       filterConditions.push({ userId: new mongoose.Types.ObjectId(userId) });
     }
 
-    const filter = filterConditions.length > 0 ? { $or: filterConditions } : {};
+    if (!filterConditions.length) throw new Error("Telemetry requires organization or user scope");
+    const filter = { $and: filterConditions, timestamp: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } };
 
     const [aggResult] = await AIObservabilityMetric.aggregate([
       { $match: filter },
@@ -71,7 +72,7 @@ export class AIObservabilityService {
           ]
         }
       }
-    ]);
+    ]).option({ maxTimeMS: 5_000 });
 
     const summaryRow = aggResult?.summary?.[0] || {
       totalRequests: 0,

@@ -3,7 +3,7 @@ import { AuditLog } from "../models/AuditLog.ts";
 
 export function auditPlugin(schema: any) {
   schema.post("save", async function(this: any, doc: any) {
-    if (!doc.constructor?.modelName || doc.constructor.modelName === "AuditLog") return;
+    if (!doc.constructor?.modelName || ["AuditLog", "AuditChainHead", "OperationReceipt"].includes(doc.constructor.modelName)) return;
 
     const context = requestContextStore.getStore();
     const userId = context?.userId;
@@ -20,14 +20,14 @@ export function auditPlugin(schema: any) {
         userAgent: context?.userAgent,
         category: "CLINICAL_WRITE",
         details: doc.toJSON()
-      });
+      }, { session: doc.$session?.() || undefined });
     } catch (err) {
-      console.error("Audit log creation failed inside plugin (save):", err);
+      throw err;
     }
   });
 
   schema.post("findOneAndUpdate", async function(this: any, res: any) {
-    if (!res || !this.model || this.model.modelName === "AuditLog") return;
+    if (!res || !this.model || ["AuditLog", "AuditChainHead", "OperationReceipt"].includes(this.model.modelName)) return;
 
     const context = requestContextStore.getStore();
     const userId = context?.userId;
@@ -44,14 +44,14 @@ export function auditPlugin(schema: any) {
         userAgent: context?.userAgent,
         category: "CLINICAL_WRITE",
         details: typeof res.toJSON === "function" ? res.toJSON() : res
-      });
+      }, { session: this.getOptions?.().session });
     } catch (err) {
-      console.error("Audit log creation failed inside plugin (findOneAndUpdate):", err);
+      throw err;
     }
   });
 
   schema.post("findOneAndDelete", async function(this: any, res: any) {
-    if (!res || !this.model || this.model.modelName === "AuditLog") return;
+    if (!res || !this.model || ["AuditLog", "AuditChainHead", "OperationReceipt"].includes(this.model.modelName)) return;
 
     const context = requestContextStore.getStore();
     const userId = context?.userId;
@@ -68,9 +68,9 @@ export function auditPlugin(schema: any) {
         userAgent: context?.userAgent,
         category: "CLINICAL_WRITE",
         details: { id: res._id.toString() }
-      });
+      }, { session: this.getOptions?.().session });
     } catch (err) {
-      console.error("Audit log creation failed inside plugin (findOneAndDelete):", err);
+      throw err;
     }
   });
 }

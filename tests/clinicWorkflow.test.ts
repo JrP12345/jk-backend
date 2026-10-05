@@ -97,7 +97,7 @@ describe("Existing clinic workflow with opt-in experience preferences", () => {
     expect((await complete(visit.id)).statusCode).toBe(200);
     expect(await Encounter.countDocuments({ appointmentId: visit.id })).toBe(1);
     const invoice = await Invoice.findOne({ appointmentId: visit.id }); expect(invoice).toBeTruthy();
-    const paid = await app.inject({ method: "POST", url: `/api/invoices/${invoice!.id}/payments`, headers: receptionHeaders, payload: { amount: invoice!.totalAmount, paymentMethod: "cash" } });
+    const paid = await app.inject({ method: "POST", url: `/api/invoices/${invoice!.id}/payments`, headers: receptionHeaders, payload: { idempotencyKey: "test-financial-clinicWorkflow_test_ts-1", amount: invoice!.totalAmount, paymentMethod: "cash" } });
     expect(paid.statusCode, paid.body).toBe(200);
     expect((await Appointment.findById(visit.id))?.paymentStatus).toBe("paid");
     const listed = await app.inject({ method: "GET", url: `/api/invoices?appointmentId=${visit.id}&clinicId=${clinic.id}`, headers: receptionHeaders });
@@ -201,7 +201,7 @@ describe("Existing clinic workflow with opt-in experience preferences", () => {
     const done = await complete(visit.id, {}, adminHeaders); expect(done.statusCode, done.body).toBe(200);
     const encounter = await Encounter.findOne({ appointmentId: visit.id });
     const invoice = await Invoice.findOne({ encounterId: encounter!.id }); expect(invoice?.totalAmount).toBe(220);
-    const paid = await app.inject({ method: "POST", url: `/api/invoices/${invoice!.id}/payments`, headers: receptionHeaders, payload: { amount: 220, paymentMethod: "cash" } });
+    const paid = await app.inject({ method: "POST", url: `/api/invoices/${invoice!.id}/payments`, headers: receptionHeaders, payload: { idempotencyKey: "test-financial-clinicWorkflow_test_ts-2", amount: 220, paymentMethod: "cash" } });
     expect(paid.statusCode, paid.body).toBe(200); expect((await Appointment.findById(visit.id))?.paymentStatus).toBe("paid");
     const replay = await app.inject({ method: "POST", url: "/api/appointment-payments/collect-counter", headers: receptionHeaders, payload: { appointmentId: visit.id, paymentMethod: "cash" } });
     expect(replay.statusCode, replay.body).toBe(409);

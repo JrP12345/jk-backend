@@ -2,8 +2,11 @@ import mongoose from "mongoose";
 import crypto from "node:crypto";
 import { AuditLog } from "../models/AuditLog.ts";
 import { AuditCheckpoint } from "../models/AuditCheckpoint.ts";
+import { AuditChainHead } from "../models/AuditChainHead.ts";
+import { withTransaction } from "../utilities/transaction.ts";
 import { computeAuditHash, GENESIS_HASH } from "../utilities/auditCrypto.ts";
 import { redactAuditDetails } from "../utilities/auditRedaction.ts";
+import { requestContextStore } from "../utilities/context.ts";
 import { reportCriticalError } from "../utilities/telemetry.ts";
 
 export interface AuditRecordInput {
@@ -47,61 +50,38 @@ export { withChainLock };
  * Appends a tamper-evident, cryptographically chained audit log entry.
  * Links each entry to the preceding entry's SHA-256 hash.
  */
-export async function recordAuditLog(input: AuditRecordInput): Promise<any> {
+export async function recordAuditLog(input: AuditRecordInput, options?: { session?: mongoose.ClientSession }): Promise<any> {
+  if (input.organizationId === undefined && requestContextStore.getStore()?.organizationId) input = { ...input, organizationId: requestContextStore.getStore()!.organizationId };
   const orgKey = input.organizationId ? String(input.organizationId) : "GLOBAL";
-
-  return withChainLock(orgKey, async () => {
-    const orgFilter = input.organizationId
-      ? new mongoose.Types.ObjectId(String(input.organizationId))
-      : null;
-
-    let retries = 3;
-    while (retries > 0) {
-      try {
-        const lastEntry = await AuditLog.findOne({ organizationId: orgFilter })
-          .sort({ sequence: -1 })
-          .select("sequence hash")
-          .lean();
-
-        const sequence = (lastEntry?.sequence || 0) + 1;
-        const prevHash = lastEntry?.hash || GENESIS_HASH;
-        const createdAt = input.createdAt || new Date();
-        const redactedDetails = redactAuditDetails(input.details);
-
-        const hash = computeAuditHash({
-          sequence,
-          prevHash,
-          organizationId: input.organizationId,
-          userId: input.userId,
-          action: input.action,
-          category: input.category,
-          targetId: input.targetId,
-          targetModel: input.targetModel,
-          details: redactedDetails,
-          createdAt,
-        });
-
-        const log = new AuditLog({
-          ...input,
-          details: redactedDetails,
-          sequence,
-          prevHash,
-          hash,
-          createdAt,
-        });
-
-        await log.save();
-        return log;
-      } catch (err: any) {
-        if (err.code === 11000 && retries > 1) {
-          retries--;
-          await new Promise((r) => setTimeout(r, 20 + Math.random() * 50));
-          continue;
-        }
-        throw err;
+  const inherited = options?.session || (mongoose as any).transactionAsyncLocalStorage?.getStore()?.session;
+  const append = async (session: mongoose.ClientSession | null) => {
+    const opts = session ? { session } : {};
+    const orgFilter = input.organizationId ? new mongoose.Types.ObjectId(String(input.organizationId)) : null;
+    let head = await AuditChainHead.findById(orgKey, null, opts);
+    if (!head) {
+      const last = await AuditLog.findOne({ organizationId: orgFilter }, null, opts).sort({ sequence: -1 }).select("sequence hash").lean();
+      try { head = await new AuditChainHead({ _id: orgKey, sequence: last?.sequence || 0, hash: last?.hash || GENESIS_HASH }).save(opts); }
+      catch (error: any) {
+        if (session && error.code === 11000) error.addErrorLabel?.("TransientTransactionError");
+        throw error;
       }
     }
-  });
+    const sequence = head.sequence + 1;
+    const createdAt = input.createdAt || new Date();
+    const details = redactAuditDetails(input.details);
+    const category = input.category || "CLINICAL_WRITE";
+    const hash = computeAuditHash({ ...input, organizationId: orgFilter, sequence, prevHash: head.hash, createdAt, details, category });
+    const advanced = await AuditChainHead.updateOne({ _id: orgKey, sequence: head.sequence, hash: head.hash }, { $set: { sequence, hash } }, opts);
+    if (!advanced.modifiedCount) throw Object.assign(new Error("Audit chain conflict"), { errorLabels: ["TransientTransactionError"], hasErrorLabel: (label: string) => label === "TransientTransactionError" });
+    return new AuditLog({ ...input, organizationId: orgFilter, sequence, prevHash: head.hash, hash, createdAt, details, category }).save(opts);
+  };
+  if (inherited) return append(inherited);
+  const topology = (mongoose.connection as any).client?.topology?.description?.type;
+  if (topology === "Single" || topology === "Unknown") {
+    if (process.env.NODE_ENV === "production") throw new Error("Audit append requires a transaction-capable MongoDB deployment");
+    return withChainLock(orgKey, () => append(null));
+  }
+  return withTransaction(append);
 }
 
 /**
@@ -113,7 +93,7 @@ export async function verifyAuditChainIntegrity(
 ): Promise<AuditChainVerificationResult> {
   const orgFilter = organizationId
     ? { organizationId: new mongoose.Types.ObjectId(organizationId) }
-    : {};
+    : { organizationId: null };
 
   const logs = await AuditLog.find(orgFilter)
     .sort({ sequence: 1 })
@@ -241,4 +221,3 @@ export async function verifyAuditChainIntegrity(
     lastHash: logs[logs.length - 1].hash,
   };
 }
-

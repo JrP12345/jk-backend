@@ -206,9 +206,9 @@ export async function checkWorkerReadiness(workerName: string): Promise<{
   data: Record<string, any>;
 }> {
   const configCheck = validateConfig();
-  const dbReport = await checkDatabaseReadiness();
+  const [dbReport, redisReport] = await Promise.all([checkDatabaseReadiness(), checkRedisReadiness()]);
 
-  const isReady = !shuttingDown && configCheck.valid && dbReport.ready;
+  const isReady = !shuttingDown && configCheck.valid && dbReport.ready && redisReport.ready;
   return {
     ready: isReady,
     statusCode: isReady ? 200 : 503,
@@ -216,6 +216,7 @@ export async function checkWorkerReadiness(workerName: string): Promise<{
       worker: workerName,
       status: isReady ? "ready" : shuttingDown ? "shutting_down" : "unhealthy",
       database: dbReport,
+      redis: redisReport,
       configuration: { valid: configCheck.valid },
       uptimeSeconds: Math.floor(process.uptime()),
       timestamp: new Date().toISOString(),

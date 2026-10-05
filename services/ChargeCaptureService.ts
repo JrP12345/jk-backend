@@ -1,4 +1,6 @@
+import { withTransaction } from "../utilities/transaction.ts";
 import { Encounter } from "../models/Encounter.ts";
+import { ClinicalNote } from "../models/ClinicalNote.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { LabOrder } from "../models/LabOrder.ts";
 import { LabTest } from "../models/LabTest.ts";
@@ -110,7 +112,7 @@ export async function compileEncounterCharges(
 
   // 2. Lab Orders linked to Encounter (only when laboratory module is enabled)
   if (labEnabled) {
-    const labOrders = await LabOrder.find({ encounterId }).populate("testId");
+    const labOrders = await LabOrder.find({ encounterId, organizationId, status: { $ne: "cancelled" }, deletedAt: null }).populate("testId");
     for (const order of labOrders) {
       const test = order.testId as any;
       if (test) {
@@ -127,7 +129,8 @@ export async function compileEncounterCharges(
   }
 
   // 3. Prescriptions linked to Encounter (P1 pharmacy — always compiled when present)
-  const prescriptions = await Prescription.find({ encounterId }).populate("medicineId");
+  const currentNote = await ClinicalNote.findOne({ encounterId, organizationId, isLatest: true, deletedAt: null }).select("plan.prescriptionIds").lean();
+  const prescriptions = await Prescription.find({ encounterId, organizationId, ...(currentNote ? { _id: { $in: currentNote.plan?.prescriptionIds || [] } } : {}), status: { $in: ["active", "dispensed"] }, deletedAt: null }).populate("medicineId");
   for (const rx of prescriptions) {
     const med = rx.medicineId as any;
     if (med) {
@@ -136,7 +139,7 @@ export async function compileEncounterCharges(
         amount: med.price || 0,
         quantity: 1,
         hsnSacCode: med.hsnCode || "3004",
-        gstRate: med.gstRate || 5, // Medicines typically 5% or 12% GST
+        gstRate: med.gstRate ?? 5,
         category: "pharmacy",
       });
     }
@@ -181,6 +184,11 @@ export async function autoGenerateEncounterInvoice(
   createdByUserId?: string,
   customConsultFee?: number
 ): Promise<any> {
+  return withTransaction(() => generateEncounterInvoice(encounterId, createdByUserId, customConsultFee));
+}
+async function generateEncounterInvoice(encounterId: string, createdByUserId?: string, customConsultFee?: number): Promise<any> {
+  // Serialize generation with the encounter itself; database uniqueness remains the final boundary.
+  await Encounter.findOneAndUpdate({ _id: encounterId }, { $inc: { __v: 1 } });
   // Check if invoice already exists for this encounter
   const existing = await Invoice.findOne({ encounterId });
   if (existing) {
@@ -229,6 +237,7 @@ export async function autoGenerateEncounterInvoice(
   });
 
   const invoice = await Invoice.create({
+    generationKey: "encounter:" + encounterId,
     invoiceNumber,
     organizationId: encounter.organizationId || null,
     patientId: encounter.patientId,
@@ -318,6 +327,7 @@ export async function compileAppointmentCharges(
   // 2. Lab Orders
   const encounter = await Encounter.findOne({ appointmentId: appointment._id });
   const labQuery: any = {
+    organizationId: appointment.organizationId, deletedAt: null, status: { $ne: "cancelled" },
     $or: [
       { appointmentId: appointment._id },
       ...(encounter ? [{ encounterId: encounter._id }] : []),
@@ -341,9 +351,10 @@ export async function compileAppointmentCharges(
 
   // 3. Pharmacy Prescriptions
   const addedRxNames = new Set<string>();
+  const currentNote = encounter ? await ClinicalNote.findOne({ encounterId: encounter._id, organizationId: appointment.organizationId, isLatest: true, deletedAt: null }).select("plan.prescriptionIds").lean() : null;
 
   if (encounter) {
-    const prescriptions = await Prescription.find({ encounterId: encounter._id }).populate("medicineId");
+    const prescriptions = await Prescription.find({ encounterId: encounter._id, organizationId: appointment.organizationId, ...(currentNote ? { _id: { $in: currentNote.plan?.prescriptionIds || [] } } : {}), status: { $in: ["active", "dispensed"] }, deletedAt: null }).populate("medicineId");
     for (const rx of prescriptions) {
       const med = rx.medicineId as any;
       const name = med?.name || rx.medicineName;
@@ -353,14 +364,14 @@ export async function compileAppointmentCharges(
         amount: med?.price || 60,
         quantity: 1,
         hsnSacCode: med?.hsnCode || "3004",
-        gstRate: med?.gstRate || 5,
+        gstRate: med?.gstRate ?? 5,
         category: "pharmacy",
       });
     }
   }
 
   // Also include prescriptions stored directly on Appointment document
-  if (Array.isArray(appointment.prescriptions)) {
+  if (!currentNote && Array.isArray(appointment.prescriptions)) {
     for (const p of appointment.prescriptions) {
       if (p.name && !addedRxNames.has(p.name.toLowerCase())) {
         addedRxNames.add(p.name.toLowerCase());

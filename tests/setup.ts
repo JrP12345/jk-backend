@@ -1,6 +1,6 @@
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { MongoMemoryServer, MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose from "mongoose";
-import { beforeAll, beforeEach, afterAll } from "vitest";
+import { beforeAll, beforeEach, afterAll, expect } from "vitest";
 
 import "../models/User.ts";
 import "../models/Organization.ts";
@@ -26,10 +26,12 @@ import "../services/ai/AIService.ts";
 
 process.env.NODE_ENV = "test";
 
-let mongoServer: MongoMemoryServer;
+let mongoServer: MongoMemoryServer | MongoMemoryReplSet;
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
+  mongoServer = (process.env.TEST_MONGO_REPLICA_SET === "true" || expect.getState().testPath?.endsWith("architectureIntegrity.test.ts"))
+    ? await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: "wiredTiger" } })
+    : await MongoMemoryServer.create();
   const uri = mongoServer.getUri();
   
   // Set environment variables for test DB and Cloudflare R2

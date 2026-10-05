@@ -162,11 +162,19 @@ async function runBackup() {
     return;
   }
 
-  // 2. Dump and Compress all collections to in-memory JSON stream
+  // Supplementary logical exports require a coordinated write pause. Provider
+  // snapshots/PITR remain the primary recovery mechanism.
+  if (!process.argv.includes("--writes-paused")) throw new Error("Logical export requires --writes-paused after stopping API/worker writes; use provider snapshots for online recovery");
+  const maxBytes = Number(process.env.BACKUP_MAX_EXPORT_BYTES) || 64 * 1024 * 1024;
+  let exportBytes = 0;
+  const indexes: Record<string, any[]> = {};
+  // Bounded supplementary export; never allow unbounded collection toArray.
   console.log("\n📦 Dumping and compressing collections into gzip archive...");
   const exportPayload: Record<string, any> = {
     _metadata: {
-      version: "1.0",
+      version: "2.0",
+      bsonEncoding: "canonical-ejson",
+      consistency: "operator-confirmed-writes-paused",
       createdAt: new Date().toISOString(),
       databaseName: db.databaseName,
       collectionsCount: collectionNames.length,
@@ -175,11 +183,18 @@ async function runBackup() {
   };
 
   for (const colName of collectionNames) {
-    const docs = await db.collection(colName).find({}).toArray();
+    indexes[colName] = await db.collection(colName).indexes();
+    const docs: any[] = [];
+    for await (const document of db.collection(colName).find({}).batchSize(100)) {
+      exportBytes += Buffer.byteLength(mongoose.mongo.BSON.EJSON.stringify(document, { relaxed: false }));
+      if (exportBytes > maxBytes) throw new Error("Supplementary export budget exceeded; use provider recovery/database tooling for this dataset");
+      docs.push(document);
+    }
     exportPayload[colName] = docs;
   }
+  exportPayload._indexes = indexes;
 
-  const jsonString = JSON.stringify(exportPayload);
+  const jsonString = mongoose.mongo.BSON.EJSON.stringify(exportPayload, { relaxed: false });
   const compressedGzip = zlib.gzipSync(Buffer.from(jsonString, "utf8"), { level: 9 });
 
   // 3. Encrypt archive with AES-256-GCM

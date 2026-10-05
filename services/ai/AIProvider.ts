@@ -25,6 +25,8 @@ export interface ChatTurn {
 }
 
 export interface HealthQueryInput {
+  deadlineAt?: number;
+  signal?: AbortSignal;
   patientId: string;
   query: string;
   patientRecordSummary: string;
@@ -65,6 +67,7 @@ export interface AIUsage {
 }
 
 export interface AIRequest {
+  signal?: AbortSignal;
   correlationId: string;
   organizationId: string;
   sessionId: string;

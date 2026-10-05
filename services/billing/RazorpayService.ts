@@ -38,6 +38,16 @@ export interface RazorpayRefund {
 }
 
 export class RazorpayService {
+  /** Provider reconciliation only; an empty result never authorizes a resend. */
+  async findOrderByReceipt(receipt: string): Promise<RazorpayOrderResponse | null> {
+    const { keyId, keySecret } = await this.getCredentials();
+    const response = await resilientHttpClient.request<{ items: RazorpayOrderResponse[] }>(`https://api.razorpay.com/v1/orders?receipt=${encodeURIComponent(receipt)}&count=2`, {
+      provider: "razorpay", method: "GET", headers: { Authorization: `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString("base64")}` },
+    });
+    const matches = (response.data.items || []).filter(order => order.receipt === receipt);
+    if (matches.length > 1) throw new Error("Multiple provider orders require operator review");
+    return matches[0] || null;
+  }
   /**
    * Fetch active platform Razorpay credentials dynamically from MongoDB (SaaSConfig)
    * Fallback to environment variables.

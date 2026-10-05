@@ -4,8 +4,29 @@ import { AIServiceUnavailableError } from "../services/ai/AIService.ts";
 import { aiGateway } from "../services/ai/AIGateway.ts";
 import { InboundPipeline } from "../services/ai/InboundPipeline.ts";
 import { providerRegistry } from "../services/ai/ProviderRegistry.ts";
+import * as concurrencyBudget from "../utilities/concurrencyBudget.ts";
 
 describe("Batch 1: AI Provider Security & Schema Validation Tests", () => {
+  it("propagates caller cancellation to the provider without retrying", async () => {
+    const controller = new AbortController();
+    let providerSignal: AbortSignal | undefined;
+    const query = vi.fn((input: any) => new Promise<any>((_resolve, reject) => {
+      providerSignal = input.signal;
+      input.signal.addEventListener("abort", () => reject(input.signal.reason), { once: true });
+    }));
+    vi.spyOn(InboundPipeline, "process").mockResolvedValue({ providerName: "cancellable", allowedProviders: [], anonymizedPrompt: "General query", anonymizedContext: "", compiledPrompt: {} } as any);
+    vi.spyOn(providerRegistry, "listProviders").mockReturnValue([]);
+    vi.spyOn(providerRegistry, "getProvider").mockReturnValue({ name: "cancellable", queryPatientHealthAssistant: query } as any);
+    try {
+      const pending = aiGateway.execute({ correlationId: "cancel-check", organizationId: "", userId: "", sessionId: "test", requestId: "test", prompt: "General query", signal: controller.signal });
+      const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      await vi.waitFor(() => expect(query).toHaveBeenCalledOnce());
+      controller.abort();
+      await rejected;
+      expect(providerSignal?.aborted).toBe(true);
+      expect(query).toHaveBeenCalledOnce();
+    } finally { vi.restoreAllMocks(); }
+  });
   it("should validate and sanitize valid SOAP note draft structure", () => {
     const validDraft = {
       subjective: "Patient reports intermittent throbbing headaches",
@@ -48,6 +69,8 @@ describe("Batch 1: AI Provider Security & Schema Validation Tests", () => {
 
   it("refuses simulated AI execution in production", async () => {
     vi.stubEnv("NODE_ENV", "production");
+    // Isolate the provider guard from Redis availability; quota failure is covered separately.
+    vi.spyOn(concurrencyBudget, "withConcurrencyBudget").mockImplementation(async (_scope, _limit, work) => work());
     const query = vi.fn();
     vi.spyOn(InboundPipeline, "process").mockResolvedValue({ providerName: "FallbackSimulationAI", allowedProviders: [] } as any);
     vi.spyOn(providerRegistry, "listProviders").mockReturnValue(["FallbackSimulationAI"]);

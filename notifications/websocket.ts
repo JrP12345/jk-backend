@@ -32,6 +32,22 @@ export interface ClusterMessageEnvelope {
 export const NODE_ID: string = process.env.POD_NAME || process.env.HOSTNAME || `node-${crypto.randomUUID()}`;
 
 // ─── Connection Registries (In-Memory per Node) ──────────────────────────
+const MAX_CONNECTION_BUFFER = 256 * 1024;
+function safeSocketSend(socket: WebSocket, data: string) {
+  if (socket.bufferedAmount > MAX_CONNECTION_BUFFER) { socket.close(1013, 'Slow consumer'); return; }
+  if (socket.readyState === 1) socket.send(data);
+}
+function safeSseWrite(reply: FastifyReply, data: string) {
+  if (reply.raw.writableLength > MAX_CONNECTION_BUFFER) { reply.raw.destroy(); return; }
+  if (!reply.raw.writableEnded) reply.raw.write(data);
+}
+const aliveSockets = new WeakMap<WebSocket, boolean>();
+function heartbeatSocket(socket: WebSocket) {
+  if (aliveSockets.get(socket) === false) { socket.terminate(); return; }
+  if (!aliveSockets.has(socket)) socket.on('pong', () => aliveSockets.set(socket, true));
+  aliveSockets.set(socket, false);
+  socket.ping();
+}
 const sseStreamsMap = new Map<string, Set<FastifyReply>>();
 const userWebSocketsMap = new Map<string, Set<WebSocket>>();
 const clinicQueueWebSocketsMap = new Map<string, Set<WebSocket>>();
@@ -224,7 +240,7 @@ export function sendToUserLocally(userId: string, payload: RealtimeMessage) {
     sseStreams.forEach((reply) => {
       try {
         if (!reply.raw.writableEnded) {
-          sendPrivate(reply, () => { if (!reply.raw.writableEnded) reply.raw.write(dataString); });
+          sendPrivate(reply, () => { if (!reply.raw.writableEnded) safeSseWrite(reply, dataString); });
         }
       } catch (err) {
         console.error(`[SSE Stream Error] Failed writing to user ${userId} stream:`, err);
@@ -239,7 +255,7 @@ export function sendToUserLocally(userId: string, payload: RealtimeMessage) {
     webSockets.forEach((socket) => {
       try {
         if (socket.readyState === 1 /* OPEN */) {
-          sendPrivate(socket, () => { if (socket.readyState === 1) socket.send(wsString); });
+          sendPrivate(socket, () => { if (socket.readyState === 1) safeSocketSend(socket, wsString); });
         }
       } catch (err) {
         console.error(`[WebSocket Error] Failed writing to user ${userId} websocket:`, err);
@@ -289,7 +305,7 @@ export function sendToClinicQueueLocally(clinicId: string, payload: RealtimeMess
     webSockets.forEach((socket) => {
       try {
         if (socket.readyState === 1 /* OPEN */) {
-          socket.send(wsString);
+          safeSocketSend(socket, wsString);
         }
       } catch (err) {
         console.error(`[Queue WebSocket Error] Failed writing to clinic ${clinicId} queue websocket:`, err);
@@ -305,7 +321,7 @@ export function sendToClinicClinicalLocally(clinicId: string, payload: RealtimeM
     webSockets.forEach((socket) => {
       try {
         if (socket.readyState === 1 /* OPEN */) {
-          sendPrivate(socket, () => { if (socket.readyState === 1) socket.send(wsString); });
+          sendPrivate(socket, () => { if (socket.readyState === 1) safeSocketSend(socket, wsString); });
         }
       } catch (err) {
         console.error(`[Clinical WebSocket Error] Failed writing to clinic ${clinicId} clinical websocket:`, err);
@@ -568,6 +584,8 @@ const MAX_CONNECTS_PER_MINUTE = 30;
 
 export function checkPublicWsRateLimit(ip: string): { allowed: boolean; reason?: string; code?: number } {
   const now = Date.now();
+  for (const [address, entry] of publicWsIpAttempts) if (entry.resetAt < now) publicWsIpAttempts.delete(address);
+  if (!publicWsIpAttempts.has(ip) && publicWsIpAttempts.size >= 10_000) return { allowed: false, reason: "Connection rate limit capacity exceeded", code: 4029 };
   let attemptInfo = publicWsIpAttempts.get(ip);
   if (!attemptInfo || attemptInfo.resetAt < now) {
     attemptInfo = { count: 1, resetAt: now + 60000 };
@@ -606,7 +624,7 @@ export function decrementPublicWsIp(ip: string) {
 export async function handleNotificationWebSocket(socket: WebSocket, req: FastifyRequest) {
   const user = await resolveWebSocketAuth(req);
   if (!user) {
-    socket.send(JSON.stringify({ type: "ERROR", message: "Unauthorized: Valid authentication token required" }));
+    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Unauthorized: Valid authentication token required" }));
     socket.close(1008, "Unauthorized");
     return;
   }
@@ -614,7 +632,7 @@ export async function handleNotificationWebSocket(socket: WebSocket, req: Fastif
   bindPrivateConnection(user, socket, () => socket.close(4001, "Session expired or revoked"));
   registerUserWebSocket(user.id, socket);
 
-  socket.send(JSON.stringify({
+  safeSocketSend(socket, JSON.stringify({
     type: "CONNECTED",
     transport: "websocket",
     message: `Realtime WebSocket stream established for user ${user.id}`,
@@ -626,7 +644,7 @@ export async function handleNotificationWebSocket(socket: WebSocket, req: Fastif
     buffered.forEach((alert) => {
       try {
         if (socket.readyState === 1) {
-          sendPrivate(socket, () => { if (socket.readyState === 1) socket.send(JSON.stringify(alert)); });
+          sendPrivate(socket, () => { if (socket.readyState === 1) safeSocketSend(socket, JSON.stringify(alert)); });
         }
       } catch {
         // Safe ignore
@@ -638,7 +656,7 @@ export async function handleNotificationWebSocket(socket: WebSocket, req: Fastif
   const pingInterval = setInterval(() => {
     if (socket.readyState === 1 /* OPEN */) {
       try {
-        sendPrivate(socket, () => socket.ping());
+        sendPrivate(socket, () => heartbeatSocket(socket));
       } catch {
         clearInterval(pingInterval);
       }
@@ -651,7 +669,7 @@ export async function handleNotificationWebSocket(socket: WebSocket, req: Fastif
     try {
       const data = JSON.parse(raw.toString());
       if (data.type === "PING") {
-        socket.send(JSON.stringify({ type: "PONG", timestamp: new Date().toISOString() }));
+        safeSocketSend(socket, JSON.stringify({ type: "PONG", timestamp: new Date().toISOString() }));
       }
     } catch {
       // Ignore unparseable client messages
@@ -672,14 +690,14 @@ export async function handleQueueWebSocket(socket: WebSocket, req: FastifyReques
   
   const rateLimit = checkPublicWsRateLimit(clientIp);
   if (!rateLimit.allowed) {
-    socket.send(JSON.stringify({ type: "ERROR", message: rateLimit.reason }));
+    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: rateLimit.reason }));
     socket.close(rateLimit.code || 4029, rateLimit.reason);
     return;
   }
 
   const clinicId = (req.params as any)?.clinicId || (req.query as any)?.clinicId;
   if (!clinicId || typeof clinicId !== "string" || clinicId.length !== 24) {
-    socket.send(JSON.stringify({ type: "ERROR", message: "Valid 24-character clinicId required" }));
+    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Valid 24-character clinicId required" }));
     socket.close(4004, "Invalid clinicId");
     return;
   }
@@ -688,12 +706,12 @@ export async function handleQueueWebSocket(socket: WebSocket, req: FastifyReques
   try {
     const clinic = await Clinic.findOne({ _id: clinicId, isActive: true }).select("_id isActive").lean();
     if (!clinic) {
-      socket.send(JSON.stringify({ type: "ERROR", message: "Clinic facility not found or inactive" }));
+      safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Clinic facility not found or inactive" }));
       socket.close(4004, "Clinic Not Found or Inactive");
       return;
     }
   } catch {
-    socket.send(JSON.stringify({ type: "ERROR", message: "Unable to validate clinic facility" }));
+    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Unable to validate clinic facility" }));
     socket.close(1011, "Clinic lookup failed");
     return;
   }
@@ -701,7 +719,7 @@ export async function handleQueueWebSocket(socket: WebSocket, req: FastifyReques
   incrementPublicWsIp(clientIp);
   registerClinicQueueWebSocket(clinicId, socket);
 
-  socket.send(JSON.stringify({
+  safeSocketSend(socket, JSON.stringify({
     type: "CONNECTED",
     transport: "websocket",
     topic: `clinic_queue:${clinicId}`,
@@ -714,7 +732,7 @@ export async function handleQueueWebSocket(socket: WebSocket, req: FastifyReques
 
   const pingInterval = setInterval(() => {
     if (socket.readyState === 1) {
-      try { socket.ping(); } catch { clearInterval(pingInterval); }
+      try { heartbeatSocket(socket); } catch { clearInterval(pingInterval); }
     } else {
       clearInterval(pingInterval);
     }
@@ -724,7 +742,7 @@ export async function handleQueueWebSocket(socket: WebSocket, req: FastifyReques
     try {
       const data = JSON.parse(raw.toString());
       if (data.type === "PING") {
-        socket.send(JSON.stringify({ type: "PONG", timestamp: new Date().toISOString() }));
+        safeSocketSend(socket, JSON.stringify({ type: "PONG", timestamp: new Date().toISOString() }));
       }
     } catch {
       // ignore
@@ -755,20 +773,20 @@ const CLINICAL_STAFF_ROLES = new Set([
 export async function handleClinicalWebSocket(socket: WebSocket, req: FastifyRequest) {
   const user = await resolveWebSocketAuth(req);
   if (!user) {
-    socket.send(JSON.stringify({ type: "ERROR", message: "Unauthorized: Valid authentication token required" }));
+    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Unauthorized: Valid authentication token required" }));
     socket.close(4001, "Unauthorized");
     return;
   }
 
   if (!user.role || !CLINICAL_STAFF_ROLES.has(user.role)) {
-    socket.send(JSON.stringify({ type: "ERROR", message: "Forbidden: Clinical staff role required for clinical channel" }));
+    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Forbidden: Clinical staff role required for clinical channel" }));
     socket.close(4003, "Forbidden");
     return;
   }
 
   const clinicId = (req.params as any)?.clinicId || (req.query as any)?.clinicId;
   if (!clinicId || typeof clinicId !== "string" || clinicId.length !== 24) {
-    socket.send(JSON.stringify({ type: "ERROR", message: "Valid 24-character clinicId query parameter required" }));
+    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Valid 24-character clinicId query parameter required" }));
     socket.close(4004, "Invalid clinicId");
     return;
   }
@@ -777,12 +795,12 @@ export async function handleClinicalWebSocket(socket: WebSocket, req: FastifyReq
   try {
     clinic = await Clinic.findById(clinicId).select("organizationId isActive").lean();
   } catch {
-    socket.send(JSON.stringify({ type: "ERROR", message: "Unable to validate clinic access" }));
+    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Unable to validate clinic access" }));
     socket.close(1011, "Clinic lookup failed");
     return;
   }
   if (!clinic || clinic.isActive === false || (user.role !== "root" && (!user.organization_id || clinic.organizationId.toString() !== user.organization_id))) {
-    socket.send(JSON.stringify({ type: "ERROR", message: "Forbidden: clinic access denied" }));
+    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Forbidden: clinic access denied" }));
     socket.close(4003, "Forbidden");
     return;
   }
@@ -795,7 +813,7 @@ export async function handleClinicalWebSocket(socket: WebSocket, req: FastifyReq
   bindPrivateConnection(user, socket, () => socket.close(4001, 'Clinical authority expired or revoked'), permitted);
   registerClinicClinicalWebSocket(clinicId, socket);
 
-  socket.send(JSON.stringify({
+  safeSocketSend(socket, JSON.stringify({
     type: "CONNECTED",
     transport: "websocket",
     topic: `clinic_clinical:${clinicId}`,
@@ -808,7 +826,7 @@ export async function handleClinicalWebSocket(socket: WebSocket, req: FastifyReq
     buffered.forEach((alert) => {
       try {
         if (socket.readyState === 1) {
-          sendPrivate(socket, () => { if (socket.readyState === 1) socket.send(JSON.stringify(alert)); });
+          sendPrivate(socket, () => { if (socket.readyState === 1) safeSocketSend(socket, JSON.stringify(alert)); });
         }
       } catch {
         // Safe ignore
@@ -818,7 +836,7 @@ export async function handleClinicalWebSocket(socket: WebSocket, req: FastifyReq
 
   const pingInterval = setInterval(() => {
     if (socket.readyState === 1) {
-      try { sendPrivate(socket, () => socket.ping()); } catch { clearInterval(pingInterval); }
+      try { sendPrivate(socket, () => heartbeatSocket(socket)); } catch { clearInterval(pingInterval); }
     } else {
       clearInterval(pingInterval);
     }
@@ -828,7 +846,7 @@ export async function handleClinicalWebSocket(socket: WebSocket, req: FastifyReq
     try {
       const data = JSON.parse(raw.toString());
       if (data.type === "PING") {
-        socket.send(JSON.stringify({ type: "PONG", timestamp: new Date().toISOString() }));
+        safeSocketSend(socket, JSON.stringify({ type: "PONG", timestamp: new Date().toISOString() }));
       }
     } catch {
       // ignore
@@ -862,7 +880,7 @@ export async function notificationStreamHandler(req: FastifyRequest, reply: Fast
   });
 
   // Initial connection message
-  reply.raw.write(`data: ${JSON.stringify({ type: "CONNECTED", transport: "sse", message: "Notification stream established" })}\n\n`);
+  safeSseWrite(reply, `data: ${JSON.stringify({ type: "CONNECTED", transport: "sse", message: "Notification stream established" })}\n\n`);
 
   bindPrivateConnection(req.user!, reply, () => reply.raw.end());
   registerUserSseStream(userId, reply);
@@ -871,7 +889,7 @@ export async function notificationStreamHandler(req: FastifyRequest, reply: Fast
   const heartbeatTimer = setInterval(() => {
     try {
       if (!reply.raw.writableEnded) {
-        sendPrivate(reply, () => { if (!reply.raw.writableEnded) reply.raw.write(": keep-alive\n\n"); });
+        sendPrivate(reply, () => { if (!reply.raw.writableEnded) safeSseWrite(reply, ": keep-alive\n\n"); });
       } else {
         clearInterval(heartbeatTimer);
       }

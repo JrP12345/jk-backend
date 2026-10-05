@@ -89,9 +89,22 @@ export function tenantPlugin(schema: Schema, options: TenantPluginOptions = {}) 
   schema.pre("save", function (this: any) {
     const context = requestContextStore.getStore();
     if (context?.organizationId && !context.isRoot) {
+      if (this.get(tenantField) && String(this.get(tenantField)) !== context.organizationId) throw new Error("Tenant ownership mismatch");
       if (!this.get(tenantField)) {
         this.set(tenantField, new mongoose.Types.ObjectId(context.organizationId));
       }
     }
   });
+  for (const method of ["updateOne", "updateMany", "findOneAndUpdate", "findOneAndReplace"] as const) {
+    schema.pre(method, function(this: any) {
+      const context = requestContextStore.getStore();
+      if (!context?.organizationId || context.isRoot || this.getOptions()?.bypassTenantFilter) return;
+      const update = this.getUpdate();
+      if (Array.isArray(update)) throw new Error("Tenant update pipelines require a scoped repository");
+      if (update?.$unset?.[tenantField] !== undefined || update?.$rename?.[tenantField] !== undefined) throw new Error("Tenant ownership cannot be removed");
+      for (const candidate of [update?.[tenantField], update?.$set?.[tenantField], update?.$setOnInsert?.[tenantField]]) {
+        if (candidate !== undefined && String(candidate) !== context.organizationId) throw new Error("Tenant ownership mismatch");
+      }
+    });
+  }
 }

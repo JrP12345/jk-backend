@@ -18,7 +18,7 @@ export class AIDataPrivacyError extends Error {
 const EMAIL_REGEX = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
 const PHONE_REGEX = /(?:\+?1[-.\s]?)?\(?[2-9]\d{2}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g;
 const SSN_REGEX = /\b\d{3}-\d{2}-\d{4}\b/g;
-const MRN_REGEX = /\b(?:MRN|mrn|Chart#?)[\s:#-]*([A-Za-z0-9-]{4,15})\b/gi;
+const MRN_REGEX = /\b(?:MRN[\s:#-]+|Chart\s*[#:]\s*)([A-Za-z0-9-]{4,64})\b/gi;
 const DOB_REGEX = /\b(?:DOB|dob|Date of Birth|Birthdate)[\s:#-]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b/gi;
 
 export class PHIAnonymizer {

@@ -17,6 +17,7 @@ const ClinicalNoteSchema = new Schema({
   doctorId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
 
   version: { type: Number, default: 1, required: true },
+  revision: { type: Number, default: 0, required: true },
   parentNoteId: { type: Schema.Types.ObjectId, ref: "ClinicalNote", default: null },
   isLatest: { type: Boolean, default: true, index: true },
 

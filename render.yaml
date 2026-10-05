@@ -1,6 +1,6 @@
-# Blueprint for the standalone jk-backend repository.
-# Before adopting it for an existing service, match `name` to its Render name.
-# Existing manually configured services must update their dashboard build command.
+# Provision the existing jk-production environment group before adopting this blueprint.
+# Preserve persistent encryption/signing keys. Match existing service names first.
+# https://render.com/docs/blueprint-spec
 services:
   - type: web
     name: jk-backend
@@ -9,7 +9,112 @@ services:
     startCommand: npm start
     healthCheckPath: /api/health/readiness
     envVars:
+      - fromGroup: jk-production
       - key: NODE_ENV
         value: production
-# Keep existing secrets configured in Render; none are generated or replaced here.
-# PORT is supplied by Render. Node 24 is selected through package.json engines.
+      - key: RUN_INLINE_JOBS
+        value: "false"
+      - key: MONGODB_MIN_POOL_SIZE
+        value: "2"
+      - key: MONGODB_MAX_POOL_SIZE
+        value: "30"
+  - type: worker
+    name: jk-notifications
+    runtime: node
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: node dist/workers/notificationDeliveryWorker.js
+    envVars:
+      - fromGroup: jk-production
+      - key: NODE_ENV
+        value: production
+      - key: WORKLOAD_ROLE
+        value: worker
+      - key: JWT_PRIVATE_KEY_BASE64
+        value: ""
+      - key: JWT_PRIVATE_KEY
+        value: ""
+      - key: PRESCRIPTION_SIGNING_KEY
+        value: ""
+      - key: GEMINI_API_KEY
+        value: ""
+      - key: MONGODB_MIN_POOL_SIZE
+        value: "0"
+      - key: MONGODB_MAX_POOL_SIZE
+        value: "5"
+      - key: WORKER_HEALTH_PORT
+        value: "5001"
+  - type: worker
+    name: jk-outbound-messages
+    runtime: node
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: node dist/workers/outboundMessageWorker.js
+    envVars:
+      - fromGroup: jk-production
+      - key: NODE_ENV
+        value: production
+      - key: WORKLOAD_ROLE
+        value: worker
+      - key: JWT_PRIVATE_KEY_BASE64
+        value: ""
+      - key: JWT_PRIVATE_KEY
+        value: ""
+      - key: PRESCRIPTION_SIGNING_KEY
+        value: ""
+      - key: GEMINI_API_KEY
+        value: ""
+      - key: MONGODB_MIN_POOL_SIZE
+        value: "0"
+      - key: MONGODB_MAX_POOL_SIZE
+        value: "5"
+      - key: WORKER_HEALTH_PORT
+        value: "5002"
+  - type: worker
+    name: jk-disruption-timeouts
+    runtime: node
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: node dist/workers/disruptionTimeoutWorker.js
+    envVars:
+      - fromGroup: jk-production
+      - key: NODE_ENV
+        value: production
+      - key: WORKLOAD_ROLE
+        value: worker
+      - key: JWT_PRIVATE_KEY_BASE64
+        value: ""
+      - key: JWT_PRIVATE_KEY
+        value: ""
+      - key: PRESCRIPTION_SIGNING_KEY
+        value: ""
+      - key: GEMINI_API_KEY
+        value: ""
+      - key: MONGODB_MIN_POOL_SIZE
+        value: "0"
+      - key: MONGODB_MAX_POOL_SIZE
+        value: "5"
+      - key: WORKER_HEALTH_PORT
+        value: "5003"
+  - type: worker
+    name: jk-domain-events
+    runtime: node
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: node dist/workers/domainEventWorker.js
+    envVars:
+      - fromGroup: jk-production
+      - key: NODE_ENV
+        value: production
+      - key: WORKLOAD_ROLE
+        value: worker
+      - key: JWT_PRIVATE_KEY_BASE64
+        value: ""
+      - key: JWT_PRIVATE_KEY
+        value: ""
+      - key: PRESCRIPTION_SIGNING_KEY
+        value: ""
+      - key: GEMINI_API_KEY
+        value: ""
+      - key: MONGODB_MIN_POOL_SIZE
+        value: "0"
+      - key: MONGODB_MAX_POOL_SIZE
+        value: "5"
+      - key: WORKER_HEALTH_PORT
+        value: "5004"

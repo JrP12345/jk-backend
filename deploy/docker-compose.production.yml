@@ -9,8 +9,8 @@ x-backend-env: &backend-env
   CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?Set CORS_ALLOWED_ORIGINS in .env}
   MONGODB_URI: ${MONGODB_URI:?Set MONGODB_URI in .env}
   REDIS_URL: ${REDIS_URL:-redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379}
-  MONGODB_MIN_POOL_SIZE: ${MONGODB_MIN_POOL_SIZE:-10}
-  MONGODB_MAX_POOL_SIZE: ${MONGODB_MAX_POOL_SIZE:-50}
+  MONGODB_MIN_POOL_SIZE: ${MONGODB_MIN_POOL_SIZE:-2}
+  MONGODB_MAX_POOL_SIZE: ${MONGODB_MAX_POOL_SIZE:-30}
   RUN_INLINE_JOBS: "false"
   ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in .env}
   PRESCRIPTION_SIGNING_KEY: ${PRESCRIPTION_SIGNING_KEY:?Set the persistent prescription signing key}
@@ -45,6 +45,7 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    stop_grace_period: 60s
     environment:
       CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:?Set the production frontend hostname}
       ACME_EMAIL: ${ACME_EMAIL:?Set the TLS certificate contact email}
@@ -66,6 +67,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    stop_grace_period: 60s
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}", "--appendonly", "yes"]
     volumes:
       - redis-data:/data
@@ -84,6 +86,7 @@ services:
       dockerfile: Dockerfile
     image: ${BACKEND_IMAGE:-ekavyu-backend:production}
     restart: unless-stopped
+    stop_grace_period: 60s
     environment:
       <<: *backend-env
     networks:
@@ -104,9 +107,17 @@ services:
       dockerfile: Dockerfile
     image: ${BACKEND_IMAGE:-ekavyu-backend:production}
     restart: unless-stopped
+    stop_grace_period: 60s
     command: ["node", "dist/workers/notificationDeliveryWorker.js"]
     environment:
       <<: *backend-env
+      WORKLOAD_ROLE: worker
+      JWT_PRIVATE_KEY_BASE64: ""
+      JWT_PRIVATE_KEY: ""
+      PRESCRIPTION_SIGNING_KEY: ""
+      GEMINI_API_KEY: ""
+      MONGODB_MIN_POOL_SIZE: "0"
+      MONGODB_MAX_POOL_SIZE: "5"
     networks:
       - healthos-net
     depends_on:
@@ -127,9 +138,17 @@ services:
       dockerfile: Dockerfile
     image: ${BACKEND_IMAGE:-ekavyu-backend:production}
     restart: unless-stopped
+    stop_grace_period: 60s
     command: ["node", "dist/workers/outboundMessageWorker.js"]
     environment:
       <<: *backend-env
+      WORKLOAD_ROLE: worker
+      JWT_PRIVATE_KEY_BASE64: ""
+      JWT_PRIVATE_KEY: ""
+      PRESCRIPTION_SIGNING_KEY: ""
+      GEMINI_API_KEY: ""
+      MONGODB_MIN_POOL_SIZE: "0"
+      MONGODB_MAX_POOL_SIZE: "5"
     networks:
       - healthos-net
     depends_on:
@@ -150,9 +169,17 @@ services:
       dockerfile: Dockerfile
     image: ${BACKEND_IMAGE:-ekavyu-backend:production}
     restart: unless-stopped
+    stop_grace_period: 60s
     command: ["node", "dist/workers/disruptionTimeoutWorker.js"]
     environment:
       <<: *backend-env
+      WORKLOAD_ROLE: worker
+      JWT_PRIVATE_KEY_BASE64: ""
+      JWT_PRIVATE_KEY: ""
+      PRESCRIPTION_SIGNING_KEY: ""
+      GEMINI_API_KEY: ""
+      MONGODB_MIN_POOL_SIZE: "0"
+      MONGODB_MAX_POOL_SIZE: "5"
     networks:
       - healthos-net
     depends_on:
@@ -173,9 +200,17 @@ services:
       dockerfile: Dockerfile
     image: ${BACKEND_IMAGE:-ekavyu-backend:production}
     restart: unless-stopped
+    stop_grace_period: 60s
     command: ["node", "dist/workers/domainEventWorker.js"]
     environment:
       <<: *backend-env
+      WORKLOAD_ROLE: worker
+      JWT_PRIVATE_KEY_BASE64: ""
+      JWT_PRIVATE_KEY: ""
+      PRESCRIPTION_SIGNING_KEY: ""
+      GEMINI_API_KEY: ""
+      MONGODB_MIN_POOL_SIZE: "0"
+      MONGODB_MAX_POOL_SIZE: "5"
     networks:
       - healthos-net
     depends_on:
@@ -190,29 +225,6 @@ services:
       retries: 3
       start_period: 20s
 
-  no-show-worker:
-    build:
-      context: ../
-      dockerfile: Dockerfile
-    image: ${BACKEND_IMAGE:-ekavyu-backend:production}
-    restart: unless-stopped
-    command: ["node", "dist/workers/noShowSweepWorker.js"]
-    environment:
-      <<: *backend-env
-    networks:
-      - healthos-net
-    depends_on:
-      backend:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5005/ready > /dev/null || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
-
   frontend:
     build:
       context: ../../frontend
@@ -221,6 +233,7 @@ services:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?Set NEXT_PUBLIC_API_URL at build time}
     image: ${FRONTEND_IMAGE:-ekavyu-frontend:production}
     restart: unless-stopped
+    stop_grace_period: 60s
     environment:
       NODE_ENV: production
       PORT: 3000

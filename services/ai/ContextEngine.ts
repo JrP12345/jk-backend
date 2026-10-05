@@ -198,6 +198,8 @@ export class ContextEngine {
         ].filter(Boolean).join("\n");
 
         // Cache the formatted organizationContext
+        for (const [key, entry] of this.metricsCache) if (entry.expiresAt <= Date.now()) this.metricsCache.delete(key);
+        if (this.metricsCache.size >= 100) this.metricsCache.delete(this.metricsCache.keys().next().value!);
         this.metricsCache.set(cacheKey, {
           data: organizationContext,
           expiresAt: Date.now() + this.CACHE_TTL_MS
@@ -217,7 +219,7 @@ export class ContextEngine {
         const patient = await Patient.findById(input.activePatientId).populate("userId", "name email").lean();
         if (patient) {
           const recordScope = { organizationId: orgId && mongoose.Types.ObjectId.isValid(orgId) ? orgId : null };
-          const patientName = (patient.userId as any)?.name || "Patient";
+          const patientName = (patient.userId as any)?.name || (patient as any).name || "Patient";
           const prescriptions = await Prescription.find({ patientId: input.activePatientId, ...recordScope }).limit(5).lean();
           const rxList = prescriptions.map(p => `${(p as any).medicineName || (p as any).medicationName || "Medication"} ${p.dosage}`).join(", ") || "None recorded";
 
@@ -229,7 +231,7 @@ export class ContextEngine {
           const lastAppt = apptDate ? `Last Appt: ${new Date(apptDate).toLocaleDateString()}` : "No past appts";
 
           const patientConditions = (patient.conditions || []).join(", ") || "None";
-          patientRecordContext = `Active Patient Record: Name: ${patientName}, MRN: MRN-${patient._id.toString().substring(18).toUpperCase()}, Conditions: ${patientConditions}. Active Rx: ${rxList}. Labs: ${labList}.`;
+          patientRecordContext = `Active Patient Record: Name: ${patientName}, MRN: ${(patient as any).mrn || patient._id.toString()}, Conditions: ${patientConditions}. Active Rx: ${rxList}. Labs: ${labList}.`;
           encounterContext = `Encounter History: ${lastAppt}.`;
         }
       } catch (err) {

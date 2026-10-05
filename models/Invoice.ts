@@ -1,4 +1,5 @@
 import mongoose, { Schema } from "mongoose";
+import { documentBudget } from "../utilities/documentBudget.ts";
 import { auditPlugin } from "../utilities/auditPlugin.ts";
 import { tenantPlugin } from "../utilities/tenantPlugin.ts";
 import { Organization } from "./Organization.ts";
@@ -19,6 +20,7 @@ const InvoiceItemSchema = new Schema({
 
 const InvoiceSchema = new Schema({
   invoiceNumber: { type: String, required: true, unique: true },
+  generationKey: { type: String },
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization" },
   currency: { type: String, enum: ["INR", "USD", "CAD", "GBP", "AED", "EUR"] },
   patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
@@ -63,6 +65,7 @@ const InvoiceSchema = new Schema({
   payments: [
     {
       amount: { type: Number, required: true },
+      operationKey: { type: String },
       paymentMethod: { type: String, required: true },
       referenceNumber: { type: String, trim: true },
       paidAt: { type: Date, default: Date.now },
@@ -81,6 +84,7 @@ const InvoiceSchema = new Schema({
 }, { timestamps: true });
 
 InvoiceSchema.index({ clinicId: 1, status: 1 });
+InvoiceSchema.index({ generationKey: 1 }, { unique: true, partialFilterExpression: { generationKey: { $type: "string" } } });
 InvoiceSchema.index({ organizationId: 1, createdAt: -1 });
 InvoiceSchema.index({ organizationId: 1, patientId: 1, createdAt: -1 });
 
@@ -117,5 +121,6 @@ InvoiceSchema.set("toJSON", {
 
 InvoiceSchema.plugin(auditPlugin);
 InvoiceSchema.plugin(tenantPlugin);
+InvoiceSchema.plugin(documentBudget, { payments: 500, items: 1000 });
 
 export const Invoice = mongoose.models.Invoice || mongoose.model("Invoice", InvoiceSchema);

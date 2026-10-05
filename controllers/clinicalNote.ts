@@ -151,6 +151,7 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
       prescriptions,
       followUpDate,
       followUpInstructions,
+      expectedRevision,
     } = req.body as any;
 
     if (!encounterId || !patientId || !chiefComplaint) {
@@ -174,6 +175,15 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
     const effectiveClinicId = encounter.clinicId.toString();
 
     const savedNote = await withClinicalTransaction(async () => {
+    let note = await ClinicalNote.findOne({ encounterId, organizationId: orgId, status: "draft", isLatest: true });
+    if (note && expectedRevision === undefined) throw Object.assign(new Error("Reload the draft before saving; its revision is required."), { statusCode: 428 });
+    if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision !== (note?.revision || 0))) {
+      throw Object.assign(new Error("This draft was changed by another user. Reload before saving."), { statusCode: 409 });
+    }
+    const oldObservationIds = note?.objective?.observationIds || [];
+    const oldPrescriptionIds = note?.plan?.prescriptionIds || [];
+    const previousObservations = await Observation.find({ _id: { $in: oldObservationIds }, organizationId: orgId, encounterId, deletedAt: null });
+    const previousPrescriptions = await Prescription.find({ _id: { $in: oldPrescriptionIds }, organizationId: orgId, encounterId, isSealed: false, deletedAt: null });
     // Completion and draft persistence both write this encounter, so concurrent
     // transactions cannot append new clinical work after a focused completion.
     const editableEncounter = await Encounter.findOneAndUpdate(
@@ -208,8 +218,12 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
         }));
 
       if (obsToInsert.length > 0) {
-        const createdObs = await Observation.insertMany(obsToInsert);
-        observationIds.push(...createdObs.map((obs) => obs._id as mongoose.Types.ObjectId));
+        for (const value of obsToInsert) {
+          const previous = previousObservations.find((item: any) => item.code === value.code);
+          const saved = previous ? await Observation.findOneAndUpdate({ _id: previous._id, organizationId: orgId, encounterId }, { $set: value }, { returnDocument: "after", runValidators: true }) : await Observation.create(value);
+          if (!saved) throw Object.assign(new Error("Observation changed during edit"), { statusCode: 409 });
+          observationIds.push(saved._id as mongoose.Types.ObjectId);
+        }
       }
     }
 
@@ -233,8 +247,13 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
         }));
 
       if (rxToInsert.length > 0) {
-        const createdRx = await Prescription.insertMany(rxToInsert);
-        prescriptionIds.push(...createdRx.map((rx) => rx._id as mongoose.Types.ObjectId));
+        const used = new Set<string>();
+        for (const value of rxToInsert) {
+          const previous = previousPrescriptions.find((item: any) => !used.has(String(item._id)) && item.medicineName.toLowerCase() === value.medicineName.toLowerCase());
+          const saved = previous ? await Prescription.findOneAndUpdate({ _id: previous._id, organizationId: orgId, encounterId, isSealed: false }, { $set: value }, { returnDocument: "after", runValidators: true }) : await Prescription.create(value);
+          used.add(String(saved._id));
+          prescriptionIds.push(saved._id as mongoose.Types.ObjectId);
+        }
       }
     }
 
@@ -248,12 +267,14 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
       : [];
 
     // 4. Create or update draft ClinicalNote
-    let note = await ClinicalNote.findOne({ encounterId, organizationId: orgId, status: "draft", isLatest: true });
+    await Observation.updateMany({ _id: { $in: oldObservationIds, $nin: observationIds }, organizationId: orgId, encounterId }, { $set: { deletedAt: new Date() } });
+    await Prescription.updateMany({ _id: { $in: oldPrescriptionIds, $nin: prescriptionIds }, organizationId: orgId, encounterId, isSealed: false }, { $set: { status: "superseded", deletedAt: new Date() } });
     if (note) {
       note.subjective = { chiefComplaint, historyOfPresentIllness: historyOfPresentIllness || "", symptoms: symptoms || [] };
       note.objective = { observationIds, physicalExamination: physicalExamination || "" };
       note.assessment = { diagnoses: formattedDiagnoses as any, severity: severity || "moderate" };
-      note.plan = { treatmentPlan: treatmentPlan || "", prescriptionIds, labOrderIds: [], followUpDate: followUpDate ? new Date(followUpDate) : undefined, followUpInstructions: followUpInstructions || "" };
+      note.plan = { treatmentPlan: treatmentPlan || "", prescriptionIds, labOrderIds: note.plan?.labOrderIds || [], followUpDate: followUpDate ? new Date(followUpDate) : undefined, followUpInstructions: followUpInstructions || "" };
+      note.revision = (note.revision || 0) + 1;
       await note.save();
     } else {
       note = await ClinicalNote.create({
@@ -263,6 +284,7 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
         patientId,
         doctorId: userId,
         version: 1,
+        revision: 1,
         isLatest: true,
         subjective: { chiefComplaint, historyOfPresentIllness: historyOfPresentIllness || "", symptoms: symptoms || [] },
         objective: { observationIds, physicalExamination: physicalExamination || "" },
@@ -330,7 +352,10 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
     try {
       const { PrescriptionSealingService } = await import("../services/PrescriptionSealingService.ts");
       const unsealedPrescriptions = await Prescription.find({
+        _id: { $in: note.plan?.prescriptionIds || [] },
         encounterId: note.encounterId,
+        organizationId: note.organizationId,
+        status: "active",
         isSealed: { $ne: true },
         deletedAt: null,
       });

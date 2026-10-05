@@ -39,6 +39,14 @@ export function hasConfiguredKeys(): boolean {
  * cross-pod verification failure and token invalidation on container restart.
  */
 export function initKeys(forceReload = false): { privateKey: string; publicKey: string } {
+  if (process.env.WORKLOAD_ROLE === "worker") {
+    const encoded = process.env.JWT_PUBLIC_KEY_BASE64;
+    const raw = process.env.JWT_PUBLIC_KEY;
+    SERVICE_PUBLIC_KEY = encoded ? Buffer.from(encoded.trim(), "base64").toString("utf8") : raw ? raw.replace(/\\n/g, "\n").trim() : fs.existsSync(getPublicKeyPath()) ? fs.readFileSync(getPublicKeyPath(), "utf8").trim() : "";
+    SERVICE_PRIVATE_KEY = "";
+    if (!SERVICE_PUBLIC_KEY) throw new Error("Workers require the public verification key");
+    return { privateKey: "", publicKey: SERVICE_PUBLIC_KEY };
+  }
   if (!forceReload && SERVICE_PRIVATE_KEY && SERVICE_PUBLIC_KEY) {
     return { privateKey: SERVICE_PRIVATE_KEY, publicKey: SERVICE_PUBLIC_KEY };
   }

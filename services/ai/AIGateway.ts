@@ -6,6 +6,9 @@ import { OutboundPipeline } from "./OutboundPipeline.ts";
 import { AIServiceUnavailableError } from "./AIService.ts";
 import { AIDataPrivacyError } from "../../utilities/phiAnonymizer.ts";
 import { AIObservabilityMetric } from "../../models/AIObservabilityMetric.ts";
+import { withConcurrencyBudget } from "../../utilities/concurrencyBudget.ts";
+import { MAX_AI_CONCURRENT_PER_TENANT } from "../../utilities/scalability.ts";
+import { requestContextStore } from "../../utilities/context.ts";
 
 export class AIGateway {
   private static instance: AIGateway;
@@ -28,7 +31,8 @@ export class AIGateway {
     return {
       patientId: request.sessionId || "general", query: context.anonymizedPrompt,
       patientRecordSummary: context.anonymizedContext,
-      chatHistory: request.chatHistory,
+      // History is included in the scrubbed compiled context.
+      chatHistory: undefined,
       systemPrompt: context.compiledPrompt?.systemPrompt || request.systemDirective,
       compiledPromptText: context.compiledPrompt?.userPrompt,
       modelEndpoint: provider.name === context.providerName ? context.modelEndpoint : provider.defaultModel,
@@ -55,8 +59,13 @@ export class AIGateway {
   }
 
   async execute(request: AIRequest, samplePatientData?: Array<{ name?: string; mrn?: string; email?: string; phone?: string }>, extraContextInput?: { currentRoute?: string; activePatientId?: string; userRole?: string }): Promise<AIResponse> {
+    return withConcurrencyBudget(`ai:${request.organizationId}`, MAX_AI_CONCURRENT_PER_TENANT, () => this.executeBounded(request, samplePatientData, extraContextInput));
+  }
+  private async executeBounded(request: AIRequest, samplePatientData?: Array<{ name?: string; mrn?: string; email?: string; phone?: string }>, extraContextInput?: { currentRoute?: string; activePatientId?: string; userRole?: string }): Promise<AIResponse> {
     const started = Date.now();
     let context: InboundPipelineContext;
+    const cancellation = request.signal || requestContextStore.getStore()?.abortSignal;
+    cancellation?.throwIfAborted();
     try { context = await InboundPipeline.process(request, samplePatientData, extraContextInput); }
     catch (error: any) {
       void AIObservabilityMetric.create({
@@ -69,28 +78,42 @@ export class AIGateway {
       }).catch(metricError => console.error("[AIGateway] Block metric failed:", metricError));
       throw error;
     }
-    let lastError: unknown;
     const candidates = this.providers(context);
     for (let index = 0; index < candidates.length; index++) {
+      cancellation?.throwIfAborted();
+      if (Date.now() - started >= 8_000) break;
       const provider = candidates[index];
       const payload = this.payload(request, context, provider);
+      payload.deadlineAt = started + 8_000;
+      const timeout = AbortSignal.timeout(Math.max(1, payload.deadlineAt - Date.now()));
+      payload.signal = cancellation ? AbortSignal.any([cancellation, timeout]) : timeout;
       let result: HealthQueryResponse;
       try { result = await provider.queryPatientHealthAssistant(payload); }
-      catch (error) { lastError = error; continue; }
+      catch { cancellation?.throwIfAborted(); continue; }
       // Outbound/privacy failures must not cause another provider request.
       return this.finish(request, context, provider, result, payload, started, index ? "failover" : "success");
     }
-    throw new AIServiceUnavailableError(lastError instanceof Error ? lastError.message : "No permitted AI provider is available.");
+    throw new AIServiceUnavailableError("No permitted AI provider completed within its deadline.");
   }
 
   async executeStream(request: AIRequest, onChunk: (token: string) => void, samplePatientData?: Array<{ name?: string; mrn?: string; email?: string; phone?: string }>, extraContextInput?: { currentRoute?: string; activePatientId?: string; userRole?: string }): Promise<AIResponse> {
+    return withConcurrencyBudget(`ai:${request.organizationId}`, MAX_AI_CONCURRENT_PER_TENANT, () => this.streamBounded(request, onChunk, samplePatientData, extraContextInput));
+  }
+  private async streamBounded(request: AIRequest, onChunk: (token: string) => void, samplePatientData?: Array<{ name?: string; mrn?: string; email?: string; phone?: string }>, extraContextInput?: { currentRoute?: string; activePatientId?: string; userRole?: string }): Promise<AIResponse> {
     const started = Date.now();
+    const cancellation = request.signal || requestContextStore.getStore()?.abortSignal;
+    cancellation?.throwIfAborted();
     const context = await InboundPipeline.process(request, samplePatientData, extraContextInput);
     if (!context.enableStreaming) throw new AIServiceUnavailableError("AI streaming is disabled for this organization.");
     const provider = this.providers(context)[0];
     if (!provider) throw new AIServiceUnavailableError("No permitted AI provider is available.");
     const payload = this.payload(request, context, provider);
+    payload.deadlineAt = started + 30_000;
+    const timeout = AbortSignal.timeout(Math.max(1, payload.deadlineAt - Date.now()));
+    payload.signal = cancellation ? AbortSignal.any([cancellation, timeout]) : timeout;
+    payload.signal.throwIfAborted();
     const streamHandler = (token: string) => {
+      if (payload.signal?.aborted) return;
       let text = token;
       context.tokenMap.forEach((value, placeholder) => { text = text.replaceAll(placeholder, value); });
       onChunk(text);

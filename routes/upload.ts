@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { FastifyInstance } from 'fastify';
 import mongoose from 'mongoose';
 import { generatePresignedUrl, generatePresignedDownloadUrl, getObjectBuffer, storeVerifiedObject, deleteObjectFromStorage } from '../utilities/r2.ts';
@@ -39,7 +40,8 @@ export default async function uploadRoutes(fastify: FastifyInstance) {
     if (!authority.allowed || authority.organizationId !== intent.organizationId.toString()) return reply.code(403).send(errorResponse('Upload access denied'));
     if (intent.status === 'completed') return reply.send(successResponse(intent));
     // Claim prevents concurrent reads/scans of the same object.
-    intent = await UploadIntent.findOneAndUpdate({ ...owned, status: 'pending', expiresAt: { $gt: new Date() } }, { $set: { status: 'verifying' } }, { returnDocument: 'after' });
+    const verificationToken = crypto.randomUUID();
+    intent = await UploadIntent.findOneAndUpdate({ ...owned, expiresAt: { $gt: new Date() }, $or: [{ status: 'pending' }, { status: 'verifying', verifyingUntil: { $lte: new Date() } }, { status: 'verifying', verifyingUntil: null, updatedAt: { $lt: new Date(Date.now() - 120_000) } }] }, { $set: { status: 'verifying', verificationToken, verifyingUntil: new Date(Date.now() + 90_000) } }, { returnDocument: 'after' });
     if (!intent) return reply.code(409).send(errorResponse('Upload is expired or already being verified'));
     let verifiedKey: string | undefined;
     const originalKey = intent.objectKey;
@@ -51,9 +53,9 @@ export default async function uploadRoutes(fastify: FastifyInstance) {
       catch (error) { invalidContent = true; throw error; }
       // Seal the checked bytes at a server-only key. The original PUT URL cannot overwrite them.
       verifiedKey = await storeVerifiedObject(buffer, mime, intent.organizationId.toString());
-      const completed = await UploadIntent.findOneAndUpdate({ ...owned, status: 'verifying', objectKey: originalKey }, {
-        $set: { objectKey: verifiedKey, status: 'completed', actualSizeBytes: buffer.length, actualMimeType: mime, magicBytesVerified: true, malwareClean: true },
-        $unset: { expiresAt: 1 },
+      const completed = await UploadIntent.findOneAndUpdate({ ...owned, status: 'verifying', verificationToken, objectKey: originalKey }, {
+        $set: { objectKey: verifiedKey, status: 'completed', actualSizeBytes: buffer.length, actualMimeType: mime, magicBytesVerified: true, contentValidationPassed: true, malwareClean: false },
+        $unset: { expiresAt: 1, verificationToken: 1, verifyingUntil: 1 },
       }, { returnDocument: 'after' });
       if (!completed) throw new Error('Upload claim was lost');
       void deleteObjectFromStorage(originalKey).catch(() => {});
@@ -61,7 +63,7 @@ export default async function uploadRoutes(fastify: FastifyInstance) {
         status: 'completed', actualSizeBytes: completed.actualSizeBytes, detectedMime: mime }));
     } catch (error: any) {
       if (verifiedKey) await deleteObjectFromStorage(verifiedKey).catch(() => {});
-      await UploadIntent.updateOne({ ...owned, status: 'verifying' }, { $set: { status: invalidContent || error.message === 'UPLOAD_TOO_LARGE' ? 'rejected' : 'pending' } });
+      await UploadIntent.updateOne({ ...owned, status: 'verifying', verificationToken }, { $set: { status: invalidContent || error.message === 'UPLOAD_TOO_LARGE' ? 'rejected' : 'pending' }, $unset: { verificationToken: 1, verifyingUntil: 1 } });
       return reply.code(400).send(errorResponse('Upload could not be verified. Check its size, type and storage upload.'));
     }
   });
@@ -92,7 +94,7 @@ export default async function uploadRoutes(fastify: FastifyInstance) {
     const authority = await authorizeUpload(req, body.patientId);
     if (!authority.allowed) return reply.code(authority.statusCode).send(errorResponse(authority.message));
     const encoded = body.base64Data || body.base64;
-    const maxBytes = CLASS_MAX_BYTES[contentClass as ContentClass];
+    const maxBytes = Math.min(CLASS_MAX_BYTES[contentClass as ContentClass], 7 * 1024 * 1024);
     if (typeof encoded !== 'string' || encoded.length > Math.ceil(maxBytes / 3) * 4 + 256) return reply.code(413).send(errorResponse('Upload exceeds the allowed size'));
     const raw = encoded.replace(/^data:[^;]+;base64,/, '');
     if (!/^[A-Za-z0-9+/]*={0,2}$/.test(raw) || raw.length % 4 !== 0) return reply.code(400).send(errorResponse('Invalid base64 data'));
@@ -105,7 +107,7 @@ export default async function uploadRoutes(fastify: FastifyInstance) {
       const intent = await UploadIntent.create({ organizationId: authority.organizationId, userId: req.user!.id,
         patientId: body.patientId, objectKey: key, originalFileName: filename, contentClass,
         permittedMimeTypes: [mime], maxSizeBytes: maxBytes, actualSizeBytes: buffer.length, actualMimeType: mime,
-        status: 'completed', magicBytesVerified: true, malwareClean: true });
+        status: 'completed', magicBytesVerified: true, contentValidationPassed: true, malwareClean: false });
       return reply.send(successResponse({ intentId: intent._id, fileKey: key, objectKey: key, publicUrl: key, url: key }));
     } catch (error) { await deleteObjectFromStorage(key).catch(() => {}); throw error; }
   });

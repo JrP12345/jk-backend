@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { authenticate, checkAnyPermission, checkAnyPermissionOrRoles, requirePlatformRoot } from "../middleware/auth.ts";
 import { requireModule } from "../middleware/moduleGuard.ts";
 import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
-import { createInvoiceSchema, collectPaymentSchema } from "../schemas/billing.ts";
+import { createInvoiceSchema, collectPaymentSchema, installmentSchema, consolidatedCheckoutSchema } from "../schemas/billing.ts";
 import {
   createInvoice,
   getInvoices,
@@ -120,7 +120,7 @@ export default async function billingRoutes(app: FastifyInstance) {
   app.get("/api/invoices/patient/me", viewInvoices, getInvoices);
   app.get("/api/invoices/:id", viewInvoices, getInvoiceDetails);
   app.put("/api/invoices/:id/pay", { ...manageInvoices, schema: collectPaymentSchema }, collectPayment);
-  app.post("/api/invoices/:id/payments", manageInvoices, recordPartialPayment);
+  app.post("/api/invoices/:id/payments", { ...manageInvoices, schema: installmentSchema }, recordPartialPayment);
 
   // Auto Charge Capture from Encounter
   app.get("/api/encounters/:encounterId/charges-preview", encounterBilling, getEncounterChargesPreview);
@@ -136,7 +136,7 @@ export default async function billingRoutes(app: FastifyInstance) {
 
   // ─── 1-Click Consolidated Outpatient Checkout ────────────────────
   app.get("/api/billing/checkout/preview/:appointmentId", manageInvoices, getConsolidatedCheckoutPreview);
-  app.post("/api/billing/checkout/consolidate", manageInvoices, processConsolidatedCheckout);
+  app.post("/api/billing/checkout/consolidate", { ...manageInvoices, schema: consolidatedCheckoutSchema }, processConsolidatedCheckout);
 
   // ─── Cashier Till Reconciliation & Shift Close (Z-Report) ────────
   app.get("/api/billing/till/summary", manageInvoices, getTillSummary);

@@ -1,4 +1,5 @@
 import mongoose, { Schema } from "mongoose";
+import { documentBudget } from "../utilities/documentBudget.ts";
 import { getNextAtomicSequence } from "./Counter.ts";
 import { tenantPlugin } from "../utilities/tenantPlugin.ts";
 import { encryptField, decryptField } from "../utilities/cryptoEnvelope.ts";
@@ -104,13 +105,14 @@ PatientSchema.pre("save", async function () {
     const year = new Date().getFullYear();
     const orgPart = this.organizationId ? this.organizationId.toString() : "GLOBAL";
     const seq = await getNextAtomicSequence(`mrn_${orgPart}_${year}`);
-    const orgSuffix = this.organizationId ? this.organizationId.toString().slice(-4).toUpperCase() : "GEN";
+    const orgSuffix = this.organizationId ? this.organizationId.toString().toUpperCase() : "GEN";
     this.mrn = `MRN-${year}-${orgSuffix}-${String(seq).padStart(6, "0")}`;
   }
 });
 
 // Apply automatic multi-tenant scoping
 PatientSchema.plugin(tenantPlugin);
+PatientSchema.plugin(documentBudget, { allergies: 100, conditions: 100, emergencyContacts: 20, insurancePolicies: 50, careContexts: 2000, abdmConsentRequests: 2000 });
 
 PatientSchema.virtual("id").get(function() {
   return this._id.toHexString();

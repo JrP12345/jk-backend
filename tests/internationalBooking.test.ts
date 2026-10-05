@@ -112,7 +112,7 @@ describe("international clinic booking", () => {
       headers: { cookie: cookies }, payload: { paymentMethod: "upi" } });
     expect(invoiceUpi.statusCode, invoiceUpi.body).toBe(409);
     const partialUpi = await app.inject({ method: "POST", url: `/api/invoices/${invoice!.id}/payments`,
-      headers: { cookie: cookies }, payload: { paymentMethod: "upi", amount: 25 } });
+      headers: { cookie: cookies }, payload: { idempotencyKey: "test-financial-internationalBooking_test_ts-1", paymentMethod: "upi", amount: 25 } });
     expect(partialUpi.statusCode, partialUpi.body).toBe(409);
     expect((await Invoice.findById(invoice!._id))?.status).toBe("unpaid");
 

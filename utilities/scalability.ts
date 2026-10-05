@@ -57,7 +57,7 @@ export const MAX_OUTBOUND_RETRY_COUNT = positiveInt("MAX_OUTBOUND_RETRY_COUNT", 
 
 /** Maximum MongoDB connection pool size per process (default 10, production recommendation: 50) */
 export const DB_POOL_SIZE = positiveInt("DB_POOL_SIZE",
-  process.env.NODE_ENV === "production" ? 50 : 10
+  process.env.NODE_ENV === "production" ? 30 : 10
 );
 
 /** MongoDB socket timeout in milliseconds (default 30s) */

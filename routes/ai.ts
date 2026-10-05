@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate, checkAnyPermission, checkPermission } from "../middleware/auth.ts";
+import { authenticate, checkAnyPermission, checkPermission, requirePlatformRoot } from "../middleware/auth.ts";
 import {
   generateSOAPNoteController,
   queryHealthAssistantController,
@@ -66,6 +66,7 @@ export default async function aiRoutes(app: FastifyInstance) {
     ...auth,
     preHandler: [authenticate, checkAnyPermission("VIEW_ANALYTICS", "MANAGE_ORGANIZATION")],
   };
+  const platformPrompts = { ...auth, preHandler: [authenticate, requirePlatformRoot()] };
   const billingAi = {
     ...auth,
     preHandler: [authenticate, checkAnyPermission("VIEW_BILLING", "MANAGE_BILLING")],
@@ -95,10 +96,10 @@ export default async function aiRoutes(app: FastifyInstance) {
   app.get("/api/ai/health", getAIHealthController);
 
   // Enterprise Prompt Governance & Approval Workflow APIs (Phase 2)
-  app.get("/api/ai/prompts", aiGovernance, listPromptTemplatesController);
-  app.post("/api/ai/prompts", aiGovernance, createPromptDraftController);
-  app.put("/api/ai/prompts/:id/approve", aiGovernance, approvePromptTemplateController);
-  app.post("/api/ai/prompts/test", aiGovernance, testPromptSandboxController);
+  app.get("/api/ai/prompts", platformPrompts, listPromptTemplatesController);
+  app.post("/api/ai/prompts", platformPrompts, createPromptDraftController);
+  app.put("/api/ai/prompts/:id/approve", platformPrompts, approvePromptTemplateController);
+  app.post("/api/ai/prompts/test", platformPrompts, testPromptSandboxController);
 
   // Enterprise Tool Calling & Clinician Co-Signature Approval APIs (Phase 5)
   app.post("/api/ai/tools/intent", clinicalAi, detectToolIntentController);

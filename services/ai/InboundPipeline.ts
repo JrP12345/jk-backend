@@ -67,6 +67,9 @@ export class InboundPipeline {
     // 3. Data Classification Policy Enforcement
     const classification: "nonclinical" | "deidentified_clinical" | "identifiable_clinical" =
       request.dataClassification || (orgConfig as any)?.defaultDataClassification || "deidentified_clinical";
+    if (process.env.NODE_ENV === "production" && classification !== "nonclinical" && process.env.CLINICAL_AI_PAYLOAD_REVIEWED !== "true") {
+      throw new AIDataPrivacyError("Clinical AI requires an approved provider-payload privacy review before production enablement");
+    }
 
     const purpose = request.purpose || "clinical_decision_support";
     const retentionCategory = request.retentionCategory || "operational_transient";
@@ -128,6 +131,7 @@ export class InboundPipeline {
     const combinedContext = [
       `Assigned AI Specialist: ${agentResult.agentName} (${agentResult.agentRole})\n${agentResult.systemDirective}`,
       sixDContext.fullContextSummary,
+      ...(request.chatHistory || []).slice(-16).map(turn => `Previous ${turn.sender}: ${turn.text}`),
       request.systemDirective || "",
       knowledgeRetrieval.evidenceText ? `Verifiable Medical Evidence:\n${knowledgeRetrieval.evidenceText}` : ""
     ].filter(Boolean).join("\n\n");
@@ -145,7 +149,7 @@ export class InboundPipeline {
 
     if (classification === "nonclinical") {
       // Nonclinical requests must NOT contain unmasked patient PHI
-      const scan = PHIAnonymizer.detectUnmaskedPHI(request.prompt);
+      const scan = PHIAnonymizer.detectUnmaskedPHI([request.prompt, combinedContext, compiledPrompt.userPrompt, compiledPrompt.systemPrompt].join("\n"));
       if (scan.hasUnmaskedPHI) {
         throw new AIDataPrivacyError(
           `Nonclinical request contains identifiable data (${scan.detectedCategories.join(", ")}). Aborting request.`
@@ -162,10 +166,10 @@ export class InboundPipeline {
           if (activeP) {
             const u = (activeP.userId as any) || {};
             phiList.unshift({
-              name: u.name,
+              name: u.name || (activeP as any).name,
               mrn: (activeP as any).mrn || activeP._id.toString(),
-              email: u.email,
-              phone: u.phone
+              email: u.email || (activeP as any).email,
+              phone: u.phone || (activeP as any).phone
             });
           }
         } catch {
@@ -191,8 +195,11 @@ export class InboundPipeline {
       compiledPrompt.userPrompt = compiledAnonymized.anonymizedText;
       compiledAnonymized.tokenMap.forEach((val, key) => tokenMap.set(key, val));
 
+      const systemAnonymized = PHIAnonymizer.anonymizeText(compiledPrompt.systemPrompt, phiList);
+      compiledPrompt.systemPrompt = systemAnonymized.anonymizedText;
+      systemAnonymized.tokenMap.forEach((value, key) => tokenMap.set(key, value));
       // Post-deidentification validation (fail-closed check)
-      const postScan = PHIAnonymizer.detectUnmaskedPHI(anonymizedPrompt);
+      const postScan = PHIAnonymizer.detectUnmaskedPHI([anonymizedPrompt, anonymizedContext, compiledPrompt.userPrompt, compiledPrompt.systemPrompt].join("\n"));
       if (postScan.hasUnmaskedPHI) {
         throw new AIDataPrivacyError(
           `De-identification failed to scrub sensitive identifiers: ${postScan.detectedCategories.join(", ")}. Aborting to prevent data leak.`

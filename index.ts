@@ -5,6 +5,7 @@ import "./db.ts";
 import mongoose from "mongoose";
 import { closeRealtimeTransports } from "./notifications/websocket.ts";
 import { requestContextStore } from "./utilities/context.ts";
+import { requestCancellationSignal } from "./utilities/requestCancellation.ts";
 import { redisClient } from "./utilities/redis.ts";
 import { reportCriticalError } from "./utilities/telemetry.ts";
 import {
@@ -63,7 +64,9 @@ import whatsappWebhookRoutes from "./routes/whatsappWebhook.ts";
 import { whatsAppWebhookWorker } from "./services/WhatsAppWebhookService.ts";
 import { outboundMessageDeliveryWorker } from "./services/OutboundMessageDeliveryWorker.ts";
 import whatsappCreditsRoutes from "./routes/whatsappCredits.ts";
-import { startNoShowSweepJob, stopNoShowSweepJob } from "./jobs/noShowSweepJob.ts";
+import { startDisruptionTimeoutJob, stopDisruptionTimeoutJob } from "./jobs/disruptionTimeoutJob.ts";
+import { domainEventDeliveryWorker } from "./services/DomainEventDeliveryWorker.ts";
+import { notificationDeliveryWorker } from "./notifications/workers/NotificationDeliveryWorker.ts";
 import { startBillingReconciliationJob, stopBillingReconciliationJob } from "./jobs/billingReconciliationJob.ts";
 import upiWebhookRoutes from "./routes/upiWebhook.ts";
 import abdmRoutes from "./routes/abdm.ts";
@@ -201,8 +204,8 @@ registerProfilingHooks(app);
 
 // Setup global async context for request-scoped state
 app.addHook("onRequest", (request, reply, done) => {
-  requestContextStore.enterWith({ userId: undefined });
-  done();
+  reply.header("X-Request-Id", request.id);
+  requestContextStore.run({ userId: undefined, correlationId: request.id, memo: new Map(), abortSignal: requestCancellationSignal(request, reply) }, done);
 });
 
 // ─── VAPT Enterprise Security Headers Hook (Applied on all outgoing HTTP responses) ───
@@ -421,14 +424,16 @@ async function startServer(port = getServerPort()) {
     await syncOrganizationPlanQuotas();
     app.log.info("✓ Tenant plan resource quotas verified / synchronized.");
 
-    // 3. Start scheduled no-show sweeper if running inline background jobs
+    // 3. Start durable consumers when using inline jobs.
     if (process.env.NODE_ENV !== "test" && (process.env.RUN_INLINE_JOBS === "true" || process.env.NODE_ENV !== "production")) {
-      startNoShowSweepJob();
+      domainEventDeliveryWorker.start();
+      notificationDeliveryWorker.start();
+      startDisruptionTimeoutJob();
       startBillingReconciliationJob();
       startOrganizationBrandingJob();
       whatsAppWebhookWorker.start();
       outboundMessageDeliveryWorker.start();
-      app.log.info("✓ Scheduled no-show background sweeper started (inline mode).");
+      app.log.info("Durable consumers and scheduled jobs started (inline mode).");
     }
 
     markBootstrapComplete();
@@ -449,25 +454,22 @@ const gracefulShutdown = async (signal: string, exitCode = 0) => {
   acceptingTraffic = false;
   markShuttingDown();
   const deadline = setTimeout(() => {
-    app.log.error("Shutdown exceeded 30 seconds; forcing exit so the supervisor can restart the API.");
+    app.log.error("Shutdown exceeded 55 seconds; forcing exit so durable leases can recover unfinished work.");
     process.exit(1);
-  }, 30_000);
+  }, 55_000);
   deadline.unref();
   app.log.info(`Received ${signal}. Initiating graceful traffic drain and shutdown...`);
   try {
-    // Step 0: Stop scheduled background sweepers
-    stopNoShowSweepJob();
-    stopBillingReconciliationJob();
-    stopOrganizationBrandingJob();
-    await whatsAppWebhookWorker.stop();
-    await outboundMessageDeliveryWorker.stop();
-
-    // Step 1: Remove server from traffic by failing readiness probes immediately
+    // Stop every consumer immediately; draining concurrently fits container grace.
     const drainMs = exitCode === 0 ? SHUTDOWN_DRAIN_MS : 0;
     if (drainMs > 0) {
       app.log.info(`Draining inbound traffic for ${drainMs}ms before closing listeners...`);
-      await new Promise((resolve) => setTimeout(resolve, drainMs));
     }
+    await Promise.all([
+      stopDisruptionTimeoutJob(), domainEventDeliveryWorker.stop(), notificationDeliveryWorker.stop(),
+      stopBillingReconciliationJob(), stopOrganizationBrandingJob(), whatsAppWebhookWorker.stop(), outboundMessageDeliveryWorker.stop(),
+      drainMs > 0 ? new Promise(resolve => setTimeout(resolve, drainMs)) : Promise.resolve(),
+    ]);
 
     // Step 2: Stop accepting new HTTP connections and wait for in-flight requests
     closeRealtimeTransports();

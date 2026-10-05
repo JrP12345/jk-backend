@@ -2,8 +2,21 @@ import { describe, it, expect, vi } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
 import { emailProvider } from "../notifications/providers/emailProvider.ts";
+import { otpService } from "../services/OtpService.ts";
+import { OtpVerification } from "../models/OtpVerification.ts";
 
 describe("Patient Email OTP Sign-In & Registration Tests", () => {
+  it("does not claim production delivery or leave an active OTP when the provider declines it", async () => {
+    const email = `declined-${Date.now()}@example.test`;
+    const delivery = vi.spyOn(emailProvider, "sendEmail").mockResolvedValue(false);
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      const result = await otpService.requestOtp({ email }, "authentication");
+      expect(result).toMatchObject({ success: false, expiresInSeconds: 0 });
+      expect(result).not.toHaveProperty("devOtp");
+      expect(await OtpVerification.countDocuments({ email, expiresAt: { $gt: new Date() } })).toBe(0);
+    } finally { delivery.mockRestore(); vi.unstubAllEnvs(); }
+  });
   const patientEmail = `patient_otp_${Date.now()}@example.com`;
   const staffEmail = `doctor_otp_${Date.now()}@ananta.internal`;
 

@@ -6,6 +6,7 @@ export interface WorkerHealthServerOptions {
   defaultPort?: number;
   envPortVar?: string;
   onMetrics?: () => Promise<Record<string, any>> | Record<string, any>;
+  onProgress?: () => ({ running: boolean; lastCompletedAt: number; idleMs: number; active: boolean } | { running: boolean; lastCompletedAt: number; idleMs: number; active: boolean }[]);
 }
 
 export function startWorkerHealthServer(options: WorkerHealthServerOptions): {
@@ -44,6 +45,11 @@ export function startWorkerHealthServer(options: WorkerHealthServerOptions): {
 
     if (url === "/ready" || url === "/api/health/readiness") {
       const report = await checkWorkerReadiness(options.workerName);
+      const progress = options.onProgress?.();
+      if (progress) {
+        report.data.progress = progress;
+        if ((Array.isArray(progress) ? progress : [progress]).some(item => !item.running || Date.now() - item.lastCompletedAt > Math.max(120_000, item.idleMs * 4))) { report.statusCode = 503; report.ready = false; report.data.status = "consumer_stalled"; }
+      }
       res.writeHead(report.statusCode, { "Content-Type": "application/json" });
       res.end(JSON.stringify(report.data));
       return;

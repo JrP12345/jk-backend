@@ -1,3 +1,4 @@
+import { WorkerLoop } from "../utilities/workerLoop.ts";
 import crypto from "node:crypto";
 import { DomainEventOutbox } from "../models/DomainEventOutbox.ts";
 import { readEncryptedDomainEvent } from "./DomainEventOutboxService.ts";
@@ -16,6 +17,7 @@ const BASE_RETRY_DELAY_MS = 1_000;
 const MAX_RETRY_DELAY_MS = 300_000; // 5 minutes ceiling
 
 export interface DomainEventMetrics {
+  countsCapped?: boolean;
   oldestEventAgeMs: number | null;
   pendingCount: number;
   retryingCount: number;
@@ -28,30 +30,14 @@ export interface DomainEventMetrics {
 }
 
 export class DomainEventDeliveryWorker {
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private loop = new WorkerLoop();
+  public getProgress() { return this.loop.progress(); }
   private stopped = false;
   private inBackpressure = false;
 
-  public start(intervalMs = DOMAIN_EVENT_WORKER_POLL_MS) {
-    if (this.timer) return;
-    this.stopped = false;
-    this.timer = setInterval(() => {
-      const batchSize = this.inBackpressure
-        ? Math.max(1, Math.floor(DOMAIN_EVENT_WORKER_BATCH_SIZE / WORKER_BACKPRESSURE_POLL_MULTIPLIER))
-        : DOMAIN_EVENT_WORKER_BATCH_SIZE;
+  public start(intervalMs = DOMAIN_EVENT_WORKER_POLL_MS) { this.stopped = false; this.loop.start(() => this.processBatch(DOMAIN_EVENT_WORKER_BATCH_SIZE), intervalMs); }
 
-      this.processBatch(batchSize).catch((error) =>
-        console.error("[DomainEventWorker] Batch failed:", error),
-      );
-    }, intervalMs);
-    this.timer.unref?.();
-  }
-
-  public async stop() {
-    this.stopped = true;
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
-  }
+  public async stop() { this.stopped = true; await this.loop.stop(); }
 
   public async processBatch(batchSize = DOMAIN_EVENT_WORKER_BATCH_SIZE) {
     if (this.stopped) return { processed: 0 };
@@ -80,6 +66,9 @@ export class DomainEventDeliveryWorker {
     ).select("+payloadCiphertext");
 
     if (!eventRow) return false;
+    const heartbeat = setInterval(() => { void DomainEventOutbox.updateOne({ _id: eventRow._id, status: "processing", lockedBy }, { $set: { lockedUntil: new Date(Date.now() + LOCK_DURATION_MS) } }).catch(() => console.error("[DomainEventWorker] Lease renewal failed")); }, 20_000);
+    heartbeat.unref?.();
+    try {
 
     // Guard: Poison event detection during deserialization
     let payload: DomainEventPayload;
@@ -152,6 +141,7 @@ export class DomainEventDeliveryWorker {
       }
     }
     return true;
+    } finally { clearInterval(heartbeat); }
   }
 
   /**
@@ -159,6 +149,8 @@ export class DomainEventDeliveryWorker {
    */
   public async getMetrics(): Promise<DomainEventMetrics> {
     const stats = await DomainEventOutbox.aggregate([
+      { $match: { status: { $in: ["pending", "retrying", "processing", "failed", "dead_letter"] } } },
+      { $limit: 5000 },
       {
         $group: {
           _id: "$status",
@@ -166,7 +158,7 @@ export class DomainEventDeliveryWorker {
           totalAttempts: { $sum: "$attempts" },
         },
       },
-    ]);
+    ]).option({ maxTimeMS: 2_000 });
 
     const counts: Record<string, number> = {
       pending: 0,
@@ -202,6 +194,7 @@ export class DomainEventDeliveryWorker {
 
     return {
       oldestEventAgeMs,
+      countsCapped: stats.reduce((sum, item) => sum + item.count, 0) >= 5000,
       pendingCount: counts.pending,
       retryingCount: counts.retrying,
       processingCount: counts.processing,

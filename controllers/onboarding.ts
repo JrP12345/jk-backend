@@ -536,6 +536,10 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
       return reply.code(404).send(errorResponse("Organization not found"));
     }
 
+    if (updateData.isActive === false) {
+      const { revokeOrganizationSessions } = await import("../utilities/sessionResolver.ts");
+      await revokeOrganizationSessions(id, "organization_suspended");
+    }
     // Synchronize primary clinic details if city, address, phone, or email changed
     const clinicUpdates: any = {};
     if (city) clinicUpdates.city = city;
@@ -556,88 +560,20 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
 
 // ─── Delete Organization By ID (Cascading Chain Delete) ──────────────────
 export async function deleteOrganizationById(req: FastifyRequest, reply: FastifyReply) {
-  try {
-    const { id } = req.params as { id: string };
-
-    if (req.user?.role !== "root") {
-      return reply.code(403).send(errorResponse("Only platform Root Admin can delete organizations"));
-    }
-
-    const org = await Organization.findById(id);
-    if (!org) {
-      return reply.code(404).send(errorResponse("Organization not found"));
-    }
-
-    // 1. Find all Clinics belonging to this Organization (checking both camelCase & snake_case)
-    const clinics = await Clinic.find({
-      $or: [{ organizationId: id }, { organization_id: id }]
-    }).select("_id").lean();
-    const clinicIds = clinics.map(c => c._id);
-
-    // 2. Find all OrgMembers belonging to this Organization
-    const members = await OrgMember.find({ organizationId: id }).select("userId").lean();
-    const memberUserIds = members.map(m => m.userId);
-
-    // 3. Cascading Deletion of Clinical & Operational Records Across All Modules
-    await Promise.all([
-      // Appointments & Encounters
-      Appointment.deleteMany({ $or: [{ clinicId: { $in: clinicIds } }, { organizationId: id }] }),
-      Encounter.deleteMany({ clinicId: { $in: clinicIds } }),
-
-      // Pharmacy & Inventory
-      Medicine.deleteMany({ clinicId: { $in: clinicIds } }),
-      Prescription.deleteMany({ clinicId: { $in: clinicIds } }),
-
-      // Laboratory & Diagnostics
-      LabTest.deleteMany({ clinicId: { $in: clinicIds } }),
-      LabOrder.deleteMany({ clinicId: { $in: clinicIds } }),
-
-      // Billing & Invoices
-      Invoice.deleteMany({ clinicId: { $in: clinicIds } }),
-
-      // Multi-location Doctor Assignments & Staff Profiles
-      DoctorAssignment.deleteMany({ organizationId: id }),
-      Doctor.deleteMany({ organizationId: id }),
-      Receptionist.deleteMany({ organizationId: id }),
-      OrgMember.deleteMany({ organizationId: id }),
-      PendingTwoFactorSetup.deleteMany({ userId: { $in: memberUserIds } }),
-      OnboardingDraft.deleteMany({ organizationId: id }),
-
-      // Commercial SaaS Subscriptions
-      Subscription.deleteMany({ organizationId: id }),
-      SubscriptionPayment.deleteMany({ organizationId: id }),
-
-      // Clinics belonging to this organization
-      Clinic.deleteMany({ $or: [{ organizationId: id }, { organization_id: id }] }),
-    ]);
-
-    // 4. Delete linked User accounts (Safely preserve Root Admin users and users who belong to other organizations)
-    if (memberUserIds.length > 0) {
-      const usersInOtherOrgs = await OrgMember.find({
-        userId: { $in: memberUserIds },
-        organizationId: { $ne: id },
-      }).distinct("userId");
-      const usersInOtherOrgsSet = new Set(usersInOtherOrgs.map(u => u.toString()));
-
-      const usersToDelete = memberUserIds.filter(uid => !usersInOtherOrgsSet.has(uid.toString()));
-      if (usersToDelete.length > 0) {
-        await User.deleteMany({
-          _id: { $in: usersToDelete },
-          role: { $ne: "root" } // Safely preserve Root Super-Admin!
-        });
-        await RefreshToken.deleteMany({ userId: { $in: usersToDelete } });
-      }
-    }
-
-    // 5. Delete the Organization record itself
-    await Organization.findByIdAndDelete(id);
-    await retireUnusedBranding(org, null);
-
-    return reply.send(successResponse({ id, name: org.name }, "Organization and all cascading clinic/staff/clinical resources cleanly deleted"));
-  } catch (err: any) {
-    console.error("deleteOrganizationById error:", err);
-    return reply.code(500).send(errorResponse(err.message || "Failed to delete organization"));
-  }
+  if (req.user?.role !== "root") return reply.code(403).send(errorResponse("Only platform Root can archive organizations"));
+  const { id } = req.params as { id: string };
+  if (!mongoose.Types.ObjectId.isValid(id)) return reply.code(400).send(errorResponse("Invalid organization ID"));
+  const organization = await withTransaction(async () => {
+    const organization = await Organization.findByIdAndUpdate(id, { $set: { status: "inactive", isActive: false } }, { returnDocument: "after", runValidators: true });
+    if (!organization) return null;
+    const { AuditLog } = await import("../models/AuditLog.ts");
+    await AuditLog.create({ userId: req.user!.id, organizationId: id, category: "ADMIN", action: "ORGANIZATION_ARCHIVED", targetId: organization._id, targetModel: "Organization", details: { clinicalRecordsPreserved: true } });
+    return organization;
+  });
+  if (!organization) return reply.code(404).send(errorResponse("Organization not found"));
+  const { revokeOrganizationSessions } = await import("../utilities/sessionResolver.ts");
+  await revokeOrganizationSessions(id, "organization_archived");
+  return reply.send(successResponse({ id, name: organization.name, archived: true }, "Organization archived; retained records preserved"));
 }
 
 

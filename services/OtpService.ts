@@ -89,7 +89,7 @@ export class OtpService {
 
     await OtpVerification.updateMany(activeQuery, { expiresAt: now });
 
-    await OtpVerification.create({
+    const issuedOtp = await OtpVerification.create({
       phone: phone || undefined,
       email: email || undefined,
       otpHash,
@@ -108,7 +108,7 @@ export class OtpService {
       if (isDev) {
         console.log(`[DEV OTP GENERATED] Email: ${email} | Purpose: ${purpose} | OTP: ${otpCode}`);
       }
-      emailProvider.sendEmail({
+      const accepted = await emailProvider.sendEmail({
         to: email,
         subject: purpose === "record_access" ? "Approve access to your full patient history" : "Ekavyu Security Verification OTP Code",
         text: purpose === "record_access" ? `Share this code only to approve viewing your records from all organizations for 10 minutes: ${otpCode}. Code valid for 5 minutes.` : `Your Ekavyu verification code is: ${otpCode}. Valid for 5 minutes.`,
@@ -129,7 +129,11 @@ export class OtpService {
             </p>
           </div>
         `,
-      }).catch((err) => console.error("Email OTP delivery failed:", err));
+      }).catch(() => false);
+      if (!accepted && !isDev) {
+        await OtpVerification.updateOne({ _id: issuedOtp._id }, { $set: { expiresAt: new Date() } });
+        return { success: false, message: "OTP delivery is unavailable. Retry shortly.", expiresInSeconds: 0 };
+      }
 
       return {
         success: true,
@@ -143,7 +147,7 @@ export class OtpService {
         console.log(`[DEV OTP GENERATED] Phone: ${phone} | Purpose: ${purpose} | OTP: ${otpCode}`);
       } else {
         // Production SMS / WhatsApp Provider Abstraction
-        sendSmsWhatsAppNotification({
+        const delivery = await sendSmsWhatsAppNotification({
           phone: phone!,
           channel: "sms",
           templateId: "OTP_VERIFICATION",
@@ -151,7 +155,11 @@ export class OtpService {
             otpCode,
             purpose,
           },
-        }).catch((err) => console.error("OTP Delivery failed:", err));
+        }).catch(() => null);
+        if (!delivery || !["sent", "accepted", "delivered"].includes(delivery.status)) {
+          await OtpVerification.updateOne({ _id: issuedOtp._id }, { $set: { expiresAt: new Date() } });
+          return { success: false, message: "OTP delivery is unavailable. Retry shortly.", expiresInSeconds: 0 };
+        }
       }
 
       return {

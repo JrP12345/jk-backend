@@ -258,7 +258,7 @@ describe("Variable & Post-Consultation Doctor Fee Workflow Suite", () => {
       method: "POST",
       url: "/api/billing/checkout/consolidate",
       headers: { cookie: adminCookies.join("; ") },
-      payload: {
+      payload: { idempotencyKey: "test-financial-postConsultationFeeWorkflow_test_ts-1",
         appointmentId: appt2Id,
         paymentMethod: "cash",
         customConsultationFee: 600,

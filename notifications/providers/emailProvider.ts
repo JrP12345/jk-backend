@@ -1,4 +1,6 @@
 import nodemailer, { type Transporter } from "nodemailer";
+import { withConcurrencyBudget } from "../../utilities/concurrencyBudget.ts";
+import { MAX_PROVIDER_CONCURRENCY } from "../../utilities/scalability.ts";
 import { decrypt, isEncrypted } from "../../utilities/encryption.ts";
 
 export interface EmailOptions {
@@ -79,6 +81,9 @@ export class EmailProvider {
    * If orgSmtp is provided and has credentials, it is used instead of .env.
    */
   public async sendEmail(options: EmailOptions, orgSmtp?: SmtpConfig | null): Promise<boolean> {
+    return withConcurrencyBudget("provider:email", MAX_PROVIDER_CONCURRENCY, () => this.sendEmailBounded(options, orgSmtp));
+  }
+  private async sendEmailBounded(options: EmailOptions, orgSmtp?: SmtpConfig | null): Promise<boolean> {
     const fromEmail = orgSmtp?.fromEmail || options.from || process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER || "noreply@anant.health";
     // Old platform SMTP display names can survive in deployed environment
     // settings. Normalize only those labels; preserve tenant names and addresses.

@@ -14,14 +14,15 @@ const healthServer = startWorkerHealthServer({
   workerName: "domain-event-worker",
   defaultPort: 5004,
   envPortVar: "WORKER_HEALTH_PORT",
+  onProgress: () => domainEventDeliveryWorker.getProgress(),
   onMetrics: () => domainEventDeliveryWorker.getMetrics(),
 });
 
 const shutdown = async () => {
   console.log("[DomainEventWorker] Graceful shutdown initiated...");
-  await healthServer.stop();
   await domainEventDeliveryWorker.stop();
   console.log("[DomainEventWorker] Worker stopped cleanly.");
+  await healthServer.stop();
   process.exit(0);
 };
 

@@ -1,4 +1,21 @@
 const objectIdPattern = "^[0-9a-fA-F]{24}$";
+const paymentMethod = { type: "string", enum: ["cash", "card", "upi", "net-banking", "insurance", "online"] };
+const money = { type: "number", minimum: 0, maximum: 1e9 };
+export const installmentSchema = {
+  body: { type: "object", required: ["amount", "paymentMethod"], properties: {
+    amount: { ...money, exclusiveMinimum: 0 }, paymentMethod,
+    referenceNumber: { type: "string", maxLength: 200 }, notes: { type: "string", maxLength: 2000 },
+    idempotencyKey: { type: "string", minLength: 8, maxLength: 128 },
+  }, additionalProperties: false },
+};
+export const consolidatedCheckoutSchema = {
+  body: { type: "object", required: ["appointmentId", "paymentMethod"], properties: {
+    appointmentId: { type: "string", pattern: objectIdPattern }, paymentMethod,
+    amountPaid: money, discount: money, customConsultFee: money, customConsultationFee: money,
+    referenceNumber: { type: "string", maxLength: 200 }, notes: { type: "string", maxLength: 2000 },
+    idempotencyKey: { type: "string", minLength: 8, maxLength: 128 },
+  }, additionalProperties: false },
+};
 
 export const createInvoiceSchema = {
   body: {

@@ -23,6 +23,7 @@ import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
 import mongoose from "mongoose";
+const MAX_ARCHIVE_BYTES = 128 * 1024 * 1024;
 
 function getBackupKey(): Buffer {
   const rawBackupKey = process.env.BACKUP_ENCRYPTION_KEY || process.env.ENCRYPTION_KEY;
@@ -76,12 +77,16 @@ async function fetchLatestFromRemoteStorage(): Promise<{ buffer: Buffer; fileNam
   // Sort descending by LastModified
   objects.sort((a, b) => ((b.LastModified?.getTime() || 0) - (a.LastModified?.getTime() || 0)));
   const latestObj = objects[0];
+  if ((latestObj.Size || 0) > MAX_ARCHIVE_BYTES) throw new Error("Supplemental archive exceeds restore memory budget; use provider recovery");
   if (!latestObj.Key) throw new Error("Remote backup object key missing.");
 
   console.log(`⬇️  Downloading remote archive: ${latestObj.Key} (${((latestObj.Size || 0) / 1024).toFixed(1)} KB)...`);
   const getResp = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: latestObj.Key }));
   const chunks: Uint8Array[] = [];
+  let downloadedBytes = 0;
   for await (const chunk of getResp.Body as any) {
+    downloadedBytes += chunk.length;
+    if (downloadedBytes > MAX_ARCHIVE_BYTES) throw new Error("Supplemental archive exceeds restore memory budget");
     chunks.push(chunk);
   }
   const buffer = Buffer.concat(chunks);
@@ -123,6 +128,7 @@ async function runRestoreDrill() {
   } else {
     const localTarget = inputIdx !== -1 && args[inputIdx + 1] ? args[inputIdx + 1] : findLatestBackup(backupsDir);
     targetFileLabel = localTarget;
+    if (fs.statSync(localTarget).size > MAX_ARCHIVE_BYTES) throw new Error("Supplemental archive exceeds restore memory budget; use provider recovery");
     rawFileBuffer = fs.readFileSync(localTarget);
   }
 
@@ -164,8 +170,9 @@ async function runRestoreDrill() {
 
   // 3. Decompress
   console.log("🗜  Decompressing gzip data stream...");
-  const jsonBuffer = zlib.gunzipSync(decryptedGzip);
-  const data = JSON.parse(jsonBuffer.toString("utf8"));
+  const jsonBuffer = zlib.gunzipSync(decryptedGzip, { maxOutputLength: MAX_ARCHIVE_BYTES });
+  const data = mongoose.mongo.BSON.EJSON.parse(jsonBuffer.toString("utf8"), { relaxed: false });
+  if (data._metadata?.bsonEncoding !== "canonical-ejson" || !data._indexes || data._metadata?.consistency !== "operator-confirmed-writes-paused") throw new Error("Legacy/uncoordinated JSON archives are not application recovery evidence. Use a BSON-preserving provider recovery.");
 
   const metadata = data._metadata || {};
   console.log(`   • Backup Created At : ${metadata.createdAt || "Unknown"}`);
@@ -186,11 +193,25 @@ async function runRestoreDrill() {
   let totalRestoredDocs = 0;
 
   for (const [keyName, documents] of Object.entries(data)) {
-    if (keyName === "_metadata" || !Array.isArray(documents)) continue;
+    if (keyName.startsWith("_") || !Array.isArray(documents)) continue;
     if (documents.length > 0) {
       await drillDb.collection(keyName).insertMany(documents as any[]);
+    } else {
+      await drillDb.createCollection(keyName);
     }
     const count = await drillDb.collection(keyName).countDocuments();
+    if (count !== documents.length) throw new Error(`Document count mismatch for ${keyName}`);
+    for (const index of data._indexes[keyName] || []) {
+      if (index.name === "_id_") continue;
+      const { key, v, ns, ...options } = index;
+      await drillDb.collection(keyName).createIndex(key, options);
+    }
+    const restoredIndexes = await drillDb.collection(keyName).indexes();
+    for (const index of data._indexes[keyName] || []) if (!restoredIndexes.some(value => value.name === index.name)) throw new Error(`Missing restored index: ${keyName}.${index.name}`);
+    if (documents.length) {
+      const restored = await drillDb.collection(keyName).findOne({ _id: documents[0]._id }, { promoteValues: false });
+      if (!restored || mongoose.mongo.BSON.EJSON.stringify(restored, { relaxed: false }) !== mongoose.mongo.BSON.EJSON.stringify(documents[0], { relaxed: false })) throw new Error(`BSON sample mismatch for ${keyName}`);
+    }
     restoredCounts[keyName] = count;
     totalRestoredDocs += count;
     console.log(`   ✓ ${keyName.padEnd(28)} : ${count} docs verified`);
@@ -218,7 +239,8 @@ async function runRestoreDrill() {
 
   const durationMs = Date.now() - startTime;
   const drillReport = {
-    status: "verified",
+    status: "archive-structure-verified",
+    applicationRecoveryVerified: false,
     timestamp: new Date().toISOString(),
     durationMs,
     targetFile: targetFileLabel,
@@ -232,7 +254,7 @@ async function runRestoreDrill() {
 
   console.log("\n================================================================================");
   console.log(`🏆 Disaster Recovery Drill PASSED in ${(durationMs / 1000).toFixed(2)}s.`);
-  console.log("   Backup archive is valid, decryptable, and restore-ready.");
+  console.log("   BSON samples, document counts and indexes verified. Application/decryption/cutover checks remain required.");
   console.log("================================================================================\n");
 }
 

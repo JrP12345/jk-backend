@@ -108,6 +108,15 @@ export class TimelineService {
     const eventArrays = await Promise.all(providerPromises);
     let allEvents: TimelineEvent[] = eventArrays.flat();
 
+    // Sort/window source events before text filtering. A sparse search page may
+    // be empty with hasMore=true; its source cursor still advances safely.
+    allEvents.sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime() || b.id.localeCompare(a.id));
+    const limit = Math.min(Math.max(query.limit || 20, 1), 100);
+    const hasMore = allEvents.length > limit;
+    const scanWindow = allEvents.slice(0, limit);
+    const lastScanned = scanWindow.at(-1);
+    const nextCursor = hasMore && lastScanned ? TimelineService.encodeCursor(new Date(lastScanned.occurredAt), lastScanned.id) : null;
+    allEvents = scanWindow;
     // 4. Keyword Text Search Filtering (`q`)
     if (query.q && query.q.trim().length > 0) {
       const search = query.q.trim().toLowerCase();
@@ -122,43 +131,8 @@ export class TimelineService {
       });
     }
 
-    // 5. Deterministic Sort: occurredAt DESC, id DESC tiebreaker
-    allEvents.sort((a, b) => {
-      const timeA = new Date(a.occurredAt).getTime();
-      const timeB = new Date(b.occurredAt).getTime();
-      if (timeA !== timeB) {
-        return timeB - timeA; // Most recent first
-      }
-      return b.id.localeCompare(a.id); // Tiebreaker by ID
-    });
-
-    const totalCount = allEvents.length;
-
-    // 6. Cursor-Based Pagination
-    let paginatedEvents = allEvents;
-    if (query.cursor) {
-      const decoded = TimelineService.decodeCursor(query.cursor);
-      if (decoded) {
-        const cursorTime = decoded.timestamp.getTime();
-        paginatedEvents = allEvents.filter((ev) => {
-          const evTime = new Date(ev.occurredAt).getTime();
-          if (evTime < cursorTime) return true;
-          if (evTime === cursorTime && ev.id.localeCompare(decoded.id) < 0) return true;
-          return false;
-        });
-      }
-    }
-
-    const limit = Math.min(Math.max(query.limit || 20, 1), 100);
-    const hasMore = paginatedEvents.length > limit;
-    const resultEvents = paginatedEvents.slice(0, limit);
-
-    let nextCursor: string | null = null;
-    if (hasMore && resultEvents.length > 0) {
-      const last = resultEvents[resultEvents.length - 1];
-      nextCursor = TimelineService.encodeCursor(new Date(last.occurredAt), last.id);
-    }
-
+    const resultEvents = allEvents;
+    const totalCount = resultEvents.length; // This is a page count, not an unbounded historical count.
     const durationMs = Date.now() - startTime;
 
     return {
@@ -168,6 +142,7 @@ export class TimelineService {
       hasMore,
       returnedCount: resultEvents.length,
       totalCount,
+      totalCountIsExact: !hasMore && !query.cursor,
       metrics: {
         durationMs,
         providerExecutionTimesMs,

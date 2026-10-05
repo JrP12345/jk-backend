@@ -7,6 +7,8 @@ export interface RequestContext {
   ipAddress?: string;
   userAgent?: string;
   correlationId?: string;
+  abortSignal?: AbortSignal;
+  memo?: Map<string, Promise<unknown>>;
 }
 
 export const requestContextStore = new AsyncLocalStorage<RequestContext>();

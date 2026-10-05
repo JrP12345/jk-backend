@@ -1,3 +1,4 @@
+import { timelineWindow } from "./timelineWindow.ts";
 import { Invoice } from "../../models/Invoice.ts";
 import {
   type TimelineEvent,
@@ -23,7 +24,7 @@ export class BillingProvider implements TimelineProvider {
     if (query.organizationId && !query.isCrossOrgAllowed) {
       invQuery.organizationId = query.organizationId;
     }
-    const invoices = await Invoice.find(invQuery).setOptions({ bypassTenantFilter: query.isCrossOrgAllowed === true }).lean();
+    const invoices = await (await timelineWindow(Invoice, invQuery, query, ["paymentDate"])).query.lean();
 
     const events: TimelineEvent[] = [];
 
@@ -31,7 +32,7 @@ export class BillingProvider implements TimelineProvider {
       events.push({
         id: inv._id.toString(),
         type: "billing",
-        occurredAt: inv.paidAt || inv.createdAt,
+        occurredAt: inv.paymentDate || inv.createdAt,
         patientId: query.patientId,
         organizationId: inv.organizationId?.toString() || query.organizationId,
         title: `Invoice #${inv.invoiceNumber || inv._id.toString().slice(-6)}`,

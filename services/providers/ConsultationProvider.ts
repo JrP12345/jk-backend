@@ -1,3 +1,4 @@
+import { timelineWindow } from "./timelineWindow.ts";
 import { Appointment } from "../../models/Appointment.ts";
 import { ClinicalNote } from "../../models/ClinicalNote.ts";
 import { Observation } from "../../models/Observation.ts";
@@ -30,11 +31,12 @@ export class ConsultationProvider implements TimelineProvider {
     if (query.organizationId && !query.isCrossOrgAllowed) {
       noteQuery.organizationId = query.organizationId;
     }
-    const noteFind = ClinicalNote.find(noteQuery);
+    const noteFind = (await timelineWindow(ClinicalNote, noteQuery, query, ["signature.signedAt"])).query;
     if (query.isCrossOrgAllowed) {
       noteFind.setOptions({ bypassTenantFilter: true });
     }
     const notes = await noteFind
+      .populate("encounterId", "appointmentId")
       .populate("doctorId", "name email")
       .populate("clinicId", "name city")
       .populate("objective.observationIds")
@@ -44,6 +46,7 @@ export class ConsultationProvider implements TimelineProvider {
     const noteApptIds = new Set<string>();
 
     for (const note of notes as any[]) {
+      note.appointmentId = note.encounterId?.appointmentId;
       noteApptIds.add(note.appointmentId?.toString());
       const doctorName = note.doctorId?.name || note.signature?.signerName || "Attending Physician";
       const doctorId = note.doctorId?._id?.toString() || note.doctorId?.toString() || "unknown";
@@ -107,11 +110,11 @@ export class ConsultationProvider implements TimelineProvider {
     }
 
     // 2. Fetch Appointments without a Clinical Note
-    const appointments = await Appointment.find({
+    const appointments = await (await timelineWindow(Appointment, {
       patientId: query.patientId,
       ...(query.organizationId && !query.isCrossOrgAllowed ? { organizationId: query.organizationId } : {}),
       status: { $in: ["completed", "in-consultation", "checked-in"] },
-    }).setOptions({ bypassTenantFilter: query.isCrossOrgAllowed === true })
+    }, query, ["appointmentTime"])).query
       .populate("doctorId", "name email")
       .lean();
 

@@ -9,6 +9,7 @@ import { enqueueCommunicationTemplate } from "./CommunicationOutbox.ts";
 import { resolveWhatsAppAccount, recordWhatsAppCredentialError } from "./WhatsAppAccountService.ts";
 import { assertWhatsAppConsent, assertApprovedTemplate } from "./WhatsAppSendPolicy.ts";
 import { claimWhatsAppIntent } from "./WhatsAppLedger.ts";
+import { withConcurrencyBudget } from "../utilities/concurrencyBudget.ts";
 
 export type SupportedTemplateId =
   | "OTP_VERIFICATION"
@@ -56,6 +57,13 @@ export async function sendSmsWhatsAppNotification(options: SendMessageOptions): 
 
 /** Provider-only dispatch. This must only be called by the outbound worker. */
 export async function dispatchSmsWhatsAppNotification(options: SendMessageOptions): Promise<any> {
+  if (options.channel === "sms" && process.env.SMS_PROVIDER === "msg91") {
+    return withConcurrencyBudget("provider:sms", 5, () => dispatchBounded(options));
+  }
+  return dispatchBounded(options);
+}
+
+async function dispatchBounded(options: SendMessageOptions): Promise<any> {
   const channel = options.channel || "whatsapp";
   const phone = options.phone.trim();
   const appointmentId = options.appointmentId;
@@ -133,6 +141,7 @@ export async function dispatchSmsWhatsAppNotification(options: SendMessageOption
     try {
       const recipientMobile = whatsAppCloudApiService.formatPhoneNumber(phone);
       const res = await fetch("https://control.msg91.com/api/v5/otp", {
+        signal: AbortSignal.timeout(8_000),
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -156,7 +165,7 @@ export async function dispatchSmsWhatsAppNotification(options: SendMessageOption
         templateId,
         messageContent,
         status: isSuccess ? "sent" : "failed",
-        errorReason: isSuccess ? undefined : JSON.stringify(responseData),
+        errorReason: isSuccess ? undefined : "SMS_PROVIDER_DECLINED",
       });
     } catch (err: any) {
       console.error("[MSG91 SMS Error]:", err);

@@ -1,3 +1,4 @@
+import { timelineWindow } from "./timelineWindow.ts";
 import { LabOrder } from "../../models/LabOrder.ts";
 import { LabTest } from "../../models/LabTest.ts";
 import { User } from "../../models/User.ts";
@@ -28,10 +29,10 @@ export class LabProvider implements TimelineProvider {
   }
 
   async fetch(query: TimelineQueryOptions): Promise<TimelineEvent[]> {
-    const orders = await LabOrder.find({
+    const orders = await (await timelineWindow(LabOrder, {
       patientId: query.patientId,
       ...(query.organizationId && !query.isCrossOrgAllowed ? { organizationId: query.organizationId } : {}),
-    }).setOptions({ bypassTenantFilter: query.isCrossOrgAllowed === true })
+    }, query, ["resultedAt", "completedDate", "orderDate"], "")).query
       .populate("testId", "name code department sampleType normalRange")
       .populate("orderedBy", "name")
       .populate("doctorId", "name")

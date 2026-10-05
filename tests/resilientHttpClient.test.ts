@@ -4,6 +4,14 @@ import { AmbiguousOutcomeError, CircuitBreakerOpenError, ResilientHttpClient } f
 afterEach(() => vi.unstubAllGlobals());
 
 describe("provider HTTP failure classification", () => {
+  it("keeps the timeout active while consuming a response body", async () => {
+    const client = new ResilientHttpClient();
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, options: any) => ({
+      ok: true, status: 200, headers: new Headers(),
+      text: () => new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("body timeout")), { once: true })),
+    })));
+    await expect(client.request("https://provider.test/body", { provider: "body-deadline", method: "POST", isIdempotent: false, totalTimeoutMs: 25 })).rejects.toBeInstanceOf(AmbiguousOutcomeError);
+  });
   it("does not retry 404s or open a provider-wide circuit after repeated missing orders", async () => {
     const client = new ResilientHttpClient();
     const fetchMock = vi.fn().mockImplementation(async () => new Response("no Route matched with those values", { status: 404 }));

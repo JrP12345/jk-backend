@@ -380,6 +380,8 @@ describe("Cryptographic Audit Trail & WebSocket Channel Segregation Suite", () =
     const sentErrors: any[] = [];
 
     const mockSocket: any = {
+      readyState: 1,
+      bufferedAmount: 0,
       send: vi.fn((msg) => sentErrors.push(JSON.parse(msg))),
       close: vi.fn((code, reason) => closedSockets.push({ code, reason })),
       on: vi.fn(),

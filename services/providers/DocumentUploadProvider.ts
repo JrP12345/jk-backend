@@ -1,3 +1,4 @@
+import { timelineWindow } from "./timelineWindow.ts";
 import { DocumentUpload } from "../../models/DocumentUpload.ts";
 import {
   type TimelineEvent,
@@ -14,10 +15,10 @@ export class DocumentUploadProvider implements TimelineProvider {
   }
 
   async fetch(query: TimelineQueryOptions): Promise<TimelineEvent[]> {
-    const docs = await DocumentUpload.find({
+    const docs = await (await timelineWindow(DocumentUpload, {
       patientId: query.patientId,
       ...(query.organizationId && !query.isCrossOrgAllowed ? { organizationId: query.organizationId } : {}),
-    }).setOptions({ bypassTenantFilter: query.isCrossOrgAllowed === true })
+    }, query, ["uploadedAt"], "DOCUMENT_")).query
       .populate("uploadedByUserId", "name role")
       .lean();
 

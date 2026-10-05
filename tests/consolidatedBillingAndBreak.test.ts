@@ -257,7 +257,7 @@ describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite"
       method: "POST",
       url: "/api/billing/checkout/consolidate",
       headers: { cookie: adminCookies.join("; ") },
-      payload: {
+      payload: { idempotencyKey: "test-financial-consolidatedBillingAndBreak_test_ts-1",
         appointmentId,
         paymentMethod: "upi",
         discount: 50,

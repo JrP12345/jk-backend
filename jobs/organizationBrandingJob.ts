@@ -1,15 +1,17 @@
 import crypto from "node:crypto";
 import { cleanupBrandingAssets } from "../services/OrganizationBranding.ts";
-import { acquireOrRenewWorkerLease } from "../utilities/workerLease.ts";
-const holderId = `${process.pid}:${crypto.randomUUID()}`;
-let timer: NodeJS.Timeout | null = null;
+import { cleanupExpiredUploads } from "../services/UploadCleanupService.ts";
+import { acquireOrRenewWorkerLease, releaseWorkerLease } from "../utilities/workerLease.ts";
+import { WorkerLoop } from "../utilities/workerLoop.ts";
+const holderId = crypto.randomUUID();
+const loop = new WorkerLoop();
 export function startOrganizationBrandingJob() {
-  if (timer) return;
-  timer = setInterval(async () => {
-    try {
-      if (await acquireOrRenewWorkerLease({ name: "organization-branding-cleanup", holderId, leaseMs: 20 * 60_000 })) await cleanupBrandingAssets();
-    } catch (error) { console.error("organization.branding.job.failed", error); }
+  loop.start(async () => {
+    if (!await acquireOrRenewWorkerLease({ name: "organization-branding-cleanup", holderId, leaseMs: 120_000 })) return { processed: 1 };
+    const heartbeat = setInterval(() => { void acquireOrRenewWorkerLease({ name: "organization-branding-cleanup", holderId, leaseMs: 120_000 }).catch(() => console.error("storage.cleanup.lease.failed")); }, 20_000);
+    heartbeat.unref?.();
+    try { await cleanupBrandingAssets(); await cleanupExpiredUploads(); return { processed: 1 }; }
+    finally { clearInterval(heartbeat); await releaseWorkerLease("organization-branding-cleanup", holderId); }
   }, 10 * 60_000);
-  timer.unref();
 }
-export function stopOrganizationBrandingJob() { if (timer) clearInterval(timer); timer = null; }
+export async function stopOrganizationBrandingJob() { await loop.stop(); }

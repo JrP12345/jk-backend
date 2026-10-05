@@ -420,6 +420,14 @@ export async function listChatSessionMessagesController(req: FastifyRequest, rep
 
 // ─── POST /api/ai/chat/sessions/:sessionId/messages ───────────────────
 export async function sendChatMessageController(req: FastifyRequest, reply: FastifyReply) {
+  const { withConcurrencyBudget } = await import("../utilities/concurrencyBudget.ts");
+  try {
+    return await withConcurrencyBudget(`chat:${req.user?.id}:${(req.params as any).sessionId}`, 1, () => sendChatMessage(req, reply));
+  } catch (error: any) {
+    return reply.code(error.statusCode || 503).send(errorResponse("Chat is busy. Retry shortly."));
+  }
+}
+async function sendChatMessage(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { sessionId } = req.params as { sessionId: string };
     const { query, currentRoute, activePatientId } = req.body as { query: string; currentRoute?: string; activePatientId?: string };
@@ -448,7 +456,7 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
       .lean();
     const userSeq = (lastMsg?.sequence || 0) + 1;
 
-    if (userSeq > MAX_AI_SESSION_MESSAGES) {
+    if (userSeq >= MAX_AI_SESSION_MESSAGES) {
       return reply.code(400).send(errorResponse(`Session message limit (${MAX_AI_SESSION_MESSAGES}) reached. Please start a new session.`));
     }
 
@@ -557,17 +565,13 @@ export async function sendChatMessageController(req: FastifyRequest, reply: Fast
       { returnDocument: "after" }
     );
 
-    const allMessages = await AIChatMessage.find({ sessionId }).sort({ sequence: 1 }).lean();
     return reply.code(200).send(successResponse({
       sessionId: updatedSession?._id.toString() || sessionId,
       title: updatedSession?.title || "Clinical Chat Session",
       userMessage: userMsg,
       aiMessage: aiMsg,
-      allMessages: allMessages.map(m => ({
-        id: m._id.toString(), sender: m.sender, text: m.text,
-        citations: m.citations || [], suggestedActions: m.suggestedActions || [],
-        sequence: m.sequence, timestamp: m.timestamp, createdAt: m.createdAt
-      }))
+      revision: aiSeq,
+      incremental: true
     }));
   } catch (err: any) {
     console.error("sendChatMessageController error:", err);

@@ -86,12 +86,13 @@ class GeminiAIProvider implements AIProvider {
 
   get defaultModel() { return process.env.GEMINI_MODEL || "gemini-1.5-flash"; }
 
-  private async callGemini(prompt: string, schemaConfig?: any, requestedModel?: string): Promise<any> {
+  private async callGemini(prompt: string, schemaConfig?: any, requestedModel?: string, signal: AbortSignal = AbortSignal.timeout(8_000)): Promise<any> {
     const primaryModel = requestedModel || this.defaultModel;
     const modelsToTry = requestedModel ? [primaryModel] : [primaryModel, "gemini-2.0-flash", "gemini-1.5-pro"];
     let lastError: Error | null = null;
 
     for (let i = 0; i < modelsToTry.length; i++) {
+      signal.throwIfAborted();
       const model = modelsToTry[i];
       try {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
@@ -108,7 +109,7 @@ class GeminiAIProvider implements AIProvider {
               ...(schemaConfig ? { responseSchema: schemaConfig } : {})
             }
           }),
-          signal: AbortSignal.timeout(15000)
+          signal
         });
 
         if (res.ok) {
@@ -254,7 +255,7 @@ Return ONLY a JSON object matching this schema:
       required: ["answer"]
     };
 
-    const raw = await this.callGemini(prompt, schemaConfig, input.modelEndpoint);
+    const raw = await this.callGemini(prompt, schemaConfig, input.modelEndpoint, input.signal);
     const validated = validateHealthQueryResponse(raw.data || raw);
     return {
       ...validated,
@@ -284,7 +285,7 @@ Return ONLY a JSON object matching this schema:
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }]
       }),
-      signal: AbortSignal.timeout(30000)
+      signal: input.signal || AbortSignal.timeout(8_000)
     });
 
     if (!res.ok) {
@@ -376,7 +377,7 @@ JSON Keys: subjective, objective, assessment, plan, suggestedICD10 (array of cod
 
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`${this.name} API error ${res.status}: ${errText}`);
+      throw new Error(`${this.name} API error ${res.status}`);
     }
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content;
@@ -408,12 +409,12 @@ JSON Keys: subjective, objective, assessment, plan, suggestedICD10 (array of cod
         ],
         response_format: { type: "json_object" }
       }),
-      signal: AbortSignal.timeout(15000)
+      signal: input.signal || AbortSignal.timeout(8_000)
     });
 
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`${this.name} API error ${res.status}: ${errText}`);
+      throw new Error(`${this.name} API error ${res.status}`);
     }
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content;
@@ -453,7 +454,7 @@ JSON Keys: subjective, objective, assessment, plan, suggestedICD10 (array of cod
         ],
         stream: true
       }),
-      signal: AbortSignal.timeout(30000)
+      signal: input.signal || AbortSignal.timeout(8_000)
     });
 
     if (!res.ok) {

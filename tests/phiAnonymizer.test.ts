@@ -2,6 +2,12 @@ import { describe, it, expect } from "vitest";
 import { PHIAnonymizer } from "../utilities/phiAnonymizer.ts";
 
 describe("HIPAA PHI Anonymizer Utility Tests", () => {
+  it("distinguishes chart instructions from real record identifiers", () => {
+    expect(PHIAnonymizer.detectUnmaskedPHI("No active patient chart selected. Review the clinical chart summary.").hasUnmaskedPHI).toBe(false);
+    for (const text of ["MRN-6A64E9", "MRN: JK-abcdef012345678901234567-0001", "Chart#12345", "Chart: ABC123"]) {
+      expect(PHIAnonymizer.detectUnmaskedPHI(text).detectedCategories).toContain("MEDICAL_RECORD_NUMBER");
+    }
+  });
   it("should replace patient names and MRNs with anonymized tokens", () => {
     const originalText = "Patient John Doe (MRN: MRN-6A64E9) presents with essential hypertension. Maria Garcia has asthma.";
     const patientList = [

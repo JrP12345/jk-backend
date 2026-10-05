@@ -128,7 +128,7 @@ export const deleteObjectFromStorage = async (fileKey: string): Promise<void> =>
     Key: fileKey,
   });
 
-  await s3Client.send(command);
+  await s3Client.send(command, { abortSignal: AbortSignal.timeout(8_000) });
 };
 
 export async function uploadOrganizationImage(buffer: Buffer, contentType: string, ownerId: string) {

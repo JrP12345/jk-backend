@@ -98,14 +98,14 @@ export async function searchPatients(req: FastifyRequest, reply: FastifyReply) {
             { $set: { userId: { $ifNull: [{ $arrayElemAt: ['$searchUser', 0] }, null] } } },
             { $project: { searchUser: 0, 'userId.role': 0, 'userId.isActive': 0 } }],
         } },
-      ]);
+      ]).option({ maxTimeMS: 5_000 });
       totalCount = result?.count[0]?.total || 0;
       rawPatients = result?.items || [];
     } else {
       [totalCount, rawPatients] = await Promise.all([
-        Patient.countDocuments(patientFilter),
+        Patient.countDocuments(patientFilter).maxTimeMS(5_000),
         Patient.find(patientFilter).populate('userId', 'name email phone')
-          .sort({ createdAt: -1 }).skip(skip).limit(pageSize).lean(),
+          .sort({ createdAt: -1, _id: -1 }).skip(skip).limit(pageSize).maxTimeMS(5_000).lean(),
       ]);
     }
 

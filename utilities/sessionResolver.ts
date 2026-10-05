@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import { RefreshToken } from "../models/RefreshToken.ts";
 import { User } from "../models/User.ts";
+import { Organization } from "../models/Organization.ts";
 import { redisClient, publishRedisEvent, createRedisSubscriber } from "./redis.ts";
 import { disconnectUserWebSockets } from "../notifications/websocket.ts";
 import { logger } from "./logger.ts";
@@ -61,15 +62,21 @@ export async function resolveSession(sessionId: string, expectedAuthVersion?: nu
     const [session] = await RefreshToken.aggregate([
       { $match: { _id: new mongoose.Types.ObjectId(sessionId) } },
       { $lookup: { from: User.collection.name, localField: "userId", foreignField: "_id",
-        pipeline: [{ $project: { isActive: 1, authVersion: 1, role: 1 } }], as: "owner" } },
+        pipeline: [{ $project: { isActive: 1, authVersion: 1, role: 1, twoFactorEnabled: 1 } }], as: "owner" } },
+      { $lookup: { from: Organization.collection.name, localField: "organizationId", foreignField: "_id",
+        pipeline: [{ $project: { isActive: 1, status: 1 } }], as: "organization" } },
       { $project: { userId: 1, organizationId: 1, isGuest: 1, authVersion: 1, revoked: 1,
-        revocationReason: 1, expiresAt: 1, owner: 1 } },
+        revocationReason: 1, expiresAt: 1, owner: 1, organization: 1 } },
     ]);
     if (!session) return { valid: false, reason: "Session not found" };
     if (session.revoked) return { valid: false, reason: "Session revoked" };
     if (new Date(session.expiresAt).getTime() <= Date.now()) return { valid: false, reason: "Session expired" };
     const owner = session.owner[0];
     if (!owner?.isActive) return { valid: false, reason: "User account deactivated or suspended" };
+    if (process.env.NODE_ENV === "production" && owner.role === "root" && !owner.twoFactorEnabled) return { valid: false, reason: "Platform MFA enrollment required" };
+    if (session.organizationId && owner.role !== "root" && (!session.organization[0] || session.organization[0].isActive === false || session.organization[0].status === "inactive")) {
+      return { valid: false, reason: "Organization is unavailable" };
+    }
     const version = owner.authVersion || 1;
     if ((session.authVersion || 1) !== version ||
       (expectedAuthVersion !== undefined && expectedAuthVersion !== version)) {
@@ -81,6 +88,15 @@ export async function resolveSession(sessionId: string, expectedAuthVersion?: nu
   } catch {
     logger.error("Session resolution failed closed");
     return { valid: false, reason: "Authentication infrastructure unavailable" };
+  }
+}
+
+export async function revokeOrganizationSessions(organizationId: string, reason: string): Promise<void> {
+  const sessions = await RefreshToken.find({ organizationId, revoked: false }).select("userId").lean();
+  await RefreshToken.updateMany({ organizationId, revoked: false }, { $set: { revoked: true, revocationReason: reason } });
+  for (const userId of new Set(sessions.map(value => String(value.userId)))) {
+    disconnectUserWebSockets(userId, 4001, reason);
+    await publishRedisEvent("session:events", { type: "REVOKE_USER", userId, reason });
   }
 }
 

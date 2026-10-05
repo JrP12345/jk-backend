@@ -5,6 +5,8 @@ import mongoose from "mongoose";
 mongoose.set("transactionAsyncLocalStorage", true);
 
 export async function withClinicalTransaction<T>(fn: () => Promise<T>): Promise<T> {
+  const inherited = (mongoose as any).transactionAsyncLocalStorage?.getStore()?.session;
+  if (inherited?.inTransaction()) return fn();
   const topology = (mongoose.connection as any)?.client?.topology?.description?.type;
   if (topology === "Single" || topology === "Unknown") {
     if (process.env.NODE_ENV === "production") {
@@ -26,6 +28,8 @@ export async function withClinicalTransaction<T>(fn: () => Promise<T>): Promise<
 export async function withTransaction<T>(
   fn: (session: mongoose.ClientSession | null) => Promise<T>
 ): Promise<T> {
+  const inherited = (mongoose as any).transactionAsyncLocalStorage?.getStore()?.session;
+  if (inherited?.inTransaction()) return fn(inherited);
   const topologyType = ((mongoose.connection as any)?.client as any)?.topology?.description?.type;
   const isStandalone = topologyType === "Single" || topologyType === "Unknown";
 
@@ -36,34 +40,9 @@ export async function withTransaction<T>(
     return fn(null);
   }
 
-  let session: mongoose.ClientSession | null = null;
-  try {
-    session = await mongoose.startSession();
-    session.startTransaction();
-    const result = await fn(session);
-    if (session.inTransaction()) await session.commitTransaction();
-    return result;
-  } catch (err: any) {
-    if (session?.inTransaction()) {
-      try {
-        await session.abortTransaction();
-      } catch {
-        // Preserve the workflow error; abort is best effort.
-      }
-    }
-
-    const msg = err?.message || err?.errmsg || err?.errorResponse?.errmsg || "";
-    const code = err?.code || err?.errorResponse?.code;
-    if (code === 20 || msg.includes("replica set") || msg.includes("Transaction numbers")) {
-      if (process.env.NODE_ENV === "production") {
-        throw new Error(`Transaction failed: Multi-document ACID transactions require a MongoDB Replica Set in production (${msg})`);
-      }
-      return fn(null);
-    }
-    throw err;
-  } finally {
-    session?.endSession();
-  }
+  // Driver-managed retry/commit handling and Mongoose session propagation.
+  // Callers must keep irreversible external effects outside this callback.
+  return mongoose.connection.transaction(async (session) => fn(session));
 }
 
 /** Create a document with an optional transaction session. */

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { Appointment } from "../models/Appointment.ts";
@@ -136,17 +137,20 @@ export async function createAppointmentPaymentOrder(req: FastifyRequest, reply: 
       return reply.code(409).send(errorResponse("Online checkout is not configured for this organization's country and currency"));
     }
 
+    const invoice = await withClinicalTransaction(async () => {
+    await Appointment.updateOne({ _id: appointment._id }, { $inc: { __v: 1 } });
     let invoice = await Invoice.findOne({ appointmentId: appointment._id });
     if (!invoice) {
       const assignment = await DoctorAssignment.findOne({ doctorId: appointment.doctorId, clinicId: appointment.clinicId });
       const fees = Number(assignment?.fees ?? appointment.paymentAmount ?? 0);
       if (!Number.isFinite(fees) || fees <= 0) {
-        return reply.code(409).send(errorResponse("No payable consultation fee is configured for this appointment"));
+        throw new AppointmentDomainError("No payable consultation fee is configured for this appointment", 409);
       }
       const { generateClinicInvoiceNumber } = await import("../utilities/invoiceNumber.ts");
       const invoiceNumber = await generateClinicInvoiceNumber(appointment.clinicId.toString());
       invoice = await Invoice.create({
         invoiceNumber,
+        generationKey: `appointment:${appointment._id}`,
         patientId: appointment.patientId,
         appointmentId: appointment._id,
         clinicId: appointment.clinicId,
@@ -158,6 +162,8 @@ export async function createAppointmentPaymentOrder(req: FastifyRequest, reply: 
         status: "unpaid",
       });
     }
+    return invoice;
+    });
 
     if (invoice.status === "paid") {
       return reply.code(400).send(errorResponse("This appointment invoice has already been paid"));
@@ -173,7 +179,7 @@ export async function createAppointmentPaymentOrder(req: FastifyRequest, reply: 
     }
     const idempotencyKey = `pay_order_${appointment._id.toString()}_${amountDue}`;
 
-    const existingPayment = await AppointmentPayment.findOne({ idempotencyKey, status: "created" });
+    const existingPayment = await AppointmentPayment.findOne({ idempotencyKey });
     if (existingPayment?.razorpayOrderId) {
       const publicParams = await razorpayService.getPublicParams();
       return reply.code(200).send(
@@ -187,27 +193,27 @@ export async function createAppointmentPaymentOrder(req: FastifyRequest, reply: 
       );
     }
 
-    const razorpayOrder = await razorpayService.createOrder({
-      amount: amountDue,
-      currency: "INR",
-      receipt: invoice.invoiceNumber,
-      notes: {
-        appointmentId: appointment.id,
-        patientId: appointment.patientId.toString(),
-      },
-    });
-
-    const paymentRecord = await AppointmentPayment.create({
-      appointmentId: appointment._id,
-      invoiceId: invoice._id,
-      patientId: appointment.patientId,
-      amount: amountDue,
-      currency: "INR",
-      paymentMethod: "razorpay",
-      razorpayOrderId: razorpayOrder.id,
-      status: "created",
-      idempotencyKey,
-    });
+    if (existingPayment) return reply.code(409).send(errorResponse("An order intent already exists. Reconcile its provider status before retrying.", "PAYMENT_RECONCILIATION_REQUIRED"));
+    const orderReceipt = 'apo_' + crypto.createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32);
+    let paymentRecord: any;
+    try {
+      paymentRecord = await AppointmentPayment.create({ appointmentId: appointment._id, invoiceId: invoice._id, patientId: appointment.patientId, amount: amountDue,
+        currency: "INR", paymentMethod: "razorpay", status: "creating", idempotencyKey, orderReceipt });
+    } catch (error: any) {
+      if (error.code === 11000) return reply.code(409).send(errorResponse("Order creation is in progress. Reconcile before retrying."));
+      throw error;
+    }
+    let razorpayOrder;
+    try {
+      razorpayOrder = await razorpayService.createOrder({ amount: amountDue, currency: "INR", receipt: orderReceipt,
+        notes: { appointmentId: appointment.id, patientId: String(appointment.patientId), intentId: String(paymentRecord._id) } });
+      const saved = await AppointmentPayment.findOneAndUpdate({ _id: paymentRecord._id, status: "creating" }, { $set: { razorpayOrderId: razorpayOrder.id, status: "created" } }, { returnDocument: "after" });
+      if (!saved) throw new Error("Order intent state changed; reconciliation required");
+      paymentRecord = saved;
+    } catch (error) {
+      await AppointmentPayment.updateOne({ _id: paymentRecord._id, status: "creating" }, { $set: { status: "ambiguous" } }).catch(() => {});
+      throw Object.assign(new Error("Order outcome needs reconciliation before another order is created"), { statusCode: 409 });
+    }
 
     const publicParams = await razorpayService.getPublicParams();
 
@@ -223,7 +229,7 @@ export async function createAppointmentPaymentOrder(req: FastifyRequest, reply: 
     );
   } catch (err: any) {
     console.error("createAppointmentPaymentOrder error:", err);
-    return reply.code(500).send(errorResponse(err.message || "Failed to create payment order"));
+    return reply.code(err.statusCode || 500).send(errorResponse(err.statusCode ? err.message : "Failed to create payment order"));
   }
 }
 

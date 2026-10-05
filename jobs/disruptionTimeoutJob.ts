@@ -1,8 +1,10 @@
 import crypto from "node:crypto";
 import { disruptionService } from "../services/disruptionService.ts";
-import { acquireOrRenewWorkerLease } from "../utilities/workerLease.ts";
+import { WorkerLoop } from "../utilities/workerLoop.ts";
+import { acquireOrRenewWorkerLease, releaseWorkerLease } from "../utilities/workerLease.ts";
 
-let intervalHandle: NodeJS.Timeout | null = null;
+const loop = new WorkerLoop();
+export const getDisruptionTimeoutProgress = () => loop.progress();
 const disruptionHolderId = `${process.env.HOSTNAME || "api"}:${process.pid}:${crypto.randomUUID()}`;
 
 /**
@@ -22,35 +24,15 @@ export async function runDisruptionTimeoutSweep() {
   }
 }
 
-export function startDisruptionTimeoutJob(intervalMs: number = 5 * 60 * 1000) {
-  if (intervalHandle) return;
-
-  console.log(`[DisruptionTimeoutJob] Starting disruption timeout sweeper (interval: ${intervalMs}ms)`);
-  intervalHandle = setInterval(async () => {
-    try {
-      const ownsLease = await acquireOrRenewWorkerLease({
-        name: "disruption-timeout-sweeper",
-        holderId: disruptionHolderId,
-        leaseMs: Math.max(intervalMs * 2, 60_000),
-      });
-      if (!ownsLease) {
-        return;
-      }
-      await runDisruptionTimeoutSweep();
-    } catch (err: any) {
-      console.warn("[DisruptionTimeoutJob] Lock acquisition failed; failing safely:", err.message);
-    }
+export function startDisruptionTimeoutJob(intervalMs = 5 * 60 * 1000) {
+  loop.start(async () => {
+    const name = 'disruption-timeout-sweeper';
+    const ownsLease = await acquireOrRenewWorkerLease({ name, holderId: disruptionHolderId, leaseMs: 120_000 });
+    if (!ownsLease) return { processed: 0 };
+    const heartbeat = setInterval(() => { void acquireOrRenewWorkerLease({ name, holderId: disruptionHolderId, leaseMs: 120_000 }).catch(() => console.error('[DisruptionTimeoutJob] Lease renewal failed')); }, 20_000);
+    heartbeat.unref?.();
+    try { const result = await runDisruptionTimeoutSweep(); if ("error" in result) throw result.error; return { processed: 1 }; }
+    finally { clearInterval(heartbeat); await releaseWorkerLease(name, disruptionHolderId); }
   }, intervalMs);
-  // Do not block process exit in tests
-  if (intervalHandle.unref) {
-    intervalHandle.unref();
-  }
 }
-
-export function stopDisruptionTimeoutJob() {
-  if (intervalHandle) {
-    clearInterval(intervalHandle);
-    intervalHandle = null;
-    console.log("[DisruptionTimeoutJob] Disruption timeout sweeper stopped.");
-  }
-}
+export async function stopDisruptionTimeoutJob() { await loop.stop(); }

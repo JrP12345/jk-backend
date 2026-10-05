@@ -1,6 +1,9 @@
 import mongoose, { type Model, type QueryFilter, type UpdateQuery, type QueryOptions, type PipelineStage } from "mongoose";
 import { requestContextStore } from "../utilities/context.ts";
 
+// Preserve raw document types and accept schema-specific methods and virtuals.
+type TenantModel<T> = Model<T, any, any, any, any, any, any>;
+
 export class TenantContextError extends Error {
   constructor(message: string) {
     super(message);
@@ -26,10 +29,10 @@ export interface TenantRepoOptions {
  * to a verified organizationId context. Throws on missing or mismatched tenant context.
  */
 export class TenantRepository<T extends mongoose.Document | any> {
-  private model: Model<T>;
+  private model: TenantModel<T>;
   private tenantField: string;
 
-  constructor(model: Model<T>, defaultTenantField: string = "organizationId") {
+  constructor(model: TenantModel<T>, defaultTenantField: string = "organizationId") {
     this.model = model;
     this.tenantField = defaultTenantField;
   }
@@ -39,6 +42,8 @@ export class TenantRepository<T extends mongoose.Document | any> {
    * Throws TenantContextError if missing or malformed (fail-closed).
    */
   private resolveOrgId(explicitOrgId?: string | mongoose.Types.ObjectId): mongoose.Types.ObjectId {
+    const context = requestContextStore.getStore();
+    if (explicitOrgId && context?.organizationId && !context.isRoot && String(explicitOrgId) !== context.organizationId) throw new TenantIsolationViolationError("Explicit tenant does not match authenticated tenant");
     const candidate = explicitOrgId || requestContextStore.getStore()?.organizationId;
     if (!candidate || !mongoose.Types.ObjectId.isValid(String(candidate))) {
       throw new TenantContextError(
@@ -46,6 +51,14 @@ export class TenantRepository<T extends mongoose.Document | any> {
       );
     }
     return new mongoose.Types.ObjectId(String(candidate));
+  }
+
+  private validateUpdate(update: any, orgId: mongoose.Types.ObjectId) {
+    if (Array.isArray(update)) throw new TenantIsolationViolationError("Update pipelines are not supported by the tenant repository");
+    for (const candidate of [update?.[this.tenantField], update?.$set?.[this.tenantField], update?.$setOnInsert?.[this.tenantField]]) {
+      if (candidate !== undefined && String(candidate) !== String(orgId)) throw new TenantIsolationViolationError("Tenant ownership mismatch");
+    }
+    if (update?.$unset?.[this.tenantField] !== undefined || update?.$rename?.[this.tenantField] !== undefined || Object.values(update?.$rename || {}).includes(this.tenantField)) throw new TenantIsolationViolationError("Tenant ownership cannot be changed");
   }
 
   /**
@@ -115,16 +128,19 @@ export class TenantRepository<T extends mongoose.Document | any> {
   }
 
   async updateOne(filter: QueryFilter<T>, update: UpdateQuery<T>, options?: Omit<QueryOptions, "session"> & { session?: mongoose.ClientSession } & TenantRepoOptions): Promise<any> {
+    this.validateUpdate(update, this.resolveOrgId(options?.organizationId));
     const scoped = this.scopeFilter(filter, options?.organizationId);
     return this.model.updateOne(scoped, update, options).exec();
   }
 
   async updateMany(filter: QueryFilter<T>, update: UpdateQuery<T>, options?: Omit<QueryOptions, "session"> & { session?: mongoose.ClientSession } & TenantRepoOptions): Promise<any> {
+    this.validateUpdate(update, this.resolveOrgId(options?.organizationId));
     const scoped = this.scopeFilter(filter, options?.organizationId);
     return this.model.updateMany(scoped, update, options).exec();
   }
 
   async findOneAndUpdate(filter: QueryFilter<T>, update: UpdateQuery<T>, options?: Omit<QueryOptions, "session"> & { session?: mongoose.ClientSession } & TenantRepoOptions): Promise<T | null> {
+    this.validateUpdate(update, this.resolveOrgId(options?.organizationId));
     const scoped = this.scopeFilter(filter, options?.organizationId);
     return this.model.findOneAndUpdate<T>(scoped, update, options).exec();
   }
@@ -164,19 +180,25 @@ export class TenantRepository<T extends mongoose.Document | any> {
     const orgId = this.resolveOrgId(options?.organizationId);
     const scopedOps = ops.map((op) => {
       const opKey = Object.keys(op)[0];
-      const payload = op[opKey];
+      const payload = { ...op[opKey] };
+      if (payload.update) this.validateUpdate(payload.update, orgId);
+      if (payload.replacement) {
+        this.validateUpdate(payload.replacement, orgId);
+        payload.replacement = { ...payload.replacement, [this.tenantField]: orgId };
+      }
       if (payload.filter) {
-        payload.filter = { ...payload.filter, [this.tenantField]: orgId };
+        payload.filter = this.scopeFilter(payload.filter, orgId);
       }
       if (payload.document) {
+        if (payload.document[this.tenantField] && String(payload.document[this.tenantField]) !== String(orgId)) throw new TenantIsolationViolationError("Tenant ownership mismatch");
         payload.document = { ...payload.document, [this.tenantField]: orgId };
       }
       return { [opKey]: payload };
     });
-    return this.model.bulkWrite(scopedOps as Parameters<Model<T>["bulkWrite"]>[0]);
+    return this.model.bulkWrite(scopedOps as Parameters<TenantModel<T>["bulkWrite"]>[0]);
   }
 
-  getModel(): Model<T> {
+  getModel(): TenantModel<T> {
     return this.model;
   }
 }
@@ -185,7 +207,7 @@ export class TenantRepository<T extends mongoose.Document | any> {
  * Factory helper to construct a fail-closed tenant repository.
  */
 export function createTenantRepository<T extends mongoose.Document | any>(
-  model: Model<T>,
+  model: TenantModel<T>,
   tenantField: string = "organizationId"
 ): TenantRepository<T> {
   return new TenantRepository<T>(model, tenantField);

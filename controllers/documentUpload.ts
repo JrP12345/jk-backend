@@ -37,7 +37,7 @@ export const uploadDocument = async (req: FastifyRequest, reply: FastifyReply) =
       const docId = new mongoose.Types.ObjectId();
       const intent = await UploadIntent.findOneAndUpdate({
         _id: uploadIntentId, organizationId, patientId, userId, status: 'completed',
-        magicBytesVerified: true, malwareClean: true, registeredDocumentId: { $exists: false },
+        magicBytesVerified: true, $or: [{ contentValidationPassed: true }, { malwareClean: true }], registeredDocumentId: { $exists: false },
       }, { $set: { registeredDocumentId: docId } }, { returnDocument: 'after', session });
       if (!intent) throw Object.assign(new Error('Verified upload is unavailable or already registered'), { statusCode: 409 });
       const created = await createWithSession(DocumentUpload, {

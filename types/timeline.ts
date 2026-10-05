@@ -107,6 +107,7 @@ export interface TimelineQueryResponse {
   hasMore: boolean;
   returnedCount: number;
   totalCount: number;
+  totalCountIsExact?: boolean;
   metrics: {
     durationMs: number;
     providerExecutionTimesMs: Record<string, number>;

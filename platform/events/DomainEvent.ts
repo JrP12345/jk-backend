@@ -22,7 +22,7 @@ export function createDomainEvent<TPayload>(
   version: number = 1
 ): DomainEvent<TPayload> {
   return {
-    eventId: crypto.randomUUID(),
+    eventId: typeof (payload as any)?.eventId === "string" ? (payload as any).eventId : crypto.randomUUID(),
     eventType,
     eventVersion: version,
     occurredAt: new Date(),

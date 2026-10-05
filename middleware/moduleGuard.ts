@@ -36,8 +36,8 @@ export function requireModule(moduleKey: string) {
 
     // Validate the module key is known
     if (!MODULE_KEYS[moduleKey]) {
-      req.log?.warn(`requireModule: unknown module key '${moduleKey}', allowing request`);
-      return;
+      req.log?.error(`requireModule: unknown module key '${moduleKey}'`);
+      return reply.code(403).send({ success: false, message: 'Module access denied' });
     }
 
     const orgId = await resolveModuleOrganizationId(req);

@@ -1491,6 +1491,8 @@ export async function googleLoginController(req: FastifyRequest, reply: FastifyR
 // Shared session issuance for verified passwords and passkeys; existing 2FA remains required.
 export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyReply, user: any, extra: Record<string, unknown> = {}) {
     if (!user.isActive) return reply.code(403).send(errorResponse("Account is deactivated"));
+    if (process.env.NODE_ENV === "production" && user.role === "root" && !user.twoFactorEnabled) return reply.code(403).send(errorResponse("Platform root MFA enrollment is required. Use the authorized recovery/setup procedure."));
+    if (user.role !== "root" && await OrgMember.countDocuments({ userId: user._id }) > 1) return reply.code(409).send(errorResponse("Multiple organization memberships require an explicit workspace selection flow; automatic workspace selection is disabled"));
     const orgMember = await OrgMember.findOne({ userId: user._id });
     const organization_id = orgMember?.organizationId?.toString() || (user as any).organization_id?.toString();
 

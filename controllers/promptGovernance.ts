@@ -1,3 +1,5 @@
+import { withTransaction } from "../utilities/transaction.ts";
+import { getNextAtomicSequence } from "../models/Counter.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { AIPromptTemplate } from "../models/AIPromptTemplate.ts";
 import { promptManager } from "../services/ai/PromptManager.ts";
@@ -6,7 +8,7 @@ import { successResponse, errorResponse } from "../utilities/helpers.ts";
 // ─── GET /api/ai/prompts ────────────────────────────────────────────────
 export async function listPromptTemplatesController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const templates = await AIPromptTemplate.find().sort({ key: 1, createdAt: -1 }).lean();
+    const templates = await AIPromptTemplate.find({ organizationId: null }).limit(200).sort({ key: 1, createdAt: -1 }).lean();
     return reply.code(200).send(successResponse(templates));
   } catch (err: any) {
     return reply.code(500).send(errorResponse("Failed to list prompt templates"));
@@ -23,13 +25,14 @@ export async function createPromptDraftController(req: FastifyRequest, reply: Fa
     }
 
     const template = await AIPromptTemplate.create({
+      organizationId: null,
       key,
       version,
       title: title || key,
       description,
       systemPrompt,
       userPromptTemplate: userPromptTemplate || "{{query}}",
-      temperature: temperature || 0.2,
+      temperature: temperature ?? 0.2,
       requiredVariables: requiredVariables || ["query"],
       status: "draft",
       createdById: req.user?.id
@@ -46,18 +49,26 @@ export async function approvePromptTemplateController(req: FastifyRequest, reply
   try {
     const { id } = req.params as { id: string };
 
-    const template = await AIPromptTemplate.findById(id);
+    const template = await withTransaction(async () => {
+    const template = await AIPromptTemplate.findOne({ _id: id, organizationId: null });
     if (!template) {
-      return reply.code(404).send(errorResponse("Prompt template not found"));
+      return null;
     }
+    // A shared counter row serializes approvals even before the first activation.
+    await getNextAtomicSequence(`prompt_activation:${template.key}`);
+    if (template.status === "active") return template;
 
     // Deactivate previous active version for same key
-    await AIPromptTemplate.updateMany({ key: template.key, status: "active" }, { status: "archived" });
+    await AIPromptTemplate.updateMany({ key: template.key, organizationId: null, status: "active" }, { status: "archived" });
 
     template.status = "active";
     template.approvedByUserId = req.user?.id as any;
     template.approvedAt = new Date();
     await template.save();
+    return template;
+    });
+    if (!template) return reply.code(404).send(errorResponse("Prompt template not found"));
+    promptManager.invalidate(template.key);
 
     return reply.code(200).send(successResponse(template, "Prompt template approved and set to active status"));
   } catch (err: any) {

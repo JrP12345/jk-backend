@@ -10,8 +10,9 @@ export interface IAppointmentPayment extends Document {
   razorpayOrderId?: string;
   razorpayPaymentId?: string;
   razorpaySignature?: string;
-  status: "created" | "authorized" | "captured" | "failed" | "pay_at_clinic";
+  status: "creating" | "ambiguous" | "created" | "authorized" | "captured" | "failed" | "pay_at_clinic";
   idempotencyKey?: string;
+  orderReceipt?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -36,9 +37,10 @@ const AppointmentPaymentSchema = new Schema<IAppointmentPayment>(
     razorpaySignature: { type: String },
     status: {
       type: String,
-      enum: ["created", "authorized", "captured", "failed", "pay_at_clinic"],
+      enum: ["creating", "ambiguous", "created", "authorized", "captured", "failed", "pay_at_clinic"],
       default: "created",
     },
+    orderReceipt: { type: String, index: true },
     idempotencyKey: { type: String, unique: true, sparse: true },
   },
   { timestamps: true }

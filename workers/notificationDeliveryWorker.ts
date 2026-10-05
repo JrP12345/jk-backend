@@ -7,11 +7,11 @@ await import("../db.ts");
 notificationDeliveryWorker.start();
 console.log("Notification delivery worker started");
 
-const healthServer = startWorkerHealthServer({ workerName: "notificationDeliveryWorker", defaultPort: 5001 });
+const healthServer = startWorkerHealthServer({ workerName: "notificationDeliveryWorker", defaultPort: 5001, onProgress: () => notificationDeliveryWorker.getProgress() });
 
 const shutdown = async () => {
-  await healthServer.stop();
   await notificationDeliveryWorker.stop();
+  await healthServer.stop();
   process.exit(0);
 };
 
