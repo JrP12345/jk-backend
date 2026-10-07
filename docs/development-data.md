@@ -18,3 +18,33 @@ seed:root creates a root and the current plans. npm run seed -- --confirm-databa
 npm run db:indexes previews current schema indexes without connecting. During a controlled rollout with writes paused, npm run db:indexes -- --writes-paused --apply creates indexes. It does not drop indexes or repair conflicting rows. Review uniqueness conflicts explicitly. Immutable audit history has a separate chain-preserving remediation procedure.
 
 No database reset, seed, index application or secret rotation is part of source verification. Development reset is never a production deployment step.
+
+## Start over while preserving Root
+
+For an explicitly chosen development installation, including a shared hosted
+database, `reset:root-only` preserves one existing Root document and its registered
+passkeys. Root's ID, password hash, encrypted MFA secret and other authentication
+fields stay unchanged. All other records, sessions, organizations, patient data,
+billing, plans, queues, audit history and jobs are removed. This is an operator
+action for disposable development data, never an application startup step.
+
+Preview the exact connected database first:
+
+    npm run reset:root-only -- --confirm-database=<database>
+
+If multiple Root accounts exist, select one with `--root-email=<email>`. The
+database name must match the actual connection; `admin`, `local` and `config`
+are refused. The existing DATA_ENCRYPTION_KEY must successfully decrypt Root's
+current MFA secret. Preview prints counts and IDs, without credentials or keys.
+
+Stop API and workers when possible to prevent new writes, then apply:
+
+    npm run reset:root-only -- --confirm-database=<database> --apply
+
+Deletion uses one replica-set/sharded-cluster transaction and verifies the retained
+authentication before commit. Afterward, empty collections and their indexes are
+dropped. A running worker can recreate an empty collection; this is reported
+separately. Recreated records cause verification to stop. Root must sign in again;
+the current role catalog and model indexes are prepared through normal startup.
+Create fresh commercial plans through Root administration. Do not run the empty-
+database seed over the preserved Root account.

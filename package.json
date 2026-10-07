@@ -12,6 +12,7 @@
     "audit:release": "node scripts/repo_auditor.js",
     "seed": "node --env-file=.env --experimental-strip-types scripts/seedDatabase.ts",
     "reset:development": "node --env-file-if-exists=.env --experimental-strip-types scripts/reset-development-data.ts",
+    "reset:root-only": "node --env-file-if-exists=.env --experimental-strip-types scripts/reset-root-only.ts",
     "setup:root-2fa": "node --env-file=.env --experimental-strip-types scripts/setupRoot2FA.ts",
     "setup:root-2fa:production": "node --experimental-strip-types scripts/setupRoot2FA.ts",
     "check:root-2fa:production": "node --experimental-strip-types scripts/checkRoot2FA.ts",
