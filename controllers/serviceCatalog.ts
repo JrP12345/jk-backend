@@ -1,7 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { ServiceCatalog } from "../models/ServiceCatalog.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { createTenantRepository } from "../platform/TenantRepository.ts";
 import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
@@ -18,9 +18,9 @@ export async function createService(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const {
-      clinicId, code, name, department, category, price, hsnSacCode, gstRate, description, isActive
+      locationId, code, name, department, category, price, hsnSacCode, gstRate, description, isActive
     } = req.body as {
-      clinicId?: string;
+      locationId?: string;
       code: string;
       name: string;
       department: string;
@@ -36,17 +36,17 @@ export async function createService(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse("code, name, department, and price are required"));
     }
 
-    // Validate referenced clinic belongs to the same organization
-    let validatedClinicId: mongoose.Types.ObjectId | undefined = undefined;
-    if (clinicId) {
-      if (!mongoose.Types.ObjectId.isValid(clinicId)) {
-        return reply.code(400).send(errorResponse("Invalid clinic ID format"));
+    // Validate referenced location belongs to the same organization
+    let validatedLocationId: mongoose.Types.ObjectId | undefined = undefined;
+    if (locationId) {
+      if (!mongoose.Types.ObjectId.isValid(locationId)) {
+        return reply.code(400).send(errorResponse("Invalid location ID format"));
       }
-      const clinicExists = await Clinic.findOne({ _id: clinicId, organizationId: orgId });
-      if (!clinicExists) {
-        return reply.code(400).send(errorResponse("Referenced clinic does not belong to your organization"));
+      const locationExists = await Location.findOne({ _id: locationId, organizationId: orgId });
+      if (!locationExists) {
+        return reply.code(400).send(errorResponse("Referenced location does not belong to your organization"));
       }
-      validatedClinicId = new mongoose.Types.ObjectId(clinicId);
+      validatedLocationId = new mongoose.Types.ObjectId(locationId);
     }
 
     const existing = await serviceCatalogRepo.findOne({
@@ -59,7 +59,7 @@ export async function createService(req: FastifyRequest, reply: FastifyReply) {
 
     const service = await serviceCatalogRepo.create({
       organizationId: new mongoose.Types.ObjectId(orgId),
-      clinicId: validatedClinicId,
+      locationId: validatedLocationId,
       code: code.trim().toUpperCase(),
       name: name.trim(),
       department: department.trim(),
@@ -87,16 +87,16 @@ export async function getServices(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse("Organization ID context is missing"));
     }
 
-    const { search, category, department, clinicId, isActive, page, limit } = req.query as any;
+    const { search, category, department, locationId, isActive, page, limit } = req.query as any;
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
 
     const andConditions: any[] = [
       { organizationId: new mongoose.Types.ObjectId(orgId) }
     ];
 
-    if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
+    if (locationId && mongoose.Types.ObjectId.isValid(locationId)) {
       andConditions.push({
-        $or: [{ clinicId: new mongoose.Types.ObjectId(clinicId) }, { clinicId: { $exists: false } }, { clinicId: null }],
+        $or: [{ locationId: new mongoose.Types.ObjectId(locationId) }, { locationId: { $exists: false } }, { locationId: null }],
       });
     }
 
@@ -186,18 +186,18 @@ export async function updateService(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const {
-      clinicId, name, department, category, price, hsnSacCode, gstRate, description, isActive
+      locationId, name, department, category, price, hsnSacCode, gstRate, description, isActive
     } = req.body as any;
 
-    if (clinicId !== undefined) {
-      if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
-        const clinicExists = await Clinic.findOne({ _id: clinicId, organizationId: orgId });
-        if (!clinicExists) {
-          return reply.code(400).send(errorResponse("Referenced clinic does not belong to your organization"));
+    if (locationId !== undefined) {
+      if (locationId && mongoose.Types.ObjectId.isValid(locationId)) {
+        const locationExists = await Location.findOne({ _id: locationId, organizationId: orgId });
+        if (!locationExists) {
+          return reply.code(400).send(errorResponse("Referenced location does not belong to your organization"));
         }
-        service.clinicId = new mongoose.Types.ObjectId(clinicId);
+        service.locationId = new mongoose.Types.ObjectId(locationId);
       } else {
-        service.clinicId = undefined;
+        service.locationId = undefined;
       }
     }
 

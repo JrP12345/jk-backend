@@ -3,7 +3,7 @@ import { getActiveConsultationDoctorDayKey } from "../utilities/consultationLock
 
 const AppointmentSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
-  clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
+  locationId: { type: Schema.Types.ObjectId, ref: "Location", required: true, index: true },
   doctorId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
   patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
   bookedByUserId: { type: Schema.Types.ObjectId, ref: "User", index: true },
@@ -25,15 +25,15 @@ const AppointmentSchema = new Schema({
     }
   },
   appointmentType: { type: String, enum: ["walk-in", "online", "reception", "qr"], required: true },
-  status: { 
-    type: String, 
-    enum: ["pending_payment", "pending", "confirmed", "checked-in", "in-consultation", "completed", "cancelled", "no-show", "disruption_triage", "standby"], 
+  status: {
+    type: String,
+    enum: ["pending_payment", "pending", "confirmed", "checked-in", "in-consultation", "completed", "cancelled", "no-show", "disruption_triage", "standby"],
     default: "pending",
     index: true
   },
   paymentStatus: {
     type: String,
-    enum: ["not_required", "pending", "paid", "pay_at_clinic", "failed", "refund_pending", "refunded", "unpaid", "partially_paid"],
+    enum: ["not_required", "pending", "paid", "pay_at_location", "failed", "refund_pending", "refunded", "unpaid", "partially_paid"],
     default: "pending",
     index: true
   },
@@ -58,10 +58,10 @@ const AppointmentSchema = new Schema({
   activeConsultationDoctorDayKey: { type: String, sparse: true },
   bookingMode: { type: String, enum: ["time_slot", "sequential_queue"], default: "sequential_queue" },
   duration: { type: Number, default: 15 },
-  reasonForVisit: { 
-    type: String, 
-    enum: ["new_consultation", "follow_up", "routine_checkup", "second_opinion", "report_review"], 
-    default: "new_consultation" 
+  reasonForVisit: {
+    type: String,
+    enum: ["new_consultation", "follow_up", "routine_checkup", "second_opinion", "report_review"],
+    default: "new_consultation"
   },
   notes: { type: String },
   followUpRecommended: { type: Boolean, default: false },
@@ -91,10 +91,10 @@ const AppointmentSchema = new Schema({
   disruptionTimeoutClaimToken: { type: String, index: true },
   cancellationReason: { type: String },
   priorityRescheduledFromId: { type: Schema.Types.ObjectId, ref: "Appointment", index: true },
-  triageAction: { 
-    type: String, 
+  triageAction: {
+    type: String,
     enum: ["pending", "timeout_processing", "transferred", "cancelled", "rescheduled", "refunded"],
-    default: "pending" 
+    default: "pending"
   },
   // Parked / Standby Queue Fields
   parkedAt: { type: Date },
@@ -102,10 +102,10 @@ const AppointmentSchema = new Schema({
   patientReturned: { type: Boolean, default: false },
   patientReturnedAt: { type: Date },
   // Diagnostic Investigation & 2-Phase Consultation Fields
-  consultationPhase: { 
-    type: String, 
-    enum: ["single", "initial_pending_investigation", "report_review"], 
-    default: "single" 
+  consultationPhase: {
+    type: String,
+    enum: ["single", "initial_pending_investigation", "report_review"],
+    default: "single"
   },
   investigationSentAt: { type: Date },
   investigationNotes: { type: String },
@@ -114,9 +114,9 @@ const AppointmentSchema = new Schema({
   lastNotifiedDelayMinutes: { type: Number },
   // Financial Disruption Reconciliation Fields
   feeVariance: { type: Number, default: 0 },
-  feeResolution: { 
-    type: String, 
-    enum: ["waived_courtesy", "paid_difference", "partial_refund", "exact_match"] 
+  feeResolution: {
+    type: String,
+    enum: ["waived_courtesy", "paid_difference", "partial_refund", "exact_match"]
   },
   // Pre-Consultation Nurse Triage & Vitals Fields
   vitals: {
@@ -173,7 +173,7 @@ const AppointmentSchema = new Schema({
 }, { timestamps: true });
 
 AppointmentSchema.index(
-  { clinicId: 1, doctorId: 1, appointmentTime: 1 },
+  { locationId: 1, doctorId: 1, appointmentTime: 1 },
   {
     name: "uniq_timeslot_appointment",
     unique: true,
@@ -184,10 +184,10 @@ AppointmentSchema.index(
   }
 );
 AppointmentSchema.index({ organizationId: 1, appointmentTime: -1 });
-AppointmentSchema.index({ clinicId: 1, status: 1, appointmentTime: -1 });
-AppointmentSchema.index({ clinicId: 1, status: 1, appointmentTime: 1 });
-AppointmentSchema.index({ organizationId: 1, clinicId: 1, status: 1, appointmentTime: 1 });
-AppointmentSchema.index({ clinicId: 1, doctorId: 1, appointmentTime: 1, queuePosition: 1 });
+AppointmentSchema.index({ locationId: 1, status: 1, appointmentTime: -1 });
+AppointmentSchema.index({ locationId: 1, status: 1, appointmentTime: 1 });
+AppointmentSchema.index({ organizationId: 1, locationId: 1, status: 1, appointmentTime: 1 });
+AppointmentSchema.index({ locationId: 1, doctorId: 1, appointmentTime: 1, queuePosition: 1 });
 AppointmentSchema.index({ patientId: 1, organizationId: 1, createdAt: -1 });
 AppointmentSchema.index({ status: 1, disruptionResponseDeadline: 1 });
 AppointmentSchema.index(

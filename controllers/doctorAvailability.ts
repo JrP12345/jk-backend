@@ -2,13 +2,13 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
 import { Appointment } from "../models/Appointment.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { checkClinicAccess, checkPatientAccess, checkOperationalRecordAccess, getRequestClinicIds, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+import { checkLocationAccess, checkPatientAccess, checkOperationalRecordAccess, getRequestLocationIds, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { hasValidTrackerCapability } from "../utilities/publicTracker.ts";
-import { clinicDateKey, clinicDayRange, clinicLocalTimeToDate, getClinicTimezone } from "../utilities/clinicTime.ts";
+import { locationDateKey, locationDayRange, locationLocalTimeToDate, getLocationTimezone } from "../utilities/locationTime.ts";
 import { broadcastQueueUpdate } from "../notifications/websocket.ts";
 import { sendBookingNotification } from "../utilities/notifications.ts";
 import { disruptionService } from "../services/disruptionService.ts";
@@ -19,7 +19,7 @@ export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyRe
     const userId = req.user!.id;
     const userRole = req.user!.role;
     const {
-      clinicId,
+      locationId,
       doctorId,
       date,
       status,
@@ -27,7 +27,7 @@ export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyRe
       effectiveEndTime,
       reason,
     } = req.body as {
-      clinicId: string;
+      locationId: string;
       doctorId: string;
       date: string;
       status: "available" | "unavailable" | "delayed" | "extended";
@@ -36,8 +36,8 @@ export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyRe
       reason?: string;
     };
 
-    if (!clinicId || !doctorId || !date || !status) {
-      return reply.code(400).send(errorResponse("clinicId, doctorId, date, and status are required"));
+    if (!locationId || !doctorId || !date || !status) {
+      return reply.code(400).send(errorResponse("locationId, doctorId, date, and status are required"));
     }
     if (!mongoose.Types.ObjectId.isValid(doctorId)) return reply.code(400).send(errorResponse("Invalid doctor ID"));
 
@@ -53,58 +53,58 @@ export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyRe
     const { DoctorAssignment } = await import("../models/DoctorAssignment.ts");
     const scope = resolveAuthorizedOrganizationScope(req);
     if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
-    let targetClinics: string[] = [];
-    if (clinicId === "all") {
+    let targetLocations: string[] = [];
+    if (locationId === "all") {
       const assignments = await DoctorAssignment.find({
         $or: [{ doctorId }, { doctorId: mongoose.Types.ObjectId.isValid(doctorId) ? new mongoose.Types.ObjectId(doctorId) : doctorId }],
         isActive: true,
         ...(scope.organizationId ? { organizationId: scope.organizationId } : {}),
       });
-      targetClinics = Array.from(new Set(assignments.map((a) => a.clinicId.toString())));
-      if (targetClinics.length === 0) {
-        return reply.code(400).send(errorResponse("No active clinic assignments found for this doctor"));
+      targetLocations = Array.from(new Set(assignments.map((a) => a.locationId.toString())));
+      if (targetLocations.length === 0) {
+        return reply.code(400).send(errorResponse("No active location assignments found for this doctor"));
       }
     } else {
-      const clinicCheck = await checkClinicAccess(req, clinicId);
-      if (!clinicCheck.allowed) {
-        return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+      const locationCheck = await checkLocationAccess(req, locationId);
+      if (!locationCheck.allowed) {
+        return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
       }
-      targetClinics = [clinicId];
+      targetLocations = [locationId];
     }
 
     // An override must target an active assignment, not merely a known user ID.
-    const assigned = await DoctorAssignment.find({ doctorId, clinicId: { $in: targetClinics }, isActive: true }).select("clinicId").lean();
-    const assignedClinics = new Set(assigned.map(assignment => String(assignment.clinicId)));
-    if (targetClinics.some(id => !assignedClinics.has(id))) {
+    const assigned = await DoctorAssignment.find({ doctorId, locationId: { $in: targetLocations }, isActive: true }).select("locationId").lean();
+    const assignedLocations = new Set(assigned.map(assignment => String(assignment.locationId)));
+    if (targetLocations.some(id => !assignedLocations.has(id))) {
       return reply.code(404).send(errorResponse("Active doctor assignment not found"));
     }
-    const clinicChecks = await Promise.all(targetClinics.map(id => checkClinicAccess(req, id)));
-    for (const check of clinicChecks) {
+    const locationChecks = await Promise.all(targetLocations.map(id => checkLocationAccess(req, id)));
+    for (const check of locationChecks) {
       if (!check.allowed) return reply.code(check.statusCode).send(errorResponse(check.message));
-      if (scope.organizationId && check.organizationId !== scope.organizationId) return reply.code(404).send(errorResponse("Clinic not found"));
+      if (scope.organizationId && check.organizationId !== scope.organizationId) return reply.code(404).send(errorResponse("Location not found"));
     }
-    for (const targetClinic of targetClinics) {
-      const timezone = await getClinicTimezone(targetClinic);
+    for (const targetLocation of targetLocations) {
+      const timezone = await getLocationTimezone(targetLocation);
       try {
-        clinicDayRange(date, timezone);
-        if (effectiveStartTime) clinicLocalTimeToDate(date, effectiveStartTime, timezone);
-        if (effectiveEndTime) clinicLocalTimeToDate(date, effectiveEndTime, timezone);
-      } catch { return reply.code(400).send(errorResponse("Invalid clinic date or time")); }
+        locationDayRange(date, timezone);
+        if (effectiveStartTime) locationLocalTimeToDate(date, effectiveStartTime, timezone);
+        if (effectiveEndTime) locationLocalTimeToDate(date, effectiveEndTime, timezone);
+      } catch { return reply.code(400).send(errorResponse("Invalid location date or time")); }
     }
 
     const createdOverrides = [];
     let lastDisruptionSummary: any = null;
 
-    for (const cId of targetClinics) {
-      const clinicCheck = await checkClinicAccess(req, cId);
-      if (!clinicCheck.allowed) continue;
+    for (const cId of targetLocations) {
+      const locationCheck = await checkLocationAccess(req, cId);
+      if (!locationCheck.allowed) continue;
 
-      const orgId = clinicCheck.organizationId || req.user?.organization_id;
+      const orgId = locationCheck.organizationId || req.user?.organization_id;
 
       const override = await DoctorDayOverride.findOneAndUpdate(
-        { clinicId: cId, doctorId, date },
+        { locationId: cId, doctorId, date },
         {
-          clinicId: cId,
+          locationId: cId,
           doctorId,
           organizationId: orgId || null,
           date,
@@ -114,7 +114,7 @@ export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyRe
           reason: reason || null,
           createdBy: userId,
         },
-        { new: true, upsert: true, setDefaultsOnInsert: true }
+        { returnDocument: "after", upsert: true, setDefaultsOnInsert: true }
       );
 
       createdOverrides.push(override);
@@ -123,7 +123,7 @@ export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyRe
       let disruptionSummary: any = null;
       if (status === "unavailable" || effectiveEndTime) {
         disruptionSummary = await disruptionService.processDoctorDisruption({
-          clinicId: cId,
+          locationId: cId,
           doctorId,
           date,
           status,
@@ -144,7 +144,7 @@ export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyRe
         targetId: override._id,
         targetModel: "DoctorDayOverride",
         details: {
-          clinicId: cId,
+          locationId: cId,
           doctorId,
           date,
           status,
@@ -158,7 +158,7 @@ export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyRe
       broadcastQueueUpdate(cId, {
         type: "QUEUE_UPDATED",
         data: {
-          clinicId: cId,
+          locationId: cId,
           doctorId,
           date,
           overrideStatus: status,
@@ -181,7 +181,7 @@ export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyRe
             remoteNotifiedCount: 0,
           },
         },
-        `Doctor availability override set successfully for ${createdOverrides.length} clinic branch(es)`
+        `Doctor availability override set successfully for ${createdOverrides.length} location(s)`
       )
     );
   } catch (err) {
@@ -192,37 +192,37 @@ export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyRe
 
 export async function getDoctorDayOverrides(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, doctorId, date, startDate, endDate } = req.query as {
-      clinicId?: string;
+    const { locationId, doctorId, date, startDate, endDate } = req.query as {
+      locationId?: string;
       doctorId?: string;
       date?: string;
       startDate?: string;
       endDate?: string;
     };
 
-    if (clinicId && clinicId !== "all") {
-      const clinicCheck = await checkClinicAccess(req, clinicId);
-      if (!clinicCheck.allowed) {
-        return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    if (locationId && locationId !== "all") {
+      const locationCheck = await checkLocationAccess(req, locationId);
+      if (!locationCheck.allowed) {
+        return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
       }
     }
 
     const consumer = ["patient", "family_member", "guest"].includes(req.user?.role || "");
-    if (consumer && (!clinicId || clinicId === "all" || !doctorId)) {
-      return reply.code(400).send(errorResponse("A clinic and doctor are required"));
+    if (consumer && (!locationId || locationId === "all" || !doctorId)) {
+      return reply.code(400).send(errorResponse("A location and doctor are required"));
     }
     const filter: any = {};
     if (!consumer) {
       const scope = resolveAuthorizedOrganizationScope(req);
       if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
-      // Older overrides omit organizationId; their owning clinic remains authority.
+      // Older overrides omit organizationId; their owning location remains authority.
       if (scope.organizationId) filter.$or = [{ organizationId: scope.organizationId }, { organizationId: null }];
-      const clinicIds = scope.organizationId
-        ? (await Clinic.find({ organizationId: scope.organizationId, isActive: { $ne: false } }).select("_id").lean()).map(clinic => String(clinic._id))
-        : await getRequestClinicIds(req);
-      if (clinicIds) filter.clinicId = { $in: clinicIds };
+      const locationIds = scope.organizationId
+        ? (await Location.find({ organizationId: scope.organizationId, isActive: { $ne: false } }).select("_id").lean()).map(location => String(location._id))
+        : await getRequestLocationIds(req);
+      if (locationIds) filter.locationId = { $in: locationIds };
     }
-    if (clinicId && clinicId !== "all") filter.clinicId = filter.clinicId ? { ...filter.clinicId, $eq: clinicId } : clinicId;
+    if (locationId && locationId !== "all") filter.locationId = filter.locationId ? { ...filter.locationId, $eq: locationId } : locationId;
     if (doctorId) filter.doctorId = doctorId;
 
     if (date) {
@@ -234,9 +234,9 @@ export async function getDoctorDayOverrides(req: FastifyRequest, reply: FastifyR
     }
 
     const overrides = await DoctorDayOverride.find(filter)
-      .select(consumer ? "clinicId doctorId date status effectiveStartTime effectiveEndTime" : "")
+      .select(consumer ? "locationId doctorId date status effectiveStartTime effectiveEndTime" : "")
       .populate("doctorId", consumer ? "name specialization" : "name email phone specialization")
-      .populate("clinicId", "name city")
+      .populate("locationId", "name city")
       .sort({ date: 1 });
 
     return reply.code(200).send(successResponse(overrides));
@@ -261,9 +261,9 @@ export async function deleteDoctorDayOverride(req: FastifyRequest, reply: Fastif
       return reply.code(404).send(errorResponse("Override not found"));
     }
 
-    const clinicCheck = await checkOperationalRecordAccess(req, override);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkOperationalRecordAccess(req, override);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     if (userRole === "doctor" && userId !== override.doctorId.toString()) {
@@ -277,13 +277,13 @@ export async function deleteDoctorDayOverride(req: FastifyRequest, reply: Fastif
       action: "DOCTOR_DAY_OVERRIDE_DELETE",
       targetId: override._id,
       targetModel: "DoctorDayOverride",
-      details: { clinicId: override.clinicId, doctorId: override.doctorId, date: override.date },
+      details: { locationId: override.locationId, doctorId: override.doctorId, date: override.date },
     });
 
-    broadcastQueueUpdate(override.clinicId.toString(), {
+    broadcastQueueUpdate(override.locationId.toString(), {
       type: "QUEUE_UPDATED",
       data: {
-        clinicId: override.clinicId.toString(),
+        locationId: override.locationId.toString(),
         doctorId: override.doctorId.toString(),
         date: override.date,
         overrideStatus: "reverted_to_default",
@@ -301,35 +301,35 @@ export async function deleteDoctorDayOverride(req: FastifyRequest, reply: Fastif
 
 export async function getTriageAppointments(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, doctorId, date } = req.query as {
-      clinicId: string;
+    const { locationId, doctorId, date } = req.query as {
+      locationId: string;
       doctorId?: string;
       date?: string;
     };
 
-    if (!clinicId) {
-      return reply.code(400).send(errorResponse("clinicId is required"));
+    if (!locationId) {
+      return reply.code(400).send(errorResponse("locationId is required"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, clinicId);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, locationId);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     const query: any = {
-      clinicId,
-      organizationId: clinicCheck.organizationId,
+      locationId,
+      organizationId: locationCheck.organizationId,
       status: "disruption_triage",
     };
 
     if (doctorId) query.doctorId = doctorId;
 
     if (date) {
-      const timezone = await getClinicTimezone(clinicId);
+      const timezone = await getLocationTimezone(locationId);
       try {
-        const { start, end } = clinicDayRange(date, timezone);
+        const { start, end } = locationDayRange(date, timezone);
         query.appointmentTime = { $gte: start, $lte: end };
-      } catch { return reply.code(400).send(errorResponse("Invalid clinic date")); }
+      } catch { return reply.code(400).send(errorResponse("Invalid location date")); }
     }
 
     const appointments = await Appointment.find(query)
@@ -349,26 +349,26 @@ export async function getTriageAppointments(req: FastifyRequest, reply: FastifyR
 
 export async function getEligibleReplacements(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, doctorId, date } = req.query as {
-      clinicId: string;
+    const { locationId, doctorId, date } = req.query as {
+      locationId: string;
       doctorId: string;
       date?: string;
     };
 
-    if (!clinicId || !doctorId) {
-      return reply.code(400).send(errorResponse("clinicId and doctorId are required"));
+    if (!locationId || !doctorId) {
+      return reply.code(400).send(errorResponse("locationId and doctorId are required"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, clinicId);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, locationId);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
-    const timezone = await getClinicTimezone(clinicId);
-    const targetDate = date || clinicDateKey(new Date(), timezone);
-    try { clinicDayRange(targetDate, timezone); }
-    catch { return reply.code(400).send(errorResponse("Invalid clinic date")); }
-    const eligible = await disruptionService.getEligibleReplacementDoctors(clinicId, targetDate, doctorId);
+    const timezone = await getLocationTimezone(locationId);
+    const targetDate = date || locationDateKey(new Date(), timezone);
+    try { locationDayRange(targetDate, timezone); }
+    catch { return reply.code(400).send(errorResponse("Invalid location date")); }
+    const eligible = await disruptionService.getEligibleReplacementDoctors(locationId, targetDate, doctorId);
 
     return reply.code(200).send(successResponse(eligible));
   } catch (err) {
@@ -395,9 +395,9 @@ export async function triageTransferAppointment(req: FastifyRequest, reply: Fast
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const clinicCheck = await checkOperationalRecordAccess(req, appt);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkOperationalRecordAccess(req, appt);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     const updated = await disruptionService.transferPatient({
@@ -431,9 +431,9 @@ export async function triageCancelAppointment(req: FastifyRequest, reply: Fastif
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const clinicCheck = await checkOperationalRecordAccess(req, appt);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkOperationalRecordAccess(req, appt);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     const updated = await disruptionService.cancelByDisruption({
@@ -469,9 +469,9 @@ export async function triageRescheduleAppointment(req: FastifyRequest, reply: Fa
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const clinicCheck = await checkOperationalRecordAccess(req, appt);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkOperationalRecordAccess(req, appt);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     const result = await disruptionService.priorityReschedule({
@@ -516,19 +516,19 @@ export async function triageBatchAction(req: FastifyRequest, reply: FastifyReply
     const scope = resolveAuthorizedOrganizationScope(req);
     if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
     const uniqueIds = Array.from(new Set(appointmentIds));
-    const records = await Appointment.find({ _id: { $in: uniqueIds } }).select("clinicId organizationId").lean();
+    const records = await Appointment.find({ _id: { $in: uniqueIds } }).select("locationId organizationId").lean();
     if (records.length !== uniqueIds.length) return reply.code(404).send(errorResponse("Appointment not found"));
     // All targets must be authorized before the first mutation or refund.
-    const allowedClinics = new Set<string>();
+    const allowedLocations = new Set<string>();
     for (const record of records) {
       if (scope.organizationId && String(record.organizationId) !== scope.organizationId) {
         return reply.code(404).send(errorResponse("Appointment not found"));
       }
-      const clinic = String(record.clinicId);
-      if (!allowedClinics.has(clinic)) {
+      const location = String(record.locationId);
+      if (!allowedLocations.has(location)) {
         const check = await checkOperationalRecordAccess(req, record);
         if (!check.allowed) return reply.code(check.statusCode).send(errorResponse(check.message));
-        allowedClinics.add(clinic);
+        allowedLocations.add(location);
       }
     }
 

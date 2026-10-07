@@ -1,7 +1,8 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Doctor } from "../models/Doctor.ts";
@@ -14,14 +15,14 @@ import crypto from "node:crypto";
 describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversational Booking Suite", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctor1Id: string;
   let doctor2Id: string;
   const whatsAppPatientPhone = `9199${Math.floor(10000000 + Math.random() * 90000000)}`;
 
   beforeAll(async () => {
     // 1. Setup Organization & Super Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -34,14 +35,14 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
     await Organization.updateOne({ _id: orgId }, { $set: { "whatsappConfig.mode": "dedicated", "whatsappConfig.wabaId": "WABA_ID_TEST", "whatsappConfig.phoneNumberId": "TEST_PHONE_ID" } });
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Apollo Multi-Specialty PolyCare Centre",
@@ -50,8 +51,8 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
         phone: "+911144556677",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Doctor 1 (Cabin 101 - Cardiology)
     const doc1Res = await app.inject({
@@ -65,7 +66,7 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
         specialization: "Cardiology",
         qualification: "MBBS, MD, DM (Cardiology)",
         registrationNumber: "MCI-55441/2010",
-        clinicIds: [clinicId],
+        locationIds: [locationId],
         consultationFee: 800,
       },
     });
@@ -84,7 +85,7 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
         specialization: "Orthopaedics",
         qualification: "MBBS, MS (Ortho)",
         registrationNumber: "DMC-88192/2014",
-        clinicIds: [clinicId],
+        locationIds: [locationId],
         consultationFee: 700,
       },
     });
@@ -98,7 +99,7 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
     // Create assignments with cabin numbers
     await DoctorAssignment.create({
       doctorId: doctor1Id,
-      clinicId,
+      locationId,
       organizationId: orgId,
       workingHours,
       fees: 800,
@@ -108,7 +109,7 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
 
     await DoctorAssignment.create({
       doctorId: doctor2Id,
-      clinicId,
+      locationId,
       organizationId: orgId,
       workingHours,
       fees: 700,
@@ -198,7 +199,7 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
         url: "/api/abdm/scan-share",
         headers: { cookie: adminCookies.join("; ") },
         payload: {
-          clinicId,
+          locationId,
           doctorId: doctor1Id,
           abhaProfile: {
             abhaNumber,
@@ -237,14 +238,14 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
     it("should return multi-cabin matrix with cabin numbers, doctor specialties, and queue status", async () => {
       const res = await app.inject({
         method: "GET",
-        url: `/api/public/queue-tv/${clinicId}`,
+        url: `/api/public/queue-tv/${locationId}`,
       });
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
       expect(body.success).toBe(true);
       const data = body.data;
-      expect(data.clinic).toBeDefined();
+      expect(data.location).toBeDefined();
       expect(data.cabins).toBeDefined();
       expect(Array.isArray(data.cabins)).toBe(true);
       expect(data.cabins.length).toBeGreaterThanOrEqual(2);

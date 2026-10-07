@@ -1,11 +1,12 @@
+import { providerFixtureSlug } from "./helpers/providerFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 
 describe("SEC-001: Public Organization & Clinic Secret Containment", () => {
   let testOrgId: string;
-  let testClinicId: string;
+  let testLocationId: string;
   const smtpPassSecret = "super-secret-smtp-password-999";
   const whatsappTokenSecret = "meta-access-token-secret-888";
 
@@ -21,11 +22,11 @@ describe("SEC-001: Public Organization & Clinic Secret Containment", () => {
       email: "contact@apollosecret.org",
       description: "Premier multi-specialty healthcare facility",
       plan: "enterprise",
-      maxClinics: 10,
+      maxLocations: 10,
       maxDoctors: 50,
       maxStaff: 50,
       taxId: "GSTIN-9988776655",
-      licenseNumber: "CLINIC-LIC-443322",
+      licenseNumber: "LOCATION-LIC-443322",
       onboardingStatus: "COMPLETED",
       isOnboarded: true,
       isActive: true,
@@ -59,8 +60,8 @@ describe("SEC-001: Public Organization & Clinic Secret Containment", () => {
     });
     testOrgId = org.id;
 
-    // Create a clinic linked to this organization
-    const clinic = await Clinic.create({
+    // Create a location linked to this organization
+    const location = await Location.create({
       organizationId: org._id,
       name: "Apollo Care Clinic Indiranagar",
       city: "Bangalore",
@@ -69,7 +70,7 @@ describe("SEC-001: Public Organization & Clinic Secret Containment", () => {
       address: "100 Feet Road, Indiranagar",
       isActive: true,
     });
-    testClinicId = clinic.id;
+    testLocationId = location.id;
   });
 
   it("1. GET /api/public/organizations must NEVER return sensitive fields or credentials", async () => {
@@ -98,7 +99,7 @@ describe("SEC-001: Public Organization & Clinic Secret Containment", () => {
     expect(matchedOrg.taxId).toBeUndefined();
     expect(matchedOrg.licenseNumber).toBeUndefined();
     expect(matchedOrg.plan).toBeUndefined();
-    expect(matchedOrg.maxClinics).toBeUndefined();
+    expect(matchedOrg.maxLocations).toBeUndefined();
     expect(matchedOrg.maxDoctors).toBeUndefined();
     expect(matchedOrg.maxStaff).toBeUndefined();
     expect(matchedOrg.onboardingStatus).toBeUndefined();
@@ -134,7 +135,7 @@ describe("SEC-001: Public Organization & Clinic Secret Containment", () => {
     expect(org.taxId).toBeUndefined();
     expect(org.licenseNumber).toBeUndefined();
     expect(org.plan).toBeUndefined();
-    expect(org.maxClinics).toBeUndefined();
+    expect(org.maxLocations).toBeUndefined();
     expect(org.maxDoctors).toBeUndefined();
     expect(org.maxStaff).toBeUndefined();
     expect(org.onboardingStatus).toBeUndefined();
@@ -147,10 +148,10 @@ describe("SEC-001: Public Organization & Clinic Secret Containment", () => {
     expect(org.doctors).toBeDefined();
   });
 
-  it("3. GET /api/public/clinics must not leak organization credentials", async () => {
+  it("3. GET /api/public/locations must not leak organization credentials", async () => {
     const res = await app.inject({
       method: "GET",
-      url: "/api/public/clinics",
+      url: "/api/public/locations",
     });
 
     expect(res.statusCode).toBe(200);
@@ -160,10 +161,10 @@ describe("SEC-001: Public Organization & Clinic Secret Containment", () => {
     expect(rawBody).not.toContain(whatsappTokenSecret);
   });
 
-  it("4. GET /api/public/clinics/:id must project clean organization without credentials", async () => {
+  it("4. GET /api/public/locations/:id must project clean organization without credentials", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/api/public/clinics/${testClinicId}`,
+      url: `/api/public/locations/${await providerFixtureSlug("location", testLocationId)}`,
     });
 
     expect(res.statusCode).toBe(200);
@@ -174,12 +175,12 @@ describe("SEC-001: Public Organization & Clinic Secret Containment", () => {
 
     const json = JSON.parse(rawBody);
     expect(json.success).toBe(true);
-    const clinic = json.data;
-    expect(clinic.organization).toBeDefined();
-    expect(clinic.organization.name).toBe("Apollo Secret Defense Org");
-    expect(clinic.organization.smtp).toBeUndefined();
-    expect(clinic.organization.whatsappConfig).toBeUndefined();
-    expect(clinic.organization.taxId).toBeUndefined();
+    const location = json.data;
+    expect(location.organization).toBeDefined();
+    expect(location.organization.name).toBe("Apollo Secret Defense Org");
+    expect(location.organization.smtp).toBeUndefined();
+    expect(location.organization.whatsappConfig).toBeUndefined();
+    expect(location.organization.taxId).toBeUndefined();
   });
 
   it("5. Schema defense-in-depth: Organization.findById omits smtp.pass and whatsappConfig.accessToken by default", async () => {

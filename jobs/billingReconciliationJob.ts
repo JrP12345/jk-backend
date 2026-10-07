@@ -14,7 +14,7 @@ export async function runBillingReconciliation() {
   const pending = await SubscriptionPayment.find({
     createdAt: { $lte: new Date(now - 2 * 60_000) },
     // Explicit local simulation references never identify a gateway Order.
-    // Do not guess validity from the length/case of other legacy order IDs.
+    // Do not guess validity from the length/case of other provider order IDs.
     razorpayOrderId: { $not: /^order_(?:sim|test)_/ },
     $and: [{ $or: [{ reconcileAfter: null }, { reconcileAfter: { $lte: new Date(now) } }] }],
     $or: [

@@ -26,18 +26,18 @@ function pending(orderId: string, extra: Record<string, unknown> = {}) {
 }
 
 describe("subscription reconciliation scheduling", () => {
-  it("excludes explicit simulated orders without excluding other legacy IDs", async () => {
+  it("excludes explicit simulated orders without excluding other provider IDs", async () => {
     const simulated = await pending("order_sim_fj26qvtzzga");
     await pending("order_test_local_fixture");
-    const legacy = await pending("order_dofp724broi");
+    const providerOrder = await pending("order_dofp724broi");
     const fetch = vi.spyOn(razorpayService, "fetchCapturedPaymentForOrder").mockResolvedValue(null);
 
     await runBillingReconciliation();
 
-    expect(fetch).toHaveBeenCalledExactlyOnceWith(legacy.razorpayOrderId, 499);
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(providerOrder.razorpayOrderId, 499);
     expect((await SubscriptionPayment.findById(simulated.id))?.lastReconciledAt).toBeNull();
     expect((await SubscriptionPayment.findById(simulated.id))?.status).toBe("created");
-    expect((await SubscriptionPayment.findById(legacy.id))?.lastReconciledAt).toEqual(now);
+    expect((await SubscriptionPayment.findById(providerOrder.id))?.lastReconciledAt).toEqual(now);
   });
 
   it("defers a missing provider order for a day without changing financial state", async () => {

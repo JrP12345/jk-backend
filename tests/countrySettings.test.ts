@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { validateCountrySettings } from "../utilities/countrySettings.ts";
 import { normalizePhone } from "../utilities/helpers.ts";
 import { WhatsAppCloudApiService } from "../services/WhatsAppCloudApiService.ts";
-import { clinicClockMinutes, clinicDateKey, clinicDayRange, clinicLocalTimeToDate } from "../utilities/clinicTime.ts";
+import { locationClockMinutes, locationDateKey, locationDayRange, locationLocalTimeToDate } from "../utilities/locationTime.ts";
 
 describe("country settings", () => {
   it("requires a timezone for countries spanning multiple zones", () => {
@@ -27,31 +27,31 @@ describe("country settings", () => {
 describe("clinic timezone", () => {
   it("uses the clinic's day and clock for booking", () => {
     const instant = new Date("2026-09-29T00:30:00Z");
-    expect(clinicDateKey(instant, "America/Los_Angeles")).toBe("2026-09-28");
-    expect(clinicClockMinutes(instant, "America/Los_Angeles")).toBe(17 * 60 + 30);
-    expect(clinicLocalTimeToDate("2026-01-15", "09:00", "America/New_York").toISOString()).toBe("2026-01-15T14:00:00.000Z");
-    expect(clinicLocalTimeToDate("2026-07-15", "09:00", "America/New_York").toISOString()).toBe("2026-07-15T13:00:00.000Z");
+    expect(locationDateKey(instant, "America/Los_Angeles")).toBe("2026-09-28");
+    expect(locationClockMinutes(instant, "America/Los_Angeles")).toBe(17 * 60 + 30);
+    expect(locationLocalTimeToDate("2026-01-15", "09:00", "America/New_York").toISOString()).toBe("2026-01-15T14:00:00.000Z");
+    expect(locationLocalTimeToDate("2026-07-15", "09:00", "America/New_York").toISOString()).toBe("2026-07-15T13:00:00.000Z");
   });
 
   it("keeps a daylight-saving day to its actual local duration", () => {
-    const range = clinicDayRange("2026-03-08", "America/New_York");
+    const range = locationDayRange("2026-03-08", "America/New_York");
     expect(range.start.toISOString()).toBe("2026-03-08T05:00:00.000Z");
     expect(range.end.toISOString()).toBe("2026-03-09T03:59:59.999Z");
-    const autumnRange = clinicDayRange("2026-11-01", "America/New_York");
+    const autumnRange = locationDayRange("2026-11-01", "America/New_York");
     expect(autumnRange.end.getTime() - autumnRange.start.getTime() + 1).toBe(25 * 60 * 60 * 1000);
   });
 
   it("rejects impossible dates and skipped daylight-saving times", () => {
     for (const [date, time] of [["2026-02-30", "09:00"], ["2026-09-29", "24:00"], ["2026-09-29", "09:60"], ["2026-03-08", "02:30"]]) {
-      expect(() => clinicLocalTimeToDate(date, time, "America/New_York")).toThrow();
+      expect(() => locationLocalTimeToDate(date, time, "America/New_York")).toThrow();
     }
   });
 
   it("converts slots for all five supported country contexts", () => {
-    expect(clinicLocalTimeToDate("2026-01-15", "09:00", "Asia/Kolkata").toISOString()).toBe("2026-01-15T03:30:00.000Z");
-    expect(clinicLocalTimeToDate("2026-01-15", "09:00", "America/Toronto").toISOString()).toBe("2026-01-15T14:00:00.000Z");
-    expect(clinicLocalTimeToDate("2026-01-15", "09:00", "Europe/London").toISOString()).toBe("2026-01-15T09:00:00.000Z");
-    expect(clinicLocalTimeToDate("2026-07-15", "09:00", "Europe/London").toISOString()).toBe("2026-07-15T08:00:00.000Z");
-    expect(clinicLocalTimeToDate("2026-01-15", "09:00", "Asia/Dubai").toISOString()).toBe("2026-01-15T05:00:00.000Z");
+    expect(locationLocalTimeToDate("2026-01-15", "09:00", "Asia/Kolkata").toISOString()).toBe("2026-01-15T03:30:00.000Z");
+    expect(locationLocalTimeToDate("2026-01-15", "09:00", "America/Toronto").toISOString()).toBe("2026-01-15T14:00:00.000Z");
+    expect(locationLocalTimeToDate("2026-01-15", "09:00", "Europe/London").toISOString()).toBe("2026-01-15T09:00:00.000Z");
+    expect(locationLocalTimeToDate("2026-07-15", "09:00", "Europe/London").toISOString()).toBe("2026-07-15T08:00:00.000Z");
+    expect(locationLocalTimeToDate("2026-01-15", "09:00", "Asia/Dubai").toISOString()).toBe("2026-01-15T05:00:00.000Z");
   });
 });

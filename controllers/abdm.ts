@@ -1,9 +1,9 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { abdmService } from "../services/AbdmService.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Patient } from "../models/Patient.ts";
-import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess } from "../utilities/tenant.ts";
+import { checkLocationAccess, checkOperationalRecordAccess, checkPatientAccess } from "../utilities/tenant.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 
 export async function generateAadhaarOtpController(req: FastifyRequest, reply: FastifyReply) {
@@ -73,18 +73,18 @@ export async function searchAbhaController(req: FastifyRequest, reply: FastifyRe
 
 export async function scanAndShareCheckInController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, abhaProfile, doctorId, appointmentType, notes } = (req.body || {}) as any;
+    const { locationId, abhaProfile, doctorId, appointmentType, notes } = (req.body || {}) as any;
 
-    if (!clinicId || !abhaProfile || !abhaProfile.abhaNumber || !doctorId) {
-      return reply.code(400).send(errorResponse("clinicId, doctorId, and abhaProfile with abhaNumber are required"));
+    if (!locationId || !abhaProfile || !abhaProfile.abhaNumber || !doctorId) {
+      return reply.code(400).send(errorResponse("locationId, doctorId, and abhaProfile with abhaNumber are required"));
     }
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) return reply.code(locationAccess.statusCode).send(errorResponse(locationAccess.message));
 
     const organizationId = req.user?.organization_id;
 
     const result = await abdmService.processScanAndShare({
-      clinicId,
+      locationId,
       abhaProfile,
       doctorId,
       appointmentType: appointmentType || "qr",
@@ -98,31 +98,31 @@ export async function scanAndShareCheckInController(req: FastifyRequest, reply: 
   }
 }
 
-export async function getClinicQrStandeeController(req: FastifyRequest, reply: FastifyReply) {
+export async function getLocationQrStandeeController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId } = req.params as { clinicId: string };
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
+    const { locationId } = req.params as { locationId: string };
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) return reply.code(locationAccess.statusCode).send(errorResponse(locationAccess.message));
 
-    const clinic = await Clinic.findById(clinicId).select("name city address phone").lean();
-    if (!clinic) {
-      return reply.code(404).send(errorResponse("Clinic not found"));
+    const location = await Location.findById(locationId).select("name city address phone").lean();
+    if (!location) {
+      return reply.code(404).send(errorResponse("Location not found"));
     }
 
-    const qrPayload = abdmService.getClinicQrStandeePayload({
-      id: clinic._id.toString(),
-      name: clinic.name,
-      city: clinic.city,
+    const qrPayload = abdmService.getLocationQrStandeePayload({
+      id: location._id.toString(),
+      name: location.name,
+      city: location.city,
     });
 
     return reply.code(200).send(
       successResponse(
         {
-          clinic: {
-            id: clinic._id.toString(),
-            name: clinic.name,
-            city: clinic.city,
-            address: clinic.address,
+          location: {
+            id: location._id.toString(),
+            name: location.name,
+            city: location.city,
+            address: location.address,
           },
           qrPayload,
           instructions: "Patient scans this QR from Aarogya Setu / ABHA app to share demographics in 3 seconds.",
@@ -139,18 +139,18 @@ export async function getClinicQrStandeeController(req: FastifyRequest, reply: F
 
 export async function linkCareContextController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { patientId, appointmentId, clinicId, customDisplay } = (req.body || {}) as any;
+    const { patientId, appointmentId, locationId, customDisplay } = (req.body || {}) as any;
 
-    if (!patientId || !appointmentId || !clinicId) {
-      return reply.code(400).send(errorResponse("patientId, appointmentId, and clinicId are required"));
+    if (!patientId || !appointmentId || !locationId) {
+      return reply.code(400).send(errorResponse("patientId, appointmentId, and locationId are required"));
     }
-    const [patientAccess, clinicAccess] = await Promise.all([checkPatientAccess(req, patientId), checkClinicAccess(req, clinicId)]);
+    const [patientAccess, locationAccess] = await Promise.all([checkPatientAccess(req, patientId), checkLocationAccess(req, locationId)]);
     if (!patientAccess.allowed) return reply.code(patientAccess.statusCode).send(errorResponse(patientAccess.message));
-    if (!clinicAccess.allowed) return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
-    const appointment = await Appointment.findById(appointmentId).select("patientId clinicId organizationId").lean();
+    if (!locationAccess.allowed) return reply.code(locationAccess.statusCode).send(errorResponse(locationAccess.message));
+    const appointment = await Appointment.findById(appointmentId).select("patientId locationId organizationId").lean();
     if (!appointment) return reply.code(404).send(errorResponse("Appointment not found"));
     const appointmentAccess = await checkOperationalRecordAccess(req, appointment);
-    if (!appointmentAccess.allowed || String(appointment.patientId) !== String(patientId) || String(appointment.clinicId) !== String(clinicId)) {
+    if (!appointmentAccess.allowed || String(appointment.patientId) !== String(patientId) || String(appointment.locationId) !== String(locationId)) {
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
@@ -158,7 +158,7 @@ export async function linkCareContextController(req: FastifyRequest, reply: Fast
     const result = await abdmService.linkCareContext({
       patientId,
       appointmentId,
-      clinicId,
+      locationId,
       organizationId,
       customDisplay,
     });
@@ -194,7 +194,7 @@ export async function getFhirBundleController(req: FastifyRequest, reply: Fastif
     if (!appointmentId) {
       return reply.code(400).send(errorResponse("appointmentId parameter is required"));
     }
-    const appointment = await Appointment.findById(appointmentId).select("clinicId organizationId").lean();
+    const appointment = await Appointment.findById(appointmentId).select("locationId organizationId").lean();
     if (!appointment) return reply.code(404).send(errorResponse("Appointment not found"));
     const appointmentAccess = await checkOperationalRecordAccess(req, appointment);
     if (!appointmentAccess.allowed) return reply.code(appointmentAccess.statusCode).send(errorResponse(appointmentAccess.message));

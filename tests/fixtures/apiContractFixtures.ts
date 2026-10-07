@@ -1,7 +1,7 @@
 import { expect } from "vitest";
 
 /**
- * Immutable API Contract Fixtures for /api/v1 supported clients.
+ * Response-shape assertions for the current /api endpoints.
  * These fixtures verify that core endpoints maintain stable response shapes.
  */
 
@@ -23,7 +23,7 @@ export const AppointmentResponseContractFixture = {
   success: true,
   data: {
     id: expect.any(String),
-    clinicId: expect.anything(),
+    locationId: expect.anything(),
     doctorId: expect.anything(),
     patientId: expect.anything(),
     appointmentTime: expect.any(String),
@@ -38,7 +38,7 @@ export const EncounterResponseContractFixture = {
   data: {
     id: expect.any(String),
     organizationId: expect.any(String),
-    clinicId: expect.any(String),
+    locationId: expect.any(String),
     patientId: expect.anything(),
     doctorId: expect.anything(),
     encounterType: expect.any(String),
@@ -53,7 +53,7 @@ export const InvoiceResponseContractFixture = {
     id: expect.any(String),
     invoiceNumber: expect.any(String),
     organizationId: expect.any(String),
-    clinicId: expect.any(String),
+    locationId: expect.any(String),
     patientId: expect.anything(),
     totalAmount: expect.any(Number),
     amountPaid: expect.any(Number),

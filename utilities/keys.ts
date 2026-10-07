@@ -10,7 +10,7 @@ export function getPublicKeyPath(): string {
   return process.env.JWT_PUBLIC_KEY_PATH || path.join(process.cwd(), "keys", "public.pem");
 }
 
-export const KEY_ID = "healthos-service-key-1";
+export const KEY_ID = "ekavyu-service-key-1";
 
 export let SERVICE_PRIVATE_KEY: string = "";
 export let SERVICE_PUBLIC_KEY: string = "";

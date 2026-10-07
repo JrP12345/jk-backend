@@ -7,7 +7,7 @@ import { RefillRequest } from "../models/RefillRequest.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { domainEventBus } from "../platform/events/DomainEventBus.ts";
 import { eventBus } from "../events/eventBus.ts";
-import { checkClinicAccess, checkOperationalRecordAccess, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+import { checkLocationAccess, checkOperationalRecordAccess, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { requestHasAnyPermission } from "../utilities/permissions.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
@@ -189,7 +189,7 @@ export async function createPrescriptionRefillRequest(req: FastifyRequest, reply
 
     const refill = await RefillRequest.create({
       organizationId: prescription.organizationId,
-      clinicId: prescription.clinicId,
+      locationId: prescription.locationId,
       prescriptionId: prescription._id,
       patientId: patient._id,
       doctorId: prescription.doctorId,
@@ -210,7 +210,7 @@ export async function createPrescriptionRefillRequest(req: FastifyRequest, reply
         prescriptionId: id,
         patientId: patient._id.toString(),
         doctorId: prescription.doctorId.toString(),
-        clinicId: prescription.clinicId.toString(),
+        locationId: prescription.locationId.toString(),
         reason: reason.trim(),
       },
     });
@@ -225,7 +225,7 @@ export async function createPrescriptionRefillRequest(req: FastifyRequest, reply
         prescriptionId: id,
         patientId: patient._id.toString(),
         doctorId: prescription.doctorId.toString(),
-        clinicId: prescription.clinicId.toString(),
+        locationId: prescription.locationId.toString(),
         reason: reason.trim(),
       },
     } as any);
@@ -336,29 +336,29 @@ export async function patientSelfBookAppointment(req: FastifyRequest, reply: Fas
     const scope = resolveAuthorizedOrganizationScope(req);
     const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
 
-    const { clinicId, doctorId, appointmentTime, appointmentType, notes, lockId, forPatientId, payAtClinic } = req.body as {
-      clinicId: string;
+    const { locationId, doctorId, appointmentTime, appointmentType, notes, lockId, forPatientId, payAtLocation } = req.body as {
+      locationId: string;
       doctorId: string;
       appointmentTime: string;
       appointmentType?: "online" | "walk-in" | "reception";
       notes?: string;
       lockId?: string;
       forPatientId?: string;
-      payAtClinic?: boolean;
+      payAtLocation?: boolean;
     };
 
-    if (!clinicId || !doctorId || !appointmentTime) {
-      return reply.code(400).send(errorResponse("clinicId, doctorId, and appointmentTime are required"));
+    if (!locationId || !doctorId || !appointmentTime) {
+      return reply.code(400).send(errorResponse("locationId, doctorId, and appointmentTime are required"));
     }
 
-    if (!mongoose.Types.ObjectId.isValid(clinicId) || !mongoose.Types.ObjectId.isValid(doctorId)) {
-      return reply.code(400).send(errorResponse("Invalid clinic or doctor ID"));
+    if (!mongoose.Types.ObjectId.isValid(locationId) || !mongoose.Types.ObjectId.isValid(doctorId)) {
+      return reply.code(400).send(errorResponse("Invalid location or doctor ID"));
     }
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
-    const { canCreateClinicBooking } = await import("../services/billing/SubscriptionAccess.ts");
-    if (!(await canCreateClinicBooking(clinicId))) {
-      return reply.code(409).send(errorResponse("Online booking is temporarily unavailable. Please contact the clinic directly."));
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
+    const { canCreateLocationBooking } = await import("../services/billing/SubscriptionAccess.ts");
+    if (!(await canCreateLocationBooking(locationId))) {
+      return reply.code(409).send(errorResponse("Online booking is temporarily unavailable. Please contact reception directly."));
     }
 
     const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
@@ -383,7 +383,7 @@ export async function patientSelfBookAppointment(req: FastifyRequest, reply: Fas
           email: userObj?.email || undefined,
           accountType: "self",
           createdBy: userId,
-          organizationId: clinicAccess.organizationId ? new mongoose.Types.ObjectId(clinicAccess.organizationId) : (orgId ? new mongoose.Types.ObjectId(orgId) : undefined),
+          organizationId: locationAccess.organizationId ? new mongoose.Types.ObjectId(locationAccess.organizationId) : (orgId ? new mongoose.Types.ObjectId(orgId) : undefined),
         });
         await FamilyRelationship.findOneAndUpdate(
           { userId, patientId: patient._id },
@@ -402,9 +402,9 @@ export async function patientSelfBookAppointment(req: FastifyRequest, reply: Fas
     const { AuditLog } = await import("../models/AuditLog.ts");
 
     // Verify doctor assignment
-    const assignment = await DoctorAssignment.findOne({ doctorId, clinicId });
+    const assignment = await DoctorAssignment.findOne({ doctorId, locationId });
     if (!assignment) {
-      return reply.code(400).send(errorResponse("Doctor is not assigned to the selected clinic"));
+      return reply.code(400).send(errorResponse("Doctor is not assigned to the selected location"));
     }
 
     const mode = (assignment as any)?.bookingMode;
@@ -413,14 +413,14 @@ export async function patientSelfBookAppointment(req: FastifyRequest, reply: Fas
     // Validate anti-double-booking slot lock (only for time_slot mode)
     let lockValidation: { valid: boolean; message?: string; lockKey?: string } = { valid: true };
     if (!isSequentialQueue) {
-      lockValidation = await validateSlotLockForBooking(clinicId, doctorId, appointmentTime, userId, lockId);
+      lockValidation = await validateSlotLockForBooking(locationId, doctorId, appointmentTime, userId, lockId);
       if (!lockValidation.valid) {
         return reply.code(409).send(errorResponse(lockValidation.message || "Slot is unavailable"));
       }
     }
 
     const apptDateStr = new Date(appointmentTime).toISOString().split("T")[0];
-    const counterId = `queue_${clinicId}_${doctorId}_${apptDateStr}`;
+    const counterId = `queue_${locationId}_${doctorId}_${apptDateStr}`;
     const tokenNumber = await getNextAtomicSequence(counterId);
 
     const maxTokens = (assignment as any)?.maxDailyTokens;
@@ -430,13 +430,13 @@ export async function patientSelfBookAppointment(req: FastifyRequest, reply: Fas
 
     const isPaymentRequired = (assignment as any)?.paymentRequired === true;
     const initialStatus = isPaymentRequired ? "pending_payment" : "confirmed";
-    const initialPaymentStatus = isPaymentRequired ? "pending" : (payAtClinic ? "pay_at_clinic" : "not_required");
+    const initialPaymentStatus = isPaymentRequired ? "pending" : (payAtLocation ? "pay_at_location" : "not_required");
 
     const appointment = await Appointment.create({
       patientId: targetPatientId,
       bookedByUserId: userId,
       doctorId,
-      clinicId,
+      locationId,
       appointmentTime: new Date(appointmentTime),
       appointmentType: appointmentType || "online",
       notes: notes?.trim(),
@@ -459,7 +459,7 @@ export async function patientSelfBookAppointment(req: FastifyRequest, reply: Fas
       action: "PATIENT_SELF_BOOKING",
       targetId: appointment._id,
       targetModel: "Appointment",
-      details: { tokenNumber, appointmentTime, clinicId, doctorId, targetPatientId }
+      details: { tokenNumber, appointmentTime, locationId, doctorId, targetPatientId }
     });
 
     return reply.code(201).send(
@@ -498,7 +498,7 @@ export async function getPatientAppointmentsHistory(req: FastifyRequest, reply: 
       ],
     })
       .populate("doctorId", "name email phone")
-      .populate("clinicId", "name address phone")
+      .populate("locationId", "name address phone")
       .populate("patientId", "name phone email dob gender accountType mrn")
       .sort({ appointmentTime: -1 });
 

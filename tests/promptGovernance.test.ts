@@ -12,12 +12,12 @@ describe("Phase 2: Prompt Governance System Tests", () => {
   let testOrgId: string;
 
   beforeAll(async () => {
-    const email = `dr_prompt_gov_${Date.now()}@ananta.internal`;
+    const email = `dr_prompt_gov_${Date.now()}@ekavyu.internal`;
     const password = "Password123!";
 
     const org = await (Organization as any).create({
       name: "Prompt Gov Test Hospital",
-      email: `prompt_gov_${Date.now()}@ananta.internal`,
+      email: `prompt_gov_${Date.now()}@ekavyu.internal`,
       phone: "+1999888666",
       address: "200 Governance Way",
       city: "San Francisco",

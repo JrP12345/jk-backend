@@ -1,3 +1,4 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
@@ -5,7 +6,7 @@ import { ImagingStudy } from "../models/ImagingStudy.ts";
 
 describe("Radiology & PACS Imaging Integration Tests", () => {
   let adminCookies: string[] = [];
-  let clinicId: string;
+  let locationId: string;
   let patientId: string;
   let patientCookies: string[] = [];
   afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
@@ -13,7 +14,7 @@ describe("Radiology & PACS Imaging Integration Tests", () => {
   beforeAll(async () => {
     process.env.PACS_BASE_URL = "https://pacs.test/dicom-web";
     // 1. Create Organization & Admin
-    const orgRes = await app.inject({
+    const orgRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -26,12 +27,12 @@ describe("Radiology & PACS Imaging Integration Tests", () => {
       },
     });
     expect(orgRes.statusCode).toBe(201);
-    adminCookies = orgRes.headers["set-cookie"] as string[];
+    adminCookies = (await provisionedAdminCookies(orgRes));
 
-    // 2. Create Clinic
-    const clinicRes = await app.inject({
+    // 2. Create Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Advanced Imaging & MRI Wing",
@@ -41,8 +42,8 @@ describe("Radiology & PACS Imaging Integration Tests", () => {
         email: "pacs@imaging.internal",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Register Patient
     const patientRes = await app.inject({
@@ -71,7 +72,7 @@ describe("Radiology & PACS Imaging Integration Tests", () => {
       url: "/api/radiology/studies",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         patientId,
         modality: "CT",
         studyDescription: "CT High Resolution Chest with Contrast",
@@ -89,7 +90,7 @@ describe("Radiology & PACS Imaging Integration Tests", () => {
   it("should list imaging studies with modality filters via GET /api/radiology/studies", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/api/radiology/studies?clinicId=${clinicId}&modality=CT`,
+      url: `/api/radiology/studies?locationId=${locationId}&modality=CT`,
       headers: { cookie: adminCookies.join("; ") },
     });
 
@@ -108,7 +109,7 @@ describe("Radiology & PACS Imaging Integration Tests", () => {
       url: "/api/radiology/studies",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         patientId,
         modality: "MR",
         studyDescription: "MRI Brain 3T T1/T2 Flair",
@@ -136,7 +137,7 @@ describe("Radiology & PACS Imaging Integration Tests", () => {
       url: "/api/radiology/studies",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         patientId,
         modality: "DX",
         studyDescription: "Digital Chest X-Ray PA View",
@@ -161,7 +162,7 @@ describe("Radiology & PACS Imaging Integration Tests", () => {
   });
 
   it("requires authentication and returns an explicit unconfigured preview without contacting PACS", async () => {
-    const study = await ImagingStudy.findOne({ clinicId });
+    const study = await ImagingStudy.findOne({ locationId });
     const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock); vi.stubEnv("PACS_DICOMWEB_BASE_URL", "");
     const url = `/api/radiology/studies/${study!._id}/preview`;
     expect((await app.inject({ method: "GET", url })).statusCode).toBe(401);
@@ -172,7 +173,7 @@ describe("Radiology & PACS Imaging Integration Tests", () => {
   });
 
   it("scopes previews to the stored study and never fetches its supplied URL", async () => {
-    const study = await ImagingStudy.findOne({ clinicId });
+    const study = await ImagingStudy.findOne({ locationId });
     study!.dicomWebUrl = "https://untrusted.example/redirect"; await study!.save();
     vi.stubEnv("PACS_DICOMWEB_BASE_URL", "https://orthanc.test/dicom-web");
     vi.stubEnv("PACS_DICOMWEB_TOKEN", "test-only-token");
@@ -187,17 +188,17 @@ describe("Radiology & PACS Imaging Integration Tests", () => {
   });
 
   it("denies an administrator from another organization before contacting PACS", async () => {
-    const other = await app.inject({ method: "POST", url: "/api/onboarding/organization", payload: { org_name: "Other Imaging", city: "Mumbai", admin_name: "Other Admin", admin_email: "other-preview@example.test", admin_password: "Password123", plan: "enterprise" } });
+    const other = await app.inject({ headers: await provisioningFixtureHeaders(), method: "POST", url: "/api/onboarding/organization", payload: { org_name: "Other Imaging", city: "Mumbai", admin_name: "Other Admin", admin_email: "other-preview@example.test", admin_password: "Password123", plan: "enterprise" } });
     expect(other.statusCode).toBe(201);
-    const study = await ImagingStudy.findOne({ clinicId });
+    const study = await ImagingStudy.findOne({ locationId });
     const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
-    const res = await app.inject({ method: "GET", url: `/api/radiology/studies/${study!._id}/preview`, headers: { cookie: (other.headers["set-cookie"] as string[]).join("; ") } });
+    const res = await app.inject({ method: "GET", url: `/api/radiology/studies/${study!._id}/preview`, headers: { cookie: (await provisionedAdminCookies(other)).join("; ") } });
     expect([403, 404]).toContain(res.statusCode);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("serves only frames in the authorized study with private no-store headers", async () => {
-    const study = await ImagingStudy.findOne({ clinicId });
+    const study = await ImagingStudy.findOne({ locationId });
     vi.stubEnv("PACS_DICOMWEB_BASE_URL", "https://orthanc.test/dicom-web");
     const rows = [{ "0020000E": { Value: ["1.2.3"] }, "00080018": { Value: ["1.2.4"] }, "00280008": { Value: [2] } }];
     const png = Buffer.from([137,80,78,71,13,10,26,10,0]);

@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 import app from "../index.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import { Prescription } from "../models/Prescription.ts";
 import { CDSEvaluation } from "../models/CDSEvaluation.ts";
@@ -15,7 +15,7 @@ describe("Milestone 5: AI Platform Infrastructure Tests", () => {
   it("should generate structured SOAP clinical note draft using AIService", async () => {
     const doctorUser = await User.create({
       name: "Dr. AI User",
-      email: "dr_ai_soap@ananta.internal",
+      email: "dr_ai_soap@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "doctor",
     });
@@ -24,7 +24,7 @@ describe("Milestone 5: AI Platform Infrastructure Tests", () => {
       method: "POST",
       url: "/api/auth/login",
       remoteAddress: "10.6.0.1",
-      payload: { email: "dr_ai_soap@ananta.internal", password: "Password123!" },
+      payload: { email: "dr_ai_soap@ekavyu.internal", password: "Password123!" },
     });
     expect(loginRes.statusCode).toBe(200);
 
@@ -58,7 +58,7 @@ describe("Milestone 5: AI Platform Infrastructure Tests", () => {
     const org = await Organization.create({ name: "AI Health Assistant Org", city: "Delhi" });
     const doctorUser = await User.create({
       name: "Dr. Health Query Host",
-      email: "dr_rag_query@ananta.internal",
+      email: "dr_rag_query@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "doctor",
     });
@@ -66,7 +66,7 @@ describe("Milestone 5: AI Platform Infrastructure Tests", () => {
 
     const patientUser = await User.create({
       name: "RAG Patient",
-      email: "rag_patient@ananta.internal",
+      email: "rag_patient@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "patient",
     });
@@ -83,7 +83,7 @@ describe("Milestone 5: AI Platform Infrastructure Tests", () => {
       method: "POST",
       url: "/api/auth/login",
       remoteAddress: "10.6.0.3",
-      payload: { email: "dr_rag_query@ananta.internal", password: "Password123!" },
+      payload: { email: "dr_rag_query@ekavyu.internal", password: "Password123!" },
     });
     const accessToken = loginRes.cookies.find((c) => c.name === "access_token")?.value || "";
 
@@ -109,7 +109,7 @@ describe("Milestone 5: AI Platform Infrastructure Tests", () => {
 
   it("should evaluate CDS clinical safety checks and persist clinician overrides", async () => {
     const org = await Organization.create({ name: "CDS Test Org", city: "Pune" });
-    const clinic = await Clinic.create({
+    const location = await Location.create({
       organizationId: org._id,
       name: "CDS Clinic",
       city: "Pune",
@@ -118,7 +118,7 @@ describe("Milestone 5: AI Platform Infrastructure Tests", () => {
 
     const doctorUser = await User.create({
       name: "Dr. CDS Evaluator",
-      email: "dr_cds_eval@ananta.internal",
+      email: "dr_cds_eval@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "admin",
     });
@@ -131,7 +131,7 @@ describe("Milestone 5: AI Platform Infrastructure Tests", () => {
 
     const patientUser = await User.create({
       name: "Allergic Patient",
-      email: "allergic_patient@ananta.internal",
+      email: "allergic_patient@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "patient",
     });
@@ -147,7 +147,7 @@ describe("Milestone 5: AI Platform Infrastructure Tests", () => {
       method: "POST",
       url: "/api/auth/login",
       remoteAddress: "10.6.0.5",
-      payload: { email: "dr_cds_eval@ananta.internal", password: "Password123!" },
+      payload: { email: "dr_cds_eval@ekavyu.internal", password: "Password123!" },
     });
     const accessToken = loginRes.cookies.find((c) => c.name === "access_token")?.value || "";
 
@@ -176,7 +176,7 @@ describe("Milestone 5: AI Platform Infrastructure Tests", () => {
       cookies: { access_token: accessToken },
       headers: { authorization: `Bearer ${accessToken}` },
       payload: {
-        clinicId: clinic._id.toString(),
+        locationId: location._id.toString(),
         patientId: patient._id.toString(),
         findings: evalData.findings,
         clinicianDecision: "overridden",

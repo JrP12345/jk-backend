@@ -25,6 +25,6 @@ export function isIanaTimezone(value: unknown): value is string {
 export function validateCountrySettings(countryCode: CountryCode, currency: string | undefined, timezone: string | undefined): string | null {
   const settings = COUNTRY_SETTINGS[countryCode];
   if (currency && currency !== settings.currency) return `${countryCode} organizations must use ${settings.currency}`;
-  if (!isIanaTimezone(timezone || settings.defaultTimezone)) return "A valid clinic timezone is required";
+  if (!isIanaTimezone(timezone || settings.defaultTimezone)) return "A valid timezone is required";
   return null;
 }

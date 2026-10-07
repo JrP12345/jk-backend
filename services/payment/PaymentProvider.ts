@@ -41,7 +41,7 @@ class LiveRazorpayPaymentProvider implements PaymentProvider {
       const paymentLinkId = `paylink_${Math.random().toString(36).substr(2, 9)}`;
       return {
         paymentLinkId,
-        checkoutUrl: `https://pay.ananta.health/checkout/${paymentLinkId}`,
+        checkoutUrl: `https://pay.ekavyu.health/checkout/${paymentLinkId}`,
         status: "created",
         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       };
@@ -106,7 +106,7 @@ class LiveRazorpayPaymentProvider implements PaymentProvider {
     const paymentLinkId = `paylink_dev_${Math.random().toString(36).substr(2, 9)}`;
     return {
       paymentLinkId,
-      checkoutUrl: `https://pay.ananta.health/checkout/${paymentLinkId}`,
+      checkoutUrl: `https://pay.ekavyu.health/checkout/${paymentLinkId}`,
       status: "created",
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
     };

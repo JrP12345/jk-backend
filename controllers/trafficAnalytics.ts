@@ -1,6 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { SiteVisit } from "../models/SiteVisit.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 
 export async function getSiteTrafficAnalytics(req: FastifyRequest, reply: FastifyReply) {
@@ -78,19 +78,19 @@ export async function getSiteTrafficAnalytics(req: FastifyRequest, reply: Fastif
       });
     }
 
-    // 3. Clinic Attribution Breakdown ("whose clinic and all")
-    const clinicVisitsAgg = await SiteVisit.aggregate([
+    // 3. Location Attribution Breakdown ("whose location and all")
+    const locationVisitsAgg = await SiteVisit.aggregate([
       { $match: { date: { $gte: windowStartStr } } },
       {
         $group: {
-          _id: "$clinicId",
+          _id: "$locationId",
           visits: { $sum: 1 },
           visitors: { $addToSet: { $ifNull: ["$visitorId", "$ipAddress"] } },
         },
       },
       {
         $project: {
-          clinicId: "$_id",
+          locationId: "$_id",
           visits: 1,
           uniqueVisitors: { $size: "$visitors" },
         },
@@ -98,21 +98,21 @@ export async function getSiteTrafficAnalytics(req: FastifyRequest, reply: Fastif
       { $sort: { visits: -1 } },
     ]);
 
-    // Fetch clinic documents to enrich with clinic name and organization name
-    const clinicIds = clinicVisitsAgg.filter((c) => c.clinicId).map((c) => c.clinicId);
-    const clinics = await Clinic.find({ _id: { $in: clinicIds } })
+    // Fetch location documents to enrich with location name and organization name
+    const locationIds = locationVisitsAgg.filter((c) => c.locationId).map((c) => c.locationId);
+    const locations = await Location.find({ _id: { $in: locationIds } })
       .populate("organizationId", "name city")
       .lean();
-    const clinicMap = new Map<string, any>();
-    clinics.forEach((c: any) => clinicMap.set(c._id.toString(), c));
+    const locationMap = new Map<string, any>();
+    locations.forEach((c: any) => locationMap.set(c._id.toString(), c));
 
     const totalWindowVisits = dailyTrends.reduce((acc, cur) => acc + cur.visits, 0) || 1;
 
-    const clinicAttribution = clinicVisitsAgg.map((item) => {
-      if (!item.clinicId) {
+    const locationAttribution = locationVisitsAgg.map((item) => {
+      if (!item.locationId) {
         return {
-          clinicId: null,
-          clinicName: "General Platform / Portal",
+          locationId: null,
+          locationName: "General Platform / Portal",
           organizationName: "Direct Visitors",
           city: "Global",
           visits: item.visits,
@@ -120,13 +120,13 @@ export async function getSiteTrafficAnalytics(req: FastifyRequest, reply: Fastif
           percentShare: Number(((item.visits / totalWindowVisits) * 100).toFixed(1)),
         };
       }
-      const clinicObj = clinicMap.get(item.clinicId.toString());
-      const org = clinicObj?.organizationId as any;
+      const locationObj = locationMap.get(item.locationId.toString());
+      const org = locationObj?.organizationId as any;
       return {
-        clinicId: item.clinicId.toString(),
-        clinicName: clinicObj ? clinicObj.name : "Archived Clinic",
+        locationId: item.locationId.toString(),
+        locationName: locationObj ? locationObj.name : "Archived Location",
         organizationName: org ? org.name : "Platform Tenant",
-        city: clinicObj ? clinicObj.city : "Unknown",
+        city: locationObj ? locationObj.city : "Unknown",
         visits: item.visits,
         uniqueVisitors: item.uniqueVisitors,
         percentShare: Number(((item.visits / totalWindowVisits) * 100).toFixed(1)),
@@ -171,7 +171,7 @@ export async function getSiteTrafficAnalytics(req: FastifyRequest, reply: Fastif
         {
           summary,
           dailyTrends,
-          clinicAttribution,
+          locationAttribution,
           topPages: topPagesAgg,
           devices: devicesAgg.map((d) => ({ name: d._id || "Desktop", count: d.count })),
           browsers: browsersAgg.map((b) => ({ name: b._id || "Other", count: b.count })),

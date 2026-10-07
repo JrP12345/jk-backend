@@ -3,7 +3,7 @@ import { auditPlugin } from "../utilities/auditPlugin.ts";
 
 export interface IScheduleH1Register {
   organizationId: mongoose.Types.ObjectId;
-  clinicId: mongoose.Types.ObjectId;
+  locationId: mongoose.Types.ObjectId;
   medicineId: mongoose.Types.ObjectId;
   medicineName: string;
   genericName?: string;
@@ -30,7 +30,7 @@ export interface IScheduleH1Register {
 const ScheduleH1RegisterSchema = new Schema<IScheduleH1Register>(
   {
     organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
-    clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
+    locationId: { type: Schema.Types.ObjectId, ref: "Location", required: true, index: true },
     medicineId: { type: Schema.Types.ObjectId, ref: "Medicine", required: true, index: true },
     medicineName: { type: String, required: true, trim: true },
     genericName: { type: String, trim: true },
@@ -60,8 +60,8 @@ const ScheduleH1RegisterSchema = new Schema<IScheduleH1Register>(
   { timestamps: true }
 );
 
-ScheduleH1RegisterSchema.index({ clinicId: 1, dispensedAt: -1 });
-ScheduleH1RegisterSchema.index({ clinicId: 1, scheduleType: 1 });
+ScheduleH1RegisterSchema.index({ locationId: 1, dispensedAt: -1 });
+ScheduleH1RegisterSchema.index({ locationId: 1, scheduleType: 1 });
 
 ScheduleH1RegisterSchema.plugin(auditPlugin);
 

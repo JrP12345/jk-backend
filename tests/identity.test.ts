@@ -13,7 +13,7 @@ import bcrypt from "bcryptjs";
 
 describe("Milestone 2: Identity & Authorization Hardening Tests", () => {
   it("should lockout account after 5 consecutive failed login attempts", async () => {
-    const email = "lockout_test@ananta.internal";
+    const email = "lockout_test@ekavyu.internal";
     const password = "Password123!";
     const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -56,7 +56,7 @@ describe("Milestone 2: Identity & Authorization Hardening Tests", () => {
   });
 
   it("should enforce maximum 5 active sessions per user", async () => {
-    const email = "session_limit@ananta.internal";
+    const email = "session_limit@ekavyu.internal";
     const password = "Password123!";
     const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -84,7 +84,7 @@ describe("Milestone 2: Identity & Authorization Hardening Tests", () => {
   });
 
   it("should generate password reset link and reset password cleanly", async () => {
-    const email = "reset_test@ananta.internal";
+    const email = "reset_test@ekavyu.internal";
     const oldPassword = "Password123!";
     const newPassword = "NewSecurePassword123!";
     const hashedPassword = await bcrypt.hash(oldPassword, 10);
@@ -150,7 +150,7 @@ describe("Milestone 2: Identity & Authorization Hardening Tests", () => {
 
     const adminUser = await User.create({
       name: "Admin Host",
-      email: "admin_host@ananta.internal",
+      email: "admin_host@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "admin",
     });
@@ -166,7 +166,7 @@ describe("Milestone 2: Identity & Authorization Hardening Tests", () => {
       method: "POST",
       url: "/api/auth/login",
       remoteAddress: "10.3.0.1",
-      payload: { email: "admin_host@ananta.internal", password: "Password123!" },
+      payload: { email: "admin_host@ekavyu.internal", password: "Password123!" },
     });
     const cookies = loginRes.cookies;
     const accessToken = cookies.find((c) => c.name === "access_token")?.value || "";
@@ -177,11 +177,11 @@ describe("Milestone 2: Identity & Authorization Hardening Tests", () => {
       remoteAddress: "10.3.0.2",
       cookies: { access_token: accessToken },
       headers: { authorization: `Bearer ${accessToken}` },
-      payload: { email: "invited_nurse@ananta.internal", role: "nurse" },
+      payload: { email: "invited_nurse@ekavyu.internal", role: "nurse" },
     });
     expect(inviteRes.statusCode).toBe(201);
 
-    const inviteRecord = await OrgInvite.findOne({ email: "invited_nurse@ananta.internal" });
+    const inviteRecord = await OrgInvite.findOne({ email: "invited_nurse@ekavyu.internal" });
     expect(inviteRecord).toBeDefined();
 
     // 2. Accept invitation

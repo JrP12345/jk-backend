@@ -14,9 +14,9 @@ export const objectIdParamSchema = {
 export const createMedicineSchema = {
   body: {
     type: "object",
-    required: ["clinicId", "name", "genericName", "stockQuantity", "price", "costPrice", "expiryDate", "batchNumber"],
+    required: ["locationId", "name", "genericName", "stockQuantity", "price", "costPrice", "expiryDate", "batchNumber"],
     properties: {
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
       name: { type: "string", minLength: 1 },
       genericName: { type: "string", minLength: 1 },
       stockQuantity: { type: "number", minimum: 0 },
@@ -32,10 +32,10 @@ export const createMedicineSchema = {
 export const dispensePrescriptionSchema = {
   body: {
     type: "object",
-    required: ["patientId", "clinicId", "items"],
+    required: ["patientId", "locationId", "items"],
     properties: {
       patientId: { type: "string", pattern: objectIdPattern },
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
       doctorId: { type: "string", pattern: objectIdPattern },
       encounterId: { type: "string", pattern: objectIdPattern },
       appointmentId: { type: "string", pattern: objectIdPattern },
@@ -64,9 +64,9 @@ export const dispensePrescriptionSchema = {
 export const createLabTestSchema = {
   body: {
     type: "object",
-    required: ["clinicId", "name", "code", "department", "sampleType", "price", "normalRange"],
+    required: ["locationId", "name", "code", "department", "sampleType", "price", "normalRange"],
     properties: {
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
       name: { type: "string", minLength: 1 },
       code: { type: "string", minLength: 1 },
       department: { type: "string", minLength: 1 },
@@ -81,9 +81,9 @@ export const createLabTestSchema = {
 export const createLabOrderSchema = {
   body: {
     type: "object",
-    required: ["clinicId", "patientId", "doctorId", "testId"],
+    required: ["locationId", "patientId", "doctorId", "testId"],
     properties: {
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
       patientId: { type: "string", pattern: objectIdPattern },
       doctorId: { type: "string", pattern: objectIdPattern },
       testId: { type: "string", pattern: objectIdPattern }
@@ -103,10 +103,10 @@ export const uploadLabResultSchema = {
   },
   body: {
     type: "object",
-    required: ["resultValue"],
+    required: ["value"],
     properties: {
-      resultValue: { type: "string", minLength: 1 },
-      resultNotes: { type: "string" },
+      value: { type: "string", minLength: 1 },
+      notes: { type: "string" },
       attachmentUrl: { type: "string" }
     },
     additionalProperties: false
@@ -144,7 +144,7 @@ export const labOrdersQuerySchema = {
   querystring: {
     type: "object",
     properties: {
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
       patientId: { type: "string", pattern: objectIdPattern },
       status: {
         type: "string",
@@ -161,7 +161,7 @@ export const labTestsQuerySchema = {
   querystring: {
     type: "object",
     properties: {
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
       page: { type: "string", pattern: "^[0-9]{1,6}$" },
       limit: { type: "string", pattern: "^[0-9]{1,3}$" }
     },
@@ -184,7 +184,7 @@ export const labTatMetricsSchema = {
   querystring: {
     type: "object",
     properties: {
-      clinicId: { type: "string", pattern: objectIdPattern }
+      locationId: { type: "string", pattern: objectIdPattern }
     },
     additionalProperties: false
   }
@@ -193,10 +193,10 @@ export const labTatMetricsSchema = {
 export const createImagingStudySchema = {
   body: {
     type: "object",
-    required: ["patientId", "clinicId", "modality", "studyDescription"],
+    required: ["patientId", "locationId", "modality", "studyDescription"],
     properties: {
       patientId: { type: "string", pattern: objectIdPattern },
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
       modality: { type: "string", enum: ["CR", "DX", "CT", "MR", "US", "MG"] },
       studyDescription: { type: "string", minLength: 1 },
       dicomWebUrl: { type: "string" }
@@ -209,7 +209,7 @@ export const imagingStudiesQuerySchema = {
   querystring: {
     type: "object",
     properties: {
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
       patientId: { type: "string", pattern: objectIdPattern },
       modality: { type: "string", enum: ["CR", "DX", "CT", "MR", "US", "MG"] },
       page: { type: "string", pattern: "^[0-9]{1,6}$" },
@@ -271,7 +271,7 @@ export const teleSessionsQuerySchema = {
   querystring: {
     type: "object",
     properties: {
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
       status: { type: "string", enum: ["scheduled", "active", "ended", "missed"] },
       page: { type: "string", pattern: "^[0-9]{1,6}$" },
       limit: { type: "string", pattern: "^[0-9]{1,3}$" }
@@ -319,7 +319,7 @@ export const shiftsQuerySchema = {
   querystring: {
     type: "object",
     properties: {
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
       date: { type: "string", minLength: 1 },
       ward: { type: "string" },
       staffRole: { type: "string", enum: ["ALL", "Nurse", "Doctor", "Technician", "Admin", "Pharmacist"] },
@@ -332,9 +332,9 @@ export const shiftsQuerySchema = {
 export const createShiftSchema = {
   body: {
     type: "object",
-    required: ["clinicId", "staffName", "shiftDate", "shiftType"],
+    required: ["locationId", "staffName", "shiftDate", "shiftType"],
     properties: {
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
       departmentId: { type: "string", pattern: objectIdPattern },
       staffId: { type: "string", pattern: objectIdPattern },
       staffName: { type: "string", minLength: 1 },

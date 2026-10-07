@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { appointmentReviewState } from "../utilities/appointmentReview.ts";
-import { runNoShowSweep } from "../jobs/noShowSweepJob.ts";
 
 const now = new Date("2026-09-29T12:00:00.000Z");
 const visit = (status: string, hoursAgo: number, bookingMode = "sequential_queue") => ({ status, bookingMode, appointmentTime: new Date(now.getTime() - hoursAgo * 3600000) });
@@ -18,8 +17,5 @@ describe("appointment review without inferred medical events", () => {
     expect(appointmentReviewState(visit("in-consultation", 1), now)).toBeNull();
     for (const status of ["completed", "cancelled", "no-show"]) expect(appointmentReviewState(visit(status, 30), now)).toBeNull();
     expect(appointmentReviewState(visit("confirmed", -1, "time_slot"), now)).toBeNull();
-  });
-  it("retired automatic sweep never writes or fabricates no-shows", async () => {
-    expect(await runNoShowSweep()).toEqual({ sweptCount: 0, clinicIdsAffected: [] });
   });
 });

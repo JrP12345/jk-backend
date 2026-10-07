@@ -1,4 +1,5 @@
-import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { reuseOnboardingLocation } from "./helpers/locationEssentialsSetup.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { PatientFeedback } from "../models/PatientFeedback.ts";
@@ -6,14 +7,14 @@ import { Appointment } from "../models/Appointment.ts";
 
 describe("Patient Experience (PEC) & NPS Feedback Integration Tests", () => {
   let adminCookies: string[] = [];
-  let clinicId: string;
+  let locationId: string;
   let patientId: string;
   let doctorUserId: string;
   let appointmentId: string;
 
   beforeAll(async () => {
     // 1. Create Organization & Admin
-    const orgRes = await app.inject({
+    const orgRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -25,18 +26,18 @@ describe("Patient Experience (PEC) & NPS Feedback Integration Tests", () => {
       },
     });
     expect(orgRes.statusCode).toBe(201);
-    adminCookies = orgRes.headers["set-cookie"] as string[];
+    adminCookies = (await provisionedAdminCookies(orgRes));
 
-    // 2. Create Clinic
-    const clinicRes = await reuseOnboardingClinic(app, { headers: { cookie: adminCookies.join("; ") }, payload: {
+    // 2. Create Location
+    const locationRes = await reuseOnboardingLocation(app, { headers: { cookie: adminCookies.join("; ") }, payload: {
         name: "Apollo Specialty OPD Center",
         city: "Hyderabad",
         address: "10 Jubilee Hills",
         phone: "9800044400",
         email: "pec@apollo.internal",
       } });
-    expect(clinicRes.statusCode).toBe(200);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(200);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Register Patient
     const patientRes = await app.inject({
@@ -44,7 +45,7 @@ describe("Patient Experience (PEC) & NPS Feedback Integration Tests", () => {
       url: "/api/auth/register",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         name: "Anish Feedback Patient",
         email: `anish_pec_${Date.now()}@patient.com`,
         phone: "9876541100",
@@ -75,14 +76,14 @@ describe("Patient Experience (PEC) & NPS Feedback Integration Tests", () => {
     expect(docRes.statusCode).toBe(201);
     doctorUserId = JSON.parse(docRes.body).data.id;
 
-    // 4b. Assign Doctor to Clinic
+    // 4b. Assign Doctor to Location
     const assignRes = await app.inject({
       method: "POST",
       url: "/api/onboarding/doctors/assignments",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         doctorId: doctorUserId,
-        clinicId,
+        locationId,
         workingHours: "09:00 - 17:00",
         fees: 500,
         appointmentDuration: 15,
@@ -96,7 +97,7 @@ describe("Patient Experience (PEC) & NPS Feedback Integration Tests", () => {
       url: "/api/appointments",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         patientId,
         doctorId: doctorUserId,
         appointmentTime: new Date(Date.now() + 86400000).toISOString(),
@@ -154,7 +155,7 @@ describe("Patient Experience (PEC) & NPS Feedback Integration Tests", () => {
   it("should retrieve Net Promoter Score (NPS) and CSAT statistics via GET /api/feedback/stats", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/api/feedback/stats?clinicId=${clinicId}`,
+      url: `/api/feedback/stats?locationId=${locationId}`,
       headers: { cookie: adminCookies.join("; ") },
     });
 

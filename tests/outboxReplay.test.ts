@@ -1,3 +1,4 @@
+import { fixtureAccessToken } from "./helpers/sessionFixture.ts";
 import { beforeEach, describe, expect, it } from "vitest";
 import mongoose from "mongoose";
 import { app } from "../index.ts";
@@ -6,7 +7,6 @@ import { Notification } from "../models/Notification.ts";
 import { NotificationDelivery } from "../models/NotificationDelivery.ts";
 import { OutboundMessage } from "../models/OutboundMessage.ts";
 import { AuditLog } from "../models/AuditLog.ts";
-import { generateAccessToken } from "../utilities/helpers.ts";
 
 describe("Dead-letter replay operations", () => {
   let rootCookie: string;
@@ -33,8 +33,8 @@ describe("Dead-letter replay operations", () => {
       password: "Password123!",
       role: "admin",
     });
-    rootCookie = `access_token=${generateAccessToken({ id: rootUser._id.toString(), email: rootUser.email!, role: "root" })}`;
-    adminCookie = `access_token=${generateAccessToken({ id: adminUser._id.toString(), email: adminUser.email!, role: "admin" })}`;
+    rootCookie = `access_token=${(await fixtureAccessToken({ id: rootUser._id.toString(), email: rootUser.email!, role: "root" }))}`;
+    adminCookie = `access_token=${(await fixtureAccessToken({ id: adminUser._id.toString(), email: adminUser.email!, role: "admin" }))}`;
   });
 
   it("keeps PHI-bearing delivery fields out of the root dead-letter listing", async () => {

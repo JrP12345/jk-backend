@@ -23,12 +23,12 @@ export async function evaluateEncounterScoreController(req: FastifyRequest, repl
 
     const scope = resolveAuthorizedOrganizationScope(req);
     const orgId = (scope.allowed ? scope.organizationId : undefined) || encounter.organizationId?.toString() || req.user?.organization_id || "";
-    const clinicId = encounter.clinicId?.toString();
+    const locationId = encounter.locationId?.toString();
     const patientId = encounter.patientId?.toString();
 
     const { scoreDoc, alertDoc } = await ObservationAnalyticsService.evaluateEncounterScore(
       orgId,
-      clinicId,
+      locationId,
       encounterId,
       patientId,
       algorithmId,

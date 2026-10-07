@@ -50,7 +50,6 @@ describe("API startup and port ownership", () => {
     let finishBootstrap!: () => void;
     const bootstrap = new Promise<void>(resolve => { finishBootstrap = resolve; });
     const seed = vi.spyOn(onboarding, "seedDefaultRoles").mockImplementation(() => bootstrap);
-    const quotas = vi.spyOn(onboarding, "syncOrganizationPlanQuotas").mockResolvedValue(undefined);
     const listening = once(app.server, "listening");
     const starting = startServer(0);
     try {
@@ -75,7 +74,6 @@ describe("API startup and port ownership", () => {
       finishBootstrap();
       await starting.catch(() => {});
       seed.mockRestore();
-      quotas.mockRestore();
     }
   });
 });

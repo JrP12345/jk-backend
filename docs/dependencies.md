@@ -74,4 +74,4 @@ required packages. Use npm for dependency changes and retain license notices.
 it unmaintained. Its MIT license requires no commercial payment. Retain it in
 this behavior-preserving cleanup; a replacement needs a separate authentication
 compatibility pass covering existing base32 secrets, token windows, QR enrollment
-and legacy encrypted credentials. No MFA dependency or algorithm was changed.
+and current encrypted credentials. No MFA dependency or algorithm was changed.

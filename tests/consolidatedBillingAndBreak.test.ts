@@ -1,7 +1,8 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
@@ -13,7 +14,7 @@ import { LabTest } from "../models/LabTest.ts";
 describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let doctorUserId: string;
   let patient: any;
@@ -22,7 +23,7 @@ describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite"
 
   beforeAll(async () => {
     // 1. Setup Organization & Super Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -35,23 +36,23 @@ describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite"
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "CareFirst Indiranagar Clinic",
         city: "Bengaluru",
         upiVpa: "carefirst@icici",
-        merchantName: "CareFirst Clinics",
+        merchantName: "CareFirst Locations",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Doctor
     const docRes = await app.inject({
@@ -76,7 +77,7 @@ describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite"
 
     await DoctorAssignment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       fees: 750,
       workingHours: "[]",
@@ -111,7 +112,7 @@ describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite"
     // 5. Setup Lab Test
     labTest = await LabTest.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       name: "Complete Blood Count (CBC)",
       department: "Hematology",
       code: "CBC-001",
@@ -123,7 +124,7 @@ describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite"
     // 6. Setup Appointment with Clinical Details (Prescriptions & Lab Order)
     const appt: any = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient._id || patient.id,
       tokenNumber: 101,
@@ -144,7 +145,7 @@ describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite"
     // Link a Lab Order to the Appointment
     await LabOrder.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       appointmentId: appt._id,
       patientId: patient._id || patient.id,
       doctorId,
@@ -161,7 +162,7 @@ describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite"
       url: "/api/queue/session/start",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         doctorId,
       },
     });
@@ -173,7 +174,7 @@ describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite"
       url: "/api/queue/session/break",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         doctorId,
         isOnBreak: true,
         breakReason: "Medical Emergency Round",
@@ -189,7 +190,7 @@ describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite"
     // 3. Verify public queue TV receives doctor break status
     const tvRes = await app.inject({
       method: "GET",
-      url: `/api/public/queue-tv/${clinicId}?doctorId=${doctorId}`,
+      url: `/api/public/queue-tv/${locationId}?doctorId=${doctorId}`,
     });
     expect(tvRes.statusCode).toBe(200);
     const tvData = JSON.parse(tvRes.body).data;
@@ -204,7 +205,7 @@ describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite"
       url: "/api/queue/session/break",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         doctorId,
         isOnBreak: false,
       },
@@ -216,7 +217,7 @@ describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite"
     // 5. Verify TV reflects doctor resumed
     const tvResAfter = await app.inject({
       method: "GET",
-      url: `/api/public/queue-tv/${clinicId}?doctorId=${doctorId}`,
+      url: `/api/public/queue-tv/${locationId}?doctorId=${doctorId}`,
     });
     const tvDataAfter = JSON.parse(tvResAfter.body).data;
     expect(tvDataAfter.doctorBreak.isOnBreak).toBe(false);

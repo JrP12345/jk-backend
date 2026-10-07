@@ -1,7 +1,9 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { trackerFixtureHeaders } from "./helpers/trackerFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
@@ -11,7 +13,7 @@ import { CashierShift } from "../models/CashierShift.ts";
 describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Reconciliation Suite", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let doctorUserId: string;
   let patient: any;
@@ -19,7 +21,7 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
 
   beforeAll(async () => {
     // 1. Setup Organization & Super Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -32,23 +34,23 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Apollo Jubilee Hills Health Center",
         city: "Hyderabad",
         upiVpa: "apollo.reception@icici",
-        merchantName: "Apollo Clinics Ltd",
+        merchantName: "Apollo Locations Ltd",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Doctor
     const docRes = await app.inject({
@@ -74,7 +76,7 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
     await DoctorAssignment.create({
       organizationId: orgId,
       doctorId,
-      clinicId,
+      locationId,
       fees: 800,
       workingHours: "[]",
       isActive: true,
@@ -108,7 +110,7 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
     // 5. Create active In-Consultation Appointment
     const appt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient._id,
       appointmentTime: new Date().toISOString(),
@@ -168,7 +170,7 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
     expect(followUpAppt?.status).toBe("confirmed");
     expect(followUpAppt?.patientId.toString()).toBe(patient._id.toString());
     expect(followUpAppt?.doctorId.toString()).toBe(doctorId.toString());
-    expect(followUpAppt?.clinicId.toString()).toBe(clinicId.toString());
+    expect(followUpAppt?.locationId.toString()).toBe(locationId.toString());
     expect(followUpAppt?.tokenNumber).toBeGreaterThan(0);
     expect(followUpAppt?.notes).toContain("Review BP response to Telmisartan");
   });
@@ -177,6 +179,7 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
     const trackerRes = await app.inject({
       method: "GET",
       url: `/api/public/track/${appointmentId}`,
+      headers: await trackerFixtureHeaders(appointmentId),
     });
 
     expect(trackerRes.statusCode).toBe(200);
@@ -197,7 +200,7 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
     // Seed 3 paid invoices with distinct collection channels
     await Invoice.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       patientId: patient._id,
       doctorId,
       invoiceNumber: `INV-CASH-${Date.now()}`,
@@ -215,7 +218,7 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
 
     await Invoice.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       patientId: patient._id,
       doctorId,
       invoiceNumber: `INV-UPI-${Date.now()}`,
@@ -233,7 +236,7 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
 
     await Invoice.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       patientId: patient._id,
       doctorId,
       invoiceNumber: `INV-CARD-${Date.now()}`,
@@ -251,13 +254,13 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
 
     const summaryRes = await app.inject({
       method: "GET",
-      url: `/api/billing/till/summary?clinicId=${clinicId}`,
+      url: `/api/billing/till/summary?locationId=${locationId}`,
       headers: { cookie: adminCookies.join("; ") },
     });
 
     expect(summaryRes.statusCode).toBe(200);
     const summaryData = JSON.parse(summaryRes.body).data;
-    expect(summaryData.clinicId).toBe(clinicId);
+    expect(summaryData.locationId).toBe(locationId);
     expect(summaryData.systemTotals).toBeDefined();
     expect(summaryData.systemTotals.cash).toBe(1500);
     expect(summaryData.systemTotals.upi).toBe(2400);
@@ -273,7 +276,7 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
       url: "/api/billing/till/close",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         actualCashCounted: 1550,
         varianceReason: "Petty change surplus in reception cash box",
         handoverNotes: "Counted by Day Shift Cashier. Drawer keys handed to Evening Shift Supervisor.",
@@ -286,7 +289,7 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
 
     const shiftData = closeBody.data;
     expect(shiftData).toBeDefined();
-    expect(shiftData.clinicId).toBe(clinicId);
+    expect(shiftData.locationId).toBe(locationId);
     expect(shiftData.actualCashCounted).toBe(1550);
     expect(shiftData.systemTotals.cash).toBe(1500);
     expect(shiftData.cashVariance).toBe(50);
@@ -296,7 +299,7 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
     // Subsequent till summary call reflects the closed shift as latestShift
     const updatedSummaryRes = await app.inject({
       method: "GET",
-      url: `/api/billing/till/summary?clinicId=${clinicId}`,
+      url: `/api/billing/till/summary?locationId=${locationId}`,
       headers: { cookie: adminCookies.join("; ") },
     });
 
@@ -315,7 +318,7 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
       url: "/api/billing/till/close",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         actualCashCounted: -250,
       },
     });

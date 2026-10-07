@@ -61,7 +61,7 @@ export const reportExportSchema = {
     type: "object",
     properties: {
       reportType: { type: "string", enum: ["billing", "clinical", "pharmacy"] },
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
     },
     additionalProperties: false,
   },
@@ -127,10 +127,10 @@ export const evaluateTariffSchema = {
 export const createPreAuthSchema = {
   body: {
     type: "object",
-    required: ["patientId", "clinicId", "doctorId", "tpaName", "policyNumber", "diagnosisCode", "proposedTreatment", "requestedAmount"],
+    required: ["patientId", "locationId", "doctorId", "tpaName", "policyNumber", "diagnosisCode", "proposedTreatment", "requestedAmount"],
     properties: {
       patientId: { type: "string", pattern: objectIdPattern },
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
       doctorId: { type: "string", pattern: objectIdPattern },
       tpaName: { type: "string", minLength: 1, maxLength: 200 },
       policyNumber: { type: "string", minLength: 1, maxLength: 200 },
@@ -146,7 +146,7 @@ export const preAuthListQuerySchema = {
   querystring: {
     type: "object",
     properties: {
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
       status: { type: "string", enum: ["draft", "submitted", "under_query", "approved", "rejected", "cancelled"] },
       tpaName: { type: "string", maxLength: 200 },
       search: { type: "string", maxLength: 200 },
@@ -221,7 +221,7 @@ export const feedbackQuerySchema = {
   querystring: {
     type: "object",
     properties: {
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
       doctorId: { type: "string", pattern: objectIdPattern },
       page: { type: "string", pattern: numericStringPattern },
       limit: { type: "string", pattern: "^[0-9]{1,3}$" },

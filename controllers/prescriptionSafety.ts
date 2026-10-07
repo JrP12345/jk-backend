@@ -6,7 +6,7 @@ import { CDSEvaluation } from "../models/CDSEvaluation.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { cdsEngine } from "../services/CDSEngine.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, resolveTargetOrganizationId } from "../utilities/tenant.ts";
+import { checkLocationAccess, checkOperationalRecordAccess, checkPatientAccess, resolveTargetOrganizationId } from "../utilities/tenant.ts";
 
 function sendTenantError(reply: FastifyReply, result: { statusCode: number; message: string }) {
   return reply.code(result.statusCode).send(errorResponse(result.message));
@@ -60,7 +60,7 @@ export async function recordSafetyDecisionController(req: FastifyRequest, reply:
     let orgId = await resolveTargetOrganizationId(req);
     const userId = req.user?.id;
     const {
-      clinicId,
+      locationId,
       encounterId,
       patientId,
       prescriptionIds,
@@ -68,7 +68,7 @@ export async function recordSafetyDecisionController(req: FastifyRequest, reply:
       clinicianDecision,
       overrideReason,
     } = req.body as {
-      clinicId: string;
+      locationId: string;
       encounterId?: string;
       patientId: string;
       prescriptionIds?: string[];
@@ -77,22 +77,22 @@ export async function recordSafetyDecisionController(req: FastifyRequest, reply:
       overrideReason?: string;
     };
 
-    if (!patientId || !clinicId || !clinicianDecision) {
-      return reply.code(400).send(errorResponse("clinicId, patientId and clinicianDecision are required"));
+    if (!patientId || !locationId || !clinicianDecision) {
+      return reply.code(400).send(errorResponse("locationId, patientId and clinicianDecision are required"));
     }
 
-    if (!mongoose.isValidObjectId(patientId) || !mongoose.isValidObjectId(clinicId)) {
-      return reply.code(400).send(errorResponse("Invalid patient or clinic ID"));
+    if (!mongoose.isValidObjectId(patientId) || !mongoose.isValidObjectId(locationId)) {
+      return reply.code(400).send(errorResponse("Invalid patient or location ID"));
     }
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
 
-    if (!orgId && clinicAccess.organizationId) {
-      orgId = clinicAccess.organizationId;
+    if (!orgId && locationAccess.organizationId) {
+      orgId = locationAccess.organizationId;
     }
     if (!orgId) return reply.code(403).send(errorResponse("Organization context required"));
-    if (clinicAccess.organizationId && clinicAccess.organizationId !== orgId && req.user?.role !== "root") {
-      return reply.code(403).send(errorResponse("Clinic does not belong to the active organization"));
+    if (locationAccess.organizationId && locationAccess.organizationId !== orgId && req.user?.role !== "root") {
+      return reply.code(403).send(errorResponse("Location does not belong to the active organization"));
     }
     const patientAccess = await checkPatientAccess(req, patientId);
     if (!patientAccess.allowed) return sendTenantError(reply, patientAccess);
@@ -103,8 +103,8 @@ export async function recordSafetyDecisionController(req: FastifyRequest, reply:
       if (!encounter) return reply.code(404).send(errorResponse("Encounter not found"));
       const encounterAccess = await checkOperationalRecordAccess(req, encounter);
       if (!encounterAccess.allowed) return sendTenantError(reply, encounterAccess);
-      if (encounter.patientId?.toString() !== patientId || encounter.clinicId?.toString() !== clinicId) {
-        return reply.code(400).send(errorResponse("Encounter does not match the selected patient and clinic"));
+      if (encounter.patientId?.toString() !== patientId || encounter.locationId?.toString() !== locationId) {
+        return reply.code(400).send(errorResponse("Encounter does not match the selected patient and location"));
       }
     }
 
@@ -114,7 +114,7 @@ export async function recordSafetyDecisionController(req: FastifyRequest, reply:
 
     const evaluationDoc = await CDSEvaluation.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       encounterId: encounterId || null,
       patientId,
       prescriptionIds: prescriptionIds || [],

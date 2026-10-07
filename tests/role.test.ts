@@ -1,3 +1,4 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect } from "vitest";
 import { app } from "../index.ts";
 import { Role } from "../models/Role.ts";
@@ -9,7 +10,7 @@ describe("Role & Permission Governance API Integration Tests", () => {
   let staffUserId: string;
 
   it("should bootstrap org and admin account", async () => {
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -22,7 +23,7 @@ describe("Role & Permission Governance API Integration Tests", () => {
     });
 
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = bootstrapRes.headers["set-cookie"] as string[];
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
   });
 
   it("should fetch system permission catalog via GET /api/permissions", async () => {

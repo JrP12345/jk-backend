@@ -41,7 +41,7 @@ const DPDPConsentSchema = new Schema(
         userAgent: { type: String },
         source: {
           type: String,
-          enum: ["PATIENT_PORTAL", "CLINIC_DESK", "API", "CONSENT_WITHDRAWAL_REQUEST"],
+          enum: ["PATIENT_PORTAL", "LOCATION_DESK", "API", "CONSENT_WITHDRAWAL_REQUEST"],
           default: "PATIENT_PORTAL",
         },
       },

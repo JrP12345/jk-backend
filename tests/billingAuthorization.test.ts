@@ -1,3 +1,4 @@
+import { fixtureAccessToken } from "./helpers/sessionFixture.ts";
 import { beforeAll, describe, expect, it } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
@@ -6,7 +7,6 @@ import { Role } from "../models/Role.ts";
 import { SaaSPlan } from "../models/SaaSPlan.ts";
 import { SaaSConfig } from "../models/SaaSConfig.ts";
 import { SubscriptionPayment } from "../models/SubscriptionPayment.ts";
-import { generateAccessToken } from "../utilities/helpers.ts";
 
 describe("SaaS billing tenant authorization", () => {
   let orgA: string;
@@ -26,12 +26,12 @@ describe("SaaS billing tenant authorization", () => {
     const root = await User.create({ name: "Billing Root", email: "billing-root@test.local", password: "Password123!", role: "root" });
     const admin = await User.create({ name: "Billing Admin", email: "billing-admin@test.local", password: "Password123!", role: "admin" });
     const staff = await User.create({ name: "Billing Staff", email: "billing-staff@test.local", password: "Password123!", role: "receptionist" });
-    const cookie = (user: any, role: string, organization_id?: string, impersonatedBy?: any) =>
-      `access_token=${generateAccessToken({ id: user.id, email: user.email, role, organization_id, impersonatedBy })}`;
-    rootCookie = cookie(root, "root");
-    adminCookie = cookie(admin, "admin", orgA);
-    staffCookie = cookie(staff, "receptionist", orgA);
-    impersonatedCookie = cookie(staff, "receptionist", orgA, { id: root.id, email: root.email, name: root.name, originalRole: "root" });
+    const cookie = async (user: any, role: string, organization_id?: string, impersonatedBy?: any) =>
+      `access_token=${(await fixtureAccessToken({ id: user.id, email: user.email, role, organization_id, impersonatedBy }))}`;
+    rootCookie = (await cookie(root, "root"));
+    adminCookie = (await cookie(admin, "admin", orgA));
+    staffCookie = (await cookie(staff, "receptionist", orgA));
+    impersonatedCookie = (await cookie(staff, "receptionist", orgA, { id: root.id, email: root.email, name: root.name, originalRole: "root" }));
     const plan = await SaaSPlan.create({ name: "Billing Auth Pro", slug: "billing_auth_pro", description: "Paid", monthlyPrice: 499, annualPrice: 4999 });
     planId = plan.id;
     await SaaSConfig.create({ key: "platform_config", razorpayKeyId: "rzp_test_auth_key", razorpayKeySecret: "auth_test_secret", razorpayWebhookSecret: "auth_webhook_secret", isLiveMode: false });

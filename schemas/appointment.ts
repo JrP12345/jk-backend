@@ -4,9 +4,9 @@ const emailPattern = "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$";
 export const bookAppointmentSchema = {
   body: {
     type: "object",
-    required: ["clinicId", "doctorId", "appointmentTime", "appointmentType"],
+    required: ["locationId", "doctorId", "appointmentTime", "appointmentType"],
     properties: {
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
       doctorId: { type: "string", pattern: objectIdPattern },
       appointmentTime: { type: "string", minLength: 1 },
       appointmentType: { type: "string", enum: ["walk-in", "online", "reception", "qr"] },
@@ -37,7 +37,7 @@ export const bookAppointmentSchema = {
         type: "string",
         enum: ["new_consultation", "follow_up", "routine_checkup", "second_opinion", "report_review"]
       },
-      payAtClinic: { type: "boolean" },
+      payAtLocation: { type: "boolean" },
       forceBooking: { type: "boolean" }
     },
     additionalProperties: false

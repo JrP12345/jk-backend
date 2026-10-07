@@ -1,7 +1,8 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
@@ -12,14 +13,14 @@ import { LabOrder } from "../models/LabOrder.ts";
 describe("In-Cabin Diagnostic Lab Ordering & Digital Rx WhatsApp Suite", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let doctorUserId: string;
   let patientDoc: any;
 
   beforeAll(async () => {
     // 1. Setup Organization & Super Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -32,7 +33,7 @@ describe("In-Cabin Diagnostic Lab Ordering & Digital Rx WhatsApp Suite", () => {
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
     // Enable WhatsApp in test org
@@ -54,10 +55,10 @@ describe("In-Cabin Diagnostic Lab Ordering & Digital Rx WhatsApp Suite", () => {
       }
     );
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Max Saket OPD Cabin",
@@ -66,8 +67,8 @@ describe("In-Cabin Diagnostic Lab Ordering & Digital Rx WhatsApp Suite", () => {
         merchantName: "Max Healthcare",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Doctor
     const docRes = await app.inject({
@@ -80,7 +81,7 @@ describe("In-Cabin Diagnostic Lab Ordering & Digital Rx WhatsApp Suite", () => {
         password: "Password123",
         specialization: "Internal Medicine",
         consultationFee: 800,
-        clinicIds: [clinicId],
+        locationIds: [locationId],
       },
     });
     expect(docRes.statusCode).toBe(201);
@@ -90,7 +91,7 @@ describe("In-Cabin Diagnostic Lab Ordering & Digital Rx WhatsApp Suite", () => {
 
     // Ensure DoctorAssignment active
     await DoctorAssignment.updateOne(
-      { doctorId: doctorUserId, clinicId },
+      { doctorId: doctorUserId, locationId },
       { $set: { isActive: true } },
       { upsert: true }
     );
@@ -109,7 +110,7 @@ describe("In-Cabin Diagnostic Lab Ordering & Digital Rx WhatsApp Suite", () => {
     // Create an in-consultation appointment
     const appt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId: doctorUserId,
       patientId: patientDoc._id,
       appointmentTime: new Date(),
@@ -149,7 +150,7 @@ describe("In-Cabin Diagnostic Lab Ordering & Digital Rx WhatsApp Suite", () => {
   it("should complete consultation with digital prescription and dispatch WhatsApp notification", async () => {
     const appt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId: doctorUserId,
       patientId: patientDoc._id,
       appointmentTime: new Date(),
@@ -188,7 +189,7 @@ describe("In-Cabin Diagnostic Lab Ordering & Digital Rx WhatsApp Suite", () => {
   it("should support 1-click re-dispatch of digital e-Prescription to custom phone via WhatsApp", async () => {
     const appt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId: doctorUserId,
       patientId: patientDoc._id,
       appointmentTime: new Date(),

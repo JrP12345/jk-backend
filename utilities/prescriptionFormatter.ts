@@ -1,7 +1,7 @@
 export interface PrintPrescriptionData {
-  clinicName: string;
-  clinicAddress: string;
-  clinicPhone: string;
+  locationName: string;
+  locationAddress: string;
+  locationPhone: string;
   doctorName: string;
   doctorSpecialty: string;
   doctorLicenseNumber?: string;
@@ -59,9 +59,9 @@ function sanitizeImageUrl(url?: string): string | null {
 }
 
 export function generatePrintablePrescriptionHtml(data: PrintPrescriptionData): string {
-  const safeClinicName = escapeHtml(data.clinicName);
-  const safeClinicAddress = escapeHtml(data.clinicAddress);
-  const safeClinicPhone = escapeHtml(data.clinicPhone);
+  const safeLocationName = escapeHtml(data.locationName);
+  const safeLocationAddress = escapeHtml(data.locationAddress);
+  const safeLocationPhone = escapeHtml(data.locationPhone);
   const safeDoctorName = escapeHtml(data.doctorName);
   const safeDoctorSpecialty = escapeHtml(data.doctorSpecialty);
   const safeDoctorLicense = escapeHtml(data.doctorLicenseNumber);
@@ -96,7 +96,7 @@ export function generatePrintablePrescriptionHtml(data: PrintPrescriptionData): 
   <style>
     body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #1f2937; margin: 0; padding: 24px; }
     .header { display: flex; justify-content: space-between; border-bottom: 2px solid #2563eb; padding-bottom: 12px; margin-bottom: 16px; }
-    .clinic-title { font-size: 20px; font-weight: bold; color: #1e40af; }
+    .location-title { font-size: 20px; font-weight: bold; color: #1e40af; }
     .doctor-title { font-size: 16px; font-weight: bold; color: #1f2937; text-align: right; }
     .patient-bar { background: #f3f4f6; padding: 12px; margin-bottom: 20px; border-radius: 6px; display: flex; justify-content: space-between; }
     .rx-symbol { font-size: 28px; font-weight: bold; color: #2563eb; margin: 12px 0 6px 0; }
@@ -113,8 +113,8 @@ export function generatePrintablePrescriptionHtml(data: PrintPrescriptionData): 
 <body>
   <div class="header">
     <div>
-      <div class="clinic-title">${safeClinicName}</div>
-      <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">${safeClinicAddress} | Tel: ${safeClinicPhone}</div>
+      <div class="location-title">${safeLocationName}</div>
+      <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">${safeLocationAddress} | Tel: ${safeLocationPhone}</div>
     </div>
     <div class="doctor-title">
       ${safeDoctorName}<br>
@@ -124,7 +124,7 @@ export function generatePrintablePrescriptionHtml(data: PrintPrescriptionData): 
 
   <div class="patient-bar">
     <div>
-      <strong>Patient:</strong> ${safePatientName} &nbsp;|&nbsp; 
+      <strong>Patient:</strong> ${safePatientName} &nbsp;|&nbsp;
       <strong>Age/Gender:</strong> ${safePatientAge} / ${safePatientGender}
     </div>
     <div>

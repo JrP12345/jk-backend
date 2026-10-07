@@ -1,7 +1,9 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { providerFixtureSlug } from "./helpers/providerFixture.ts";
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
@@ -11,7 +13,7 @@ import { Encounter } from "../models/Encounter.ts";
 describe("Variable & Post-Consultation Doctor Fee Workflow Suite", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let patientId: string;
   let appointmentId: string;
@@ -23,7 +25,7 @@ describe("Variable & Post-Consultation Doctor Fee Workflow Suite", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-10-04T05:00:00Z"));
     // 1. Setup Organization & Super Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -36,23 +38,23 @@ describe("Variable & Post-Consultation Doctor Fee Workflow Suite", () => {
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Apollo Andheri Specialty Clinic",
         city: "Mumbai",
         upiVpa: "apollo@hdfcbank",
-        merchantName: "Apollo Clinics",
+        merchantName: "Apollo Locations",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Doctor with Post-Consultation Fee Type
     const docRes = await app.inject({
@@ -69,7 +71,7 @@ describe("Variable & Post-Consultation Doctor Fee Workflow Suite", () => {
         experience_years: 18,
         fees: 0,
         feeType: "post_consultation",
-        clinicId,
+        locationId,
       },
     });
     expect(docRes.statusCode).toBe(201);
@@ -77,7 +79,7 @@ describe("Variable & Post-Consultation Doctor Fee Workflow Suite", () => {
 
     // 4. Ensure DoctorAssignment has feeType: "post_consultation"
     await DoctorAssignment.findOneAndUpdate(
-      { doctorId, clinicId },
+      { doctorId, locationId },
       {
         fees: 0,
         feeType: "post_consultation",
@@ -106,7 +108,7 @@ describe("Variable & Post-Consultation Doctor Fee Workflow Suite", () => {
         phone: `91${Math.floor(10000000 + Math.random() * 90000000)}`,
         gender: "male",
         dob: "1988-04-12",
-        clinicId,
+        locationId,
       },
     });
     expect(patientRes.statusCode).toBe(201);
@@ -118,7 +120,7 @@ describe("Variable & Post-Consultation Doctor Fee Workflow Suite", () => {
   it("1. Public clinic details API reflects feeType: 'post_consultation'", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/api/public/clinics/${clinicId}`,
+      url: `/api/public/locations/${await providerFixtureSlug("location", locationId)}`,
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -127,7 +129,7 @@ describe("Variable & Post-Consultation Doctor Fee Workflow Suite", () => {
     expect(doctor.feeType).toBe("post_consultation");
   });
 
-  it("2. Books appointment with paymentStatus: 'pay_at_clinic' and skips upfront invoice creation", async () => {
+  it("2. Books appointment with paymentStatus: 'pay_at_location' and skips upfront invoice creation", async () => {
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     tomorrow.setHours(10, 0, 0, 0);
@@ -137,7 +139,7 @@ describe("Variable & Post-Consultation Doctor Fee Workflow Suite", () => {
       url: "/api/appointments",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         doctorId,
         patientId,
         appointmentTime: tomorrow.toISOString(),
@@ -153,7 +155,7 @@ describe("Variable & Post-Consultation Doctor Fee Workflow Suite", () => {
     const savedAppt = await Appointment.findById(appointmentId);
     expect(savedAppt).toBeDefined();
     expect(savedAppt?.feeType).toBe("post_consultation");
-    expect(savedAppt?.paymentStatus).toBe("pay_at_clinic");
+    expect(savedAppt?.paymentStatus).toBe("pay_at_location");
 
     // Must NOT have generated an upfront fixed invoice
     const apptInvoice = await Invoice.findOne({ appointmentId });
@@ -164,7 +166,7 @@ describe("Variable & Post-Consultation Doctor Fee Workflow Suite", () => {
     // Create Encounter
     const enc = await Encounter.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       appointmentId,
       patientId,
       doctorId,
@@ -230,7 +232,7 @@ describe("Variable & Post-Consultation Doctor Fee Workflow Suite", () => {
       url: "/api/appointments",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         doctorId,
         patientId,
         appointmentTime: new Date(Date.now() + 7200000).toISOString(),

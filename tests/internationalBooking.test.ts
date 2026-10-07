@@ -1,6 +1,9 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { fixtureAccessToken } from "./helpers/sessionFixture.ts";
+import { providerFixtureSlug } from "./helpers/providerFixture.ts";
 import { describe, expect, it } from "vitest";
 import app from "../index.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
@@ -11,14 +14,13 @@ import { Subscription } from "../models/Subscription.ts";
 import { Organization } from "../models/Organization.ts";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
-import { generateAccessToken } from "../utilities/helpers.ts";
 import { vi } from "vitest";
-import { clinicDateKey, clinicLocalTimeToDate } from "../utilities/clinicTime.ts";
+import { locationDateKey, locationLocalTimeToDate } from "../utilities/locationTime.ts";
 
 describe("international clinic booking", () => {
   it("requires an explicit timezone for a Canadian organization", async () => {
     const suffix = Date.now();
-    const response = await app.inject({
+    const response = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST", url: "/api/onboarding/organization",
       payload: { org_name: `CA Clinic ${suffix}`, city: "Toronto", countryCode: "CA", currency: "CAD",
         admin_name: "CA Admin", admin_email: `ca-${suffix}@test.com`, admin_password: "Password123!" },
@@ -29,14 +31,14 @@ describe("international clinic booking", () => {
   it("uses configured professional plan limits and respects a zero-day trial", async () => {
     const suffix = Date.now();
     const plan = await SaaSPlan.create({ name: "Configured Professional", slug: "professional", description: "Test plan",
-      monthlyPrice: 100, annualPrice: 1000, trialDays: 0, limits: { maxClinics: 3, maxDoctors: 7, maxStaff: 9 } });
-    const response = await app.inject({ method: "POST", url: "/api/onboarding/organization",
-      payload: { org_name: `Plan Clinic ${suffix}`, city: "Mumbai", countryCode: "IN", plan: "pro",
+      monthlyPrice: 100, annualPrice: 1000, trialDays: 0, limits: { maxLocations: 3, maxDoctors: 7, maxStaff: 9 } });
+    const response = await app.inject({ headers: await provisioningFixtureHeaders(), method: "POST", url: "/api/onboarding/organization",
+      payload: { org_name: `Plan Clinic ${suffix}`, city: "Mumbai", countryCode: "IN", plan: "professional",
         admin_name: "Plan Admin", admin_email: `plan-${suffix}@test.com`, admin_password: "Password123!" } });
     expect(response.statusCode, response.body).toBe(201);
     const org = response.json().data.organization;
     const storedOrg = await Organization.findById(org.id);
-    expect(storedOrg?.maxClinics).toBe(3);
+    expect(storedOrg?.maxLocations).toBe(3);
     expect(storedOrg?.maxDoctors).toBe(7);
     const subscription = await Subscription.findOne({ organizationId: org.id });
     expect(subscription?.planId.toString()).toBe(plan.id);
@@ -45,7 +47,7 @@ describe("international clinic booking", () => {
 
   it("books at clinic local time, snapshots USD, and blocks INR checkout", async () => {
     const suffix = Date.now();
-    const organization = await app.inject({
+    const organization = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST", url: "/api/onboarding/organization",
       payload: { org_name: `US Clinic ${suffix}`, city: "New York", countryCode: "US", currency: "USD",
         timezone: "America/New_York", admin_name: "US Admin", admin_email: `us-${suffix}@test.com`,
@@ -53,9 +55,9 @@ describe("international clinic booking", () => {
     });
     expect(organization.statusCode, organization.body).toBe(201);
     const organizationId = organization.json().data.organization.id;
-    const cookies = (organization.headers["set-cookie"] as string[]).map(cookie => cookie.split(";")[0]).join("; ");
-    const clinic = await Clinic.findOne({ organizationId });
-    expect(clinic).toBeTruthy();
+    const cookies = (await provisionedAdminCookies(organization)).join("; ");
+    const location = await Location.findOne({ organizationId });
+    expect(location).toBeTruthy();
 
     const doctor = await app.inject({
       method: "POST", url: "/api/onboarding/doctor", headers: { cookie: cookies },
@@ -65,17 +67,17 @@ describe("international clinic booking", () => {
     const doctorId = doctor.json().data.id;
     const assignment = await app.inject({
       method: "POST", url: "/api/onboarding/doctors/assignments", headers: { cookie: cookies },
-      payload: { doctorId, clinicId: clinic!.id, fees: 125, workingHours: "09:00 - 17:00" },
+      payload: { doctorId, locationId: location!.id, fees: 125, workingHours: "09:00 - 17:00" },
     });
     expect(assignment.statusCode, assignment.body).toBe(201);
 
-    let day = new Date(`${clinicDateKey(new Date(Date.now() + 3 * 86400000), "America/New_York")}T12:00:00Z`);
+    let day = new Date(`${locationDateKey(new Date(Date.now() + 3 * 86400000), "America/New_York")}T12:00:00Z`);
     if (day.getUTCDay() === 0) day = new Date(day.getTime() + 86400000);
     const dayKey = day.toISOString().slice(0, 10);
-    const appointmentTime = clinicLocalTimeToDate(dayKey, "10:00", "America/New_York").toISOString();
+    const appointmentTime = locationLocalTimeToDate(dayKey, "10:00", "America/New_York").toISOString();
     const booking = await app.inject({
       method: "POST", url: "/api/appointments", headers: { cookie: cookies },
-      payload: { clinicId: clinic!.id, doctorId, appointmentTime, appointmentType: "online",
+      payload: { locationId: location!.id, doctorId, appointmentTime, appointmentType: "online",
         patientDetails: { name: "US Patient", dob: "1990-01-01", gender: "other", phone: "+14155550199" } },
     });
     expect(booking.statusCode, booking.body).toBe(201);
@@ -84,13 +86,13 @@ describe("international clinic booking", () => {
     expect(invoice?.currency).toBe("USD");
     const patientUser = await User.create({ name: "International patient", email: `patient-${suffix}@test.com`, role: "patient" });
     await Patient.updateOne({ _id: booking.json().data.patientId }, { userId: patientUser._id });
-    const patientCookie = `access_token=${generateAccessToken({ id: patientUser.id, email: patientUser.email!, role: "patient", organization_id: organizationId })}`;
+    const patientCookie = `access_token=${(await fixtureAccessToken({ id: patientUser.id, email: patientUser.email!, role: "patient", organization_id: organizationId }))}`;
     const patientInvoice = await app.inject({ method: "GET", url: `/api/invoices/${invoice!.id}`, headers: { cookie: patientCookie } });
     expect(patientInvoice.statusCode, patientInvoice.body).toBe(200);
     expect(patientInvoice.json().data.currency).toBe("USD");
     const manualInvoice = await app.inject({
       method: "POST", url: "/api/invoices", headers: { cookie: cookies },
-      payload: { clinicId: clinic!.id, doctorId, patientId: booking.json().data.patientId,
+      payload: { locationId: location!.id, doctorId, patientId: booking.json().data.patientId,
         items: [{ description: "Taxable service", amount: 100, quantity: 1, gstRate: 5 }] },
     });
     expect(manualInvoice.statusCode, manualInvoice.body).toBe(409);
@@ -118,46 +120,46 @@ describe("international clinic booking", () => {
 
     for (const invalidDate of ["2026-02-30", "2026-13-01", "2026-09-29T12:00:00Z", "invalid"]) {
       const invalidSlots = await app.inject({ method: "GET",
-        url: `/api/public/doctors/${doctorId}/slots?clinicId=${clinic!.id}&date=${invalidDate}` });
+        url: `/api/public/doctors/${doctorId}/slots?locationId=${location!.id}&date=${invalidDate}` });
       expect(invalidSlots.statusCode, invalidSlots.body).toBe(400);
     }
 
-    const rescheduledTime = clinicLocalTimeToDate(dayKey, "23:30", "America/New_York").toISOString();
-    await DoctorAssignment.updateOne({ clinicId: clinic!._id, doctorId }, { workingHours: JSON.stringify({ all: { start: "00:00", end: "23:59" } }) });
+    const rescheduledTime = locationLocalTimeToDate(dayKey, "23:30", "America/New_York").toISOString();
+    await DoctorAssignment.updateOne({ locationId: location!._id, doctorId }, { workingHours: JSON.stringify({ all: { start: "00:00", end: "23:59" } }) });
     const reschedule = await app.inject({ method: "PATCH", url: `/api/appointments/${appointmentId}/reschedule`,
       headers: { cookie: cookies }, payload: { newTime: rescheduledTime } });
     expect(reschedule.statusCode, reschedule.body).toBe(200);
-    const tokenCounter = await Counter.findOne({ id: `token_${clinic!.id}_${doctorId}_${dayKey}` });
+    const tokenCounter = await Counter.findOne({ id: `token_${location!.id}_${doctorId}_${dayKey}` });
     expect(tokenCounter).toBeTruthy();
     expect(reschedule.json().data.tokenNumber).toBeGreaterThan(booking.json().data.tokenNumber);
 
-    await Clinic.updateOne({ _id: clinic!._id }, { latitude: 40.7128, longitude: -74.006 });
+    await Location.updateOne({ _id: location!._id }, { latitude: 40.7128, longitude: -74.006 });
     const branch = await app.inject({
-      method: "PUT", url: `/api/onboarding/clinics/${clinic!.id}`, headers: { cookie: cookies },
-      payload: { name: clinic!.name, city: clinic!.city, timezone: "America/Los_Angeles" },
+      method: "PUT", url: `/api/onboarding/locations/${location!.id}`, headers: { cookie: cookies },
+      payload: { name: location!.name, city: location!.city, timezone: "America/Los_Angeles" },
     });
     expect(branch.statusCode, branch.body).toBe(200);
     expect(branch.json().data.latitude).toBe(40.7128);
     expect(branch.json().data.longitude).toBe(-74.006);
-    const clinicList = await app.inject({ method: "GET", url: "/api/onboarding/clinics", headers: { cookie: cookies } });
-    expect(clinicList.json().data.find((item: { id: string }) => item.id === clinic!.id)?.effectiveTimezone).toBe("America/Los_Angeles");
-    const publicDetail = await app.inject({ method: "GET", url: `/api/public/clinics/${clinic!.id}` });
+    const locationList = await app.inject({ method: "GET", url: "/api/onboarding/locations", headers: { cookie: cookies } });
+    expect(locationList.json().data.find((item: { id: string }) => item.id === location!.id)?.effectiveTimezone).toBe("America/Los_Angeles");
+    const publicDetail = await app.inject({ method: "GET", url: `/api/public/locations/${await providerFixtureSlug("location", location!.id)}` });
     expect(publicDetail.json().data.timezone).toBe("America/Los_Angeles");
 
     const receptionist = await app.inject({ method: "POST", url: "/api/onboarding/receptionist", headers: { cookie: cookies },
-      payload: { name: "International reception", email: `reception-${suffix}@test.com`, password: "Password123!", clinicId: clinic!.id } });
+      payload: { name: "International reception", email: `reception-${suffix}@test.com`, password: "Password123!", locationId: location!.id } });
     expect(receptionist.statusCode, receptionist.body).toBe(201);
     for (const email of [`us-doctor-${suffix}@test.com`, `reception-${suffix}@test.com`]) {
       const staffLogin = await app.inject({ method: "POST", url: "/api/auth/login", payload: { email, password: "Password123!" } });
       expect(staffLogin.statusCode, staffLogin.body).toBe(200);
       const staffCookie = (staffLogin.headers["set-cookie"] as string[]).map(cookie => cookie.split(";")[0]).join("; ");
-      const staffQueue = await app.inject({ method: "GET", url: `/api/queue?clinicId=${clinic!.id}&doctorId=${doctorId}&date=${dayKey}`,
+      const staffQueue = await app.inject({ method: "GET", url: `/api/queue?locationId=${location!.id}&doctorId=${doctorId}&date=${dayKey}`,
         headers: { cookie: staffCookie } });
       expect(staffQueue.statusCode, staffQueue.body).toBe(200);
       expect(staffQueue.json().data.some((item: { id: string }) => item.id === appointmentId)).toBe(true);
     }
 
-    const joinPayload = { clinicId: clinic!.id, doctorId, name: "Walk-in Patient", phone: "+14155550188" };
+    const joinPayload = { locationId: location!.id, doctorId, name: "Walk-in Patient", phone: "+14155550188" };
     const joined = await app.inject({ method: "POST", url: "/api/public/join-queue", payload: joinPayload });
     expect(joined.statusCode, joined.body).toBe(201);
     expect(joined.json().data.trackingUrl).toContain("/track/");
@@ -172,21 +174,22 @@ describe("international clinic booking", () => {
     const joinedId = joined.json().data.appointmentId;
     const indianVisitorId = indianVisitor.json().data.appointmentId;
     await Appointment.updateMany({ _id: { $in: [joinedId, indianVisitorId] } }, { appointmentTime: new Date("2026-09-29T00:15:00Z") });
-    await DoctorDayOverride.create({ organizationId, clinicId: clinic!._id, doctorId, date: "2026-09-28", status: "unavailable", reason: "Local-day leave" });
+    await DoctorDayOverride.create({ organizationId, locationId: location!._id, doctorId, date: "2026-09-28", status: "unavailable", reason: "Local-day leave" });
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-09-29T00:30:00Z"));
     try {
-      const boundaryDetail = await app.inject({ method: "GET", url: `/api/public/clinics/${clinic!.id}` });
+      const boundaryDetail = await app.inject({ method: "GET", url: `/api/public/locations/${await providerFixtureSlug("location", location!.id)}` });
       const publicDoctor = boundaryDetail.json().data.doctors.find((item: { id: string }) => item.id === doctorId);
       expect(publicDoctor.waitingPatientsCount).toBe(2);
       expect(publicDoctor.isAvailable).toBe(false);
       expect(publicDoctor.overrideReason).toBe("Local-day leave");
-      const tracker = await app.inject({ method: "GET", url: joined.json().data.trackingUrl.replace("/track/", "/api/public/track/") });
+      const trackerLink = new URL(joined.json().data.trackingUrl, "https://ekavyu.test");
+      const tracker = await app.inject({ method: "GET", url: trackerLink.pathname.replace("/track/", "/api/public/track/"), headers: { "x-tracker-token": new URLSearchParams(trackerLink.hash.slice(1)).get("t")! } });
       expect(tracker.statusCode, tracker.body).toBe(200);
       expect(tracker.json().data.isToday).toBe(true);
-      expect(tracker.json().data.clinic.timezone).toBe("America/Los_Angeles");
+      expect(tracker.json().data.location.timezone).toBe("America/Los_Angeles");
       expect(tracker.json().data.doctorAvailability.isAvailable).toBe(false);
-      const queue = await app.inject({ method: "GET", url: `/api/queue?clinicId=${clinic!.id}&doctorId=${doctorId}`, headers: { cookie: cookies } });
+      const queue = await app.inject({ method: "GET", url: `/api/queue?locationId=${location!.id}&doctorId=${doctorId}`, headers: { cookie: cookies } });
       expect(queue.statusCode, queue.body).toBe(200);
       expect(queue.json().data.map((item: { id: string }) => item.id)).toEqual(expect.arrayContaining([joinedId, indianVisitorId]));
     } finally {

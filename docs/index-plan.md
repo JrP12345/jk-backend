@@ -10,16 +10,16 @@ This document provides an index specification for all high-volume query paths ac
 
 ### 1.1 Appointments
 * **Workload**: High-frequency patient and doctor reads, booking concurrency, no-show sweeps.
-* **Filter fields**: `clinicId`, `doctorId`, `appointmentTime`, `status`
+* **Filter fields**: `locationId`, `doctorId`, `appointmentTime`, `status`
 * **Tenant field**: `organizationId`
 * **Sort**: `appointmentTime: 1`, `queuePosition: 1`, `createdAt: -1`
 * **Expected cardinality**: ~10,000–500,000 documents per tenant annually.
-* **Projection**: `_id`, `clinicId`, `doctorId`, `patientId`, `tokenNumber`, `queuePosition`, `status`, `appointmentTime`, `bookingMode`
+* **Projection**: `_id`, `locationId`, `doctorId`, `patientId`, `tokenNumber`, `queuePosition`, `status`, `appointmentTime`, `bookingMode`
 * **Existing indexes**:
-  * `{ clinicId: 1, doctorId: 1, appointmentTime: 1 }` (unique partial: `bookingMode: "time_slot"`)
+  * `{ locationId: 1, doctorId: 1, appointmentTime: 1 }` (unique partial: `bookingMode: "time_slot"`)
   * `{ activeConsultationDoctorDayKey: 1 }` (unique sparse)
 * **Candidate compound indexes (verify before adding)**:
-  1. `{ clinicId: 1, doctorId: 1, appointmentTime: 1, queuePosition: 1 }` — Satisfies clinic doctor schedule lookups and queue ordering without in-memory sort.
+  1. `{ locationId: 1, doctorId: 1, appointmentTime: 1, queuePosition: 1 }` — Satisfies location doctor schedule lookups and queue ordering without in-memory sort.
   2. `{ patientId: 1, organizationId: 1, createdAt: -1 }` — Satisfies patient portal appointment history queries.
   3. `{ status: 1, disruptionResponseDeadline: 1 }` — Supports disruption triage timeout sweep worker.
 * **Write overhead**: Not measured; benchmark representative inserts and updates. Indexed fields change only during state transitions.
@@ -28,50 +28,50 @@ This document provides an index specification for all high-volume query paths ac
 
 ### 1.2 Queue & Active Consultation
 * **Workload**: Real-time lobby display updates, call-next operations, doctor cabin concurrency.
-* **Filter fields**: `clinicId`, `status` (`"checked-in"`, `"in-consultation"`, `"waiting"`)
+* **Filter fields**: `locationId`, `status` (`"checked-in"`, `"in-consultation"`, `"waiting"`)
 * **Tenant field**: `organizationId`
 * **Sort**: `queuePosition: 1`, `tokenNumber: 1`
-* **Expected cardinality**: 50–500 active tokens per clinic per day.
+* **Expected cardinality**: 50–500 active tokens per location per day.
 * **Projection**: `_id`, `tokenNumber`, `queuePosition`, `status`, `doctorStatus`, `doctorName`, `roomNumber`, `estimatedWaitTime`
 * **Existing indexes**:
-  * `{ clinicId: 1, status: 1, appointmentTime: 1 }`
-  * `{ organizationId: 1, clinicId: 1, status: 1, appointmentTime: 1 }`
+  * `{ locationId: 1, status: 1, appointmentTime: 1 }`
+  * `{ organizationId: 1, locationId: 1, status: 1, appointmentTime: 1 }`
 * **Candidate compound indexes (verify before adding)**:
-  * Covered by `{ clinicId: 1, doctorId: 1, appointmentTime: 1, queuePosition: 1 }` and `{ organizationId: 1, clinicId: 1, status: 1, appointmentTime: 1 }`.
+  * Covered by `{ locationId: 1, doctorId: 1, appointmentTime: 1, queuePosition: 1 }` and `{ organizationId: 1, locationId: 1, status: 1, appointmentTime: 1 }`.
 
 ---
 
 ### 1.3 Encounters
 * **Workload**: Doctor clinical workflow, EHR chart reviews, past visit timelines.
-* **Filter fields**: `patientId`, `clinicId`, `status`
+* **Filter fields**: `patientId`, `locationId`, `status`
 * **Tenant field**: `organizationId`
 * **Sort**: `createdAt: -1`
 * **Expected cardinality**: 1–20 encounters per patient; 50,000–500,000 per tenant.
-* **Projection**: `_id`, `organizationId`, `clinicId`, `appointmentId`, `patientId`, `doctorId`, `encounterType`, `status`, `startedAt`, `createdAt`
+* **Projection**: `_id`, `organizationId`, `locationId`, `appointmentId`, `patientId`, `doctorId`, `encounterType`, `status`, `startedAt`, `createdAt`
 * **Existing indexes**:
   * `{ organizationId: 1, appointmentId: 1, status: 1 }`
-  * `{ clinicId: 1, status: 1 }`
+  * `{ locationId: 1, status: 1 }`
 * **Candidate compound indexes (verify before adding)**:
   1. `{ patientId: 1, createdAt: -1 }` — Fast chronological patient encounter timeline.
-  2. `{ organizationId: 1, clinicId: 1, status: 1, createdAt: -1 }` — Tenant-scoped clinic encounter dashboard with status filters.
+  2. `{ organizationId: 1, locationId: 1, status: 1, createdAt: -1 }` — Tenant-scoped location encounter dashboard with status filters.
 * **Potentially redundant indexes (verify usage before dropping)**:
-  * Single-field `organizationId: 1` (subsumed by `{ organizationId: 1, clinicId: 1, status: 1, createdAt: -1 }`)
+  * Single-field `organizationId: 1` (subsumed by `{ organizationId: 1, locationId: 1, status: 1, createdAt: -1 }`)
   * Single-field `patientId: 1` (subsumed by `{ patientId: 1, createdAt: -1 }`)
 
 ---
 
 ### 1.4 Diagnostic Lab Orders
 * **Workload**: Diagnostic test creation, sample collection worklist, result entry and verification.
-* **Filter fields**: `patientId`, `clinicId`, `appointmentId`, `status`
+* **Filter fields**: `patientId`, `locationId`, `appointmentId`, `status`
 * **Tenant field**: `organizationId`
 * **Sort**: `createdAt: -1`, `orderDate: -1`
 * **Expected cardinality**: ~50,000–200,000 per tenant annually.
-* **Projection**: `_id`, `organizationId`, `clinicId`, `patientId`, `testId`, `status`, `priority`, `orderDate`, `result`, `createdAt`
+* **Projection**: `_id`, `organizationId`, `locationId`, `patientId`, `testId`, `status`, `priority`, `orderDate`, `result`, `createdAt`
 * **Existing indexes**:
   * `{ appointmentId: 1, status: 1 }`
 * **Candidate compound indexes (verify before adding)**:
   1. `{ organizationId: 1, patientId: 1, createdAt: -1 }` — Patient EHR diagnostic history.
-  2. `{ organizationId: 1, clinicId: 1, status: 1, createdAt: -1 }` — Clinic laboratory bench worklist (e.g. pending sample collection/processing).
+  2. `{ organizationId: 1, locationId: 1, status: 1, createdAt: -1 }` — Location laboratory bench worklist (e.g. pending sample collection/processing).
 * **Potentially redundant indexes (verify usage before dropping)**:
   * Single-field `organizationId: 1` (subsumed by compound prefix)
   * Single-field `appointmentId: 1` (subsumed by `{ appointmentId: 1, status: 1 }`)
@@ -84,7 +84,7 @@ This document provides an index specification for all high-volume query paths ac
 * **Tenant field**: `organizationId`
 * **Sort**: `version: -1`
 * **Expected cardinality**: 100,000–1,000,000 notes per tenant.
-* **Projection**: `_id`, `organizationId`, `clinicId`, `encounterId`, `patientId`, `doctorId`, `version`, `isLatest`, `subjective`, `objective`, `assessment`, `plan`, `status`
+* **Projection**: `_id`, `organizationId`, `locationId`, `encounterId`, `patientId`, `doctorId`, `version`, `isLatest`, `subjective`, `objective`, `assessment`, `plan`, `status`
 * **Candidate compound indexes (verify before adding)**:
   1. `{ organizationId: 1, patientId: 1, isLatest: 1 }` — Direct lookup of patient's current active clinical notes.
   2. `{ encounterId: 1, version: -1 }` — Encounter note revision history and latest version resolution.
@@ -113,20 +113,20 @@ This document provides an index specification for all high-volume query paths ac
 
 ### 1.7 Billing & Invoices
 * **Workload**: Cashier point-of-sale checkout, payment receipts, insurance billing ledger.
-* **Filter fields**: `patientId`, `clinicId`, `status`
+* **Filter fields**: `patientId`, `locationId`, `status`
 * **Tenant field**: `organizationId`
 * **Sort**: `createdAt: -1`
 * **Expected cardinality**: 50,000–500,000 invoices per tenant annually.
-* **Projection**: `_id`, `invoiceNumber`, `organizationId`, `patientId`, `clinicId`, `subtotal`, `totalAmount`, `status`, `paymentMethod`, `createdAt`
+* **Projection**: `_id`, `invoiceNumber`, `organizationId`, `patientId`, `locationId`, `subtotal`, `totalAmount`, `status`, `paymentMethod`, `createdAt`
 * **Existing indexes**:
   * `{ invoiceNumber: 1 }` (unique)
-  * `{ clinicId: 1, status: 1 }`
+  * `{ locationId: 1, status: 1 }`
 * **Candidate compound indexes (verify before adding)**:
   1. `{ organizationId: 1, createdAt: -1 }` — Tenant ledger & date-bounded financial reports.
   2. `{ organizationId: 1, patientId: 1, createdAt: -1 }` — Patient billing and statement history.
 * **Potentially redundant indexes (verify usage before dropping)**:
   * Single-field `organizationId: 1` (subsumed by `{ organizationId: 1, createdAt: -1 }`)
-  * Single-field `clinicId: 1` (subsumed by `{ clinicId: 1, status: 1 }`)
+  * Single-field `locationId: 1` (subsumed by `{ locationId: 1, status: 1 }`)
 
 ---
 
@@ -149,17 +149,17 @@ This document provides an index specification for all high-volume query paths ac
 
 ### 1.9 Prescriptions
 * **Workload**: Doctor e-prescribing, pharmacy dispensing queue, NMC sealing validation.
-* **Filter fields**: `patientId`, `clinicId`, `encounterId`, `status`
+* **Filter fields**: `patientId`, `locationId`, `encounterId`, `status`
 * **Tenant field**: `organizationId`
 * **Sort**: `createdAt: -1`
 * **Expected cardinality**: 100,000–500,000 per tenant annually.
 * **Existing indexes**:
   * `{ patientId: 1, createdAt: -1 }`
-  * `{ clinicId: 1, status: 1 }`
+  * `{ locationId: 1, status: 1 }`
 * **Candidate compound indexes (verify before adding)**:
   1. `{ encounterId: 1, createdAt: -1 }` — Encounter discharge and medication review.
 * **Potentially redundant indexes (verify usage before dropping)**:
-  * Single-field `clinicId: 1` (subsumed by `{ clinicId: 1, status: 1 }`)
+  * Single-field `locationId: 1` (subsumed by `{ locationId: 1, status: 1 }`)
   * Single-field `encounterId: 1` (subsumed by `{ encounterId: 1, createdAt: -1 }`)
   * Single-field `patientId: 1` (subsumed by `{ patientId: 1, createdAt: -1 }`)
 
@@ -199,7 +199,7 @@ Removing redundant single-field indexes reduces write amplification, frees worki
 
 | Collection | Removed Redundant Index | Subsumed By Compound Index |
 |---|---|---|
-| `Encounter` | `{ organizationId: 1 }` | `{ organizationId: 1, clinicId: 1, status: 1, createdAt: -1 }` |
+| `Encounter` | `{ organizationId: 1 }` | `{ organizationId: 1, locationId: 1, status: 1, createdAt: -1 }` |
 | `Encounter` | `{ patientId: 1 }` | `{ patientId: 1, createdAt: -1 }` |
 | `LabOrder` | `{ organizationId: 1 }` | `{ organizationId: 1, patientId: 1, createdAt: -1 }` |
 | `LabOrder` | `{ appointmentId: 1 }` | `{ appointmentId: 1, status: 1 }` |
@@ -208,13 +208,13 @@ Removing redundant single-field indexes reduces write amplification, frees worki
 | `DocumentUpload` | `{ organizationId: 1 }` | `{ organizationId: 1, category: 1 }` |
 | `DocumentUpload` | `{ patientId: 1 }` | `{ patientId: 1, uploadedAt: -1 }` |
 | `Invoice` | `{ organizationId: 1 }` | `{ organizationId: 1, createdAt: -1 }` |
-| `Invoice` | `{ clinicId: 1 }` | `{ clinicId: 1, status: 1 }` |
+| `Invoice` | `{ locationId: 1 }` | `{ locationId: 1, status: 1 }` |
 | `AuditLog` | `{ organizationId: 1 }` | `{ organizationId: 1, createdAt: -1 }` |
-| `Prescription` | `{ clinicId: 1 }` | `{ clinicId: 1, status: 1 }` |
+| `Prescription` | `{ locationId: 1 }` | `{ locationId: 1, status: 1 }` |
 | `Prescription` | `{ encounterId: 1 }` | `{ encounterId: 1, createdAt: -1 }` |
 | `Prescription` | `{ patientId: 1 }` | `{ patientId: 1, createdAt: -1 }` |
 | `AIChatSession` | `{ organizationId: 1 }` | `{ organizationId: 1, userId: 1, deletedAt: 1, updatedAt: -1 }` |
-| `ImagingStudy` | `{ clinicId: 1 }` | `{ clinicId: 1, patientId: 1, createdAt: -1 }` |
+| `ImagingStudy` | `{ locationId: 1 }` | `{ locationId: 1, patientId: 1, createdAt: -1 }` |
 | `RefreshToken` | `{ userId: 1 }` | `{ userId: 1, revoked: 1, createdAt: -1 }` |
 
 ---

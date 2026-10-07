@@ -6,7 +6,7 @@ export interface ITeleconsultationSession extends Document {
   appointmentId: mongoose.Types.ObjectId;
   patientId: mongoose.Types.ObjectId;
   doctorId: mongoose.Types.ObjectId;
-  clinicId: mongoose.Types.ObjectId;
+  locationId: mongoose.Types.ObjectId;
   meetingUrl: string;
   status: "scheduled" | "active" | "ended" | "missed";
   clinicalNotes?: string;
@@ -55,9 +55,9 @@ const teleconsultationSessionSchema = new Schema<ITeleconsultationSession>(
       required: true,
       index: true,
     },
-    clinicId: {
+    locationId: {
       type: Schema.Types.ObjectId,
-      ref: "Clinic",
+      ref: "Location",
       required: true,
       index: true,
     },

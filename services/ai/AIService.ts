@@ -33,7 +33,7 @@ class FallbackAIProvider implements AIProvider {
   async queryPatientHealthAssistant(input: HealthQueryInput): Promise<HealthQueryResponse> {
     const actions: AISuggestedAction[] = [
       { type: "VIEW_PATIENT", label: "📋 View Patient Directory", targetUrl: "/dashboard/patients" },
-      { type: "ANALYTICS", label: "📊 View Clinic Dashboard", targetUrl: "/dashboard" }
+      { type: "ANALYTICS", label: "📊 View Dashboard", targetUrl: "/dashboard" }
     ];
 
     return {
@@ -556,5 +556,5 @@ JSON Keys: subjective, objective, assessment, plan, suggestedICD10 (array of cod
         providerRegistry.setPrimaryProvider(primaryProvider.name);
       }
     }
-  
+
 }

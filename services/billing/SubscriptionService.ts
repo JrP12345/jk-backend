@@ -5,7 +5,7 @@ import { SubscriptionPayment } from "../../models/SubscriptionPayment.ts";
 import { SaaSInvoice } from "../../models/SaaSInvoice.ts";
 import { UsageRecord } from "../../models/UsageRecord.ts";
 import { Organization } from "../../models/Organization.ts";
-import { Clinic } from "../../models/Clinic.ts";
+import { Location } from "../../models/Location.ts";
 import { Doctor } from "../../models/Doctor.ts";
 import { Receptionist } from "../../models/Receptionist.ts";
 import { Patient } from "../../models/Patient.ts";
@@ -29,7 +29,7 @@ export function addBillingPeriod(start: Date, billingCycle: "monthly" | "annual"
 export class PlanDowngradeViolationError extends Error {
   statusCode: number;
   violations: Array<{
-    resource: "clinics" | "doctors" | "staff";
+    resource: "locations" | "doctors" | "staff";
     current: number;
     allowed: number;
     excess: number;
@@ -37,7 +37,7 @@ export class PlanDowngradeViolationError extends Error {
   }>;
   currentUsage: any;
   targetPlan: any;
-  activeClinics: any[];
+  activeLocations: any[];
 
   constructor(validation: any) {
     super(validation.violations[0]?.message || "Active resources exceed target plan limits");
@@ -46,7 +46,7 @@ export class PlanDowngradeViolationError extends Error {
     this.violations = validation.violations;
     this.currentUsage = validation.currentUsage;
     this.targetPlan = validation.targetPlan;
-    this.activeClinics = validation.activeClinics || [];
+    this.activeLocations = validation.activeLocations || [];
   }
 }
 
@@ -64,11 +64,7 @@ export class SubscriptionService {
     let planQuery = SaaSPlan.findOne({ slug: planSlug, status: "active" });
     if (session) planQuery = planQuery.session(session);
     let chosenPlan = await planQuery;
-    if (!chosenPlan && planSlug === "pro") {
-      planQuery = SaaSPlan.findOne({ slug: "professional", status: "active" });
-      if (session) planQuery = planQuery.session(session);
-      chosenPlan = await planQuery;
-    }
+
     if (!chosenPlan) {
       planQuery = SaaSPlan.findOne({ slug: "starter", status: "active" });
       if (session) planQuery = planQuery.session(session);
@@ -78,12 +74,12 @@ export class SubscriptionService {
       chosenPlan = await createWithSession(SaaSPlan, {
         name: "Starter",
         slug: "starter",
-        description: "Essential tools for individual practitioners & single clinics",
+        description: "Essential tools for individual practitioners & single locations",
         monthlyPrice: 0,
         annualPrice: 0,
         currency: "INR",
         trialDays: 15,
-        limits: { maxClinics: 1, maxDoctors: 2, maxStaff: 5, maxPatients: 500, maxAppointments: 1000, maxStorageMB: 1024, maxMonthlyWhatsApp: 100 },
+        limits: { maxLocations: 1, maxDoctors: 2, maxStaff: 5, maxPatients: 500, maxAppointments: 1000, maxStorageMB: 1024, maxMonthlyWhatsApp: 100 },
         features: { analytics: false, auditLogs: false, multiBranch: false, dataExport: false, apiAccess: false, aiFeatures: false, whatsappIntegration: true },
       }, session);
     }
@@ -111,7 +107,7 @@ export class SubscriptionService {
    */
   async getOrInitializeSubscription(organizationId: string, customTrialDays?: number) {
     let sub: any = await Subscription.findOne({ organizationId }).populate("planId");
-    
+
     if (!sub) {
       const claimToken = new mongoose.Types.ObjectId().toString();
       let acquired = false;
@@ -132,71 +128,8 @@ export class SubscriptionService {
       sub = await Subscription.findOne({ organizationId }).populate("planId");
       if (!sub) {
       const existingOrg = await Organization.findById(organizationId);
-      const targetSlug = existingOrg?.plan || "starter";
-      let chosenPlan = await SaaSPlan.findOne({ slug: targetSlug });
-      if (!chosenPlan && targetSlug === "pro") {
-        chosenPlan = await SaaSPlan.findOne({ slug: "professional" });
-      }
-      if (!chosenPlan) {
-        chosenPlan = await SaaSPlan.findOne({ slug: "starter" });
-      }
-      if (!chosenPlan) {
-        chosenPlan = await SaaSPlan.create({
-          name: "Starter",
-          slug: "starter",
-          description: "Essential tools for individual practitioners & single clinics",
-          monthlyPrice: 0,
-          annualPrice: 0,
-          currency: "INR",
-          trialDays: customTrialDays ?? 15,
-          limits: {
-            maxClinics: 1,
-            maxDoctors: 2,
-            maxStaff: 5,
-            maxPatients: 500,
-            maxAppointments: 1000,
-            maxStorageMB: 1024,
-            maxMonthlyWhatsApp: 100,
-          },
-          features: {
-            analytics: false,
-            auditLogs: false,
-            multiBranch: false,
-            dataExport: false,
-            apiAccess: false,
-            aiFeatures: false,
-            whatsappIntegration: true,
-          },
-        });
-      }
-
-      const now = new Date();
-      const trialDays = customTrialDays ?? chosenPlan.trialDays ?? 15;
-      const trialEndsAt = new Date(now.getTime() + trialDays * 24 * 60 * 60 * 1000);
-
-      sub = await Subscription.create({
-        organizationId,
-        planId: chosenPlan._id,
-        status: existingOrg?.plan === "enterprise" ? "active" : "trialing",
-        entitlementSource: existingOrg?.plan === "enterprise" ? "manual" : "trial",
-        billingCycle: "monthly",
-        trialStartedAt: now,
-        trialEndsAt,
-        currentPeriodStart: now,
-        currentPeriodEnd: trialEndsAt,
-      });
-
-      if (existingOrg) {
-        const newMaxClinics = Math.max(existingOrg.maxClinics ?? 1, chosenPlan.limits?.maxClinics ?? 1);
-        const newMaxDoctors = Math.max(existingOrg.maxDoctors ?? 2, chosenPlan.limits?.maxDoctors ?? 2);
-        const newMaxStaff = Math.max(existingOrg.maxStaff ?? 5, chosenPlan.limits?.maxStaff ?? 5);
-        await Organization.findByIdAndUpdate(organizationId, {
-          plan: existingOrg.plan || chosenPlan.slug,
-          maxClinics: newMaxClinics,
-          maxDoctors: newMaxDoctors,
-          maxStaff: newMaxStaff,
-        });
-      }
+      if (!existingOrg) throw new Error("Organization not found");
+      sub = await this.createInitialSubscription(organizationId, existingOrg.plan, customTrialDays, null);
 
       // Populate planId
       sub = await Subscription.findById(sub._id).populate("planId");
@@ -228,24 +161,24 @@ export class SubscriptionService {
   async getOrganizationUsage(organizationId: string) {
     const orgObjId = new mongoose.Types.ObjectId(organizationId);
 
-    // Fetch active clinics count (only operating, non-deactivated branches)
-    const clinicsCount = await Clinic.countDocuments({ organizationId: orgObjId, isActive: { $ne: false } });
+    // Fetch active locations count (only operating, non-deactivated branches)
+    const locationsCount = await Location.countDocuments({ organizationId: orgObjId, isActive: { $ne: false } });
     // Fetch active doctors count
     const doctorsCount = await Doctor.countDocuments({ organizationId: orgObjId, status: { $ne: "inactive" } });
     // Fetch active staff count (receptionists)
     const staffCount = await Receptionist.countDocuments({ organizationId: orgObjId, status: { $ne: "inactive" } });
 
-    // Fetch patients count linked to org clinics
-    const orgClinics = await Clinic.find({ organizationId: orgObjId, isActive: { $ne: false } }).select("_id");
-    const clinicIds = orgClinics.map(c => c._id);
+    // Fetch patients count linked to org locations
+    const orgLocations = await Location.find({ organizationId: orgObjId, isActive: { $ne: false } }).select("_id");
+    const locationIds = orgLocations.map(c => c._id);
     const patientsCount = await Patient.countDocuments({ organizationId: orgObjId });
-    const appointmentsCount = await Appointment.countDocuments({ clinicId: { $in: clinicIds } });
+    const appointmentsCount = await Appointment.countDocuments({ locationId: { $in: locationIds } });
 
     // Update or upsert UsageRecord cache
     const usage = await UsageRecord.findOneAndUpdate(
       { organizationId: orgObjId },
       {
-        clinicsCount,
+        locationsCount,
         doctorsCount,
         staffCount,
         patientsCount,
@@ -273,7 +206,7 @@ export class SubscriptionService {
 
   /**
    * Validate if organization's active resource footprint fits within a target plan's quota limits.
-   * Prevents downgrade to a tier where active clinics, doctors, or staff exceed the tier quota.
+   * Prevents downgrade to a tier where active locations, doctors, or staff exceed the tier quota.
    */
   async validatePlanDowngrade(organizationId: string, targetPlanId: string) {
     const orgObjId = new mongoose.Types.ObjectId(organizationId);
@@ -282,33 +215,33 @@ export class SubscriptionService {
       throw new Error("Target plan not found or not active");
     }
 
-    const activeClinicsCount = await Clinic.countDocuments({ organizationId: orgObjId, isActive: { $ne: false } });
+    const activeLocationsCount = await Location.countDocuments({ organizationId: orgObjId, isActive: { $ne: false } });
     const activeDoctorsCount = await Doctor.countDocuments({ organizationId: orgObjId, status: { $ne: "inactive" } });
     const activeStaffCount = await Receptionist.countDocuments({ organizationId: orgObjId, status: { $ne: "inactive" } });
 
-    const activeClinics = await Clinic.find({ organizationId: orgObjId, isActive: { $ne: false } })
+    const activeLocations = await Location.find({ organizationId: orgObjId, isActive: { $ne: false } })
       .select("_id name city address phone")
       .lean();
 
-    const maxClinics = targetPlan.limits?.maxClinics ?? 1;
+    const maxLocations = targetPlan.limits?.maxLocations ?? 1;
     const maxDoctors = targetPlan.limits?.maxDoctors ?? 2;
     const maxStaff = targetPlan.limits?.maxStaff ?? 5;
 
     const violations: Array<{
-      resource: "clinics" | "doctors" | "staff";
+      resource: "locations" | "doctors" | "staff";
       current: number;
       allowed: number;
       excess: number;
       message: string;
     }> = [];
 
-    if (activeClinicsCount > maxClinics) {
+    if (activeLocationsCount > maxLocations) {
       violations.push({
-        resource: "clinics",
-        current: activeClinicsCount,
-        allowed: maxClinics,
-        excess: activeClinicsCount - maxClinics,
-        message: `You currently have ${activeClinicsCount} active clinic branches, but the ${targetPlan.name} plan allows a maximum of ${maxClinics}. Please deactivate ${activeClinicsCount - maxClinics} branch(es) before downgrading.`,
+        resource: "locations",
+        current: activeLocationsCount,
+        allowed: maxLocations,
+        excess: activeLocationsCount - maxLocations,
+        message: `You currently have ${activeLocationsCount} active locations, but the ${targetPlan.name} plan allows a maximum of ${maxLocations}. Please deactivate ${activeLocationsCount - maxLocations} branch(es) before downgrading.`,
       });
     }
 
@@ -342,11 +275,11 @@ export class SubscriptionService {
         limits: targetPlan.limits,
       },
       currentUsage: {
-        clinics: activeClinicsCount,
+        locations: activeLocationsCount,
         doctors: activeDoctorsCount,
         staff: activeStaffCount,
       },
-      activeClinics: activeClinics.map((c: any) => ({
+      activeLocations: activeLocations.map((c: any) => ({
         id: c._id.toString(),
         name: c.name,
         city: c.city,
@@ -396,7 +329,7 @@ export class SubscriptionService {
       await target.save({ session });
       await Organization.findByIdAndUpdate(organizationId, {
         plan: plan.slug,
-        maxClinics: plan.limits?.maxClinics ?? 1,
+        maxLocations: plan.limits?.maxLocations ?? 1,
         maxDoctors: plan.limits?.maxDoctors ?? 2,
         maxStaff: plan.limits?.maxStaff ?? 5,
       }, session ? { session } : {});
@@ -704,7 +637,7 @@ export class SubscriptionService {
         await subscription.save({ session });
         await Organization.findByIdAndUpdate(organizationId, {
           plan: plan.slug,
-          maxClinics: plan.limits?.maxClinics ?? 1,
+          maxLocations: plan.limits?.maxLocations ?? 1,
           maxDoctors: plan.limits?.maxDoctors ?? 2,
           maxStaff: plan.limits?.maxStaff ?? 5,
         }, session ? { session } : {});
@@ -784,7 +717,7 @@ export class SubscriptionService {
                 <h1 style="color: #0284c7; margin: 0; font-size: 24px;">Ekavyu Healthcare SaaS</h1>
                 <p style="color: #64748b; font-size: 13px; margin-top: 4px;">Commercial Subscription Invoice Receipt</p>
               </div>
-              
+
               <p style="font-size: 15px; font-weight: 600;">Dear ${org?.name || "Customer"},</p>
               <p style="font-size: 14px; color: #334155; line-height: 1.6;">
                 Thank you for subscribing to Ekavyu. Your payment for the <strong>${plan.name} Plan (${payment.billingCycle})</strong> has been successfully processed.

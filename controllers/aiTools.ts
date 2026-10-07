@@ -46,12 +46,12 @@ export async function requestToolExecutionController(req: FastifyRequest, reply:
         return reply.code(400).send(errorResponse("chiefComplaint is required for SOAP note generation"));
       }
     } else if (toolName === "createAppointmentTool") {
-      if (!inputPayload.patientId || !inputPayload.doctorId || !inputPayload.clinicId) {
-        return reply.code(400).send(errorResponse("patientId, doctorId, and clinicId are required for appointment creation"));
+      if (!inputPayload.patientId || !inputPayload.doctorId || !inputPayload.locationId) {
+        return reply.code(400).send(errorResponse("patientId, doctorId, and locationId are required for appointment creation"));
       }
     } else if (toolName === "prescribeMedicationTool") {
-      if (!inputPayload.patientId || !inputPayload.clinicId || !inputPayload.medicineName) {
-        return reply.code(400).send(errorResponse("patientId, clinicId, and medicineName are required for prescription creation"));
+      if (!inputPayload.patientId || !inputPayload.locationId || !inputPayload.medicineName) {
+        return reply.code(400).send(errorResponse("patientId, locationId, and medicineName are required for prescription creation"));
       }
     }
 
@@ -110,16 +110,16 @@ export async function approveAndExecuteToolController(req: FastifyRequest, reply
         userId: req.user?.id || ""
       });
     } else if (log.toolName === "createAppointmentTool") {
-      const { canCreateClinicBooking } = await import("../services/billing/SubscriptionAccess.ts");
-      if (!(await canCreateClinicBooking(input.clinicId))) {
-        return reply.code(409).send(errorResponse("New booking is temporarily unavailable for this clinic."));
+      const { canCreateLocationBooking } = await import("../services/billing/SubscriptionAccess.ts");
+      if (!(await canCreateLocationBooking(input.locationId))) {
+        return reply.code(409).send(errorResponse("New booking is temporarily unavailable for this location."));
       }
       const { Appointment } = await import("../models/Appointment.ts");
       const apptTime = input.appointmentDate || input.appointmentTime || new Date();
-      const count = await Appointment.countDocuments({ clinicId: input.clinicId });
+      const count = await Appointment.countDocuments({ locationId: input.locationId });
 
       result = await Appointment.create({
-        clinicId: input.clinicId,
+        locationId: input.locationId,
         doctorId: input.doctorId,
         patientId: input.patientId,
         appointmentTime: new Date(apptTime),
@@ -145,7 +145,7 @@ export async function approveAndExecuteToolController(req: FastifyRequest, reply
         } else {
           const newEncounter = await Encounter.create({
             organizationId: req.user.organization_id,
-            clinicId: input.clinicId,
+            locationId: input.locationId,
             patientId: input.patientId,
             doctorId: req.user.id,
             status: "in_progress",
@@ -157,7 +157,7 @@ export async function approveAndExecuteToolController(req: FastifyRequest, reply
 
       result = await Prescription.create({
         organizationId: req.user.organization_id,
-        clinicId: input.clinicId,
+        locationId: input.locationId,
         encounterId,
         patientId: input.patientId,
         doctorId: req.user.id,

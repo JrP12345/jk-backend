@@ -2,7 +2,7 @@ import mongoose, { Schema } from "mongoose";
 
 const LabTestSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
-  clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
+  locationId: { type: Schema.Types.ObjectId, ref: "Location", required: true, index: true },
   name: { type: String, required: true, index: true },
   code: { type: String, required: true, trim: true },
   department: { type: String, required: true },
@@ -12,7 +12,7 @@ const LabTestSchema = new Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-LabTestSchema.index({ clinicId: 1, code: 1 }, { unique: true });
+LabTestSchema.index({ locationId: 1, code: 1 }, { unique: true });
 LabTestSchema.index({ organizationId: 1, code: 1 });
 
 LabTestSchema.virtual("id").get(function() {

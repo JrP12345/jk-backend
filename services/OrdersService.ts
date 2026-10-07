@@ -27,7 +27,7 @@ export const ordersWorkflowEngine = new WorkflowEngine(ordersWorkflowDefinition)
 
 export interface PlaceOrderPayload {
   organizationId: string;
-  clinicId: string;
+  locationId: string;
   encounterId?: string;
   patientId: string;
   testId: string;
@@ -69,10 +69,10 @@ export class OrdersService {
       test = await LabTest.findById(payload.testId).lean();
     }
     if (!test) {
-      throw new Error("Lab test not found in the selected clinic catalog");
+      throw new Error("Lab test not found in the selected location catalog");
     }
-    if (test.clinicId?.toString() !== payload.clinicId) {
-      throw new Error("Lab test not found in the selected clinic catalog");
+    if (test.locationId?.toString() !== payload.locationId) {
+      throw new Error("Lab test not found in the selected location catalog");
     }
 
     const testId = test._id.toString();
@@ -84,7 +84,7 @@ export class OrdersService {
 
     const order = await LabOrder.create({
       organizationId:  payload.organizationId,
-      clinicId:        payload.clinicId,
+      locationId:        payload.locationId,
       encounterId:     payload.encounterId || null,
       patientId:       payload.patientId,
       testId:          testId,
@@ -166,7 +166,6 @@ export class OrdersService {
     order.status = "result-uploaded";
     order.resultedBy = payload.resultedBy as any;
     order.resultedAt = new Date();
-    order.completedDate = new Date();
     if (!order.sampleCollectedAt) order.sampleCollectedAt = new Date();
     if (!order.processingStartedAt) order.processingStartedAt = new Date();
 
@@ -179,10 +178,6 @@ export class OrdersService {
       notes:          payload.notes || "",
       attachmentUrl:  payload.attachmentUrl || "",
     };
-
-    order.resultValue = payload.value;
-    order.resultNotes = payload.notes || "";
-    if (payload.attachmentUrl) order.attachmentUrl = payload.attachmentUrl;
 
     await order.save();
 

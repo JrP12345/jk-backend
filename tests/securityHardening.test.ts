@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
 import { RefreshToken } from "../models/RefreshToken.ts";
-import { encrypt, decrypt, isEncrypted } from "../utilities/encryption.ts";
+import { encryptField, decryptField, isEncrypted } from "../utilities/cryptoEnvelope.ts";
 import { createRefreshToken } from "../utilities/helpers.ts";
 import { TwoFactorService } from "../services/TwoFactorService.ts";
 import speakeasy from "speakeasy";
@@ -10,13 +10,13 @@ import speakeasy from "speakeasy";
 describe("Production Security Hardening Tests", () => {
   it("encrypts 2FA TOTP secret at rest and decrypts accurately during verification", () => {
     const rawSecret = "JBSWY3DPEHPK3PXP";
-    const encrypted = encrypt(rawSecret);
+    const encrypted = encryptField(rawSecret);
 
     expect(isEncrypted(encrypted)).toBe(true);
     expect(encrypted).not.toBe(rawSecret);
     expect(encrypted.startsWith("enc:v1:")).toBe(true);
 
-    const decrypted = decrypt(encrypted);
+    const decrypted = decryptField(encrypted);
     expect(decrypted).toBe(rawSecret);
 
     // Verify TOTP generation and validation with decrypted secret
@@ -85,7 +85,7 @@ describe("Production Security Hardening Tests", () => {
   it("rotates refresh token upon refresh and invalidates the previous token", async () => {
     const user = await User.create({
       name: "Security Test User",
-      email: `sectest_${Date.now()}@ananta.health`,
+      email: `sectest_${Date.now()}@ekavyu.health`,
       role: "admin",
       isActive: true,
     });

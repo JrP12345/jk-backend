@@ -1,16 +1,18 @@
+import { fixtureAccessToken } from "./helpers/sessionFixture.ts";
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import mongoose from "mongoose";
 import app from "../index.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { Organization } from "../models/Organization.ts";
 import { User } from "../models/User.ts";
+import { Location } from "../models/Location.ts";
+import { EventEmitter } from "node:events";
 import { ModuleRegistry } from "../models/ModuleRegistry.ts";
 import { GENESIS_HASH, computeAuditHash } from "../utilities/auditCrypto.ts";
 import { AUDIT_REDACTED_VALUE } from "../utilities/auditRedaction.ts";
 import { recordAuditLog, verifyAuditChainIntegrity } from "../services/AuditTrailService.ts";
 import {
-  registerClinicQueueWebSocket,
-  registerClinicClinicalWebSocket,
+  registerLocationQueueWebSocket,
   broadcastQueueUpdate,
   broadcastClinicalRealtime,
   handleClinicalWebSocket,
@@ -48,12 +50,12 @@ describe("Cryptographic Audit Trail & WebSocket Channel Segregation Suite", () =
       role: "admin",
     });
 
-    const adminToken = generateAccessToken({
+    const adminToken = (await fixtureAccessToken({
       id: adminUser._id.toString(),
       email: adminUser.email,
       role: "admin",
       organization_id: orgId,
-    });
+    }));
     const adminRefresh = await createRefreshToken(adminUser._id.toString(), { organizationId: orgId });
     adminCookie = `access_token=${adminToken}; refresh_token=${adminRefresh}`;
 
@@ -64,12 +66,12 @@ describe("Cryptographic Audit Trail & WebSocket Channel Segregation Suite", () =
       role: "patient",
     });
 
-    const patientToken = generateAccessToken({
+    const patientToken = (await fixtureAccessToken({
       id: patientUser._id.toString(),
       email: patientUser.email,
       role: "patient",
       organization_id: orgId,
-    });
+    }));
     const patientRefresh = await createRefreshToken(patientUser._id.toString(), { organizationId: orgId });
     patientCookie = `access_token=${patientToken}; refresh_token=${patientRefresh}`;
   });
@@ -293,7 +295,7 @@ describe("Cryptographic Audit Trail & WebSocket Channel Segregation Suite", () =
 
   // ─── Test 5: Lobby Queue WebSocket PHI Leakage Prevention ──────────────────
   it("should sanitize diagnostic lab names and panic values before emitting to waiting-room TV displays", () => {
-    const testClinicId = "6aa03a085a3bdf2bee3c5e5a";
+    const testLocationId = "6aa03a085a3bdf2bee3c5e5a";
     const queueReceived: any[] = [];
 
     const mockLobbySocket: any = {
@@ -304,10 +306,10 @@ describe("Cryptographic Audit Trail & WebSocket Channel Segregation Suite", () =
       on: vi.fn(),
     };
 
-    registerClinicQueueWebSocket(testClinicId, mockLobbySocket);
+    registerLocationQueueWebSocket(testLocationId, mockLobbySocket);
 
     // Attempt to broadcast panic alert with sensitive medical lab data to public queue
-    broadcastQueueUpdate(testClinicId, {
+    broadcastQueueUpdate(testLocationId, {
       type: "CLINICAL_PANIC_ALERT",
       data: {
         appointmentId: "6aa03a085a3bdf2bee3c5e99",
@@ -334,19 +336,20 @@ describe("Cryptographic Audit Trail & WebSocket Channel Segregation Suite", () =
   });
 
   // ─── Test 6: Clinical Staff WebSocket Receives Full Uncensored Panic Alert ──
-  it("should deliver full clinical panic alerts only to authenticated clinical staff channels", () => {
-    const testClinicId = "6aa03a085a3bdf2bee3c5e5b";
+  it("should deliver full clinical panic alerts only to authenticated clinical staff channels", async () => {
+    const testLocationId = "6aa03a085a3bdf2bee3c5e5b";
     const clinicalReceived: any[] = [];
 
-    const mockClinicalSocket: any = {
+    const mockClinicalSocket: any = Object.assign(new EventEmitter(), {
       readyState: 1,
       send: vi.fn((raw: string) => {
         clinicalReceived.push(JSON.parse(raw));
       }),
-      on: vi.fn(),
-    };
-
-    registerClinicClinicalWebSocket(testClinicId, mockClinicalSocket);
+      ping: vi.fn(), close: vi.fn(),
+    });
+    await Location.create({ _id: testLocationId, name: "Clinical channel", city: "Delhi", organizationId: orgId });
+    await handleClinicalWebSocket(mockClinicalSocket, { headers: { cookie: adminCookie }, cookies: {}, query: { locationId: testLocationId } } as any);
+    mockClinicalSocket.send.mockClear(); clinicalReceived.length = 0;
 
     const panicPayload = {
       type: "CLINICAL_PANIC_ALERT" as const,
@@ -361,9 +364,10 @@ describe("Cryptographic Audit Trail & WebSocket Channel Segregation Suite", () =
       timestamp: new Date().toISOString(),
     };
 
-    broadcastClinicalRealtime(testClinicId, panicPayload);
+    broadcastClinicalRealtime(testLocationId, panicPayload);
 
-    expect(mockClinicalSocket.send).toHaveBeenCalled();
+    await vi.waitFor(() => expect(mockClinicalSocket.send).toHaveBeenCalled());
+    mockClinicalSocket.emit("close");
     const sentToStaff = clinicalReceived[0];
 
     // Staff channel MUST receive exact clinical panic information
@@ -390,7 +394,7 @@ describe("Cryptographic Audit Trail & WebSocket Channel Segregation Suite", () =
     // Attempt connection with patient token
     const fakePatientReq: any = {
       headers: { cookie: patientCookie },
-      query: { clinicId: "6aa03a085a3bdf2bee3c5e5a" },
+      query: { locationId: "6aa03a085a3bdf2bee3c5e5a" },
     };
 
     await handleClinicalWebSocket(mockSocket, fakePatientReq);

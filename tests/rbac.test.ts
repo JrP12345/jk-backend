@@ -1,4 +1,5 @@
-import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { reuseOnboardingLocation } from "./helpers/locationEssentialsSetup.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Role } from "../models/Role.ts";
@@ -17,12 +18,12 @@ import { Role } from "../models/Role.ts";
 describe("Dynamic RBAC Authorization", () => {
   let adminCookies: string[] = [];
   let doctorCookies: string[] = [];
-  let clinicId: string;
+  let locationId: string;
 
   // ─── Seed: org + admin + doctor via the real API ─────────────────────────
   beforeAll(async () => {
     // 1. Create a fresh organization (this upserts the admin Role document)
-    const orgRes = await app.inject({
+    const orgRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -34,20 +35,20 @@ describe("Dynamic RBAC Authorization", () => {
       },
     });
     expect(orgRes.statusCode).toBe(201);
-    adminCookies = orgRes.headers["set-cookie"] as string[];
+    adminCookies = (await provisionedAdminCookies(orgRes));
 
-    // 2. Admin creates a clinic — capture the clinicId for later payloads.
-    //    addReceptionistSchema requires clinicId as a valid ObjectId, so all
+    // 2. Admin creates a location — capture the locationId for later payloads.
+    //    addReceptionistSchema requires locationId as a valid ObjectId, so all
     //    receptionist creation calls must include it.
-    const clinicRes = await reuseOnboardingClinic(app, { headers: { cookie: adminCookies.join("; ") }, payload: {
+    const locationRes = await reuseOnboardingLocation(app, { headers: { cookie: adminCookies.join("; ") }, payload: {
         name: "RBAC Clinic",
         city: "Bangalore",
         address: "1 Test Street",
         phone: "9000000001",
         email: "clinic@rbactest.com",
       } });
-    expect(clinicRes.statusCode).toBe(200);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(200);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Admin registers a doctor (the "doctor" role has no Role document yet)
     const doctorRes = await app.inject({
@@ -87,7 +88,7 @@ describe("Dynamic RBAC Authorization", () => {
     // Must contain all core RBAC permission codes
     const requiredPermissions = [
       "MANAGE_STAFF", "VIEW_STAFF",
-      "MANAGE_CLINICS", "VIEW_CLINICS",
+      "MANAGE_LOCATIONS", "VIEW_LOCATIONS",
       "MANAGE_ORGANIZATION",
       "MANAGE_BEDS", "MANAGE_ADMISSIONS", "VIEW_ADMISSIONS",
       "MANAGE_MEDICINES", "MANAGE_LAB_TESTS",
@@ -104,7 +105,7 @@ describe("Dynamic RBAC Authorization", () => {
   // ─── Test 2: Admin accesses permission-gated route via Role table ─────────
   it("should allow admin to access MANAGE_STAFF route via Role document (no bypass)", async () => {
     // POST /api/onboarding/receptionist is gated by checkPermission("MANAGE_STAFF").
-    // clinicId is required by addReceptionistSchema (ObjectId pattern) — must be supplied
+    // locationId is required by addReceptionistSchema (ObjectId pattern) — must be supplied
     // so that Fastify schema validation passes and the RBAC preHandler actually runs.
     // This confirms admin Role.permissions[] contains MANAGE_STAFF end-to-end.
     const response = await app.inject({
@@ -115,7 +116,7 @@ describe("Dynamic RBAC Authorization", () => {
         name: "RBAC Receptionist",
         email: "rbac-rec@test.com",
         password: "Password123",
-        clinicId,
+        locationId,
       },
     });
 

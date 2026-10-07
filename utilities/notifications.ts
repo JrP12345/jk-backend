@@ -11,7 +11,7 @@ import { appendTrackerCapability, hashTrackerCapability, issueAppointmentTracker
 export async function sendBookingNotification(appointmentId: any, actionType: "booked" | "cancelled" | "rescheduled", trackerToken?: string) {
   try {
     const appt: any = await Appointment.findById(appointmentId)
-      .populate("clinicId", "name email phone city organizationId")
+      .populate("locationId", "name email phone city organizationId")
       .populate("doctorId", "name email")
       .populate({
         path: "patientId",
@@ -44,7 +44,7 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
     }
 
     const doctorName = appt.doctorId?.name || "Doctor";
-    const clinicName = appt.clinicId?.name || "Clinic Location";
+    const locationName = appt.locationId?.name || "Location";
     const token = appt.tokenNumber;
     const time = new Date(appt.appointmentTime).toLocaleString("en-US", {
       dateStyle: "medium",
@@ -57,7 +57,7 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
       appt.trackerTokenHash = hashTrackerCapability(capability);
       appt.trackerTokenExpiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
       await appt.save();
-      trackingUrl = `/track/${appt._id}?t=${encodeURIComponent(capability)}`;
+      trackingUrl = `/track/${appt._id}#t=${encodeURIComponent(capability)}`;
     } else if (actionType !== "cancelled") {
       const issued = await issueAppointmentTrackerLink(appt);
       capability = issued.token;
@@ -71,21 +71,21 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
         targetUserId: targetUserId.toString(),
         title: actionType === "booked" ? `Appointment Confirmed (#${token})` : `Appointment Cancelled`,
         message: actionType === "booked"
-          ? `Appointment for ${patientName} with Dr. ${doctorName} at ${clinicName} confirmed for ${time}. Token: #${token}. Track live queue: ${trackingUrl}`
-          : `Appointment for ${patientName} with Dr. ${doctorName} at ${clinicName} scheduled for ${time} has been cancelled.`,
+          ? `Appointment for ${patientName} with Dr. ${doctorName} at ${locationName} confirmed for ${time}. Token: #${token}. Track live queue: ${trackingUrl}`
+          : `Appointment for ${patientName} with Dr. ${doctorName} at ${locationName} scheduled for ${time} has been cancelled.`,
         severity: actionType === "booked" ? "success" : "warning",
         actionUrl: actionType === "booked" ? trackingUrl : "/dashboard/appointments",
-        metadata: { appointmentId, clinicName, doctorName, token, time, trackingUrl },
+        metadata: { appointmentId, locationName, doctorName, token, time, trackingUrl },
       });
     }
 
     if (patientEmail) {
       const subject = actionType === "booked"
-        ? `Appointment Confirmed - Token #${token} at ${clinicName}`
-        : `Appointment Cancelled - ${clinicName}`;
+        ? `Appointment Confirmed - Token #${token} at ${locationName}`
+        : `Appointment Cancelled - ${locationName}`;
       const body = actionType === "booked"
-        ? `Hello ${patientName},\n\nYour appointment booking with Dr. ${doctorName} at ${clinicName} is confirmed for ${time}.\n\nYour assigned daily queue token is #${token}.\n\nYou can track your live queue position in real-time here:\n${trackingUrl}\n\nPlease scan the reception QR code or check in via the tracker when you arrive.\n\nBest regards,\nEkavyu Health Desk`
-        : `Hello ${patientName},\n\nThis is to inform you that your appointment with Dr. ${doctorName} at ${clinicName} scheduled for ${time} has been cancelled.\n\nIf you believe this is an error, please contact clinic reception.\n\nBest regards,\nEkavyu Health Desk`;
+        ? `Hello ${patientName},\n\nYour appointment booking with Dr. ${doctorName} at ${locationName} is confirmed for ${time}.\n\nYour assigned daily queue token is #${token}.\n\nYou can track your live queue position in real-time here:\n${trackingUrl}\n\nPlease scan the reception QR code or check in via the tracker when you arrive.\n\nBest regards,\nEkavyu Health Desk`
+        : `Hello ${patientName},\n\nThis is to inform you that your appointment with Dr. ${doctorName} at ${locationName} scheduled for ${time} has been cancelled.\n\nIf you believe this is an error, please contact reception.\n\nBest regards,\nEkavyu Health Desk`;
 
       await enqueueTransactionalEmail({
         to: patientEmail,
@@ -99,7 +99,7 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
     if (patientPhone) {
       const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
       sendSmsWhatsAppNotification({
-        organizationId: appt.clinicId?.organizationId?.toString() || appt.organizationId?.toString(),
+        organizationId: appt.locationId?.organizationId?.toString() || appt.organizationId?.toString(),
         appointmentId: appt._id?.toString() || appointmentId?.toString(),
         phone: patientPhone,
         patientName,
@@ -108,7 +108,7 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
         variables: {
           patientName,
           doctorName,
-          clinicName,
+          locationName,
           appointmentTime: time,
           tokenNumber: String(token),
           trackingUrl,
@@ -126,7 +126,7 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
 export async function sendTurnApproachingNotification(appointmentId: any, peopleAhead: number) {
   try {
     const appt: any = await Appointment.findById(appointmentId)
-      .populate("clinicId", "name phone organizationId")
+      .populate("locationId", "name phone organizationId")
       .populate("doctorId", "name")
       .populate({
         path: "patientId",
@@ -148,7 +148,7 @@ export async function sendTurnApproachingNotification(appointmentId: any, people
     if (targetUserId) {
       await eventBus.publishDurable({
         eventId: `turn-approaching:${appt._id}`,
-        organizationId: appt.organizationId?.toString() || appt.clinicId?.organizationId?.toString(),
+        organizationId: appt.organizationId?.toString() || appt.locationId?.organizationId?.toString(),
         eventType: EVENT_TYPES.PATIENT_CALL_NEXT,
         category: "patient",
         targetUserId: targetUserId.toString(),
@@ -164,7 +164,7 @@ export async function sendTurnApproachingNotification(appointmentId: any, people
     if (patientPhone) {
       const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
       await sendSmsWhatsAppNotification({
-        organizationId: appt.clinicId?.organizationId?.toString() || appt.organizationId?.toString(),
+        organizationId: appt.locationId?.organizationId?.toString() || appt.organizationId?.toString(),
         appointmentId: appt._id?.toString() || appointmentId?.toString(),
         phone: patientPhone,
         patientName,
@@ -195,7 +195,7 @@ export async function sendConsultationCompletedNotification(
 ) {
   try {
     const appt: any = await Appointment.findById(appointmentId)
-      .populate("clinicId", "name email phone organizationId")
+      .populate("locationId", "name email phone organizationId")
       .populate("doctorId", "name")
       .populate({
         path: "patientId",
@@ -215,7 +215,7 @@ export async function sendConsultationCompletedNotification(
     const targetPhone = options?.phone || defaultPatientPhone;
     const channel = options?.channel || "whatsapp";
     const doctorName = appt.doctorId?.name || "Doctor";
-    const clinicName = appt.clinicId?.name || "Clinic";
+    const locationName = appt.locationId?.name || "Location";
     const token = appt.tokenNumber;
     const { token: trackerToken, url: trackingUrl } = await issueAppointmentTrackerLink(appt);
     const prescriptionUrl = appendTrackerCapability(`/api/public/track/${appt._id}/prescription/print`, trackerToken);
@@ -233,13 +233,13 @@ export async function sendConsultationCompletedNotification(
         message: `Your consultation with Dr. ${doctorName} is complete. Your digital prescription and invoice are now available.`,
         severity: "success",
         actionUrl: trackingUrl,
-        metadata: { appointmentId, token, clinicName, doctorName, trackingUrl },
+        metadata: { appointmentId, token, locationName, doctorName, trackingUrl },
       });
     }
 
     if (patientEmail) {
       const subject = `Consultation Completed - Prescription & Bill for Token #${token}`;
-      const body = `Hello ${patientName},\n\nYour consultation with Dr. ${doctorName} at ${clinicName} has been completed.\n\nYour digital prescription, prescribed medicines, doctor's advice, and invoice are now available to view and download:\n${trackingUrl}\n\nThank you for choosing ${clinicName}.\n\nBest regards,\nEkavyu Health Desk`;
+      const body = `Hello ${patientName},\n\nYour consultation with Dr. ${doctorName} at ${locationName} has been completed.\n\nYour digital prescription, prescribed medicines, doctor's advice, and invoice are now available to view and download:\n${trackingUrl}\n\nThank you for choosing ${locationName}.\n\nBest regards,\nEkavyu Health Desk`;
 
       await enqueueTransactionalEmail({
         to: patientEmail,
@@ -253,7 +253,7 @@ export async function sendConsultationCompletedNotification(
     if (targetPhone) {
       const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
       await sendSmsWhatsAppNotification({
-        organizationId: appt.clinicId?.organizationId?.toString() || appt.organizationId?.toString(),
+        organizationId: appt.locationId?.organizationId?.toString() || appt.organizationId?.toString(),
         appointmentId: appt._id?.toString() || appointmentId?.toString(),
         phone: targetPhone,
         patientName,
@@ -262,7 +262,7 @@ export async function sendConsultationCompletedNotification(
         variables: {
           patientName,
           doctorName,
-          clinicName,
+          locationName,
           tokenNumber: String(token),
           trackingUrl,
           prescriptionUrl,
@@ -305,7 +305,7 @@ export async function sendPaymentReceiptNotification(params: {
     const { Invoice } = await import("../models/Invoice.ts");
 
     const appt: any = await Appointment.findById(params.appointmentId)
-      .populate("clinicId", "name phone organizationId")
+      .populate("locationId", "name phone organizationId")
       .populate("doctorId", "name")
       .populate({
         path: "patientId",
@@ -325,7 +325,7 @@ export async function sendPaymentReceiptNotification(params: {
     const patientPhone = appt.patientId?.phone || appt.patientId?.userId?.phone;
     const patientEmail = appt.patientId?.email || appt.patientId?.userId?.email;
     const doctorName = appt.doctorId?.name || "Doctor";
-    const clinicName = appt.clinicId?.name || "Ekavyu Health Clinic";
+    const locationName = appt.locationId?.name || "Ekavyu Healthcare";
     const token = appt.tokenNumber || "OPD";
     const invoiceNum = invoice?.invoiceNumber || "INV-REC";
     const amountStr = `₹${Number(params.amount).toFixed(2)}`;
@@ -337,7 +337,7 @@ export async function sendPaymentReceiptNotification(params: {
     if (patientPhone) {
       const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
       await sendSmsWhatsAppNotification({
-        organizationId: appt.clinicId?.organizationId?.toString() || appt.organizationId?.toString(),
+        organizationId: appt.locationId?.organizationId?.toString() || appt.organizationId?.toString(),
         appointmentId: appt._id?.toString(),
         phone: patientPhone,
         patientName,
@@ -346,7 +346,7 @@ export async function sendPaymentReceiptNotification(params: {
         variables: {
           patientName,
           doctorName,
-          clinicName,
+          locationName,
           tokenNumber: String(token),
           amount: amountStr,
           paymentMethod: params.paymentMethod.toUpperCase(),
@@ -359,7 +359,7 @@ export async function sendPaymentReceiptNotification(params: {
 
     if (patientEmail) {
       const subject = `Payment Confirmed - Invoice #${invoiceNum} (${amountStr})`;
-      const body = `Hello ${patientName},\n\nWe have received your payment of ${amountStr} via ${params.paymentMethod.toUpperCase()} for Token #${token} (Dr. ${doctorName} at ${clinicName}).\n\nYour payment details are available here:\n${receiptUrl}\n\nView your live visit tracker:\n${trackingUrl}\n\nThank you for choosing ${clinicName}.\n\nBest regards,\nEkavyu Health Billing Team`;
+      const body = `Hello ${patientName},\n\nWe have received your payment of ${amountStr} via ${params.paymentMethod.toUpperCase()} for Token #${token} (Dr. ${doctorName} at ${locationName}).\n\nYour payment details are available here:\n${receiptUrl}\n\nView your live visit tracker:\n${trackingUrl}\n\nThank you for choosing ${locationName}.\n\nBest regards,\nEkavyu Health Billing Team`;
 
       await enqueueTransactionalEmail({
         to: patientEmail,
@@ -385,7 +385,7 @@ export async function sendFollowUpRecallNotification(params: {
   try {
     const { Appointment } = await import("../models/Appointment.ts");
     const appt: any = await Appointment.findById(params.appointmentId)
-      .populate("clinicId", "name phone organizationId")
+      .populate("locationId", "name phone organizationId")
       .populate("doctorId", "name")
       .populate({
         path: "patientId",
@@ -399,7 +399,7 @@ export async function sendFollowUpRecallNotification(params: {
     if (!targetPhone) return;
 
     const doctorName = appt.doctorId?.name || "Doctor";
-    const clinicName = appt.clinicId?.name || "Clinic";
+    const locationName = appt.locationId?.name || "Location";
     const token = appt.tokenNumber || "OPD";
     const apptTime = new Date(appt.appointmentTime).toLocaleDateString("en-IN", {
       weekday: "short",
@@ -411,7 +411,7 @@ export async function sendFollowUpRecallNotification(params: {
 
     const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
     await sendSmsWhatsAppNotification({
-      organizationId: appt.clinicId?.organizationId?.toString() || appt.organizationId?.toString(),
+      organizationId: appt.locationId?.organizationId?.toString() || appt.organizationId?.toString(),
       appointmentId: appt._id?.toString(),
       phone: targetPhone,
       patientName,
@@ -420,7 +420,7 @@ export async function sendFollowUpRecallNotification(params: {
       variables: {
         patientName,
         doctorName,
-        clinicName,
+        locationName,
         appointmentTime: apptTime,
         tokenNumber: String(token),
         trackingUrl,
@@ -442,7 +442,7 @@ export async function sendDoorwaySummonNotification(params: {
   try {
     const { Appointment } = await import("../models/Appointment.ts");
     const appt: any = await Appointment.findById(params.appointmentId)
-      .populate("clinicId", "name phone organizationId")
+      .populate("locationId", "name phone organizationId")
       .populate("doctorId", "name")
       .populate({
         path: "patientId",
@@ -456,13 +456,13 @@ export async function sendDoorwaySummonNotification(params: {
     if (!targetPhone) return;
 
     const doctorName = appt.doctorId?.name || "Doctor";
-    const clinicName = appt.clinicId?.name || "Clinic";
+    const locationName = appt.locationId?.name || "Location";
     const token = appt.tokenNumber || "OPD";
     const { url: trackingUrl } = await issueAppointmentTrackerLink(appt);
 
     const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
     await sendSmsWhatsAppNotification({
-      organizationId: appt.clinicId?.organizationId?.toString() || appt.organizationId?.toString(),
+      organizationId: appt.locationId?.organizationId?.toString() || appt.organizationId?.toString(),
       appointmentId: appt._id?.toString(),
       phone: targetPhone,
       patientName,
@@ -471,7 +471,7 @@ export async function sendDoorwaySummonNotification(params: {
       variables: {
         patientName,
         doctorName,
-        clinicName,
+        locationName,
         tokenNumber: String(token),
         peopleAhead: "0 (CALLED IN NOW)",
         estimatedWaitTime: "0 mins - Please proceed inside to the Doctor Cabin",

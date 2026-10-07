@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import mongoose from "mongoose";
-import { decrypt, encrypt } from "../utilities/encryption.ts";
+import { decryptField, encryptField } from "../utilities/cryptoEnvelope.ts";
 import { DomainEventOutbox, type IDomainEventOutbox } from "../models/DomainEventOutbox.ts";
 
 export interface EnqueueDomainEventOptions {
@@ -43,7 +43,7 @@ export async function enqueueDomainEvent(
           eventType: options.eventType,
           eventVersion: options.eventVersion || 1,
           organizationId: orgId,
-          payloadCiphertext: encrypt(JSON.stringify(options.payload)),
+          payloadCiphertext: encryptField(JSON.stringify(options.payload)),
           status: "pending",
           attempts: 0,
           maxAttempts: 5,
@@ -77,5 +77,5 @@ export function readEncryptedDomainEvent<T = any>(row: { payloadCiphertext?: str
   if (!row.payloadCiphertext) {
     throw new Error("Domain event payload is missing or was not selected");
   }
-  return JSON.parse(decrypt(row.payloadCiphertext)) as T;
+  return JSON.parse(decryptField(row.payloadCiphertext)) as T;
 }

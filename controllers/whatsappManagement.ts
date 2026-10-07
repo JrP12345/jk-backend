@@ -7,7 +7,7 @@ import { WhatsAppWebhookInbox } from "../models/WhatsAppWebhookInbox.ts";
 import { Organization } from "../models/Organization.ts";
 import { NotificationLog } from "../models/NotificationLog.ts";
 import { OutboundMessage } from "../models/OutboundMessage.ts";
-import { encrypt } from "../utilities/encryption.ts";
+import { encryptField } from "../utilities/cryptoEnvelope.ts";
 import { isRootRequest } from "../utilities/tenant.ts";
 import { getPlatformAccount, publicAccount, resolveWhatsAppAccount } from "../services/WhatsAppAccountService.ts";
 import { whatsAppCloudApiService } from "../services/WhatsAppCloudApiService.ts";
@@ -31,11 +31,11 @@ export async function savePlatformWhatsAppConfig(req: FastifyRequest, reply: Fas
   const current = await getPlatformAccount();
   const fields: any = {};
   for (const key of ["wabaId", "phoneNumberId"]) if (current[key]) fields[key] = current[key];
-  for (const key of ["accessToken", "appSecret", "verifyToken"]) if (current[key]) fields[key] = encrypt(current[key]);
+  for (const key of ["accessToken", "appSecret", "verifyToken"]) if (current[key]) fields[key] = encryptField(current[key]);
   for (const key of ["wabaId", "phoneNumberId"]) if (body[key]?.trim()) fields[key] = body[key].trim();
-  for (const key of ["accessToken", "appSecret"]) if (body[key]?.trim()) fields[key] = encrypt(body[key].replace(/\s/g, ""));
+  for (const key of ["accessToken", "appSecret"]) if (body[key]?.trim()) fields[key] = encryptField(body[key].replace(/\s/g, ""));
   if (typeof body.enabled === "boolean") fields.enabled = body.enabled;
-  if (!current.verifyToken) fields.verifyToken = encrypt(`ananta_${crypto.randomBytes(24).toString("base64url")}`);
+  if (!current.verifyToken) fields.verifyToken = encryptField(`ekavyu_${crypto.randomBytes(24).toString("base64url")}`);
   if (typeof body.enabled !== "boolean") fields.enabled = current.enabled || false;
   if (body.accessToken?.trim() || body.appSecret?.trim() || (body.wabaId && body.wabaId !== current.wabaId) || (body.phoneNumberId && body.phoneNumberId !== current.phoneNumberId)) {
     fields.connectionStatus = "pending"; fields.verifiedAt = null; fields.lastError = "";
@@ -48,7 +48,7 @@ export async function savePlatformWhatsAppConfig(req: FastifyRequest, reply: Fas
 async function updateConnection(account: any, fields: any) {
   if (account.scope === "platform") await WhatsAppAccount.findOneAndUpdate({ key: "platform" }, { $set: fields, $setOnInsert: {
     enabled: account.enabled, wabaId: account.wabaId, phoneNumberId: account.phoneNumberId,
-    accessToken: encrypt(account.accessToken), appSecret: encrypt(account.appSecret), verifyToken: encrypt(account.verifyToken),
+    accessToken: encryptField(account.accessToken), appSecret: encryptField(account.appSecret), verifyToken: encryptField(account.verifyToken),
   } }, { upsert: true });
   else await Organization.updateOne({ _id: account.scope }, { $set: Object.fromEntries(Object.entries(fields).map(([key, value]) => [`whatsappConfig.${key}`, value])) });
 }

@@ -11,8 +11,9 @@ import { User } from "../models/User.ts";
 import { getFrontendBaseUrl } from "../utilities/config.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { completeVerifiedLogin } from "./auth.ts";
+import { AUTH_COOKIE_SCOPE } from "../utilities/types.ts";
 
-const cookieName = "ananta_passkey_challenge";
+const cookieName = "ekavyu_passkey_challenge";
 const hash = (value: string) => crypto.createHash("sha256").update(value).digest("hex");
 function relyingParty() {
   const origin = new URL(process.env.WEBAUTHN_ORIGIN || getFrontendBaseUrl());
@@ -26,11 +27,11 @@ async function storeChallenge(reply: FastifyReply, challenge: string, kind: stri
   await PasskeyChallenge.create({ tokenHash: hash(token), challenge, kind,
     userId: req?.user?.id, sessionId: req?.user?.sessionId,
     expiresAt: new Date(Date.now() + 5 * 60_000) });
-  reply.setCookie(cookieName, token, { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax", path: "/", maxAge: 300 });
+  reply.setCookie(cookieName, token, { ...AUTH_COOKIE_SCOPE, httpOnly: true, maxAge: 300 });
 }
 async function consumeChallenge(req: FastifyRequest, reply: FastifyReply, kind: string) {
   const token = req.cookies?.[cookieName];
-  reply.clearCookie(cookieName, { path: "/" });
+  reply.clearCookie(cookieName, AUTH_COOKIE_SCOPE);
   if (!token) throw new Error("Passkey request expired. Please try again.");
   const challenge = await PasskeyChallenge.findOneAndDelete({ tokenHash: hash(token), kind, expiresAt: { $gt: new Date() },
     ...(kind === "registration" ? { userId: req.user?.id, sessionId: req.user?.sessionId } : {}) });

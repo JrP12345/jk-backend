@@ -5,7 +5,7 @@ import { Patient } from "../models/Patient.ts";
 import { RefreshToken } from "../models/RefreshToken.ts";
 
 describe("Auth API Integration Tests", () => {
-  const patientEmail = "testpatient@healthos.com";
+  const patientEmail = "testpatient@ekavyu.com";
   const password = "Password123!";
 
   it("should fail self-registration with missing fields", async () => {
@@ -144,7 +144,7 @@ describe("Auth API Integration Tests", () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
     expect(body.keys).toBeDefined();
-    expect(body.keys[0].kid).toBe("healthos-service-key-1");
+    expect(body.keys[0].kid).toBe("ekavyu-service-key-1");
   });
 
   it("should refresh the access token", async () => {

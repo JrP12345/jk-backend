@@ -1,3 +1,4 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
@@ -9,16 +10,16 @@ import { LabOrder } from "../models/LabOrder.ts";
 describe("Orders & Results Management Integration Tests", () => {
   let adminCookies: string[] = [];
   let patientId: string;
-  let clinicId: string;
+  let locationId: string;
   let encounterId: string;
   let labTestId: string;
   let adminUserId: string;
   let orgId: string;
 
-  // ─── Setup: Org → Clinic → LabTest → Patient → Encounter ───────────────────
+  // ─── Setup: Org → Location → LabTest → Patient → Encounter ───────────────────
   beforeAll(async () => {
     // 1. Create Organization & Admin
-    const orgRes = await app.inject({
+    const orgRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -31,15 +32,15 @@ describe("Orders & Results Management Integration Tests", () => {
       },
     });
     expect(orgRes.statusCode).toBe(201);
-    adminCookies = (orgRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(orgRes));
     const orgData = JSON.parse(orgRes.body).data;
     orgId = orgData.organization.id;
     adminUserId = orgData.user.id || orgData.user._id;
 
-    // 2. Create Clinic
-    const clinicRes = await app.inject({
+    // 2. Create Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Path Lab Wing",
@@ -49,12 +50,12 @@ describe("Orders & Results Management Integration Tests", () => {
         email: "lab@hospital.com",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Seed LabTest catalog entry directly (bypasses admin-only route restriction)
     const test = await LabTest.create({
-      clinicId,
+      locationId,
       name: "Complete Blood Count",
       code: `CBC-${Date.now()}`,
       department: "Haematology",
@@ -73,7 +74,7 @@ describe("Orders & Results Management Integration Tests", () => {
         email: `lab.alice-${Date.now()}@patient.com`,
         password: "Password123",
         phone: `90${Math.floor(10000000 + Math.random() * 90000000)}`,
-        clinicId,
+        locationId,
       },
     });
     expect(patientReg.statusCode).toBe(201);
@@ -87,7 +88,7 @@ describe("Orders & Results Management Integration Tests", () => {
       method: "POST",
       url: "/api/encounters",
       headers: { cookie: adminCookies.join("; ") },
-      payload: { clinicId, patientId, encounterType: "opd" },
+      payload: { locationId, patientId, encounterType: "opd" },
     });
     expect(encRes.statusCode).toBe(201);
     encounterId = JSON.parse(encRes.body).data.id;
@@ -102,7 +103,7 @@ describe("Orders & Results Management Integration Tests", () => {
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         testId: labTestId,
-        clinicId,
+        locationId,
         patientId,
         priority: "urgent",
         clinicalReason: "Evaluate suspected anaemia",
@@ -173,7 +174,7 @@ describe("Orders & Results Management Integration Tests", () => {
       method: "POST",
       url: `/api/encounters/${encounterId}/orders`,
       headers: { cookie: adminCookies.join("; ") },
-      payload: { testId: labTestId, clinicId, patientId, priority: "stat", clinicalReason: "Suspected infection" },
+      payload: { testId: labTestId, locationId, patientId, priority: "stat", clinicalReason: "Suspected infection" },
     });
     expect(placeRes.statusCode).toBe(201);
     const orderId = JSON.parse(placeRes.body).data.id;
@@ -215,7 +216,7 @@ describe("Orders & Results Management Integration Tests", () => {
       method: "POST",
       url: `/api/encounters/${encounterId}/orders`,
       headers: { cookie: adminCookies.join("; ") },
-      payload: { testId: labTestId, clinicId, patientId },
+      payload: { testId: labTestId, locationId, patientId },
     });
     expect(placeRes.statusCode).toBe(201);
     const orderId = JSON.parse(placeRes.body).data.id;

@@ -221,7 +221,7 @@ export async function createOpdTemplate(req: FastifyRequest, reply: FastifyReply
       followUpTimeline: body.followUpTimeline || "1 week",
       followUpNotes: body.followUpNotes || "",
       doctorId: userId ? new mongoose.Types.ObjectId(userId) : undefined,
-      clinicId: body.clinicId ? new mongoose.Types.ObjectId(body.clinicId) : undefined,
+      locationId: body.locationId ? new mongoose.Types.ObjectId(body.locationId) : undefined,
       organizationId: orgId ? new mongoose.Types.ObjectId(orgId) : undefined,
       isPublic: false,
     });

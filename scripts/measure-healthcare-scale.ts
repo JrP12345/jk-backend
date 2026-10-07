@@ -12,7 +12,7 @@ delete process.env.REDIS_URL;
 delete process.env.REDIS_HOST;
 const { app } = await import("../index.ts");
 const { Organization } = await import("../models/Organization.ts");
-const { Clinic } = await import("../models/Clinic.ts");
+const { Location } = await import("../models/Location.ts");
 const { User } = await import("../models/User.ts");
 const { Doctor } = await import("../models/Doctor.ts");
 const { DoctorAssignment } = await import("../models/DoctorAssignment.ts");
@@ -23,10 +23,10 @@ const { Subscription } = await import("../models/Subscription.ts");
 const { SubscriptionPayment } = await import("../models/SubscriptionPayment.ts");
 const { generateAccessToken } = await import("../utilities/helpers.ts");
 const { loadPlatformDashboard } = await import("../services/platformDashboard.ts");
-const { clinicDayRange } = await import("../utilities/clinicTime.ts");
+const { locationDayRange } = await import("../utilities/locationTime.ts");
 
 const now = new Date("2026-10-15T12:00:00Z");
-const models = [Organization, Clinic, User, Doctor, DoctorAssignment, Appointment, DoctorDayOverride, SaaSPlan, Subscription, SubscriptionPayment];
+const models = [Organization, Location, User, Doctor, DoctorAssignment, Appointment, DoctorDayOverride, SaaSPlan, Subscription, SubscriptionPayment];
 const replica = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: "wiredTiger" } });
 const samples: Record<string, unknown>[] = [];
 const round = (value: number) => Math.round(value * 100) / 100;
@@ -81,26 +81,26 @@ try {
   for (const providerCount of [10, 100]) {
     await resetFixtures();
     const org = await Organization.create({ name: "Synthetic provider workload", city: "Surat", timezone: "Asia/Kolkata" });
-    const clinic = await Clinic.create({ name: "Synthetic location", city: "Surat", organizationId: org.id });
+    const location = await Location.create({ name: "Synthetic location", city: "Surat", organizationId: org.id });
     const root = await User.create({ name: "Synthetic owner", role: "root" });
     const providers = await User.insertMany(Array.from({ length: providerCount }, (_, index) => ({ name: `Synthetic provider ${index}`, role: "doctor" })));
-    await DoctorAssignment.insertMany(providers.map(provider => ({ doctorId: provider._id, clinicId: clinic._id, organizationId: org._id, workingHours: "[]" })));
+    await DoctorAssignment.insertMany(providers.map(provider => ({ doctorId: provider._id, locationId: location._id, organizationId: org._id, workingHours: "[]" })));
     const visits = providers.flatMap(provider => Array.from({ length: 100 }, (_, index) => ({
-      organizationId: org._id, clinicId: clinic._id, doctorId: provider._id, patientId: new mongoose.Types.ObjectId(),
+      organizationId: org._id, locationId: location._id, doctorId: provider._id, patientId: new mongoose.Types.ObjectId(),
       appointmentTime: new Date("2026-10-15T04:00:00Z"), createdAt: now, status: "confirmed", bookingMode: "sequential_queue",
       appointmentType: "reception", tokenNumber: index + 1,
     })));
     await Appointment.collection.insertMany(visits);
     const doctorIds = providers.map(provider => provider._id);
-    const range = clinicDayRange("2026-10-15", "Asia/Kolkata");
+    const range = locationDayRange("2026-10-15", "Asia/Kolkata");
     const loadPipeline = [
-      { $match: { clinicId: clinic._id, doctorId: { $in: doctorIds }, appointmentTime: { $gte: range.start, $lte: range.end }, status: { $in: ["confirmed", "checked-in", "in-consultation"] } } },
+      { $match: { locationId: location._id, doctorId: { $in: doctorIds }, appointmentTime: { $gte: range.start, $lte: range.end }, status: { $in: ["confirmed", "checked-in", "in-consultation"] } } },
       { $group: { _id: "$doctorId", count: { $sum: 1 } } },
     ];
     const plans = { replacementLoad: planSummary(await Appointment.collection.aggregate(loadPipeline).explain("executionStats")) };
     const cookie = `access_token=${generateAccessToken({ id: root.id, email: "", role: "root" })}`;
     await measure(`${providerCount} providers: replacement API`, async () => {
-      const response = await app.inject({ method: "GET", url: `/api/doctor-overrides/eligible-replacements?clinicId=${clinic.id}&doctorId=${providers[0].id}&date=2026-10-15`, headers: { cookie } });
+      const response = await app.inject({ method: "GET", url: `/api/doctor-overrides/eligible-replacements?locationId=${location.id}&doctorId=${providers[0].id}&date=2026-10-15`, headers: { cookie } });
       assert.equal(response.statusCode, 200);
       const body = response.json();
       assert.equal(body.data.length, providerCount - 1);
@@ -115,14 +115,14 @@ try {
     const visits: any[] = [];
     const identities: any[] = [];
     const doctors: any[] = [];
-    const clinics: any[] = [];
+    const locations: any[] = [];
     const subscriptions: any[] = [];
     const payments: any[] = [];
     for (const [index, org] of organizations.entries()) {
       const subscriptionId = new mongoose.Types.ObjectId();
-      const clinicId = new mongoose.Types.ObjectId();
+      const locationId = new mongoose.Types.ObjectId();
       const doctorIds = Array.from({ length: 10 }, () => new mongoose.Types.ObjectId());
-      clinics.push({ _id: clinicId, organizationId: org._id, name: `Synthetic location ${index}`, city: "Surat", isActive: true });
+      locations.push({ _id: locationId, organizationId: org._id, name: `Synthetic location ${index}`, city: "Surat", isActive: true });
       for (const [provider, userId] of doctorIds.entries()) {
         identities.push({ _id: userId, name: `Synthetic provider ${index}-${provider}`, role: "doctor", isActive: true });
         doctors.push({ userId, organizationId: org._id, isActive: true });
@@ -132,12 +132,12 @@ try {
       for (let visit = 0; visit < 300; visit++) {
         const ageDays = visit < 100 ? visit % 40 : 90 + visit % 365;
         const createdAt = new Date(now.getTime() - ageDays * 86400000);
-        visits.push({ organizationId: org._id, clinicId, doctorId: doctorIds[visit % doctorIds.length],
+        visits.push({ organizationId: org._id, locationId, doctorId: doctorIds[visit % doctorIds.length],
           patientId: new mongoose.Types.ObjectId(), appointmentTime: createdAt, createdAt, appointmentType: "online",
           status: visit % 4 ? "confirmed" : "completed", bookingMode: "sequential_queue", tokenNumber: visit + 1 });
       }
     }
-    await Clinic.collection.insertMany(clinics);
+    await Location.collection.insertMany(locations);
     await User.collection.insertMany(identities);
     await Doctor.collection.insertMany(doctors);
     await Subscription.collection.insertMany(subscriptions);
@@ -156,7 +156,7 @@ try {
       assert.ok(result.organizationActivity.mostActive.every(org => org.doctors === 10));
       assert.ok(result.recentActivity.length <= 8);
       return result;
-    }, { organizations: organizationCount, providers: doctors.length, clinics: clinics.length,
+    }, { organizations: organizationCount, providers: doctors.length, locations: locations.length,
       appointments: visits.length, recentAppointments: organizationCount * 100, retainedAppointments: organizationCount * 200,
       subscriptions: subscriptions.length, capturedPayments: payments.length }, plans);
   }

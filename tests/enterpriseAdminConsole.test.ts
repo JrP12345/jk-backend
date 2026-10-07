@@ -13,12 +13,12 @@ describe("Phase 8: Enterprise AI Admin Console Tests", () => {
   let testOrgId: string;
 
   beforeAll(async () => {
-    const email = `dr_admin_console_${Date.now()}@ananta.internal`;
+    const email = `dr_admin_console_${Date.now()}@ekavyu.internal`;
     const password = "Password123!";
 
     const org = await (Organization as any).create({
       name: "Admin Console Test Hospital",
-      email: `admin_console_${Date.now()}@ananta.internal`,
+      email: `admin_console_${Date.now()}@ekavyu.internal`,
       phone: "+1999444222",
       address: "600 Admin Way",
       city: "San Francisco",

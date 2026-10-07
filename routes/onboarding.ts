@@ -28,12 +28,10 @@ import {
 } from "../controllers/onboarding.ts";
 
 export default async function onboardingRoutes(app: FastifyInstance) {
-  // Public Organization Registration
+  // Authenticated platform organization provisioning
   app.post("/api/onboarding/organization", {
     schema: createOrganizationSchema,
-    preHandler: async (req, reply) => {
-      if (process.env.NODE_ENV !== "test" || req.headers.authorization || req.cookies?.access_token) await authenticate(req, reply);
-    },
+    preHandler: [authenticate, requirePlatformRoot()],
   }, createOrganization);
 
   // Draft persistence
@@ -78,8 +76,3 @@ export default async function onboardingRoutes(app: FastifyInstance) {
   app.get("/api/onboarding/organization/me/smtp", manageOrg, getOrganizationSmtp);
   app.put("/api/onboarding/organization/me/smtp", manageOrg, updateOrganizationSmtp);
 }
-
-
-
-
-

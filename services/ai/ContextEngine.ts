@@ -4,7 +4,7 @@ import { User } from "../../models/User.ts";
 import { Prescription } from "../../models/Prescription.ts";
 import { LabOrder } from "../../models/LabOrder.ts";
 import { Appointment } from "../../models/Appointment.ts";
-import { Clinic } from "../../models/Clinic.ts";
+import { Location } from "../../models/Location.ts";
 import { Invoice } from "../../models/Invoice.ts";
 import { Organization } from "../../models/Organization.ts";
 import { OrgMember } from "../../models/OrgMember.ts";
@@ -113,18 +113,18 @@ export class ContextEngine {
       }
       organizationContext = `Facility / Organization: ${orgName}`;
       try {
-        const clinicFilter = orgId && mongoose.Types.ObjectId.isValid(orgId)
+        const locationFilter = orgId && mongoose.Types.ObjectId.isValid(orgId)
           ? { organizationId: orgId, isActive: true }
           : { _id: null };
 
-        const clinics = await Clinic.find(clinicFilter).select("name city").lean();
+        const locations = await Location.find(locationFilter).select("name city").lean();
 
-        const clinicIds = clinics.map((c) => c._id);
-        const clinicNames = clinics.map(c => `${c.name} (${c.city})`).join(", ") || "No active clinics";
+        const locationIds = locations.map((c) => c._id);
+        const locationNames = locations.map(c => `${c.name} (${c.city})`).join(", ") || "No active locations";
         let operationalDetails = "";
 
         if (isOperationalQuery) {
-          const invoiceFilter = { organizationId: new mongoose.Types.ObjectId(orgId), clinicId: { $in: clinicIds } };
+          const invoiceFilter = { organizationId: new mongoose.Types.ObjectId(orgId), locationId: { $in: locationIds } };
           const startOfToday = new Date();
           startOfToday.setHours(0, 0, 0, 0);
 
@@ -193,7 +193,7 @@ export class ContextEngine {
           `Facility / Organization Context:`,
           `- Facility Name: ${orgName}`,
           `- Organization ID: ${orgId}`,
-          `- Active Clinics (${clinics.length}): ${clinicNames}`,
+          `- Active Locations (${locations.length}): ${locationNames}`,
           operationalDetails,
         ].filter(Boolean).join("\n");
 

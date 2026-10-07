@@ -1,8 +1,8 @@
 # Production Credential Rotation & Cache Invalidation SOP
 
-**Document ID**: SEC-001-SOP  
-**Classification**: Operational Security Protocol  
-**Scope**: Meta WhatsApp Cloud API credentials, SMTP relay credentials, edge & application caches  
+**Document ID**: SEC-001-SOP
+**Classification**: Operational Security Protocol
+**Scope**: Meta WhatsApp Cloud API credentials, SMTP relay credentials, edge & application caches
 
 ---
 
@@ -103,22 +103,18 @@ Because public endpoints were previously serving unprojected documents, any inte
 ### Step 4.1: Edge / CDN Cache Purge (Cloudflare / CloudFront)
 Purge URLs matching the following patterns:
 - `/api/public/organizations*`
-- `/api/public/clinics*`
+- `/api/public/locations*`
 
 Via Cloudflare API example:
 ```bash
 curl -X POST "https://api.cloudflare.com/client/v4/zones/<ZONE_ID>/purge_cache" \
      -H "Authorization: Bearer <CLOUDFLARE_API_TOKEN>" \
      -H "Content-Type: application/json" \
-     -d '{"prefixes": ["api/public/organizations", "api/public/clinics"]}'
+     -d '{"prefixes": ["api/public/organizations", "api/public/locations"]}'
 ```
 
-### Step 4.2: Redis Cache Eviction (if applicable)
-If Redis is used to cache public organization responses, issue targeted eviction:
-```bash
-redis-cli --scan --pattern "cache:public:org:*" | xargs redis-cli del
-redis-cli --scan --pattern "cache:public:clinic:*" | xargs redis-cli del
-```
+### Step 4.2: Deployment cache review
+The application does not define public-response Redis cache keys. If the deployment adds a response cache, purge the configured organization and location responses using that cache's documented procedure. Do not assume an application key pattern.
 
 ### Step 4.3: Reverse Proxy (Nginx) Cache Purge
 If Nginx `proxy_cache` is enabled:
@@ -133,8 +129,8 @@ nginx -s reload
 
 - [x] Mongoose `OrganizationSchema` enforces `select: false` on `smtp.pass` and `whatsappConfig.accessToken`.
 - [x] Schema `toJSON` transform explicitly purges credentials if loaded in memory.
-- [x] Public endpoints (`getOrganizations`, `getOrganizationDetails`, `getPublicClinics`, `getPublicClinicDetails`) use strict projection and DTO mappers.
+- [x] Public endpoints (`getOrganizations`, `getOrganizationDetails`, `getPublicLocations`, `getPublicLocationDetails`) use strict projection and DTO mappers.
 - [x] Vitest regression suite `tests/publicOrganizationDto.test.ts` validates zero secret exposure in raw response bodies.
 - [ ] Production operators executed Meta token rotation.
 - [ ] Production operators executed SMTP credential rotation.
-- [ ] Edge CDN caches purged for public organization and clinic endpoints.
+- [ ] Edge CDN caches purged for public organization and location endpoints.

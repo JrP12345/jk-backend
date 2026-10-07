@@ -1,6 +1,6 @@
 import mongoose, { Schema, Document } from "mongoose";
 import { auditPlugin } from "../utilities/auditPlugin.ts";
-import { encrypt, decrypt } from "../utilities/encryption.ts";
+import { encryptField, decryptField } from "../utilities/cryptoEnvelope.ts";
 
 export interface INotificationLog extends Document {
   organizationId?: mongoose.Types.ObjectId;
@@ -54,8 +54,8 @@ const notificationLogSchema = new Schema<INotificationLog>(
     messageContent: {
       type: String,
       required: true,
-      set: encrypt,
-      get: decrypt,
+      set: encryptField,
+      get: decryptField,
     },
     status: {
       type: String,

@@ -12,12 +12,12 @@ describe("Phase 7: AI Observability Engine & Analytics Tests", () => {
   let testOrgId: string;
 
   beforeAll(async () => {
-    const email = `dr_obs_engine_${Date.now()}@ananta.internal`;
+    const email = `dr_obs_engine_${Date.now()}@ekavyu.internal`;
     const password = "Password123!";
 
     const org = await (Organization as any).create({
       name: "Observability Test Hospital",
-      email: `obs_engine_${Date.now()}@ananta.internal`,
+      email: `obs_engine_${Date.now()}@ekavyu.internal`,
       phone: "+1999555333",
       address: "500 Metric Way",
       city: "San Francisco",

@@ -5,21 +5,21 @@ import { Invoice } from "../models/Invoice.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Organization } from "../models/Organization.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
-import { checkClinicAccess, checkOperationalRecordAccess, getRequestClinicIds, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+import { checkLocationAccess, checkOperationalRecordAccess, getRequestLocationIds, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
 
-const INDIA_BILLING_ONLY = "Manual billing and GST calculations are not configured for this clinic's country";
+const INDIA_BILLING_ONLY = "Manual billing and GST calculations are not configured for this organization's country";
 
-async function canUseIndianBilling(clinicId: string): Promise<boolean> {
-  const clinic = await Clinic.findById(clinicId).select("organizationId").lean();
-  const organization = clinic?.organizationId
-    ? await Organization.findById(clinic.organizationId).select("countryCode currency").lean()
+async function canUseIndianBilling(locationId: string): Promise<boolean> {
+  const location = await Location.findById(locationId).select("organizationId").lean();
+  const organization = location?.organizationId
+    ? await Organization.findById(location.organizationId).select("countryCode currency").lean()
     : null;
   return !!organization && (!organization.countryCode || organization.countryCode === "IN") && (!organization.currency || organization.currency === "INR");
 }
@@ -33,11 +33,11 @@ export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
     let orgId = scope.organizationId;
 
     const {
-      patientId, clinicId, doctorId, appointmentId, encounterId, items, tax, discount,
+      patientId, locationId, doctorId, appointmentId, encounterId, items, tax, discount,
       supplierGstin, customerGstin, invoiceType, placeOfSupply, isInterstate
     } = req.body as {
       patientId: string;
-      clinicId: string;
+      locationId: string;
       doctorId: string;
       appointmentId?: string;
       encounterId?: string;
@@ -58,16 +58,16 @@ export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
       isInterstate?: boolean;
     };
 
-    if (!patientId || !clinicId || !doctorId || !items || !Array.isArray(items) || items.length === 0) {
-      return reply.code(400).send(errorResponse("patientId, clinicId, doctorId, and items are required"));
+    if (!patientId || !locationId || !doctorId || !items || !Array.isArray(items) || items.length === 0) {
+      return reply.code(400).send(errorResponse("patientId, locationId, doctorId, and items are required"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) {
-      return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) {
+      return reply.code(locationAccess.statusCode).send(errorResponse(locationAccess.message));
     }
-    if (!orgId && clinicAccess.organizationId) orgId = clinicAccess.organizationId;
-    if (!(await canUseIndianBilling(clinicId))) return reply.code(409).send(errorResponse(INDIA_BILLING_ONLY));
+    if (!orgId && locationAccess.organizationId) orgId = locationAccess.organizationId;
+    if (!(await canUseIndianBilling(locationId))) return reply.code(409).send(errorResponse(INDIA_BILLING_ONLY));
 
     // Verify patient profile
     const patient = await Patient.findById(patientId);
@@ -79,8 +79,8 @@ export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
     }
 
-    const { generateClinicInvoiceNumber } = await import("../utilities/invoiceNumber.ts");
-    const invoiceNumber = await generateClinicInvoiceNumber(clinicId || "GLOBAL");
+    const { generateLocationInvoiceNumber } = await import("../utilities/invoiceNumber.ts");
+    const invoiceNumber = await generateLocationInvoiceNumber(locationId || "GLOBAL");
 
     // Calculate totals & GST Breakdown
     let subtotal = 0;
@@ -151,7 +151,7 @@ export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
       invoiceNumber,
       organizationId: orgId || null,
       patientId,
-      clinicId,
+      locationId,
       doctorId,
       appointmentId: appointmentId || null,
       encounterId: encounterId || null,
@@ -212,7 +212,7 @@ export async function getInvoices(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(scope.statusCode).send(errorResponse(scope.message));
     }
     const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
-    const { status, patientId, clinicId, appointmentId, page, limit } = req.query as any;
+    const { status, patientId, locationId, appointmentId, page, limit } = req.query as any;
 
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
 
@@ -236,17 +236,17 @@ export async function getInvoices(req: FastifyRequest, reply: FastifyReply) {
 
     if (patientId && userRole !== "patient" && userRole !== "family_member") filter.patientId = patientId;
 
-    if (clinicId) {
-      const clinicAccess = await checkClinicAccess(req, clinicId);
-      if (!clinicAccess.allowed) {
-        return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
+    if (locationId) {
+      const locationAccess = await checkLocationAccess(req, locationId);
+      if (!locationAccess.allowed) {
+        return reply.code(locationAccess.statusCode).send(errorResponse(locationAccess.message));
       }
-      filter.clinicId = clinicId;
+      filter.locationId = locationId;
     } else if (orgId && userRole !== "patient" && userRole !== "family_member") {
-      const clinicIds = userRole === "root"
-        ? (await Clinic.find({ organizationId: orgId, isActive: { $ne: false } }).select("_id").lean()).map((clinic: any) => clinic._id)
-        : await getRequestClinicIds(req);
-      filter.clinicId = { $in: clinicIds };
+      const locationIds = userRole === "root"
+        ? (await Location.find({ organizationId: orgId, isActive: { $ne: false } }).select("_id").lean()).map((location: any) => location._id)
+        : await getRequestLocationIds(req);
+      filter.locationId = { $in: locationIds };
     }
 
     if (status) filter.status = status;
@@ -260,7 +260,7 @@ export async function getInvoices(req: FastifyRequest, reply: FastifyReply) {
     const [totalCount, rawInvoices] = await Promise.all([
       Invoice.countDocuments(filter),
       Invoice.find(filter)
-        .populate("clinicId", "name city address")
+        .populate("locationId", "name city address")
         .populate("doctorId", "name specialization")
         .populate({
           path: "patientId",
@@ -275,12 +275,12 @@ export async function getInvoices(req: FastifyRequest, reply: FastifyReply) {
     const totalPages = Math.ceil(totalCount / pageSize);
     const appointmentIds = rawInvoices.map((inv: any) => inv.appointmentId).filter(Boolean);
     const pendingRefunds = appointmentIds.length ? await Appointment.find({ _id: { $in: appointmentIds },
-      paymentStatus: "refund_pending", status: "cancelled" }).select("_id clinicId patientId").lean() : [];
+      paymentStatus: "refund_pending", status: "cancelled" }).select("_id locationId patientId").lean() : [];
     const pendingById = new Map(pendingRefunds.map((visit: any) => [visit._id.toString(), visit]));
     const invoices = rawInvoices.map((inv: any) => {
       const pending = pendingById.get(String(inv.appointmentId));
       return { ...inv, id: inv._id.toString(), refundPending: Boolean(pending
-        && String(pending.clinicId) === String(inv.clinicId?._id || inv.clinicId)
+        && String(pending.locationId) === String(inv.locationId?._id || inv.locationId)
         && String(pending.patientId) === String(inv.patientId?._id || inv.patientId)) };
     });
 
@@ -309,7 +309,7 @@ export async function getInvoiceDetails(req: FastifyRequest, reply: FastifyReply
     }
 
     const invoice: any = await Invoice.findById(id)
-      .populate("clinicId", "name city address phone email organizationId")
+      .populate("locationId", "name city address phone email organizationId")
       .populate("doctorId", "name specialization qualification")
       .populate({
         path: "patientId",
@@ -320,9 +320,9 @@ export async function getInvoiceDetails(req: FastifyRequest, reply: FastifyReply
       return reply.code(404).send(errorResponse("Invoice not found"));
     }
 
-    const invoiceClinicId = invoice.clinicId?._id || invoice.clinicId;
-    const clinicAccess = await checkClinicAccess(req, invoiceClinicId);
-    if (!clinicAccess.allowed) {
+    const invoiceLocationId = invoice.locationId?._id || invoice.locationId;
+    const locationAccess = await checkLocationAccess(req, invoiceLocationId);
+    if (!locationAccess.allowed) {
       return reply.code(404).send(errorResponse("Invoice not found"));
     }
 
@@ -357,7 +357,7 @@ export async function getInvoiceDetails(req: FastifyRequest, reply: FastifyReply
 export async function collectPayment(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id } = req.params as { id: string };
-    const { paymentMethod } = req.body as { 
+    const { paymentMethod } = req.body as {
       paymentMethod: "cash" | "card" | "upi" | "net-banking" | "insurance" | "online";
       paymentToken?: string;
     };
@@ -371,7 +371,7 @@ export async function collectPayment(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse("Invalid or missing payment method"));
     }
 
-    const invoice = await Invoice.findById(id).populate("clinicId", "organizationId");
+    const invoice = await Invoice.findById(id).populate("locationId", "organizationId");
     if (!invoice) {
       return reply.code(404).send(errorResponse("Invoice not found"));
     }
@@ -398,14 +398,14 @@ export async function collectPayment(req: FastifyRequest, reply: FastifyReply) {
         return reply.code(400).send(errorResponse("Patients can only pay online, via UPI, or via tokenized card"));
       }
     } else {
-      const clinicAccess = await checkClinicAccess(req, (invoice.clinicId as any)?._id || invoice.clinicId);
-      if (!clinicAccess.allowed) {
+      const locationAccess = await checkLocationAccess(req, (invoice.locationId as any)?._id || invoice.locationId);
+      if (!locationAccess.allowed) {
         return reply.code(404).send(errorResponse("Invoice not found"));
       }
     }
 
-    if (paymentMethod === "upi" && (invoice.currency && invoice.currency !== "INR" || !(await canUseIndianBilling(String((invoice.clinicId as any)?._id || invoice.clinicId))))) {
-      return reply.code(409).send(errorResponse("UPI collection is only configured for INR clinics"));
+    if (paymentMethod === "upi" && (invoice.currency && invoice.currency !== "INR" || !(await canUseIndianBilling(String((invoice.locationId as any)?._id || invoice.locationId))))) {
+      return reply.code(409).send(errorResponse("UPI collection is only configured for INR locations"));
     }
 
     const remainingToPay = Number((invoice.totalAmount - (invoice.amountPaid || 0)).toFixed(2));
@@ -434,9 +434,9 @@ export async function collectPayment(req: FastifyRequest, reply: FastifyReply) {
       action: "INVOICE_PAY",
       targetId: invoice._id,
       targetModel: "Invoice",
-      details: { 
-        invoiceNumber: invoice.invoiceNumber, 
-        totalAmount: invoice.totalAmount, 
+      details: {
+        invoiceNumber: invoice.invoiceNumber,
+        totalAmount: invoice.totalAmount,
         paymentMethod,
       }
     });
@@ -466,7 +466,7 @@ export async function getEncounterChargesPreview(req: FastifyRequest, reply: Fas
       return reply.code(access.statusCode).send(errorResponse(access.message));
     }
 
-    if (!(await canUseIndianBilling(encounter.clinicId.toString()))) {
+    if (!(await canUseIndianBilling(encounter.locationId.toString()))) {
       return reply.code(409).send(errorResponse(INDIA_BILLING_ONLY));
     }
 
@@ -503,7 +503,7 @@ export async function autoGenerateInvoiceForEncounter(req: FastifyRequest, reply
       return reply.code(access.statusCode).send(errorResponse(access.message));
     }
 
-    if (!(await canUseIndianBilling(encounter.clinicId.toString()))) {
+    if (!(await canUseIndianBilling(encounter.locationId.toString()))) {
       return reply.code(409).send(errorResponse(INDIA_BILLING_ONLY));
     }
 
@@ -546,8 +546,8 @@ export async function recordPartialPayment(req: FastifyRequest, reply: FastifyRe
       return reply.code(404).send(errorResponse("Invoice not found"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, (invoice.clinicId as any)?._id || invoice.clinicId);
-    if (!clinicAccess.allowed) {
+    const locationAccess = await checkLocationAccess(req, (invoice.locationId as any)?._id || invoice.locationId);
+    if (!locationAccess.allowed) {
       return reply.code(404).send(errorResponse("Invoice not found"));
     }
 
@@ -562,8 +562,8 @@ export async function recordPartialPayment(req: FastifyRequest, reply: FastifyRe
     if (!paymentMethod || !validPaymentMethods.includes(paymentMethod)) {
       return reply.code(400).send(errorResponse("Invalid or missing payment method"));
     }
-    if (paymentMethod === "upi" && (invoice.currency && invoice.currency !== "INR" || !(await canUseIndianBilling(String(invoice.clinicId))))) {
-      return reply.code(409).send(errorResponse("UPI collection is only configured for INR clinics"));
+    if (paymentMethod === "upi" && (invoice.currency && invoice.currency !== "INR" || !(await canUseIndianBilling(String(invoice.locationId))))) {
+      return reply.code(409).send(errorResponse("UPI collection is only configured for INR locations"));
     }
 
     const key = mutationKey(req);
@@ -574,8 +574,8 @@ export async function recordPartialPayment(req: FastifyRequest, reply: FastifyRe
         throw new Error("NOT_FOUND:Invoice not found");
       }
 
-      const clinicAccess = await checkClinicAccess(req, (invoice.clinicId as any)?._id || invoice.clinicId);
-      if (!clinicAccess.allowed) {
+      const locationAccess = await checkLocationAccess(req, (invoice.locationId as any)?._id || invoice.locationId);
+      if (!locationAccess.allowed) {
         throw new Error("NOT_FOUND:Invoice not found");
       }
 
@@ -697,7 +697,7 @@ export async function getConsolidatedCheckoutPreview(req: FastifyRequest, reply:
       return reply.code(access.statusCode).send(errorResponse(access.message));
     }
 
-    if (!(await canUseIndianBilling(appointment.clinicId.toString()))) {
+    if (!(await canUseIndianBilling(appointment.locationId.toString()))) {
       return reply.code(409).send(errorResponse(INDIA_BILLING_ONLY));
     }
 
@@ -746,7 +746,7 @@ export async function processConsolidatedCheckout(req: FastifyRequest, reply: Fa
     if (!original) return reply.code(404).send(errorResponse("Appointment not found"));
     const access = await checkOperationalRecordAccess(req, original);
     if (!access.allowed) return reply.code(access.statusCode).send(errorResponse(access.message));
-    if (!(await canUseIndianBilling(String(original.clinicId)))) return reply.code(409).send(errorResponse(INDIA_BILLING_ONLY));
+    if (!(await canUseIndianBilling(String(original.locationId)))) return reply.code(409).send(errorResponse(INDIA_BILLING_ONLY));
     const invoice = await withTransaction(async () => {
       // Serialize all checkout requests for this visit, including distinct keys.
       const appointment = await Appointment.findOneAndUpdate({ _id: appointmentId, organizationId: original.organizationId }, { $inc: { __v: 1 } }, { returnDocument: "after" });
@@ -757,7 +757,7 @@ export async function processConsolidatedCheckout(req: FastifyRequest, reply: Fa
       if (invoice && (invoice.amountPaid > 0 || ["paid", "refunded", "cancelled"].includes(invoice.status))) throw Object.assign(new Error("Existing payments cannot be rewritten. Use the installment or adjustment workflow."), { statusCode: 409 });
       if (fee !== undefined) { appointment.customConsultationFee = fee; appointment.paymentAmount = fee; await appointment.save(); }
       const { compileAppointmentCharges } = await import("../services/ChargeCaptureService.ts");
-      const { generateClinicInvoiceNumber } = await import("../utilities/invoiceNumber.ts");
+      const { generateLocationInvoiceNumber } = await import("../utilities/invoiceNumber.ts");
       const compiled = await compileAppointmentCharges(appointmentId, fee);
       const tax = compiled.cgstTotal + compiled.sgstTotal + compiled.igstTotal;
       if (![compiled.subtotal, tax].every(value => Number.isFinite(value) && value >= 0) || compiled.items.some(item => ![item.amount, item.quantity, item.gstRate].every(value => Number.isFinite(value) && value >= 0))) throw Object.assign(new Error("Invalid configured charges; review the service catalog"), { statusCode: 409 });
@@ -772,8 +772,8 @@ export async function processConsolidatedCheckout(req: FastifyRequest, reply: Fa
         const sgstAmount = cgstAmount;
         return { ...item, cgstAmount, sgstAmount, igstAmount: 0, totalItemAmount: Number((base + cgstAmount + sgstAmount).toFixed(2)) };
       });
-      if (!invoice) invoice = new Invoice({ invoiceNumber: await generateClinicInvoiceNumber(String(appointment.clinicId)), generationKey: 'appointment:' + appointmentId,
-        organizationId: appointment.organizationId, clinicId: appointment.clinicId, patientId: appointment.patientId, doctorId: appointment.doctorId, appointmentId: appointment._id });
+      if (!invoice) invoice = new Invoice({ invoiceNumber: await generateLocationInvoiceNumber(String(appointment.locationId)), generationKey: 'appointment:' + appointmentId,
+        organizationId: appointment.organizationId, locationId: appointment.locationId, patientId: appointment.patientId, doctorId: appointment.doctorId, appointmentId: appointment._id });
       Object.assign(invoice, { items, subtotal: compiled.subtotal, taxableAmount: compiled.subtotal, tax, cgstTotal: compiled.cgstTotal, sgstTotal: compiled.sgstTotal, igstTotal: compiled.igstTotal,
         discount, totalAmount: total, amountPaid: paid, balanceDue: balance, status: balance === 0 ? "paid" : paid > 0 ? "partially_paid" : "unpaid", paymentMethod, paymentDate: paid > 0 ? new Date() : undefined });
       if (paid > 0) invoice.payments.push({ amount: paid, operationKey: key, paymentMethod, referenceNumber, notes, paidAt: new Date() });
@@ -789,7 +789,7 @@ export async function processConsolidatedCheckout(req: FastifyRequest, reply: Fa
     });
     const { broadcastQueueUpdate } = await import("../notifications/websocket.ts");
     if (!invoice) throw Object.assign(new Error("Recorded checkout needs reconciliation"), { statusCode: 409 });
-    broadcastQueueUpdate(String(original.clinicId), { type: "QUEUE_UPDATED", data: { appointmentId, invoiceId: invoice._id }, timestamp: new Date().toISOString() });
+    broadcastQueueUpdate(String(original.locationId), { type: "QUEUE_UPDATED", data: { appointmentId, invoiceId: invoice._id }, timestamp: new Date().toISOString() });
     return reply.code(200).send(successResponse(invoice, "Checkout recorded"));
   } catch (error: any) {
     return reply.code(error.statusCode || 500).send(errorResponse(error.statusCode ? error.message : "Checkout could not be completed"));

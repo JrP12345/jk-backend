@@ -19,7 +19,7 @@ export interface PrescriptionVerificationResult {
 export function computePrescriptionHash(data: {
   prescriptionId: string;
   organizationId: string;
-  clinicId: string;
+  locationId: string;
   patientId: string;
   doctorId: string;
   medicineName: string;
@@ -32,7 +32,7 @@ export function computePrescriptionHash(data: {
   const payload = [
     String(data.prescriptionId),
     String(data.organizationId),
-    String(data.clinicId),
+    String(data.locationId),
     String(data.patientId),
     String(data.doctorId),
     data.medicineName.trim().toLowerCase(),
@@ -47,11 +47,11 @@ export function computePrescriptionHash(data: {
 }
 
 function computePrescriptionSignature(hash: string): string {
-  const secret = process.env.PRESCRIPTION_SIGNING_KEY || process.env.JWT_SECRET;
-  if (process.env.NODE_ENV === "production" && (!secret || secret.length < 32 || secret === "healthos-prescription-sealing-key")) {
+  const secret = process.env.PRESCRIPTION_SIGNING_KEY;
+  if (process.env.NODE_ENV === "production" && (!secret || secret.length < 32 || ["healthos-prescription-sealing-key", "ekavyu-development-prescription-key"].includes(secret))) {
     throw new Error("A persistent prescription signing key of at least 32 characters is required in production");
   }
-  return crypto.createHmac("sha256", secret || "healthos-prescription-sealing-key").update(hash).digest("hex");
+  return crypto.createHmac("sha256", secret || "ekavyu-development-prescription-key").update(hash).digest("hex");
 }
 
 export class PrescriptionSealingService {
@@ -98,7 +98,7 @@ export class PrescriptionSealingService {
     const hash = computePrescriptionHash({
       prescriptionId: prescription._id.toString(),
       organizationId: prescription.organizationId.toString(),
-      clinicId: prescription.clinicId.toString(),
+      locationId: prescription.locationId.toString(),
       patientId: prescription.patientId.toString(),
       doctorId: prescription.doctorId.toString(),
       medicineName: prescription.medicineName,
@@ -165,7 +165,7 @@ export class PrescriptionSealingService {
     const computedHash = computePrescriptionHash({
       prescriptionId: prescription._id.toString(),
       organizationId: prescription.organizationId.toString(),
-      clinicId: prescription.clinicId.toString(),
+      locationId: prescription.locationId.toString(),
       patientId: prescription.patientId.toString(),
       doctorId: prescription.doctorId.toString(),
       medicineName: prescription.medicineName,
@@ -248,7 +248,7 @@ export class PrescriptionSealingService {
     // Create the superseding prescription
     const newPrescription = new Prescription({
       organizationId: original.organizationId,
-      clinicId: original.clinicId,
+      locationId: original.locationId,
       encounterId: original.encounterId,
       patientId: original.patientId,
       doctorId: original.doctorId,

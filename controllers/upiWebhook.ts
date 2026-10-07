@@ -336,13 +336,13 @@ export async function handleInboundUpiWebhook(req: FastifyRequest, reply: Fastif
       };
     });
 
-    const clinicIdStr = appointment.clinicId.toString();
+    const locationIdStr = appointment.locationId.toString();
     if (!settlement.replayed) {
       const broadcastAt = settlement.broadcastAt || new Date();
-      broadcastQueueUpdate(clinicIdStr, {
+      broadcastQueueUpdate(locationIdStr, {
         type: "PAYMENT_RECEIVED",
         data: {
-          clinicId: clinicIdStr,
+          locationId: locationIdStr,
           appointmentId: appointment._id.toString(),
           invoiceId: settlement.invoice._id.toString(),
           tokenNumber: appointment.tokenNumber,

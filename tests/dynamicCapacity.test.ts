@@ -1,3 +1,4 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
@@ -10,13 +11,13 @@ import { getAdaptiveConsultationDuration } from "../controllers/queue.ts";
 describe("Dynamic Capacity & Damped Hybrid Duration Tests", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let patient: any;
 
   beforeAll(async () => {
-    // 1. Setup Org, Clinic & Doctor
-    const boot = await app.inject({
+    // 1. Setup Org, Location & Doctor
+    const boot = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -29,16 +30,16 @@ describe("Dynamic Capacity & Damped Hybrid Duration Tests", () => {
       },
     });
     expect(boot.statusCode).toBe(201);
-    adminCookies = (boot.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(boot));
     orgId = JSON.parse(boot.body).data.organization.id;
 
-    const clinicRes = await app.inject({
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: { name: "Hyderabad Jubilee Clinic", city: "Hyderabad" },
     });
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    locationId = JSON.parse(locationRes.body).data.id;
 
     const docRes = await app.inject({
       method: "POST",
@@ -57,7 +58,7 @@ describe("Dynamic Capacity & Damped Hybrid Duration Tests", () => {
     // Doctor works today from 08:00 to 20:00 (for general test predictability)
     await DoctorAssignment.create({
       doctorId,
-      clinicId,
+      locationId,
       organizationId: orgId,
       workingHours: JSON.stringify({ all: { start: "08:00", end: "20:00" } }),
       fees: 500,
@@ -82,7 +83,7 @@ describe("Dynamic Capacity & Damped Hybrid Duration Tests", () => {
     endOfToday.setHours(23, 59, 59, 999);
 
     // Initial check without completed consultations: returns baseline 15 mins
-    const initial = await getAdaptiveConsultationDuration(clinicId, doctorId, startOfToday, endOfToday, 15);
+    const initial = await getAdaptiveConsultationDuration(locationId, doctorId, startOfToday, endOfToday, 15);
     expect(initial.isAdaptive).toBe(false);
     expect(initial.duration).toBe(15);
 
@@ -90,7 +91,7 @@ describe("Dynamic Capacity & Damped Hybrid Duration Tests", () => {
     const now = Date.now();
     await Encounter.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient._id,
       status: "completed",
@@ -101,7 +102,7 @@ describe("Dynamic Capacity & Damped Hybrid Duration Tests", () => {
 
     await Encounter.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient._id,
       status: "completed",
@@ -112,7 +113,7 @@ describe("Dynamic Capacity & Damped Hybrid Duration Tests", () => {
 
     // Formula: 0.6 * 15 + 0.4 * 35 = 9 + 14 = 23 mins.
     // Clamp: [0.75 * 15, 1.5 * 15] = [11, 23] -> max bound is 23 mins.
-    const adaptive = await getAdaptiveConsultationDuration(clinicId, doctorId, startOfToday, endOfToday, 15);
+    const adaptive = await getAdaptiveConsultationDuration(locationId, doctorId, startOfToday, endOfToday, 15);
     expect(adaptive.isAdaptive).toBe(true);
     expect(adaptive.sampleCount).toBe(2);
     expect(adaptive.duration).toBe(23);
@@ -129,7 +130,7 @@ describe("Dynamic Capacity & Damped Hybrid Duration Tests", () => {
     const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
     await DoctorDayOverride.create({
       doctorId,
-      clinicId,
+      locationId,
       date: todayStr,
       status: "available",
       effectiveEndTime: `${endH}:${endM}`,
@@ -143,7 +144,7 @@ describe("Dynamic Capacity & Damped Hybrid Duration Tests", () => {
       url: "/api/appointments",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         doctorId,
         appointmentTime: now.toISOString(),
         appointmentType: "online",
@@ -166,7 +167,7 @@ describe("Dynamic Capacity & Damped Hybrid Duration Tests", () => {
       url: "/api/appointments",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         doctorId,
         appointmentTime: now.toISOString(),
         appointmentType: "walk-in",

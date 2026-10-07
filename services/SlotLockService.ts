@@ -4,12 +4,12 @@ import { redisClient } from "../utilities/redis.ts";
  * SlotLockService — Atomic slot reservation using Redis SETNX + TTL.
  *
  * Prevents double-booking by holding a distributed lock on a specific
- * doctor+clinic+time slot. The lock auto-expires after LOCK_TTL_SECONDS
+ * doctor+location+time slot. The lock auto-expires after LOCK_TTL_SECONDS
  * to prevent abandoned locks from blocking slots permanently.
  *
  * When Redis is unavailable (dev/testing), falls back to an in-memory Map.
  *
- * Lock Key Format: slot_lock:{clinicId}:{doctorId}:{YYYY-MM-DDTHH:MM}
+ * Lock Key Format: slot_lock:{locationId}:{doctorId}:{YYYY-MM-DDTHH:MM}
  * Lock Value:      {userId}:{lockId}:{timestamp}
  */
 
@@ -19,7 +19,7 @@ const LOCK_PREFIX = "slot_lock";
 // In-memory fallback for environments without Redis
 const memoryLocks = new Map<string, { value: string; expiresAt: number }>();
 
-function buildLockKey(clinicId: string, doctorId: string, slotTime: string): string {
+function buildLockKey(locationId: string, doctorId: string, slotTime: string): string {
   // Normalize time to HH:MM granularity to match SlotService output
   const date = new Date(slotTime);
   if (isNaN(date.getTime())) {
@@ -30,7 +30,7 @@ function buildLockKey(clinicId: string, doctorId: string, slotTime: string): str
   const day = String(date.getDate()).padStart(2, "0");
   const hours = String(date.getHours()).padStart(2, "0");
   const minutes = String(date.getMinutes()).padStart(2, "0");
-  return `${LOCK_PREFIX}:${clinicId}:${doctorId}:${year}-${month}-${day}T${hours}:${minutes}`;
+  return `${LOCK_PREFIX}:${locationId}:${doctorId}:${year}-${month}-${day}T${hours}:${minutes}`;
 }
 
 function generateLockId(): string {
@@ -73,12 +73,12 @@ export interface SlotLockInfo {
  * Returns a lockId that must be presented when booking or releasing.
  */
 export async function acquireSlotLock(
-  clinicId: string,
+  locationId: string,
   doctorId: string,
   slotTime: string,
   userId: string
 ): Promise<SlotLockResult> {
-  const lockKey = buildLockKey(clinicId, doctorId, slotTime);
+  const lockKey = buildLockKey(locationId, doctorId, slotTime);
   if (distributedLockUnavailable()) {
     return { success: false, lockKey, message: "Distributed slot locking is unavailable" };
   }
@@ -165,13 +165,13 @@ export async function acquireSlotLock(
  * Release a held slot lock. Only the lock owner (matching lockId) can release.
  */
 export async function releaseSlotLock(
-  clinicId: string,
+  locationId: string,
   doctorId: string,
   slotTime: string,
   userId: string,
   lockId: string
 ): Promise<{ success: boolean; message: string }> {
-  const lockKey = buildLockKey(clinicId, doctorId, slotTime);
+  const lockKey = buildLockKey(locationId, doctorId, slotTime);
   if (distributedLockUnavailable()) {
     return { success: false, message: "Distributed slot locking is unavailable" };
   }
@@ -216,11 +216,11 @@ export async function releaseSlotLock(
  * Check whether a specific slot is currently locked.
  */
 export async function checkSlotLock(
-  clinicId: string,
+  locationId: string,
   doctorId: string,
   slotTime: string
 ): Promise<SlotLockInfo> {
-  const lockKey = buildLockKey(clinicId, doctorId, slotTime);
+  const lockKey = buildLockKey(locationId, doctorId, slotTime);
   if (distributedLockUnavailable()) {
     return { isLocked: true, lockKey, ttlSeconds: 0 };
   }
@@ -274,22 +274,22 @@ export async function forceReleaseSlotLock(lockKey: string): Promise<void> {
 
 /**
  * Validate that a user holds the lock for a given slot before allowing booking.
- * Returns true if the slot is unlocked (backward compat) or if the user holds the lock.
+ * Returns true if the slot is unlocked or if the user holds the lock.
  */
 export async function validateSlotLockForBooking(
-  clinicId: string,
+  locationId: string,
   doctorId: string,
   slotTime: string,
   userId: string,
   lockId?: string
 ): Promise<{ valid: boolean; lockKey: string; message: string }> {
-  const info = await checkSlotLock(clinicId, doctorId, slotTime);
+  const info = await checkSlotLock(locationId, doctorId, slotTime);
 
   if (distributedLockUnavailable()) {
     return { valid: false, lockKey: info.lockKey, message: "Distributed slot locking is unavailable" };
   }
 
-  // If slot is not locked, allow booking (backward compatibility — lock is optional)
+  // An unreserved slot can be booked; reservation is optional.
   if (!info.isLocked) {
     return { valid: true, lockKey: info.lockKey, message: "Slot is available" };
   }

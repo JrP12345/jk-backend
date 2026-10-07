@@ -1,4 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { trackerFixtureHeaders } from "./helpers/trackerFixture.ts";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
@@ -6,17 +8,20 @@ import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
 
+beforeAll(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-06T10:00:00Z")); });
+afterAll(() => vi.useRealTimers());
+
 describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorUserId: string;
   let appointmentId: string;
   let tokenNum: number;
 
   it("should setup clinic and doctor with sequential queue mode", async () => {
     // 1. Setup Org & Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -29,18 +34,18 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: { name: "Tracker Main Clinic", city: "Bengaluru", address: "100 Feet Road, Indiranagar" },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Doctor
     const docRes = await app.inject({
@@ -60,7 +65,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     // 4. Assign Doctor with full week working hours
     await DoctorAssignment.create({
       doctorId: doctorUserId,
-      clinicId,
+      locationId,
       organizationId: orgId,
       fees: 500,
       appointmentDuration: 15,
@@ -77,7 +82,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
       url: "/api/appointments",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         doctorId: doctorUserId,
         appointmentTime: new Date().toISOString(),
         appointmentType: "online",
@@ -100,6 +105,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     const trackRes = await app.inject({
       method: "GET",
       url: `/api/public/track/${appointmentId}`,
+      headers: { "x-tracker-token": body.trackerToken },
     });
 
     expect(trackRes.statusCode).toBe(200);
@@ -110,7 +116,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     expect(trackData.patientName).toBe("Sanya Gupta");
     expect(trackData.doctor.name).toBe("Dr. Vikram Seth");
     expect(trackData.doctor.specialization).toBe("Pediatrics");
-    expect(trackData.clinic.name).toBe("Tracker Main Clinic");
+    expect(trackData.location.name).toBe("Tracker Main Clinic");
     expect(trackData.status).toBe("confirmed");
     expect(trackData.isToday).toBe(true);
     expect(trackData.doctorAvailability.isAvailable).toBe(true);
@@ -121,12 +127,14 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     const missingCapability = await app.inject({
       method: "POST",
       url: `/api/public/track/${appointmentId}/check-in`,
+      headers: await trackerFixtureHeaders(appointmentId),
     });
     expect(missingCapability.statusCode).toBe(401);
 
     const capabilityRes = await app.inject({
       method: "POST",
       url: `/api/public/track/${appointmentId}/check-in-capability`,
+      headers: await trackerFixtureHeaders(appointmentId),
     });
     expect(capabilityRes.statusCode).toBe(200);
     const checkInToken = JSON.parse(capabilityRes.body).data.checkInToken;
@@ -135,6 +143,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     const checkInRes = await app.inject({
       method: "POST",
       url: `/api/public/track/${appointmentId}/check-in`,
+      headers: await trackerFixtureHeaders(appointmentId),
       payload: { checkInToken },
     });
     expect(checkInRes.statusCode).toBe(200);
@@ -146,6 +155,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     const dupRes = await app.inject({
       method: "POST",
       url: `/api/public/track/${appointmentId}/check-in`,
+      headers: await trackerFixtureHeaders(appointmentId),
       payload: { checkInToken },
     });
     expect(dupRes.statusCode).toBe(401);
@@ -154,6 +164,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     const trackRes = await app.inject({
       method: "GET",
       url: `/api/public/track/${appointmentId}`,
+      headers: await trackerFixtureHeaders(appointmentId),
     });
     expect(trackRes.statusCode).toBe(200);
     expect(JSON.parse(trackRes.body).data.status).toBe("checked-in");
@@ -166,7 +177,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
       url: "/api/appointments",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         doctorId: doctorUserId,
         appointmentTime: new Date().toISOString(),
         appointmentType: "online",
@@ -184,7 +195,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     const todayStr = new Date().toISOString().slice(0, 10);
     await DoctorDayOverride.create({
       doctorId: doctorUserId,
-      clinicId,
+      locationId,
       organizationId: orgId,
       date: todayStr,
       status: "unavailable",
@@ -195,6 +206,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     const trackRes = await app.inject({
       method: "GET",
       url: `/api/public/track/${appt2Id}`,
+      headers: await trackerFixtureHeaders(appt2Id),
     });
     expect(trackRes.statusCode).toBe(200);
     const trackData = JSON.parse(trackRes.body).data;
@@ -204,6 +216,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     const capabilityRes = await app.inject({
       method: "POST",
       url: `/api/public/track/${appt2Id}/check-in-capability`,
+      headers: await trackerFixtureHeaders(appt2Id),
     });
     expect(capabilityRes.statusCode).toBe(200);
 
@@ -211,13 +224,14 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     const checkInRes = await app.inject({
       method: "POST",
       url: `/api/public/track/${appt2Id}/check-in`,
+      headers: await trackerFixtureHeaders(appt2Id),
       payload: { checkInToken: JSON.parse(capabilityRes.body).data.checkInToken },
     });
     expect(checkInRes.statusCode).toBe(400);
     expect(JSON.parse(checkInRes.body).message).toContain("Doctor is currently unavailable today");
 
     // Clean up override
-    await DoctorDayOverride.deleteMany({ doctorId: doctorUserId, clinicId });
+    await DoctorDayOverride.deleteMany({ doctorId: doctorUserId, locationId });
   });
 
   it("should register a Quick Walk-In with emergency priority and atomic token", async () => {
@@ -226,7 +240,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
       url: "/api/appointments",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         doctorId: doctorUserId,
         appointmentTime: new Date().toISOString(),
         appointmentType: "walk-in",
@@ -259,7 +273,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     // Verify it immediately appears in live queue
     const queueRes = await app.inject({
       method: "GET",
-      url: `/api/queue?clinicId=${clinicId}&doctorId=${doctorUserId}`,
+      url: `/api/queue?locationId=${locationId}&doctorId=${doctorUserId}`,
       headers: { cookie: adminCookies.join("; ") },
     });
     expect(queueRes.statusCode).toBe(200);
@@ -299,7 +313,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     // 2. Create linked Encounter
     const encounter = await Encounter.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       appointmentId,
       patientId: apptDoc?.patientId,
       doctorId: doctorUserId,
@@ -312,7 +326,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     // 3. Create Prescriptions
     const rx1 = await Prescription.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       encounterId: encounter._id,
       patientId: apptDoc?.patientId,
       doctorId: doctorUserId,
@@ -326,7 +340,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
 
     const rx2 = await Prescription.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       encounterId: encounter._id,
       patientId: apptDoc?.patientId,
       doctorId: doctorUserId,
@@ -344,7 +358,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
 
     await ClinicalNote.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       encounterId: encounter._id,
       patientId: apptDoc?.patientId,
       doctorId: doctorUserId,
@@ -374,7 +388,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     await Invoice.create({
       invoiceNumber: `INV-TEST-${Date.now()}`,
       organizationId: orgId,
-      clinicId,
+      locationId,
       patientId: apptDoc?.patientId,
       appointmentId,
       encounterId: encounter._id,
@@ -396,6 +410,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     const trackerRes = await app.inject({
       method: "GET",
       url: `/api/public/track/${appointmentId}`,
+      headers: await trackerFixtureHeaders(appointmentId),
     });
     expect(trackerRes.statusCode).toBe(200);
 
@@ -426,6 +441,7 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     const printRes = await app.inject({
       method: "GET",
       url: `/api/public/track/${appointmentId}/prescription/print`,
+      headers: await trackerFixtureHeaders(appointmentId),
     });
     expect(printRes.statusCode).toBe(200);
     expect(printRes.headers["content-type"]).toContain("text/html");

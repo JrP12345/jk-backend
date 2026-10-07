@@ -4,7 +4,7 @@ The commercial subscription uses Razorpay **Orders** and Standard Checkout. It d
 
 ## Authority and IDs
 
-`/api/billing/*` requires `MANAGE_ORGANIZATION`. A normal administrator's organization comes from the authenticated `organization_id`; a mismatched body or query organization is rejected. Platform Root can select an organization. A Root impersonation session is limited to its signed organization context. Browser headers and selected clinic preferences do not determine billing scope.
+`/api/billing/*` requires `MANAGE_ORGANIZATION`. A normal administrator's organization comes from the authenticated `organization_id`; a mismatched body or query organization is rejected. Platform Root can select an organization. A Root impersonation session is limited to its signed organization context. Browser headers and selected location preferences do not determine billing scope.
 
 The browser submits only plan ID and billing cycle. The server fetches the active plan and quotes its stored INR price plus rounded 18% GST. It sends total rupees as integer paise to Razorpay. `SubscriptionPayment._id` is the internal attempt ID, `razorpayOrderId` is the provider Order ID, `razorpayPaymentId` is the provider payment ID, `subscriptionId` is the internal entitlement record, and `SaaSInvoice.paymentId` links the invoice to the internal attempt. No provider subscription or provider invoice ID is used.
 

@@ -1,4 +1,5 @@
-import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { reuseOnboardingLocation } from "./helpers/locationEssentialsSetup.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import mongoose from "mongoose";
@@ -6,7 +7,7 @@ import bcrypt from "bcryptjs";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { PreAuthorization } from "../models/PreAuthorization.ts";
@@ -31,7 +32,7 @@ import { LabOrder } from "../models/LabOrder.ts";
 describe("50 Adversarial Break-It Tests — User Perspective", () => {
   // ─── Org A (Primary) ──────────────────────────────────
   let orgA: any;
-  let clinicA: any;
+  let locationA: any;
   let adminACookies: string;
   let adminAToken: string;
   let patientAUser: any;
@@ -48,7 +49,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
 
   // ─── Org B (Adversary) ────────────────────────────────
   let orgB: any;
-  let clinicB: any;
+  let locationB: any;
   let adminBCookies: string;
   let adminBToken: string;
   let patientBUser: any;
@@ -58,7 +59,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     const ts = Date.now();
 
     // ═══ ORG A SETUP ═══
-    const orgARes = await app.inject({
+    const orgARes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -72,20 +73,20 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     expect(orgARes.statusCode, orgARes.body).toBe(201);
     const orgAData = JSON.parse(orgARes.body);
     orgA = orgAData.data?.organization || orgAData.data;
-    adminACookies = (orgARes.headers["set-cookie"] as string[])?.join("; ") || "";
+    adminACookies = (await provisionedAdminCookies(orgARes))?.join("; ") || "";
     adminAToken = orgARes.cookies?.find((c: any) => c.name === "access_token")?.value || "";
 
-    // Create Clinic A
-    const clinicARes = await reuseOnboardingClinic(app, { headers: { cookie: adminACookies }, payload: { name: "Break Test Clinic A", city: "Mumbai", address: "100 Test Rd", phone: "9000000001", email: `clinicA_${ts}@test.com` } });
-    expect(clinicARes.statusCode, clinicARes.body).toBe(200);
-    clinicA = JSON.parse(clinicARes.body).data;
+    // Create Location A
+    const locationARes = await reuseOnboardingLocation(app, { headers: { cookie: adminACookies }, payload: { name: "Break Test Clinic A", city: "Mumbai", address: "100 Test Rd", phone: "9000000001", email: `locationA_${ts}@test.com` } });
+    expect(locationARes.statusCode, locationARes.body).toBe(200);
+    locationA = JSON.parse(locationARes.body).data;
 
     // Register Patient A
     const patARes = await app.inject({
       method: "POST",
       url: "/api/auth/register",
       headers: { cookie: adminACookies },
-      payload: { clinicId: clinicA.id,  name: "Patient A", email: `patient_a_${ts}@test.com`, phone: "9111111111", password: "Password123", role: "patient" },
+      payload: { locationId: locationA.id,  name: "Patient A", email: `patient_a_${ts}@test.com`, phone: "9111111111", password: "Password123", role: "patient" },
     });
     expect(patARes.statusCode, patARes.body).toBe(201);
     patientAUser = JSON.parse(patARes.body).data.user;
@@ -111,12 +112,12 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     expect(docARes.statusCode, docARes.body).toBe(201);
     doctorAUser = JSON.parse(docARes.body).data;
 
-    // Assign Doctor A to Clinic A
+    // Assign Doctor A to Location A
     await app.inject({
       method: "POST",
       url: "/api/onboarding/doctors/assignments",
       headers: { cookie: adminACookies },
-      payload: { doctorId: doctorAUser.id, clinicId: clinicA.id, workingHours: "09:00 - 17:00", fees: 500 },
+      payload: { doctorId: doctorAUser.id, locationId: locationA.id, workingHours: "09:00 - 17:00", fees: 500 },
     });
 
     // Create Invoice A (for billing tests)
@@ -126,7 +127,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       headers: { cookie: adminACookies },
       payload: {
         patientId: patientAProfile!._id.toString(),
-        clinicId: clinicA.id,
+        locationId: locationA.id,
         doctorId: doctorAUser.id,
         items: [{ description: "OPD Consultation", amount: 500, quantity: 1 }],
         subtotal: 500, tax: 0, discount: 0, totalAmount: 500,
@@ -141,7 +142,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       url: "/api/pre-auth",
       headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, patientId: patientAProfile!._id.toString(), doctorId: doctorAUser.id,
+        locationId: locationA.id, patientId: patientAProfile!._id.toString(), doctorId: doctorAUser.id,
         tpaName: "Star Health", policyNumber: "POL-BREAK-001", diagnosisCode: "J06.9",
         proposedTreatment: "Tonsillectomy", requestedAmount: 50000,
       },
@@ -155,7 +156,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       url: "/api/billing/claims",
       headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, patientId: patientAProfile!._id.toString(),
+        locationId: locationA.id, patientId: patientAProfile!._id.toString(),
         payerName: "HDFC ERGO", policyNumber: "HDFC-BREAK-001", totalClaimAmount: 25000,
       },
     });
@@ -168,7 +169,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       url: "/api/lab-tests",
       headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, name: "CBC Complete Blood Count", code: `CBC-BREAK-${ts}`,
+        locationId: locationA.id, name: "CBC Complete Blood Count", code: `CBC-BREAK-${ts}`,
         department: "Hematology", sampleType: "Whole Blood", price: 350, normalRange: "4.5-11.0 x10^9/L",
       },
     });
@@ -180,7 +181,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       method: "POST",
       url: "/api/lab-orders",
       headers: { cookie: adminACookies },
-      payload: { clinicId: clinicA.id, patientId: patientAProfile!._id.toString(), doctorId: doctorAUser.id, testId: labTestA.id || labTestA._id },
+      payload: { locationId: locationA.id, patientId: patientAProfile!._id.toString(), doctorId: doctorAUser.id, testId: labTestA.id || labTestA._id },
     });
     expect(loRes.statusCode, loRes.body).toBe(201);
     labOrderA = JSON.parse(loRes.body).data;
@@ -194,7 +195,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       url: "/api/appointments",
       headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, doctorId: doctorAUser.id,
+        locationId: locationA.id, doctorId: doctorAUser.id,
         appointmentTime: apptDate.toISOString(), appointmentType: "online",
         patientId: patientAProfile!._id.toString(), status: "confirmed", notes: "Break test appointment",
       },
@@ -203,7 +204,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     appointmentA = JSON.parse(apptRes.body).data;
 
     // ═══ ORG B SETUP (ADVERSARY) ═══
-    const orgBRes = await app.inject({
+    const orgBRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -217,20 +218,20 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     expect(orgBRes.statusCode, orgBRes.body).toBe(201);
     const orgBData = JSON.parse(orgBRes.body);
     orgB = orgBData.data?.organization || orgBData.data;
-    adminBCookies = (orgBRes.headers["set-cookie"] as string[])?.join("; ") || "";
+    adminBCookies = (await provisionedAdminCookies(orgBRes))?.join("; ") || "";
     adminBToken = orgBRes.cookies?.find((c: any) => c.name === "access_token")?.value || "";
 
-    // Create Clinic B
-    const clinicBRes = await reuseOnboardingClinic(app, { headers: { cookie: adminBCookies }, payload: { name: "Break Test Clinic B", city: "Delhi", address: "200 Hack St", phone: "9333333333", email: `clinicB_${ts}@test.com` } });
-    expect(clinicBRes.statusCode, clinicBRes.body).toBe(200);
-    clinicB = JSON.parse(clinicBRes.body).data;
+    // Create Location B
+    const locationBRes = await reuseOnboardingLocation(app, { headers: { cookie: adminBCookies }, payload: { name: "Break Test Clinic B", city: "Delhi", address: "200 Hack St", phone: "9333333333", email: `locationB_${ts}@test.com` } });
+    expect(locationBRes.statusCode, locationBRes.body).toBe(200);
+    locationB = JSON.parse(locationBRes.body).data;
 
     // Register Patient B
     const patBRes = await app.inject({
       method: "POST",
       url: "/api/auth/register",
       headers: { cookie: adminBCookies },
-      payload: { clinicId: clinicB.id,  name: "Patient B", email: `patient_b_${ts}@test.com`, phone: "9444444444", password: "Password123", role: "patient" },
+      payload: { locationId: locationB.id,  name: "Patient B", email: `patient_b_${ts}@test.com`, phone: "9444444444", password: "Password123", role: "patient" },
     });
     expect(patBRes.statusCode, patBRes.body).toBe(201);
     patientBUser = JSON.parse(patBRes.body).data.user;
@@ -298,7 +299,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
   it("Q6: Create a clinic without authentication → should reject 401", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       payload: { name: "Hacker Clinic", city: "Gotham" },
     });
     expect(res.statusCode).toBeLessThan(500);
@@ -309,7 +310,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     const longName = "A".repeat(10000);
     const res = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminACookies },
       payload: { name: longName, city: "Mumbai" },
     });
@@ -319,7 +320,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
   it("Q8: Create clinic with special characters / emojis → should not crash", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminACookies },
       payload: { name: "🏥 Cl!n1c #$% Tëst™ — «special»", city: "Mumbai" },
     });
@@ -327,7 +328,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
   });
 
   it("Q9: Create organization with empty org_name → should reject", async () => {
-    const res = await app.inject({
+    const res = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: { org_name: "", city: "Test", admin_name: "Admin", admin_email: `empty_org_${Date.now()}@test.com`, admin_password: "Password123" },
@@ -340,7 +341,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     // Org B admin tries to access Org A's pre-auth data
     const res = await app.inject({
       method: "GET",
-      url: `/api/pre-auth?clinicId=${clinicA.id}`,
+      url: `/api/pre-auth?locationId=${locationA.id}`,
       headers: { cookie: adminBCookies },
     });
     expect(res.statusCode).toBeLessThan(500);
@@ -364,7 +365,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       url: "/api/appointments",
       headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, doctorId: fakeDocId,
+        locationId: locationA.id, doctorId: fakeDocId,
         appointmentTime: new Date(Date.now() + 86400000).toISOString(), appointmentType: "online",
         patientId: patientAProfile!._id.toString(),
       },
@@ -380,7 +381,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       url: "/api/appointments",
       headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, doctorId: doctorAUser.id,
+        locationId: locationA.id, doctorId: doctorAUser.id,
         appointmentTime: pastDate, appointmentType: "online",
         patientId: patientAProfile!._id.toString(),
       },
@@ -388,7 +389,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     expect(res.statusCode).toBeLessThan(500);
   });
 
-  it("Q13: Book appointment with missing clinicId → should reject 400", async () => {
+  it("Q13: Book appointment with missing locationId → should reject 400", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/appointments",
@@ -409,7 +410,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       url: "/api/appointments",
       headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, doctorId: doctorAUser.id,
+        locationId: locationA.id, doctorId: doctorAUser.id,
         appointmentTime: new Date(Date.now() + 86400000).toISOString(), appointmentType: "teleport",
         patientId: patientAProfile!._id.toString(),
       },
@@ -423,7 +424,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       url: "/api/appointments",
       headers: { cookie: adminBCookies },
       payload: {
-        clinicId: clinicA.id, doctorId: doctorAUser.id,
+        locationId: locationA.id, doctorId: doctorAUser.id,
         appointmentTime: new Date(Date.now() + 86400000).toISOString(), appointmentType: "online",
         patientId: patientBProfile!._id.toString(),
       },
@@ -442,7 +443,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       url: "/api/invoices",
       headers: { cookie: adminACookies },
       payload: {
-        patientId: patientAProfile!._id.toString(), clinicId: clinicA.id, doctorId: doctorAUser.id,
+        patientId: patientAProfile!._id.toString(), locationId: locationA.id, doctorId: doctorAUser.id,
         items: [{ description: "Negative Test", amount: -500, quantity: 1 }],
         subtotal: -500, tax: 0, discount: 0, totalAmount: -500,
       },
@@ -456,7 +457,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       url: "/api/invoices",
       headers: { cookie: adminACookies },
       payload: {
-        patientId: patientAProfile!._id.toString(), clinicId: clinicA.id, doctorId: doctorAUser.id,
+        patientId: patientAProfile!._id.toString(), locationId: locationA.id, doctorId: doctorAUser.id,
         items: [], subtotal: 0, tax: 0, discount: 0, totalAmount: 0,
       },
     });
@@ -471,7 +472,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       url: "/api/invoices",
       headers: { cookie: adminACookies },
       payload: {
-        patientId: fakeId, clinicId: clinicA.id, doctorId: doctorAUser.id,
+        patientId: fakeId, locationId: locationA.id, doctorId: doctorAUser.id,
         items: [{ description: "Ghost Patient", amount: 100, quantity: 1 }],
         subtotal: 100, tax: 0, discount: 0, totalAmount: 100,
       },
@@ -485,7 +486,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     const invRes = await app.inject({
       method: "POST", url: "/api/invoices", headers: { cookie: adminACookies },
       payload: {
-        patientId: patientAProfile!._id.toString(), clinicId: clinicA.id, doctorId: doctorAUser.id,
+        patientId: patientAProfile!._id.toString(), locationId: locationA.id, doctorId: doctorAUser.id,
         items: [{ description: "Double-pay test", amount: 200, quantity: 1 }],
         subtotal: 200, tax: 0, discount: 0, totalAmount: 200,
       },
@@ -512,7 +513,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       url: "/api/invoices",
       headers: { cookie: adminACookies },
       payload: {
-        patientId: patientAProfile!._id.toString(), clinicId: clinicA.id, doctorId: doctorAUser.id,
+        patientId: patientAProfile!._id.toString(), locationId: locationA.id, doctorId: doctorAUser.id,
         items: [{ description: "Discount exploit", amount: 100, quantity: 1 }],
         subtotal: 100, tax: 0, discount: 150, totalAmount: -50,
       },
@@ -528,7 +529,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     const res = await app.inject({
       method: "POST", url: "/api/pre-auth", headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, patientId: patientAProfile!._id.toString(), doctorId: doctorAUser.id,
+        locationId: locationA.id, patientId: patientAProfile!._id.toString(), doctorId: doctorAUser.id,
         tpaName: "Test TPA", policyNumber: "POL-ZERO", diagnosisCode: "A00",
         proposedTreatment: "Zero Test", requestedAmount: 0,
       },
@@ -541,7 +542,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     const res = await app.inject({
       method: "POST", url: "/api/pre-auth", headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, patientId: patientAProfile!._id.toString(), doctorId: doctorAUser.id,
+        locationId: locationA.id, patientId: patientAProfile!._id.toString(), doctorId: doctorAUser.id,
         tpaName: "Test TPA", policyNumber: "POL-NEG", diagnosisCode: "A00",
         proposedTreatment: "Negative Test", requestedAmount: -10000,
       },
@@ -554,7 +555,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     const res = await app.inject({
       method: "POST", url: "/api/pre-auth", headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, patientId: "not-an-objectid", doctorId: doctorAUser.id,
+        locationId: locationA.id, patientId: "not-an-objectid", doctorId: doctorAUser.id,
         tpaName: "Test TPA", policyNumber: "POL-MALFORM", diagnosisCode: "A00",
         proposedTreatment: "Malformed ID Test", requestedAmount: 10000,
       },
@@ -587,7 +588,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     const paRes = await app.inject({
       method: "POST", url: "/api/pre-auth", headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, patientId: patientAProfile!._id.toString(), doctorId: doctorAUser.id,
+        locationId: locationA.id, patientId: patientAProfile!._id.toString(), doctorId: doctorAUser.id,
         tpaName: "Overflow TPA", policyNumber: "POL-OVERFLOW", diagnosisCode: "B00",
         proposedTreatment: "Overflow Test", requestedAmount: 10000,
       },
@@ -611,7 +612,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     const res = await app.inject({
       method: "POST", url: "/api/billing/claims", headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, patientId: patientAProfile!._id.toString(),
+        locationId: locationA.id, patientId: patientAProfile!._id.toString(),
         payerName: "Zero Insurer", policyNumber: "ZERO-001", totalClaimAmount: 0,
       },
     });
@@ -634,7 +635,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     const claimRes = await app.inject({
       method: "POST", url: "/api/billing/claims", headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, patientId: patientAProfile!._id.toString(),
+        locationId: locationA.id, patientId: patientAProfile!._id.toString(),
         payerName: "State Machine Insurer", policyNumber: "SM-001", totalClaimAmount: 15000,
       },
     });
@@ -664,7 +665,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     const claimRes = await app.inject({
       method: "POST", url: "/api/billing/claims", headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, patientId: patientAProfile!._id.toString(),
+        locationId: locationA.id, patientId: patientAProfile!._id.toString(),
         payerName: "Overflow Insurer", policyNumber: "OVF-001", totalClaimAmount: 10000,
       },
     });
@@ -684,7 +685,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     const res = await app.inject({
       method: "POST", url: "/api/billing/claims", headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, patientId: patientAProfile!._id.toString(),
+        locationId: locationA.id, patientId: patientAProfile!._id.toString(),
         invoiceId: fakeInvId, payerName: "Ghost Invoice Insurer", policyNumber: "GI-001", totalClaimAmount: 5000,
       },
     });
@@ -701,7 +702,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     const res = await app.inject({
       method: "POST", url: "/api/lab-tests", headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, name: "Duplicate Test", code: existingCode,
+        locationId: locationA.id, name: "Duplicate Test", code: existingCode,
         department: "Hematology", sampleType: "Blood", price: 200, normalRange: "Normal",
       },
     });
@@ -713,7 +714,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     const res = await app.inject({
       method: "POST", url: "/api/lab-tests", headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, name: "Negative Price Test", code: `NEG-${Date.now()}`,
+        locationId: locationA.id, name: "Negative Price Test", code: `NEG-${Date.now()}`,
         department: "Biochemistry", sampleType: "Serum", price: -100, normalRange: "N/A",
       },
     });
@@ -724,7 +725,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     const fakeTestId = new mongoose.Types.ObjectId().toString();
     const res = await app.inject({
       method: "POST", url: "/api/lab-orders", headers: { cookie: adminACookies },
-      payload: { clinicId: clinicA.id, patientId: patientAProfile!._id.toString(), doctorId: doctorAUser.id, testId: fakeTestId },
+      payload: { locationId: locationA.id, patientId: patientAProfile!._id.toString(), doctorId: doctorAUser.id, testId: fakeTestId },
     });
     expect(res.statusCode).toBeLessThan(500);
     expect([400, 404]).toContain(res.statusCode);
@@ -734,7 +735,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     // Create a fresh lab order in 'ordered' status
     const loRes = await app.inject({
       method: "POST", url: "/api/lab-orders", headers: { cookie: adminACookies },
-      payload: { clinicId: clinicA.id, patientId: patientAProfile!._id.toString(), doctorId: doctorAUser.id, testId: labTestA.id || labTestA._id },
+      payload: { locationId: locationA.id, patientId: patientAProfile!._id.toString(), doctorId: doctorAUser.id, testId: labTestA.id || labTestA._id },
     });
     const order = JSON.parse(loRes.body).data;
     const orderId = order._id || order.id;
@@ -742,7 +743,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     // Try uploading result without collecting sample first
     const res = await app.inject({
       method: "PUT", url: `/api/lab-orders/${orderId}/result`, headers: { cookie: adminACookies },
-      payload: { resultValue: "5.5%", resultNotes: "Skipped sample collection" },
+      payload: { value: "5.5%", notes: "Skipped sample collection" },
     });
     expect(res.statusCode).toBeLessThan(500);
   });
@@ -750,7 +751,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
   it("Q35: Place lab order with missing doctorId → should reject 400", async () => {
     const res = await app.inject({
       method: "POST", url: "/api/lab-orders", headers: { cookie: adminACookies },
-      payload: { clinicId: clinicA.id, patientId: patientAProfile!._id.toString(), testId: labTestA.id || labTestA._id },
+      payload: { locationId: locationA.id, patientId: patientAProfile!._id.toString(), testId: labTestA.id || labTestA._id },
     });
     expect(res.statusCode).toBeLessThan(500);
     expect([400, 422]).toContain(res.statusCode);
@@ -820,13 +821,13 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
 
   it("Q41: Patient tries to access invoices from another org → should see empty or 403", async () => {
     const res = await app.inject({
-      method: "GET", url: `/api/invoices?clinicId=${clinicB.id}`,
+      method: "GET", url: `/api/invoices?locationId=${locationB.id}`,
       headers: { cookie: patientACookies },
     });
     expect(res.statusCode).toBeLessThan(500);
     if (res.statusCode === 200) {
       const body = JSON.parse(res.body);
-      expect(body.data.length).toBe(0); // Patient A should not see Clinic B invoices
+      expect(body.data.length).toBe(0); // Patient A should not see Location B invoices
     }
   });
 
@@ -835,7 +836,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
       method: "POST", url: "/api/lab-tests",
       headers: { cookie: patientACookies },
       payload: {
-        clinicId: clinicA.id, name: "Patient Hack Test", code: `HACK-${Date.now()}`,
+        locationId: locationA.id, name: "Patient Hack Test", code: `HACK-${Date.now()}`,
         department: "Hack", sampleType: "None", price: 0, normalRange: "None",
       },
     });
@@ -899,7 +900,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
   it("Q48: Query pre-auth list with NoSQL-injection style search → should not crash", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/api/pre-auth?clinicId=${clinicA.id}&search='; DROP TABLE--`,
+      url: `/api/pre-auth?locationId=${locationA.id}&search='; DROP TABLE--`,
       headers: { cookie: adminACookies },
     });
     expect(res.statusCode).toBeLessThan(500);
@@ -909,7 +910,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
     const res = await app.inject({
       method: "POST", url: "/api/pre-auth", headers: { cookie: adminACookies },
       payload: {
-        clinicId: clinicA.id, patientId: patientAProfile!._id.toString(), doctorId: doctorAUser.id,
+        locationId: locationA.id, patientId: patientAProfile!._id.toString(), doctorId: doctorAUser.id,
         tpaName: "Unicode TPA", policyNumber: "‮POL-12345‬\u200B\u200F",
         diagnosisCode: "Z99.9", proposedTreatment: "Unicode Test", requestedAmount: 5000,
       },
@@ -919,7 +920,7 @@ describe("50 Adversarial Break-It Tests — User Perspective", () => {
 
   it("Q50: Rapidly fire 5 identical claim submissions in parallel → should not create duplicates or crash", async () => {
     const payload = {
-      clinicId: clinicA.id, patientId: patientAProfile!._id.toString(),
+      locationId: locationA.id, patientId: patientAProfile!._id.toString(),
       payerName: "Race Condition Insurer", policyNumber: "RACE-001", totalClaimAmount: 7777,
     };
 

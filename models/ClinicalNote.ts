@@ -11,7 +11,7 @@ const StructuredDiagnosisSchema = new Schema({
 
 const ClinicalNoteSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true },
-  clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
+  locationId: { type: Schema.Types.ObjectId, ref: "Location", required: true, index: true },
   encounterId: { type: Schema.Types.ObjectId, ref: "Encounter", required: true },
   patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
   doctorId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },

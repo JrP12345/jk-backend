@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import app from "../index.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { RefreshToken } from "../models/RefreshToken.ts";
 import { SiteVisit } from "../models/SiteVisit.ts";
 
@@ -15,7 +15,7 @@ describe("Root Single-Session Security, Session Supervision & Traffic Analytics"
   let regularDoctorUser: any;
   let doctorPassword = "Password123!";
   let testOrg: any;
-  let testClinic: any;
+  let testLocation: any;
 
   beforeAll(async () => {
     // 1. Create Root Admin User
@@ -27,16 +27,16 @@ describe("Root Single-Session Security, Session Supervision & Traffic Analytics"
       isActive: true,
     });
 
-    // 2. Create Tenant Organization and Clinic
+    // 2. Create Tenant Organization and Location
     testOrg = await (Organization as any).create({
       name: "Supervision General Hospital",
       city: "Surat",
       email: `sgh_${Date.now()}@hospital.org`,
-      plan: "pro",
+      plan: "professional",
       isActive: true,
     });
 
-    testClinic = await (Clinic as any).create({
+    testLocation = await (Location as any).create({
       organizationId: testOrg._id,
       name: "City OPD Branch",
       city: "Surat",
@@ -58,9 +58,9 @@ describe("Root Single-Session Security, Session Supervision & Traffic Analytics"
     // Cleanup created test records
     await User.deleteMany({ _id: { $in: [rootUser._id, regularDoctorUser._id] } });
     await Organization.deleteOne({ _id: testOrg._id });
-    await Clinic.deleteOne({ _id: testClinic._id });
+    await Location.deleteOne({ _id: testLocation._id });
     await RefreshToken.deleteMany({ userId: { $in: [rootUser._id, regularDoctorUser._id] } });
-    await SiteVisit.deleteMany({ clinicId: testClinic._id });
+    await SiteVisit.deleteMany({ locationId: testLocation._id });
   });
 
   // ─── 1. Root Single-Session Enforcement ─────────────────────────────
@@ -215,20 +215,20 @@ describe("Root Single-Session Security, Session Supervision & Traffic Analytics"
     expect(pubData.images).toEqual(images);
   });
 
-  // ─── 5. Website Traffic & Clinic Attribution Telemetry ──────────────
+  // ─── 5. Website Traffic & Location Attribution Telemetry ──────────────
   it("records site visits and computes clinic traffic attribution analytics", async () => {
     // 1. Post visits via public tracking endpoint
     const visitPayloads = [
       {
-        path: "/clinics/city-opd",
-        clinicId: testClinic._id.toString(),
+        path: "/locations/city-opd",
+        locationId: testLocation._id.toString(),
         organizationId: testOrg._id.toString(),
         visitorId: "vis_101",
         referrer: "https://google.com",
       },
       {
-        path: "/clinics/city-opd/book",
-        clinicId: testClinic._id.toString(),
+        path: "/locations/city-opd/book",
+        locationId: testLocation._id.toString(),
         organizationId: testOrg._id.toString(),
         visitorId: "vis_102",
         referrer: "https://facebook.com",
@@ -263,15 +263,15 @@ describe("Root Single-Session Security, Session Supervision & Traffic Analytics"
     expect(analytics.summary.todayVisits).toBeGreaterThanOrEqual(3);
     expect(analytics.summary.todayVisitors).toBeGreaterThanOrEqual(3);
 
-    // Verify clinic attribution breakdown ("whose clinic and all")
-    const clinicShare = analytics.clinicAttribution.find(
-      (c: any) => c.clinicId === testClinic._id.toString()
+    // Verify location attribution breakdown ("whose location and all")
+    const locationShare = analytics.locationAttribution.find(
+      (c: any) => c.locationId === testLocation._id.toString()
     );
-    expect(clinicShare).toBeDefined();
-    expect(clinicShare.clinicName).toBe("City OPD Branch");
-    expect(clinicShare.organizationName).toBe("Supervision General Hospital");
-    expect(clinicShare.visits).toBeGreaterThanOrEqual(2);
-    expect(clinicShare.percentShare).toBeGreaterThan(0);
+    expect(locationShare).toBeDefined();
+    expect(locationShare.locationName).toBe("City OPD Branch");
+    expect(locationShare.organizationName).toBe("Supervision General Hospital");
+    expect(locationShare.visits).toBeGreaterThanOrEqual(2);
+    expect(locationShare.percentShare).toBeGreaterThan(0);
 
     // Verify device distribution
     expect(analytics.devices.length).toBeGreaterThan(0);

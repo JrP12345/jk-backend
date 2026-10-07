@@ -102,7 +102,6 @@ export const OUTBOUND_MESSAGE_WORKER_BATCH_SIZE = positiveInt("OUTBOUND_MESSAGE_
 export const OUTBOUND_MESSAGE_WORKER_POLL_MS = positiveInt("OUTBOUND_MESSAGE_WORKER_POLL_MS", 1_000);
 
 /** No-show sweep interval in ms (default 5 minutes) */
-export const NO_SHOW_SWEEP_INTERVAL_MS = positiveInt("NO_SHOW_SWEEP_INTERVAL_MS", 5 * 60 * 1000);
 
 // ─── Multi-Replica Coordination ──────────────────────────────────────────────
 

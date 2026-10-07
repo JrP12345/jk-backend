@@ -28,7 +28,7 @@ describe("Telemetry & Ops Paging Alert Dispatcher Suite", () => {
 
     const testError = new Error("Patient John Doe phone 9876543210 Aadhaar 1234 5678 9012 panic potassium high");
     await dispatchOpsAlert("P0_CRITICAL", "Panic Lab Evaluation Failure", testError, {
-      clinicId: "clinic-test-123",
+      locationId: "clinic-test-123",
       route: "/api/emr/labs",
     });
 
@@ -41,7 +41,7 @@ describe("Telemetry & Ops Paging Alert Dispatcher Suite", () => {
     expect(capturedBody.message).toContain("[REDACTED_AADHAAR]");
     expect(capturedBody.message).not.toContain("9876543210");
     expect(capturedBody.message).not.toContain("1234 5678 9012");
-    expect(capturedBody.context.clinicId).toBe("clinic-test-123");
+    expect(capturedBody.context.locationId).toBe("clinic-test-123");
     expect(capturedBody.nodeId).toBeDefined();
   });
 

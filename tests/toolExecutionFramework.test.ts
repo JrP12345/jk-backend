@@ -13,12 +13,12 @@ describe("Phase 5: Agentic Tool Execution & Clinician Co-Signature Approval Test
   let testOrgId: string;
 
   beforeAll(async () => {
-    const email = `dr_tool_exec_${Date.now()}@ananta.internal`;
+    const email = `dr_tool_exec_${Date.now()}@ekavyu.internal`;
     const password = "Password123!";
 
     const org = await (Organization as any).create({
       name: "Tool Exec Test Hospital",
-      email: `tool_exec_${Date.now()}@ananta.internal`,
+      email: `tool_exec_${Date.now()}@ekavyu.internal`,
       phone: "+1999666444",
       address: "400 Tool Way",
       city: "San Francisco",

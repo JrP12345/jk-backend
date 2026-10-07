@@ -12,8 +12,8 @@ const OrganizationSchema = new Schema({
   images: [{ type: String }],
   timings: { type: String }, // JSON string of schedule
   working_days: { type: String }, // JSON string
-  plan: { type: String, enum: ["starter", "pro", "enterprise"], default: "starter" },
-  maxClinics: { type: Number, default: 1 },
+  plan: { type: String, enum: ["starter", "professional", "enterprise"], default: "starter" },
+  maxLocations: { type: Number, default: 1 },
   maxDoctors: { type: Number, default: 2 },
   maxStaff: { type: Number, default: 2 },
   taxId: { type: String }, // GSTIN / EIN
@@ -32,7 +32,7 @@ const OrganizationSchema = new Schema({
   },
   onboardingStatus: {
     type: String,
-    enum: ["NOT_STARTED", "ORGANIZATION_CREATED", "ADMIN_CREATED", "CLINIC_CREATED", "TWO_FACTOR_PENDING", "COMPLETED"],
+    enum: ["NOT_STARTED", "ORGANIZATION_CREATED", "ADMIN_CREATED", "LOCATION_CREATED", "TWO_FACTOR_PENDING", "COMPLETED"],
     default: "NOT_STARTED",
   },
   isOnboarded: { type: Boolean, default: false },

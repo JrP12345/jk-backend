@@ -18,7 +18,7 @@ describe("Patient Email OTP Sign-In & Registration Tests", () => {
     } finally { delivery.mockRestore(); vi.unstubAllEnvs(); }
   });
   const patientEmail = `patient_otp_${Date.now()}@example.com`;
-  const staffEmail = `doctor_otp_${Date.now()}@ananta.internal`;
+  const staffEmail = `doctor_otp_${Date.now()}@ekavyu.internal`;
 
   it("should request an email OTP and dispatch via emailProvider", async () => {
     const sendEmailSpy = vi.spyOn(emailProvider, "sendEmail").mockResolvedValue(true);

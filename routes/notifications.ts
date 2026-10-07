@@ -7,7 +7,7 @@ import { EVENT_TYPES } from "../events/types.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
 import { emailProvider, type SmtpConfig } from "../notifications/providers/emailProvider.ts";
-import { decrypt } from "../utilities/encryption.ts";
+import { decryptField } from "../utilities/cryptoEnvelope.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { resolveTargetOrganizationId, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { enqueueTransactionalEmail } from "../services/CommunicationOutbox.ts";
@@ -24,7 +24,7 @@ async function getOrganizationSmtp(organizationId?: string | null): Promise<Smtp
     port: smtp.port || 587,
     secure: smtp.secure || false,
     user: smtp.user,
-    pass: decrypt(smtp.pass),
+    pass: decryptField(smtp.pass),
     fromEmail: smtp.fromEmail || smtp.user,
     fromName: smtp.fromName || "Ekavyu",
   };

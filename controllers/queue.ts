@@ -8,14 +8,14 @@ import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
-import { checkClinicAccess, getRequestOrganizationId } from "../utilities/tenant.ts";
+import { checkLocationAccess, getRequestOrganizationId } from "../utilities/tenant.ts";
 import { broadcastQueueUpdate } from "../notifications/websocket.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { User } from "../models/User.ts";
 import { SmsWhatsAppService } from "../services/SmsWhatsAppService.ts";
 import { verifyAuditChainIntegrity } from "../services/AuditTrailService.ts";
 import { issueAppointmentTrackerLink } from "../utilities/publicTracker.ts";
-import { clinicDateKey, clinicDayRange, getClinicTimezone } from "../utilities/clinicTime.ts";
+import { locationDateKey, locationDayRange, getLocationTimezone } from "../utilities/locationTime.ts";
 import {
   getCursorPaginationParams,
   decodeCursor,
@@ -24,11 +24,11 @@ import {
 } from "../utilities/cursorPagination.ts";
 
 /**
- * Calculates adaptive consultation duration based on today's completed encounters for doctor and clinic.
+ * Calculates adaptive consultation duration based on today's completed encounters for doctor and location.
  * Returns rolling average (in minutes) if >= 2 consultations completed today, otherwise fallbackDuration.
  */
 export async function getAdaptiveConsultationDuration(
-  clinicId: string | mongoose.Types.ObjectId,
+  locationId: string | mongoose.Types.ObjectId,
   doctorId: string | mongoose.Types.ObjectId,
   startOfDay: Date,
   endOfDay: Date,
@@ -37,7 +37,7 @@ export async function getAdaptiveConsultationDuration(
   try {
     const { Encounter } = await import("../models/Encounter.ts");
     const completed = await Encounter.find({
-      clinicId,
+      locationId,
       doctorId,
       status: "completed",
       startedAt: { $exists: true, $ne: null },
@@ -81,28 +81,28 @@ export async function getAdaptiveConsultationDuration(
 
 export async function getQueue(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, doctorId, date } = req.query as { clinicId: string; doctorId: string; date?: string };
+    const { locationId, doctorId, date } = req.query as { locationId: string; doctorId: string; date?: string };
 
-    if (!clinicId || !doctorId) {
-      return reply.code(400).send(errorResponse("clinicId and doctorId are required"));
+    if (!locationId || !doctorId) {
+      return reply.code(400).send(errorResponse("locationId and doctorId are required"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, clinicId);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, locationId);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
-    const timezone = await getClinicTimezone(clinicId);
-    const dateStr = date ? date.slice(0, 10) : clinicDateKey(new Date(), timezone);
-    const { start: startOfDay, end: endOfDay } = clinicDayRange(dateStr, timezone);
+    const timezone = await getLocationTimezone(locationId);
+    const dateStr = date ? date.slice(0, 10) : locationDateKey(new Date(), timezone);
+    const { start: startOfDay, end: endOfDay } = locationDayRange(dateStr, timezone);
 
     // Get doctor assignment to find default duration
-    const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
+    const assignment = await DoctorAssignment.findOne({ doctorId, locationId, isActive: true });
     const defaultDuration = assignment?.appointmentDuration || 15;
 
     // Calculate adaptive consultation duration based on today's actual completed encounters
     const { duration, isAdaptive, sampleCount } = await getAdaptiveConsultationDuration(
-      clinicId,
+      locationId,
       doctorId,
       startOfDay,
       endOfDay,
@@ -111,7 +111,7 @@ export async function getQueue(req: FastifyRequest, reply: FastifyReply) {
 
     // Pure read query: no mutations executed on GET requests (Step 5.1 hardened)
     const appointments = await Appointment.find({
-      clinicId,
+      locationId,
       doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay }
     })
@@ -139,13 +139,13 @@ export async function getQueue(req: FastifyRequest, reply: FastifyReply) {
     let waitingAheadCount = 0;
     const queueList = appointments.map((appt: any) => {
       let estimatedWaitTime = 0;
-      
+
       // If the patient is checked-in or scheduled (confirmed/pending) and waiting
       if (appt.status === "pending" || appt.status === "confirmed" || appt.status === "checked-in") {
         estimatedWaitTime = inConsultationRemainingMinutes + (waitingAheadCount * duration);
         waitingAheadCount++;
       }
-      
+
       return {
         ...appt.toJSON(),
         estimatedWaitTime,
@@ -162,29 +162,29 @@ export async function getQueue(req: FastifyRequest, reply: FastifyReply) {
 
 export async function getQueueStatus(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, doctorId, date } = req.query as { clinicId: string; doctorId: string; date?: string };
+    const { locationId, doctorId, date } = req.query as { locationId: string; doctorId: string; date?: string };
 
-    if (!clinicId || !doctorId) {
-      return reply.code(400).send(errorResponse("clinicId and doctorId are required"));
+    if (!locationId || !doctorId) {
+      return reply.code(400).send(errorResponse("locationId and doctorId are required"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, clinicId);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, locationId);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
-    const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
+    const assignment = await DoctorAssignment.findOne({ doctorId, locationId, isActive: true });
     const defaultDuration = assignment?.appointmentDuration || 15;
     const bookingMode = (assignment as any)?.bookingMode || "sequential_queue";
     const maxDailyTokens = (assignment as any)?.maxDailyTokens || null;
 
-    const timezone = await getClinicTimezone(clinicId);
-    const sessionDateStr = date ? date.slice(0, 10) : clinicDateKey(new Date(), timezone);
-    const { start: startOfDay, end: endOfDay } = clinicDayRange(sessionDateStr, timezone);
+    const timezone = await getLocationTimezone(locationId);
+    const sessionDateStr = date ? date.slice(0, 10) : locationDateKey(new Date(), timezone);
+    const { start: startOfDay, end: endOfDay } = locationDayRange(sessionDateStr, timezone);
 
     // Calculate adaptive consultation duration based on today's actual completed encounters
     const { duration, isAdaptive, sampleCount } = await getAdaptiveConsultationDuration(
-      clinicId,
+      locationId,
       doctorId,
       startOfDay,
       endOfDay,
@@ -192,7 +192,7 @@ export async function getQueueStatus(req: FastifyRequest, reply: FastifyReply) {
     );
 
     const appointments = await Appointment.find({
-      clinicId,
+      locationId,
       doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
       status: { $nin: ["cancelled", "disruption_triage"] }
@@ -249,14 +249,14 @@ export async function getQueueStatus(req: FastifyRequest, reply: FastifyReply) {
 
     const { OpdSession } = await import("../models/OpdSession.ts");
     const opdSession = await OpdSession.findOne({
-      clinicId,
+      locationId,
       doctorId,
       date: sessionDateStr,
     }).lean();
 
     return reply.code(200).send(
       successResponse({
-        clinicId,
+        locationId,
         doctorId,
         date: sessionDateStr,
         bookingMode,
@@ -283,17 +283,17 @@ export async function getQueueStatus(req: FastifyRequest, reply: FastifyReply) {
 
 export async function reorderQueue(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, doctorId, date, orderedAppointmentIds } = req.body as {
-      clinicId: string; doctorId: string; date: string; orderedAppointmentIds: string[];
+    const { locationId, doctorId, date, orderedAppointmentIds } = req.body as {
+      locationId: string; doctorId: string; date: string; orderedAppointmentIds: string[];
     };
 
-    if (!clinicId || !doctorId || !date || !orderedAppointmentIds || !Array.isArray(orderedAppointmentIds)) {
-      return reply.code(400).send(errorResponse("clinicId, doctorId, date, and orderedAppointmentIds array are required"));
+    if (!locationId || !doctorId || !date || !orderedAppointmentIds || !Array.isArray(orderedAppointmentIds)) {
+      return reply.code(400).send(errorResponse("locationId, doctorId, date, and orderedAppointmentIds array are required"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, clinicId);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, locationId);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     if (!mongoose.Types.ObjectId.isValid(doctorId) || orderedAppointmentIds.some((id) => !mongoose.Types.ObjectId.isValid(id))) {
@@ -316,12 +316,12 @@ export async function reorderQueue(req: FastifyRequest, reply: FastifyReply) {
 
     const scopedAppointmentCount = await Appointment.countDocuments({
       _id: { $in: orderedAppointmentIds },
-      clinicId,
+      locationId,
       doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
     });
     if (scopedAppointmentCount !== orderedAppointmentIds.length) {
-      return reply.code(403).send(errorResponse("One or more appointments are outside the selected clinic, doctor, or date"));
+      return reply.code(403).send(errorResponse("One or more appointments are outside the selected location, doctor, or date"));
     }
 
     const { withTransaction } = await import("../utilities/transaction.ts");
@@ -329,7 +329,7 @@ export async function reorderQueue(req: FastifyRequest, reply: FastifyReply) {
     return await withTransaction(async (session) => {
       const bulkOps = orderedAppointmentIds.map((id, index) => ({
         updateOne: {
-          filter: { _id: id, clinicId, doctorId, appointmentTime: { $gte: startOfDay, $lte: endOfDay } },
+          filter: { _id: id, locationId, doctorId, appointmentTime: { $gte: startOfDay, $lte: endOfDay } },
           update: { queuePosition: index + 1 }
         }
       }));
@@ -342,15 +342,15 @@ export async function reorderQueue(req: FastifyRequest, reply: FastifyReply) {
         {
           userId: req.user!.id,
           action: "VIP_OVERRIDE",
-          targetId: new mongoose.Types.ObjectId(clinicId),
-          targetModel: "Clinic",
+          targetId: new mongoose.Types.ObjectId(locationId),
+          targetModel: "Location",
           details: { doctorId, date, orderedAppointmentIds }
         }
       ], { session });
 
-      broadcastQueueUpdate(clinicId, {
+      broadcastQueueUpdate(locationId, {
         type: "QUEUE_UPDATED",
-        data: { clinicId, doctorId, date, action: "REORDERED" },
+        data: { locationId, doctorId, date, action: "REORDERED" },
         timestamp: new Date().toISOString(),
       });
 
@@ -372,11 +372,11 @@ export async function getAuditLogs(req: FastifyRequest, reply: FastifyReply) {
       if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
       filter.organizationId = orgId;
     } else {
-      // Root: apply optional organization/clinic scope filters
-      if (query.clinicId && mongoose.Types.ObjectId.isValid(String(query.clinicId))) {
-        const clinic = await Clinic.findById(String(query.clinicId)).select("organizationId").lean();
-        if (clinic?.organizationId) {
-          filter.organizationId = clinic.organizationId;
+      // Root: apply optional organization/location scope filters
+      if (query.locationId && mongoose.Types.ObjectId.isValid(String(query.locationId))) {
+        const location = await Location.findById(String(query.locationId)).select("organizationId").lean();
+        if (location?.organizationId) {
+          filter.organizationId = location.organizationId;
         }
       } else if (query.organizationId && mongoose.Types.ObjectId.isValid(String(query.organizationId))) {
         filter.organizationId = String(query.organizationId);
@@ -495,9 +495,9 @@ export async function checkInAppointment(req: FastifyRequest, reply: FastifyRepl
     }
 
     // Verify tenant access
-    const clinicCheck = await checkClinicAccess(req, appointment.clinicId);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, appointment.locationId);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     // Consumer accounts may only check in themselves or a linked family member.
@@ -548,7 +548,7 @@ export async function checkInAppointment(req: FastifyRequest, reply: FastifyRepl
         title: "Checked In Successfully ✅",
         message: `You are checked in for your appointment. Token #${appointment.tokenNumber}`,
         severity: "success",
-        organizationId: clinicCheck.organizationId || undefined,
+        organizationId: locationCheck.organizationId || undefined,
         actionUrl: "/dashboard/appointments"
       });
     }
@@ -558,16 +558,16 @@ export async function checkInAppointment(req: FastifyRequest, reply: FastifyRepl
       action: "PATIENT_CHECK_IN",
       targetId: appointment._id,
       targetModel: "Appointment",
-      details: { tokenNumber: appointment.tokenNumber, clinicId: appointment.clinicId }
+      details: { tokenNumber: appointment.tokenNumber, locationId: appointment.locationId }
     });
 
-    broadcastQueueUpdate(appointment.clinicId.toString(), {
+    broadcastQueueUpdate(appointment.locationId.toString(), {
       type: "QUEUE_UPDATED",
       data: {
         appointmentId: appointment._id.toString(),
         tokenNumber: appointment.tokenNumber,
         status: "checked-in",
-        clinicId: appointment.clinicId.toString(),
+        locationId: appointment.locationId.toString(),
       },
       timestamp: new Date().toISOString(),
     });
@@ -583,18 +583,18 @@ export async function checkInAppointment(req: FastifyRequest, reply: FastifyRepl
  * Autonomous Queue Pacing Loop (P2):
  * Dispatches live "Turn Approaching" WhatsApp/SMS notifications to the upcoming
  * 1st waiting patient (peopleAhead = 1) and 2nd waiting patient (peopleAhead = 2)
- * for the specified clinic and doctor.
+ * for the specified location and doctor.
  * Employs turnApproachingNotifiedAt guard to prevent duplicate notifications.
  */
-export async function triggerTurnApproachingPacing(clinicId: any, doctorId: any): Promise<void> {
+export async function triggerTurnApproachingPacing(locationId: any, doctorId: any): Promise<void> {
   try {
-    if (!clinicId || !doctorId) return;
+    if (!locationId || !doctorId) return;
 
-    const timezone = await getClinicTimezone(clinicId);
-    const { start: startOfDay, end: endOfDay } = clinicDayRange(clinicDateKey(new Date(), timezone), timezone);
+    const timezone = await getLocationTimezone(locationId);
+    const { start: startOfDay, end: endOfDay } = locationDayRange(locationDateKey(new Date(), timezone), timezone);
 
     const waitingAppts = await Appointment.find({
-      clinicId,
+      locationId,
       doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
       status: { $in: ["checked-in", "confirmed"] },
@@ -624,7 +624,7 @@ export async function triggerTurnApproachingPacing(clinicId: any, doctorId: any)
       await withClinicalTransaction(async () => {
         // Claim before enqueueing. Concurrent pacing calls have one winner;
         // failed outbox writes roll back the claim on the production replica set.
-        const claimed = await Appointment.updateOne({ _id: appointment._id, clinicId, doctorId,
+        const claimed = await Appointment.updateOne({ _id: appointment._id, locationId, doctorId,
           status: { $in: ["checked-in", "confirmed"] }, turnApproachingNotifiedAt: null },
         { $set: { turnApproachingNotifiedAt: new Date() } });
         if (claimed.modifiedCount) await sendTurnApproachingNotification(appointment._id, index + 1);
@@ -639,8 +639,8 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
   try {
     const userRole = req.user!.role;
     const userId = req.user!.id;
-    const { clinicId, doctorId, completePrevious = false, requireArrivalConfirmation = false, confirmedAppointmentId } = (req.body || {}) as {
-      clinicId?: string;
+    const { locationId, doctorId, completePrevious = false, requireArrivalConfirmation = false, confirmedAppointmentId } = (req.body || {}) as {
+      locationId?: string;
       doctorId?: string;
       completePrevious?: boolean;
       requireArrivalConfirmation?: boolean;
@@ -652,13 +652,13 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
       return reply.code(400).send(errorResponse("doctorId is required"));
     }
 
-    if (clinicId) {
-      const clinicCheck = await checkClinicAccess(req, clinicId);
-      if (!clinicCheck.allowed) {
-        return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    if (locationId) {
+      const locationCheck = await checkLocationAccess(req, locationId);
+      if (!locationCheck.allowed) {
+        return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
       }
     } else if (userRole !== "root") {
-      return reply.code(400).send(errorResponse("clinicId is required"));
+      return reply.code(400).send(errorResponse("locationId is required"));
     }
 
     if (!mongoose.Types.ObjectId.isValid(targetDoctorId)) {
@@ -666,12 +666,12 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
     }
 
     const now = new Date();
-    const timezone = clinicId ? await getClinicTimezone(clinicId) : undefined;
+    const timezone = locationId ? await getLocationTimezone(locationId) : undefined;
     const { start: startOfDay, end: endOfDay } = timezone
-      ? clinicDayRange(clinicDateKey(now, timezone), timezone)
+      ? locationDayRange(locationDateKey(now, timezone), timezone)
       : { start: new Date(now.getFullYear(), now.getMonth(), now.getDate()), end: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999) };
 
-    // Use the same clinic calendar day as the operational patient list.
+    // Use the same location calendar day as the operational patient list.
     // 1. Single Active Consultation Guard: Prevent orphan/concurrent in-consultation appointments
     const activeConsultation = await Appointment.findOne({
       doctorId: targetDoctorId,
@@ -684,8 +684,8 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
 
     if (activeConsultation) {
       if (completePrevious) {
-        const access = await checkClinicAccess(req, activeConsultation.clinicId.toString());
-        if (!access.allowed) return reply.code(403).send(errorResponse("You cannot close the active consultation at another clinic"));
+        const access = await checkLocationAccess(req, activeConsultation.locationId.toString());
+        if (!access.allowed) return reply.code(403).send(errorResponse("You cannot close the active consultation at another location"));
       }
       if (!completePrevious) {
         return reply.code(409).send(
@@ -704,10 +704,10 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
       status: { $in: ["checked-in", "confirmed", "pending"] }
     };
-    if (clinicId) query.clinicId = clinicId;
+    if (locationId) query.locationId = locationId;
     else if (req.user?.organization_id) {
-      const { getRequestClinicIds } = await import("../utilities/tenant.ts");
-      query.clinicId = { $in: await getRequestClinicIds(req) };
+      const { getRequestLocationIds } = await import("../utilities/tenant.ts");
+      query.locationId = { $in: await getRequestLocationIds(req) };
     }
 
     const waitingAppts = await Appointment.find(query)
@@ -715,7 +715,7 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
         path: "patientId",
         populate: { path: "userId", select: "name email phone" }
       })
-      .populate("clinicId", "name city");
+      .populate("locationId", "name city");
 
     if (waitingAppts.length === 0) {
       return reply.code(200).send(successResponse(null, "No waiting patients in queue for today"));
@@ -764,8 +764,8 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
         previousEncounter.status = "completed"; previousEncounter.endedAt = new Date();
         await previousEncounter.save();
       } else {
-        const owner = await Clinic.findById(activeConsultation.clinicId).select("organizationId").lean();
-        await Encounter.create({ organizationId: activeConsultation.organizationId || owner?.organizationId, clinicId: activeConsultation.clinicId,
+        const owner = await Location.findById(activeConsultation.locationId).select("organizationId").lean();
+        await Encounter.create({ organizationId: activeConsultation.organizationId || owner?.organizationId, locationId: activeConsultation.locationId,
           appointmentId: activeConsultation._id, patientId: activeConsultation.patientId, doctorId: activeConsultation.doctorId,
           status: "completed", endedAt: new Date() });
       }
@@ -800,7 +800,7 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
     ).populate({
       path: "patientId",
       populate: { path: "userId", select: "name email phone" }
-    }).populate("clinicId", "name city");
+    }).populate("locationId", "name city");
 
     if (!claimed) throw Object.assign(new Error("Patient was already called or modified. Refresh the queue."), { statusCode: 409 });
     nextAppt = claimed;
@@ -809,8 +809,8 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
     const existingEncounter = await Encounter.findOne({ appointmentId: nextAppt._id });
     if (!existingEncounter) {
       await Encounter.create({
-        organizationId: (nextAppt as any).organizationId || (nextAppt.clinicId as any)?.organizationId,
-        clinicId: (nextAppt.clinicId as any)?._id || nextAppt.clinicId,
+        organizationId: (nextAppt as any).organizationId || (nextAppt.locationId as any)?.organizationId,
+        locationId: (nextAppt.locationId as any)?._id || nextAppt.locationId,
         appointmentId: nextAppt._id,
         patientId: (nextAppt.patientId as any)?._id || nextAppt.patientId,
         doctorId: nextAppt.doctorId,
@@ -863,22 +863,22 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
       }
     }
 
-    const targetClinicId = (nextAppt.clinicId as any)?._id?.toString() || nextAppt.clinicId?.toString();
-    if (targetClinicId) {
-      broadcastQueueUpdate(targetClinicId, {
+    const targetLocationId = (nextAppt.locationId as any)?._id?.toString() || nextAppt.locationId?.toString();
+    if (targetLocationId) {
+      broadcastQueueUpdate(targetLocationId, {
         type: "QUEUE_CALL_NEXT",
         data: {
           appointmentId: nextAppt._id.toString(),
           tokenNumber: nextAppt.tokenNumber,
           doctorId: targetDoctorId,
-          clinicId: targetClinicId,
+          locationId: targetLocationId,
         },
         timestamp: new Date().toISOString(),
       });
     }
 
     // Autonomous Queue Pacing (P2): Dispatch turn approaching notifications to next in line
-    triggerTurnApproachingPacing(nextAppt.clinicId, targetDoctorId).catch((err) =>
+    triggerTurnApproachingPacing(nextAppt.locationId, targetDoctorId).catch((err) =>
       console.error("Background turn approaching pacing error on call next:", err)
     );
 
@@ -907,9 +907,9 @@ export async function bumpQueuePatient(req: FastifyRequest, reply: FastifyReply)
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, appointment.clinicId.toString());
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, appointment.locationId.toString());
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     const targetDate = new Date(appointment.appointmentTime);
@@ -917,7 +917,7 @@ export async function bumpQueuePatient(req: FastifyRequest, reply: FastifyReply)
     const endOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59, 999);
 
     const activeWaiting = await Appointment.find({
-      clinicId: appointment.clinicId,
+      locationId: appointment.locationId,
       doctorId: appointment.doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
       status: { $in: ["checked-in", "confirmed", "pending"] },
@@ -952,10 +952,10 @@ export async function bumpQueuePatient(req: FastifyRequest, reply: FastifyReply)
       details: { previousIndex: currentIndex, newIndex: targetIndex, bumpPositions },
     });
 
-    broadcastQueueUpdate(appointment.clinicId.toString(), {
+    broadcastQueueUpdate(appointment.locationId.toString(), {
       type: "QUEUE_UPDATED",
       data: {
-        clinicId: appointment.clinicId.toString(),
+        locationId: appointment.locationId.toString(),
         doctorId: appointment.doctorId.toString(),
         bumpedAppointmentId: appointment._id.toString(),
       },
@@ -964,7 +964,7 @@ export async function bumpQueuePatient(req: FastifyRequest, reply: FastifyReply)
     });
 
     // Autonomous Queue Pacing (P2): Dispatch turn approaching notifications if queue order shifted
-    triggerTurnApproachingPacing(appointment.clinicId, appointment.doctorId).catch((err) =>
+    triggerTurnApproachingPacing(appointment.locationId, appointment.doctorId).catch((err) =>
       console.error("Background turn approaching pacing error on bump:", err)
     );
 
@@ -976,25 +976,6 @@ export async function bumpQueuePatient(req: FastifyRequest, reply: FastifyReply)
     );
   } catch (err) {
     console.error("bumpQueuePatient error:", err);
-    return reply.code(500).send(errorResponse("Internal server error"));
-  }
-}
-
-export async function triggerAutoNoShowDetection(req: FastifyRequest, reply: FastifyReply) {
-  try {
-    const { clinicId } = (req.body || {}) as { clinicId: string };
-    if (!clinicId) {
-      return reply.code(400).send(errorResponse("clinicId is required"));
-    }
-
-    const clinicCheck = await checkClinicAccess(req, clinicId);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
-    }
-
-    return reply.code(410).send(errorResponse("Automatic no-show marking is unavailable. Review overdue appointments and record the outcome manually."));
-  } catch (err) {
-    console.error("triggerAutoNoShowDetection error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1013,9 +994,9 @@ export async function parkQueuePatient(req: FastifyRequest, reply: FastifyReply)
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, appointment.clinicId.toString());
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, appointment.locationId.toString());
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     if (appointment.status === "in-consultation") {
@@ -1042,7 +1023,7 @@ export async function parkQueuePatient(req: FastifyRequest, reply: FastifyReply)
 
     // Re-index remaining active waiting patients for this doctor today
     const remainingWaiting = await Appointment.find({
-      clinicId: appointment.clinicId,
+      locationId: appointment.locationId,
       doctorId: appointment.doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
       status: { $in: ["checked-in", "confirmed", "pending"] },
@@ -1065,16 +1046,16 @@ export async function parkQueuePatient(req: FastifyRequest, reply: FastifyReply)
         previousPosition: oldPosition,
         parkedReason: appointment.parkedReason,
         reason: appointment.parkedReason,
-        clinicId: appointment.clinicId,
+        locationId: appointment.locationId,
         doctorId: appointment.doctorId,
       },
     });
 
-    const clinicIdStr = appointment.clinicId.toString();
-    broadcastQueueUpdate(clinicIdStr, {
+    const locationIdStr = appointment.locationId.toString();
+    broadcastQueueUpdate(locationIdStr, {
       type: "QUEUE_UPDATED",
       data: {
-        clinicId: clinicIdStr,
+        locationId: locationIdStr,
         doctorId: appointment.doctorId.toString(),
         parkedAppointmentId: appointment._id.toString(),
       },
@@ -1083,7 +1064,7 @@ export async function parkQueuePatient(req: FastifyRequest, reply: FastifyReply)
     });
 
     // Autonomous Queue Pacing (P2): Update pacing for remaining waiting queue
-    triggerTurnApproachingPacing(appointment.clinicId, appointment.doctorId).catch((err) =>
+    triggerTurnApproachingPacing(appointment.locationId, appointment.doctorId).catch((err) =>
       console.error("Background turn approaching pacing error on park:", err)
     );
 
@@ -1107,9 +1088,9 @@ export async function resumeQueuePatient(req: FastifyRequest, reply: FastifyRepl
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, appointment.clinicId.toString());
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, appointment.locationId.toString());
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     if (appointment.status !== "standby") {
@@ -1122,7 +1103,7 @@ export async function resumeQueuePatient(req: FastifyRequest, reply: FastifyRepl
 
     // Shift all existing waiting patients down by 1 so this resumed patient becomes queuePosition = 1 (Next Up!)
     const existingWaiting = await Appointment.find({
-      clinicId: appointment.clinicId,
+      locationId: appointment.locationId,
       doctorId: appointment.doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
       status: { $in: ["checked-in", "confirmed", "pending"] },
@@ -1152,16 +1133,16 @@ export async function resumeQueuePatient(req: FastifyRequest, reply: FastifyRepl
         assignedPosition: 1,
         restoredPosition: 1,
         isPriorityNextUp: true,
-        clinicId: appointment.clinicId,
+        locationId: appointment.locationId,
         doctorId: appointment.doctorId,
       },
     });
 
-    const clinicIdStr = appointment.clinicId.toString();
-    broadcastQueueUpdate(clinicIdStr, {
+    const locationIdStr = appointment.locationId.toString();
+    broadcastQueueUpdate(locationIdStr, {
       type: "QUEUE_UPDATED",
       data: {
-        clinicId: clinicIdStr,
+        locationId: locationIdStr,
         doctorId: appointment.doctorId.toString(),
         resumedAppointmentId: appointment._id.toString(),
       },
@@ -1170,7 +1151,7 @@ export async function resumeQueuePatient(req: FastifyRequest, reply: FastifyRepl
     });
 
     // Autonomous Queue Pacing (P2): Dispatch turn approaching notifications for newly resumed queue order
-    triggerTurnApproachingPacing(appointment.clinicId, appointment.doctorId).catch((err) =>
+    triggerTurnApproachingPacing(appointment.locationId, appointment.doctorId).catch((err) =>
       console.error("Background turn approaching pacing error on resume:", err)
     );
 
@@ -1183,15 +1164,15 @@ export async function resumeQueuePatient(req: FastifyRequest, reply: FastifyRepl
 
 export async function getQueueDelayStatus(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, doctorId, date } = req.query as { clinicId: string; doctorId: string; date?: string };
+    const { locationId, doctorId, date } = req.query as { locationId: string; doctorId: string; date?: string };
 
-    if (!clinicId || !doctorId) {
-      return reply.code(400).send(errorResponse("clinicId and doctorId are required"));
+    if (!locationId || !doctorId) {
+      return reply.code(400).send(errorResponse("locationId and doctorId are required"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, clinicId);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, locationId);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     const targetDate = date ? new Date(date) : new Date();
@@ -1200,11 +1181,11 @@ export async function getQueueDelayStatus(req: FastifyRequest, reply: FastifyRep
     const endOfDay = new Date(targetDate);
     endOfDay.setHours(23, 59, 59, 999);
 
-    const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
+    const assignment = await DoctorAssignment.findOne({ doctorId, locationId, isActive: true });
     const defaultDuration = assignment?.appointmentDuration || 15;
 
     const { duration } = await getAdaptiveConsultationDuration(
-      clinicId,
+      locationId,
       doctorId,
       startOfDay,
       endOfDay,
@@ -1212,7 +1193,7 @@ export async function getQueueDelayStatus(req: FastifyRequest, reply: FastifyRep
     );
 
     const appointments = await Appointment.find({
-      clinicId,
+      locationId,
       doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay }
     })
@@ -1283,20 +1264,20 @@ export async function getQueueDelayStatus(req: FastifyRequest, reply: FastifyRep
 
 export async function triggerQueueDelayAlerts(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, doctorId, date, delayThresholdMinutes = 20 } = (req.body || {}) as {
-      clinicId: string;
+    const { locationId, doctorId, date, delayThresholdMinutes = 20 } = (req.body || {}) as {
+      locationId: string;
       doctorId: string;
       date?: string;
       delayThresholdMinutes?: number;
     };
 
-    if (!clinicId || !doctorId) {
-      return reply.code(400).send(errorResponse("clinicId and doctorId are required"));
+    if (!locationId || !doctorId) {
+      return reply.code(400).send(errorResponse("locationId and doctorId are required"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, clinicId);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, locationId);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     const targetDate = date ? new Date(date) : new Date();
@@ -1305,17 +1286,17 @@ export async function triggerQueueDelayAlerts(req: FastifyRequest, reply: Fastif
     const endOfDay = new Date(targetDate);
     endOfDay.setHours(23, 59, 59, 999);
 
-    const [assignment, clinic, doctor] = await Promise.all([
-      DoctorAssignment.findOne({ doctorId, clinicId, isActive: true }),
-      Clinic.findById(clinicId).select("name organizationId"),
+    const [assignment, location, doctor] = await Promise.all([
+      DoctorAssignment.findOne({ doctorId, locationId, isActive: true }),
+      Location.findById(locationId).select("name organizationId"),
       User.findById(doctorId).select("name"),
     ]);
 
     const defaultDuration = assignment?.appointmentDuration || 15;
-    const { duration } = await getAdaptiveConsultationDuration(clinicId, doctorId, startOfDay, endOfDay, defaultDuration);
+    const { duration } = await getAdaptiveConsultationDuration(locationId, doctorId, startOfDay, endOfDay, defaultDuration);
 
     const appointments = await Appointment.find({
-      clinicId,
+      locationId,
       doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
     })
@@ -1358,7 +1339,7 @@ export async function triggerQueueDelayAlerts(req: FastifyRequest, reply: Fastif
 
           if (phone && !isDebounced) {
             const revisedArrivalTime = projectedStartTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-            const orgId = clinic?.organizationId?.toString() || appt.organizationId?.toString() || "";
+            const orgId = location?.organizationId?.toString() || appt.organizationId?.toString() || "";
 
             try {
               const { url: trackerUrl } = await issueAppointmentTrackerLink(appt as any);
@@ -1369,7 +1350,7 @@ export async function triggerQueueDelayAlerts(req: FastifyRequest, reply: Fastif
                 {
                   patientName,
                   doctorName: doctor?.name || "Doctor",
-                  clinicName: clinic?.name || "Clinic",
+                  locationName: location?.name || "Location",
                   delayMinutes,
                   revisedArrivalTime,
                   trackerUrl,
@@ -1410,9 +1391,9 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, appointment.clinicId.toString());
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, appointment.locationId.toString());
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     // Only allow sending for investigation if currently in-consultation or checked-in
@@ -1432,7 +1413,7 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
     if (!encounter) {
       encounter = await Encounter.create({
         organizationId: orgId,
-        clinicId: appointment.clinicId,
+        locationId: appointment.locationId,
         appointmentId: appointment._id,
         patientId: appointment.patientId,
         doctorId: appointment.doctorId,
@@ -1461,13 +1442,13 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
       if (resolvedTestDocs.some((d) => d.name.toLowerCase() === rawName.toLowerCase())) continue;
 
       let found = await LabTest.findOne({
-        clinicId: appointment.clinicId,
+        locationId: appointment.locationId,
         name: { $regex: new RegExp(`^${rawName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
       });
       if (!found) {
         const testCode = rawName.toUpperCase().replace(/[^A-Z0-9]/g, "_").slice(0, 10) || "LAB";
         found = await LabTest.create({
-          clinicId: appointment.clinicId,
+          locationId: appointment.locationId,
           organizationId: orgId,
           name: rawName,
           code: `${testCode}_${Math.floor(Math.random() * 1000)}`,
@@ -1481,10 +1462,10 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
     }
 
     if (resolvedTestDocs.length === 0) {
-      let defaultTest = await LabTest.findOne({ clinicId: appointment.clinicId, name: "General Diagnostic Panel" });
+      let defaultTest = await LabTest.findOne({ locationId: appointment.locationId, name: "General Diagnostic Panel" });
       if (!defaultTest) {
         defaultTest = await LabTest.create({
-          clinicId: appointment.clinicId,
+          locationId: appointment.locationId,
           organizationId: orgId,
           name: "General Diagnostic Panel",
           code: "GEN_DIAG",
@@ -1497,13 +1478,13 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
       resolvedTestDocs.push(defaultTest);
     }
 
-    // Atomically create LabOrder records in the clinic's Laboratory Worklist
+    // Atomically create LabOrder records in the location's Laboratory Worklist
     const createdOrders: any[] = [];
     const orderedByUserId = user?._id || user?.id || appointment.doctorId;
     for (const t of resolvedTestDocs) {
       const order = await LabOrder.create({
         organizationId: orgId,
-        clinicId: appointment.clinicId,
+        locationId: appointment.locationId,
         encounterId: encounter._id,
         appointmentId: appointment._id,
         patientId: appointment.patientId,
@@ -1553,7 +1534,7 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
       targetModel: "Appointment",
       details: {
         tokenNumber: appointment.tokenNumber,
-        clinicId: appointment.clinicId,
+        locationId: appointment.locationId,
         doctorId: appointment.doctorId,
         orderCount: createdOrders.length,
         testNames: resolvedTestDocs.map((t) => t.name),
@@ -1561,11 +1542,11 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
       },
     });
 
-    const clinicIdStr = appointment.clinicId.toString();
-    broadcastQueueUpdate(clinicIdStr, {
+    const locationIdStr = appointment.locationId.toString();
+    broadcastQueueUpdate(locationIdStr, {
       type: "QUEUE_UPDATED",
       data: {
-        clinicId: clinicIdStr,
+        locationId: locationIdStr,
         doctorId: appointment.doctorId.toString(),
         appointmentId: appointment._id.toString(),
         status: "standby",
@@ -1575,10 +1556,10 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
       timestamp: new Date().toISOString(),
     });
 
-    broadcastQueueUpdate(clinicIdStr, {
+    broadcastQueueUpdate(locationIdStr, {
       type: "LAB_ORDER_PLACED",
       data: {
-        clinicId: clinicIdStr,
+        locationId: locationIdStr,
         appointmentId: appointment._id.toString(),
         tokenNumber: appointment.tokenNumber,
         orderCount: createdOrders.length,
@@ -1645,9 +1626,9 @@ export async function resumeForReportReview(req: FastifyRequest, reply: FastifyR
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, appointment.clinicId.toString());
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, appointment.locationId.toString());
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     if (appointment.status !== "standby") {
@@ -1663,7 +1644,7 @@ export async function resumeForReportReview(req: FastifyRequest, reply: FastifyR
 
     await Appointment.updateMany(
       {
-        clinicId: appointment.clinicId,
+        locationId: appointment.locationId,
         doctorId: appointment.doctorId,
         appointmentTime: { $gte: startOfDay, $lte: endOfDay },
         _id: { $ne: appointment._id },
@@ -1695,12 +1676,12 @@ export async function resumeForReportReview(req: FastifyRequest, reply: FastifyR
         tokenNumber: appointment.tokenNumber,
         assignedPosition: 1,
         consultationPhase: "report_review",
-        clinicId: appointment.clinicId,
+        locationId: appointment.locationId,
         doctorId: appointment.doctorId,
       },
     });
 
-    const clinicIdStr = appointment.clinicId.toString();
+    const locationIdStr = appointment.locationId.toString();
 
     // Query doctor & cabin details for TV lounge announcement & audio chime
     const { Doctor } = await import("../models/Doctor.ts");
@@ -1710,10 +1691,10 @@ export async function resumeForReportReview(req: FastifyRequest, reply: FastifyR
     const cabinNum = (docProfile as any)?.cabinNumber || "Doctor's Cabin";
     const docName = docUser?.name ? (docUser.name.startsWith("Dr.") ? docUser.name : `Dr. ${docUser.name}`) : "Doctor";
 
-    broadcastQueueUpdate(clinicIdStr, {
+    broadcastQueueUpdate(locationIdStr, {
       type: "PATIENT_RECALLED_TO_CABIN",
       data: {
-        clinicId: clinicIdStr,
+        locationId: locationIdStr,
         doctorId: appointment.doctorId.toString(),
         doctorName: docName,
         cabinNumber: cabinNum,
@@ -1729,10 +1710,10 @@ export async function resumeForReportReview(req: FastifyRequest, reply: FastifyR
       timestamp: new Date().toISOString(),
     });
 
-    broadcastQueueUpdate(clinicIdStr, {
+    broadcastQueueUpdate(locationIdStr, {
       type: "QUEUE_UPDATED",
       data: {
-        clinicId: clinicIdStr,
+        locationId: locationIdStr,
         doctorId: appointment.doctorId.toString(),
         resumedAppointmentId: appointment._id.toString(),
         consultationPhase: "report_review",
@@ -1752,15 +1733,15 @@ export async function resumeForReportReview(req: FastifyRequest, reply: FastifyR
 
 export async function startOpdSession(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, doctorId, date } = (req.body as { clinicId: string; doctorId: string; date?: string }) || {};
+    const { locationId, doctorId, date } = (req.body as { locationId: string; doctorId: string; date?: string }) || {};
 
-    if (!clinicId || !doctorId) {
-      return reply.code(400).send(errorResponse("clinicId and doctorId are required"));
+    if (!locationId || !doctorId) {
+      return reply.code(400).send(errorResponse("locationId and doctorId are required"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, clinicId);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, locationId);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     const { OpdSession } = await import("../models/OpdSession.ts");
@@ -1771,7 +1752,7 @@ export async function startOpdSession(req: FastifyRequest, reply: FastifyReply) 
     const dateStr = date ? date.slice(0, 10) : now.toISOString().slice(0, 10);
 
     const session = await OpdSession.findOneAndUpdate(
-      { clinicId, doctorId, date: dateStr },
+      { locationId, doctorId, date: dateStr },
       {
         $set: {
           organizationId: orgId,
@@ -1792,12 +1773,12 @@ export async function startOpdSession(req: FastifyRequest, reply: FastifyReply) 
       action: "OPD_SESSION_STARTED",
       targetId: session._id,
       targetModel: "OpdSession",
-      details: { clinicId, doctorId, date: dateStr, startedAt: now },
+      details: { locationId, doctorId, date: dateStr, startedAt: now },
     });
 
-    broadcastQueueUpdate(clinicId.toString(), {
+    broadcastQueueUpdate(locationId.toString(), {
       type: "QUEUE_UPDATED",
-      data: { clinicId, doctorId, opdSession: session },
+      data: { locationId, doctorId, opdSession: session },
       message: `Doctor OPD session started for today.`,
       timestamp: now.toISOString(),
     });
@@ -1811,9 +1792,9 @@ export async function startOpdSession(req: FastifyRequest, reply: FastifyReply) 
 
 export async function toggleDoctorBreak(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, doctorId, isOnBreak, breakReason, breakExpectedMinutes, date } =
+    const { locationId, doctorId, isOnBreak, breakReason, breakExpectedMinutes, date } =
       (req.body as {
-        clinicId: string;
+        locationId: string;
         doctorId: string;
         isOnBreak: boolean;
         breakReason?: string;
@@ -1821,13 +1802,13 @@ export async function toggleDoctorBreak(req: FastifyRequest, reply: FastifyReply
         date?: string;
       }) || {};
 
-    if (!clinicId || !doctorId) {
-      return reply.code(400).send(errorResponse("clinicId and doctorId are required"));
+    if (!locationId || !doctorId) {
+      return reply.code(400).send(errorResponse("locationId and doctorId are required"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, clinicId);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, locationId);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     const { OpdSession } = await import("../models/OpdSession.ts");
@@ -1853,7 +1834,7 @@ export async function toggleDoctorBreak(req: FastifyRequest, reply: FastifyReply
     }
 
     const session = await OpdSession.findOneAndUpdate(
-      { clinicId, doctorId, date: dateStr },
+      { locationId, doctorId, date: dateStr },
       { $set: updateFields },
       { upsert: true, returnDocument: "after" }
     );
@@ -1867,7 +1848,7 @@ export async function toggleDoctorBreak(req: FastifyRequest, reply: FastifyReply
       targetId: session._id,
       targetModel: "OpdSession",
       details: {
-        clinicId,
+        locationId,
         doctorId,
         date: dateStr,
         isOnBreak: session.isOnBreak,
@@ -1876,10 +1857,10 @@ export async function toggleDoctorBreak(req: FastifyRequest, reply: FastifyReply
       },
     });
 
-    broadcastQueueUpdate(clinicId.toString(), {
+    broadcastQueueUpdate(locationId.toString(), {
       type: "QUEUE_UPDATED",
       data: {
-        clinicId,
+        locationId,
         doctorId,
         opdSession: session,
         doctorBreak: {
@@ -1906,26 +1887,26 @@ export async function toggleDoctorBreak(req: FastifyRequest, reply: FastifyReply
 
 export async function getOpdSessionSummary(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, doctorId, date } = req.query as { clinicId: string; doctorId: string; date?: string };
+    const { locationId, doctorId, date } = req.query as { locationId: string; doctorId: string; date?: string };
 
-    if (!clinicId || !doctorId) {
-      return reply.code(400).send(errorResponse("clinicId and doctorId are required"));
+    if (!locationId || !doctorId) {
+      return reply.code(400).send(errorResponse("locationId and doctorId are required"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, clinicId);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, locationId);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
-    const timezone = await getClinicTimezone(clinicId);
-    const dateStr = date ? date.slice(0, 10) : clinicDateKey(new Date(), timezone);
-    const { start: startOfDay, end: endOfDay } = clinicDayRange(dateStr, timezone);
+    const timezone = await getLocationTimezone(locationId);
+    const dateStr = date ? date.slice(0, 10) : locationDateKey(new Date(), timezone);
+    const { start: startOfDay, end: endOfDay } = locationDayRange(dateStr, timezone);
 
     const { OpdSession } = await import("../models/OpdSession.ts");
-    const session = await OpdSession.findOne({ clinicId, doctorId, date: dateStr }).lean();
+    const session = await OpdSession.findOne({ locationId, doctorId, date: dateStr }).lean();
 
     const appointments = await Appointment.find({
-      clinicId,
+      locationId,
       doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
     })
@@ -1982,35 +1963,35 @@ export async function getOpdSessionSummary(req: FastifyRequest, reply: FastifyRe
 export async function endOpdSessionAndReconcile(req: FastifyRequest, reply: FastifyReply) {
   try {
     const {
-      clinicId,
+      locationId,
       doctorId,
       date,
       standbyAction = "keep_unresolved",
       waitingAction = "keep_unresolved",
     } = (req.body as {
-      clinicId: string;
+      locationId: string;
       doctorId: string;
       date?: string;
-      standbyAction?: "keep_unresolved" | "cancel_refund";
-      waitingAction?: "cancel_refund" | "keep_unresolved";
+      standbyAction?: "keep_unresolved" | "cancel";
+      waitingAction?: "cancel" | "keep_unresolved";
     }) || {};
 
-    if (!clinicId || !doctorId) {
-      return reply.code(400).send(errorResponse("clinicId and doctorId are required"));
+    if (!locationId || !doctorId) {
+      return reply.code(400).send(errorResponse("locationId and doctorId are required"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, clinicId);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, locationId);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
-    if (!["keep_unresolved", "cancel_refund"].includes(standbyAction) || !["keep_unresolved", "cancel_refund"].includes(waitingAction)) {
+    if (!["keep_unresolved", "cancel"].includes(standbyAction) || !["keep_unresolved", "cancel"].includes(waitingAction)) {
       return reply.code(400).send(errorResponse("Invalid reconciliation action"));
     }
     const now = new Date();
-    const timezone = await getClinicTimezone(clinicId);
-    const dateStr = date ? date.slice(0, 10) : clinicDateKey(now, timezone);
-    const { start: startOfDay, end: endOfDay } = clinicDayRange(dateStr, timezone);
+    const timezone = await getLocationTimezone(locationId);
+    const dateStr = date ? date.slice(0, 10) : locationDateKey(now, timezone);
+    const { start: startOfDay, end: endOfDay } = locationDayRange(dateStr, timezone);
 
     const { OpdSession } = await import("../models/OpdSession.ts");
     const user = (req as any).user;
@@ -2018,7 +1999,7 @@ export async function endOpdSessionAndReconcile(req: FastifyRequest, reply: Fast
 
     // 1. Reconcile Standby Patients
     const standbyAppointments = await Appointment.find({
-      clinicId,
+      locationId,
       doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
       status: "standby",
@@ -2026,7 +2007,7 @@ export async function endOpdSessionAndReconcile(req: FastifyRequest, reply: Fast
 
     let standbyReconciledCount = 0;
     for (const appt of standbyAppointments) {
-      if (standbyAction === "cancel_refund") {
+      if (standbyAction === "cancel") {
         appt.status = "cancelled";
         appt.cancellationReason = "End of OPD shift — unresumed standby";
         await appt.save();
@@ -2038,14 +2019,14 @@ export async function endOpdSessionAndReconcile(req: FastifyRequest, reply: Fast
 
     // 2. Reconcile Unserved Waiting Patients
     const waitingAppointments = await Appointment.find({
-      clinicId,
+      locationId,
       doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
       status: { $in: ["checked-in", "confirmed", "pending"] },
     });
 
     let waitingReconciledCount = 0;
-    if (waitingAction === "cancel_refund") {
+    if (waitingAction === "cancel") {
       for (const appt of waitingAppointments) {
         appt.status = "cancelled";
         appt.cancellationReason = "End of OPD shift — patient not called before session close";
@@ -2058,7 +2039,7 @@ export async function endOpdSessionAndReconcile(req: FastifyRequest, reply: Fast
 
     // Open consultations require a clinician's explicit completion evidence.
     const inConsultationCount = await Appointment.countDocuments({
-      clinicId,
+      locationId,
       doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
       status: "in-consultation",
@@ -2066,7 +2047,7 @@ export async function endOpdSessionAndReconcile(req: FastifyRequest, reply: Fast
 
     // 4. Update OpdSession
     const session = await OpdSession.findOneAndUpdate(
-      { clinicId, doctorId, date: dateStr },
+      { locationId, doctorId, date: dateStr },
       {
         $set: {
           organizationId: orgId,
@@ -2094,7 +2075,7 @@ export async function endOpdSessionAndReconcile(req: FastifyRequest, reply: Fast
       targetId: session._id,
       targetModel: "OpdSession",
       details: {
-        clinicId,
+        locationId,
         doctorId,
         date: dateStr,
         standbyReconciledCount,
@@ -2105,9 +2086,9 @@ export async function endOpdSessionAndReconcile(req: FastifyRequest, reply: Fast
       },
     });
 
-    broadcastQueueUpdate(clinicId.toString(), {
+    broadcastQueueUpdate(locationId.toString(), {
       type: "QUEUE_UPDATED",
-      data: { clinicId, doctorId, opdSession: session },
+      data: { locationId, doctorId, opdSession: session },
       message: `Doctor OPD session ended and reconciled.`,
       timestamp: now.toISOString(),
     });
@@ -2142,9 +2123,9 @@ export async function recordPatientVitals(req: FastifyRequest, reply: FastifyRep
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, appointment.clinicId);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, appointment.locationId);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     const body = (req.body || {}) as {
@@ -2206,7 +2187,7 @@ export async function recordPatientVitals(req: FastifyRequest, reply: FastifyRep
       if (!encounter) {
         encounter = await Encounter.create({
           organizationId: (appointment.organizationId as any) || undefined,
-          clinicId: appointment.clinicId,
+          locationId: appointment.locationId,
           appointmentId: appointment._id,
           patientId: appointment.patientId,
           doctorId: appointment.doctorId,
@@ -2222,7 +2203,7 @@ export async function recordPatientVitals(req: FastifyRequest, reply: FastifyRep
       if (vitalsData.bpSystolic && vitalsData.bpDiastolic) {
         observationsToCreate.push({
           organizationId: appointment.organizationId,
-          clinicId: appointment.clinicId,
+          locationId: appointment.locationId,
           encounterId: encounter._id,
           patientId: appointment.patientId,
           recordedBy: user?._id || user?.id,
@@ -2237,7 +2218,7 @@ export async function recordPatientVitals(req: FastifyRequest, reply: FastifyRep
       if (vitalsData.pulse) {
         observationsToCreate.push({
           organizationId: appointment.organizationId,
-          clinicId: appointment.clinicId,
+          locationId: appointment.locationId,
           encounterId: encounter._id,
           patientId: appointment.patientId,
           recordedBy: user?._id || user?.id,
@@ -2252,7 +2233,7 @@ export async function recordPatientVitals(req: FastifyRequest, reply: FastifyRep
       if (vitalsData.spO2) {
         observationsToCreate.push({
           organizationId: appointment.organizationId,
-          clinicId: appointment.clinicId,
+          locationId: appointment.locationId,
           encounterId: encounter._id,
           patientId: appointment.patientId,
           recordedBy: user?._id || user?.id,
@@ -2267,7 +2248,7 @@ export async function recordPatientVitals(req: FastifyRequest, reply: FastifyRep
       if (vitalsData.temperature) {
         observationsToCreate.push({
           organizationId: appointment.organizationId,
-          clinicId: appointment.clinicId,
+          locationId: appointment.locationId,
           encounterId: encounter._id,
           patientId: appointment.patientId,
           recordedBy: user?._id || user?.id,
@@ -2282,7 +2263,7 @@ export async function recordPatientVitals(req: FastifyRequest, reply: FastifyRep
       if (vitalsData.weight) {
         observationsToCreate.push({
           organizationId: appointment.organizationId,
-          clinicId: appointment.clinicId,
+          locationId: appointment.locationId,
           encounterId: encounter._id,
           patientId: appointment.patientId,
           recordedBy: user?._id || user?.id,
@@ -2296,7 +2277,7 @@ export async function recordPatientVitals(req: FastifyRequest, reply: FastifyRep
       if (vitalsData.bmi) {
         observationsToCreate.push({
           organizationId: appointment.organizationId,
-          clinicId: appointment.clinicId,
+          locationId: appointment.locationId,
           encounterId: encounter._id,
           patientId: appointment.patientId,
           recordedBy: user?._id || user?.id,
@@ -2311,7 +2292,7 @@ export async function recordPatientVitals(req: FastifyRequest, reply: FastifyRep
       if (vitalsData.bloodSugar) {
         observationsToCreate.push({
           organizationId: appointment.organizationId,
-          clinicId: appointment.clinicId,
+          locationId: appointment.locationId,
           encounterId: encounter._id,
           patientId: appointment.patientId,
           recordedBy: user?._id || user?.id,
@@ -2345,11 +2326,11 @@ export async function recordPatientVitals(req: FastifyRequest, reply: FastifyRep
       },
     });
 
-    const clinicIdStr = appointment.clinicId.toString();
-    broadcastQueueUpdate(clinicIdStr, {
+    const locationIdStr = appointment.locationId.toString();
+    broadcastQueueUpdate(locationIdStr, {
       type: "QUEUE_UPDATED",
       data: {
-        clinicId: clinicIdStr,
+        locationId: locationIdStr,
         doctorId: appointment.doctorId.toString(),
         appointmentId: appointment._id.toString(),
         tokenNumber: appointment.tokenNumber,
@@ -2380,9 +2361,9 @@ export async function triggerStatEmergency(req: FastifyRequest, reply: FastifyRe
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const clinicCheck = await checkClinicAccess(req, appointment.clinicId);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationCheck = await checkLocationAccess(req, appointment.locationId);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     const { reason } = (req.body || {}) as { reason?: string };
@@ -2396,7 +2377,7 @@ export async function triggerStatEmergency(req: FastifyRequest, reply: FastifyRe
     // Shift all active waiting appointments for this doctor back by 1
     await Appointment.updateMany(
       {
-        clinicId: appointment.clinicId,
+        locationId: appointment.locationId,
         doctorId: appointment.doctorId,
         appointmentTime: { $gte: startOfDay, $lte: endOfDay },
         _id: { $ne: appointment._id },
@@ -2431,14 +2412,14 @@ export async function triggerStatEmergency(req: FastifyRequest, reply: FastifyRe
       },
     });
 
-    const clinicIdStr = appointment.clinicId.toString();
+    const locationIdStr = appointment.locationId.toString();
     const doctorIdStr = appointment.doctorId.toString();
 
     // High priority emergency event broadcast
-    broadcastQueueUpdate(clinicIdStr, {
+    broadcastQueueUpdate(locationIdStr, {
       type: "QUEUE_EMERGENCY_STAT",
       data: {
-        clinicId: clinicIdStr,
+        locationId: locationIdStr,
         doctorId: doctorIdStr,
         appointmentId: appointment._id.toString(),
         tokenNumber: appointment.tokenNumber,
@@ -2476,7 +2457,7 @@ export async function resendQueueTrackerNotification(req: FastifyRequest, reply:
     }
 
     const appointment = await Appointment.findById(id)
-      .populate("clinicId", "name phone organizationId")
+      .populate("locationId", "name phone organizationId")
       .populate("doctorId", "name")
       .populate({
         path: "patientId",
@@ -2487,12 +2468,12 @@ export async function resendQueueTrackerNotification(req: FastifyRequest, reply:
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const clinicIdStr =
-      (appointment.clinicId as any)?._id?.toString() ||
-      appointment.clinicId?.toString();
-    const clinicCheck = await checkClinicAccess(req, clinicIdStr);
-    if (!clinicCheck.allowed) {
-      return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const locationIdStr =
+      (appointment.locationId as any)?._id?.toString() ||
+      appointment.locationId?.toString();
+    const locationCheck = await checkLocationAccess(req, locationIdStr);
+    if (!locationCheck.allowed) {
+      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
     }
 
     const patientDoc = appointment.patientId as any;
@@ -2518,7 +2499,7 @@ export async function resendQueueTrackerNotification(req: FastifyRequest, reply:
     const endOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59, 999);
 
     const peopleAhead = await Appointment.countDocuments({
-      clinicId: appointment.clinicId,
+      locationId: appointment.locationId,
       doctorId: appointment.doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
       status: { $in: ["checked-in", "confirmed"] },
@@ -2527,7 +2508,7 @@ export async function resendQueueTrackerNotification(req: FastifyRequest, reply:
     });
 
     const organizationId =
-      (appointment.clinicId as any)?.organizationId?.toString() ||
+      (appointment.locationId as any)?.organizationId?.toString() ||
       (appointment as any).organizationId?.toString();
 
     const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");

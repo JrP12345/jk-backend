@@ -6,7 +6,7 @@ import { paymentProvider } from "../services/payment/PaymentProvider.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import crypto from "node:crypto";
 import mongoose from "mongoose";
-import { checkClinicAccess, checkOperationalRecordAccess, resolveAuthorizedOrganizationScope, resolveTargetOrganizationId } from "../utilities/tenant.ts";
+import { checkLocationAccess, checkOperationalRecordAccess, resolveAuthorizedOrganizationScope, resolveTargetOrganizationId } from "../utilities/tenant.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));
@@ -17,7 +17,7 @@ export async function createClaimController(req: FastifyRequest, reply: FastifyR
   try {
     let orgId = await resolveTargetOrganizationId(req);
     const {
-      clinicId,
+      locationId,
       patientId,
       invoiceId,
       payerName,
@@ -25,7 +25,7 @@ export async function createClaimController(req: FastifyRequest, reply: FastifyR
       preAuthCode,
       totalClaimAmount,
     } = req.body as {
-      clinicId: string;
+      locationId: string;
       patientId: string;
       invoiceId?: string;
       payerName: string;
@@ -34,26 +34,26 @@ export async function createClaimController(req: FastifyRequest, reply: FastifyR
       totalClaimAmount: number;
     };
 
-    if (!clinicId || !patientId || !payerName || !policyNumber || totalClaimAmount === undefined) {
-      return reply.code(400).send(errorResponse("clinicId, patientId, payerName, policyNumber, and totalClaimAmount are required"));
+    if (!locationId || !patientId || !payerName || !policyNumber || totalClaimAmount === undefined) {
+      return reply.code(400).send(errorResponse("locationId, patientId, payerName, policyNumber, and totalClaimAmount are required"));
     }
-    if (!mongoose.Types.ObjectId.isValid(clinicId) || !mongoose.Types.ObjectId.isValid(patientId) || (invoiceId && !mongoose.Types.ObjectId.isValid(invoiceId))) {
-      return reply.code(400).send(errorResponse("Invalid clinic, patient, or invoice ID"));
+    if (!mongoose.Types.ObjectId.isValid(locationId) || !mongoose.Types.ObjectId.isValid(patientId) || (invoiceId && !mongoose.Types.ObjectId.isValid(invoiceId))) {
+      return reply.code(400).send(errorResponse("Invalid location, patient, or invoice ID"));
     }
     if (!Number.isFinite(totalClaimAmount) || totalClaimAmount <= 0) {
       return reply.code(400).send(errorResponse("totalClaimAmount must be greater than zero"));
     }
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
 
-    if (!orgId && clinicAccess.organizationId) {
-      orgId = clinicAccess.organizationId;
+    if (!orgId && locationAccess.organizationId) {
+      orgId = locationAccess.organizationId;
     }
     if (!orgId) return reply.code(403).send(errorResponse("Organization context required"));
 
     const patient = await Patient.findById(patientId);
     if (!patient) return reply.code(404).send(errorResponse("Patient not found"));
-    if (patient.organizationId && clinicAccess.organizationId && patient.organizationId.toString() !== clinicAccess.organizationId) {
+    if (patient.organizationId && locationAccess.organizationId && patient.organizationId.toString() !== locationAccess.organizationId) {
       return reply.code(404).send(errorResponse("Patient not found"));
     }
 
@@ -62,8 +62,8 @@ export async function createClaimController(req: FastifyRequest, reply: FastifyR
       if (!invoice) return reply.code(404).send(errorResponse("Invoice not found"));
       const invoiceAccess = await checkOperationalRecordAccess(req, invoice);
       if (!invoiceAccess.allowed) return sendTenantError(reply, invoiceAccess);
-      if (invoice.patientId.toString() !== patientId || invoice.clinicId.toString() !== clinicId) {
-        return reply.code(400).send(errorResponse("Invoice does not match the claim patient and clinic"));
+      if (invoice.patientId.toString() !== patientId || invoice.locationId.toString() !== locationId) {
+        return reply.code(400).send(errorResponse("Invoice does not match the claim patient and location"));
       }
     }
 
@@ -72,7 +72,7 @@ export async function createClaimController(req: FastifyRequest, reply: FastifyR
     const claim = await Claim.create({
       claimNumber,
       organizationId: orgId,
-      clinicId,
+      locationId,
       patientId,
       invoiceId: invoiceId || null,
       payerName,

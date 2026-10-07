@@ -23,7 +23,7 @@ export class AIToolRegistry {
   private registerDefaults() {
     this.tools.set("createAppointmentTool", {
       name: "createAppointmentTool",
-      description: "Schedule a patient consultation or follow-up appointment in the clinic calendar",
+      description: "Schedule a patient consultation or follow-up appointment in the location calendar",
       parametersSchema: { patientId: "string", appointmentDate: "ISO string", doctorId: "string", type: "string" },
       requiresClinicianApproval: true
     });

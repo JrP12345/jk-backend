@@ -53,15 +53,15 @@ describe("Enterprise Onboarding & Email Security OTP Infrastructure", () => {
   it("should create PendingTwoFactorSetup with 10-minute expiry and update Organization.isOnboarded on Email OTP verification", async () => {
     const user = await User.create({
       name: "Master Admin",
-      email: "master_admin@ananta.internal",
+      email: "master_admin@ekavyu.internal",
       password: "hashedpassword123",
       role: "admin",
     });
 
     const org = await Organization.create({
-      name: "Ananta Healthcare Facility",
+      name: "Ekavyu Healthcare Facility",
       city: "San Francisco",
-      onboardingStatus: "CLINIC_CREATED",
+      onboardingStatus: "LOCATION_CREATED",
       isOnboarded: false,
     });
 

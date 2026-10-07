@@ -1,22 +1,13 @@
 # Ekavyu deployment
 
-The final source/configuration gate and cross-repository launch actions are in
-the frontend [Phase 1 final report](../frontend/docs/phase1-final-production-gate.md).
-The frontend dependency-audit blocker is now closed; full frontend/backend npm
-audits report zero vulnerabilities and the source/configuration code gate is
-PASS. No new tests or build were run in that final pass or dependency closure.
-Complete the report's hosting, provider, worker and recovery requirements before
-launch; a repository gate does not certify the deployed environment.
+Current source cleanup is recorded in [cleanup contracts](docs/pre-production-cleanup.md).
+Complete the [operational release gates](docs/production-readiness-tracker.md) before launch; local source checks do not certify deployed infrastructure.
 
 Use Node.js 24. MongoDB must support transactions through an authenticated replica
 set or managed equivalent. Production replicas require authenticated Redis and
 persistent signing/encryption keys. Configure the backend's environment verifier;
 do not use local development fallbacks as production credentials.
-Production also requires `PRESCRIPTION_SIGNING_KEY` (at least 32 characters), or
-the actual strong legacy `JWT_SECRET` used to seal existing prescriptions.
-Preserve historical key compatibility deliberately; never use the old public
-sealing constant or silently re-sign historical records. Compose requires the
-explicit prescription-key variable for API and all workers.
+Production requires explicit `PRESCRIPTION_SIGNING_KEY` (at least 32 characters) and `DATA_ENCRYPTION_KEY`. The RS256 access-token keys are separate. Do not use development constants in production or silently re-sign historical records.
 
 ## Build
 
@@ -51,12 +42,11 @@ The Docker liveness check also uses the actual `PORT` instead of assuming 5000.
 #### Missing prescription signing key on Render
 
 If the build succeeds but `npm start` exits with `PRESCRIPTION_SIGNING_KEY
-(or legacy JWT_SECRET) must be a persistent secret of at least 32 characters`,
+must be a persistent secret of at least 32 characters`,
 open the existing service's **Environment** page. Configure
 `PRESCRIPTION_SIGNING_KEY` with the persistent secret used for prescription seals.
 The same key must be available to every API instance and worker that uses it.
-An existing strong `JWT_SECRET` is accepted for legacy compatibility; the RS256
-JWT private/public key pair does not replace this prescription signing secret.
+The RS256 JWT private/public key pair does not replace this prescription signing secret.
 
 If prescriptions were already sealed, recover their actual previous signing key
 from the secret store or deployment environment. Do not replace it with a newly
@@ -146,7 +136,7 @@ In **Anant-Backend > Environment**, choose the setting for your topology:
 Keep `NODE_ENV=production`, save the environment changes and redeploy. Readiness
 must report HTTP 200 after bootstrap with Redis `ready` or the deliberate
 `single_node_override`. The health-check path stays `/api/health/readiness`.
-The legacy Render service name is retained as an existing deployment identifier.
+Render service names must match the explicitly configured deployment.
 
 Startup validation and client initialization now resolve the same Redis settings.
 Required missing/invalid/local Redis configuration exits before MongoDB connects,
@@ -188,7 +178,6 @@ and required production environment values; run Compose from `deploy/`. It does 
 | Notifications | node dist/workers/notificationDeliveryWorker.js |
 | Outbound communications/webhooks | node dist/workers/outboundMessageWorker.js |
 | Disruption timeouts | node dist/workers/disruptionTimeoutWorker.js |
-| No-show sweep | node dist/workers/noShowSweepWorker.js |
 
 The matching npm worker:* commands load a local .env only if present. Build first.
 Production normally uses separate workers; RUN_INLINE_JOBS=true is an explicit
@@ -197,17 +186,14 @@ The outbound worker also owns the existing lease-protected subscription billing
 reconciliation (five-minute schedule) and branding cleanup (ten-minute schedule).
 Keep RUN_INLINE_JOBS=false on the API when using these standalone workers.
 
-API probes: /api/health/liveness and /api/health/readiness. Each executable worker has its own /health and /ready server on ports 5001-5005
-(notification, outbound, disruption, domain-event, no-show respectively).
+API probes: /api/health/liveness and /api/health/readiness. Each executable worker has its own /health and /ready server on ports 5001-5004
+(notification, outbound, disruption and domain-event respectively).
 Compose API probes must not be reused as proof of worker health. Monitor worker
 processes, queue age, terminal failures and provider callbacks independently.
 
 ## Rollout
 
-From a controlled source checkout, review and back up data before running
-migrate:active-consultation-lock, migrate:outbox-indexes, migrate:domain-event-indexes
-or migrate:whatsapp. Inspect each script's dry-run/apply behavior. Do not guess how
-to repair conflicting data or run a migration merely because the code builds.
+From a controlled source checkout, preview current schema indexes with `npm run db:indexes`. Apply only after review, backup and paused writers using `--writes-paused --apply`. Index preparation does not drop indexes or repair conflicts. Development domain revisions use the guarded reset/seed lifecycle; do not import superseded schemas into the current runtime.
 
 Use audit:scan and the explicit remediation options in scripts/audit-remediation.ts
 for historical audit review. Immutable historical audit entries need a deliberate

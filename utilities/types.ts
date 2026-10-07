@@ -31,6 +31,13 @@ const COOKIE_SAME_SITE =
   (process.env.COOKIE_SAME_SITE as "lax" | "strict" | "none") ||
   (IS_PROD && !COOKIE_DOMAIN ? "none" : "lax");
 
+export const AUTH_COOKIE_SCOPE = {
+  secure: IS_PROD,
+  sameSite: COOKIE_SAME_SITE,
+  path: "/",
+  ...(COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}),
+};
+
 const ACCESS_COOKIE_OPTIONS = {
   httpOnly: true,
   secure: IS_PROD,
@@ -66,7 +73,7 @@ export function setAuthCookies(reply: FastifyReply, accessToken: string, refresh
     .header('Cache-Control', 'no-store')
     .setCookie("access_token", accessToken, ACCESS_COOKIE_OPTIONS)
     .setCookie("refresh_token", refreshToken, REFRESH_COOKIE_OPTIONS)
-    .setCookie("ananta_session", isGuest ? "guest" : "1", SESSION_INDICATOR_OPTIONS);
+    .setCookie("ekavyu_session", isGuest ? "guest" : "1", SESSION_INDICATOR_OPTIONS);
 }
 
 /**
@@ -80,7 +87,7 @@ export function clearAuthCookies(reply: FastifyReply) {
   reply
     .clearCookie("access_token", clearOptions)
     .clearCookie("refresh_token", clearOptions)
-    .clearCookie("ananta_session", clearOptions)
+    .clearCookie("ekavyu_session", clearOptions)
     .clearCookie("sse_access_token", clearOptions);
 }
 

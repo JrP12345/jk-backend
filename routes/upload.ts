@@ -19,16 +19,14 @@ export default async function uploadRoutes(fastify: FastifyInstance) {
     if (!Number.isSafeInteger(fileSizeBytes) || fileSizeBytes <= 0 || fileSizeBytes > maxSizeBytes) return reply.code(400).send(errorResponse('fileSizeBytes must be within the class limit'));
     if (['clinical_document', 'prescription', 'lab_report', 'radiology'].includes(contentClass) && !patientId) return reply.code(400).send(errorResponse('Patient context is required for clinical uploads'));
     const mime = normalizeUploadMime(contentType);
-    const { uploadUrl, fileKey } = await generatePresignedUrl(originalFilename, mime, organizationId, maxSizeBytes, fileSizeBytes);
-    const intent = await UploadIntent.create({ organizationId, userId: req.user.id, patientId, objectKey: fileKey,
+    const { uploadUrl, objectKey } = await generatePresignedUrl(originalFilename, mime, organizationId, maxSizeBytes, fileSizeBytes);
+    const intent = await UploadIntent.create({ organizationId, userId: req.user.id, patientId, objectKey,
       originalFileName: originalFilename, contentClass, permittedMimeTypes: [mime], maxSizeBytes,
       status: 'pending', expiresAt: new Date(Date.now() + 15 * 60000) });
-    return reply.code(201).send(successResponse({ intentId: intent._id, uploadUrl, objectKey: fileKey, fileKey,
+    return reply.code(201).send(successResponse({ intentId: intent._id, uploadUrl, objectKey,
       maxSizeBytes, expiresAt: intent.expiresAt }, 'Upload intent created'));
   };
   fastify.post('/uploads/intent', { preHandler: [authenticate] }, createIntent);
-  // Compatibility route uses the same intent and verification contract.
-  fastify.post('/get-upload-url', { preHandler: [authenticate] }, createIntent);
 
   fastify.post('/uploads/verify', { preHandler: [authenticate] }, async (req, reply) => {
     const { intentId } = (req.body || {}) as { intentId?: string };
@@ -85,15 +83,15 @@ export default async function uploadRoutes(fastify: FastifyInstance) {
     return reply.send(successResponse({ downloadUrl, expiresInSeconds: 300, fileName: intent.originalFileName, mimeType: intent.actualMimeType }));
   });
 
-  fastify.post('/upload-base64', { preHandler: [authenticate] }, async (req, reply) => {
+  fastify.post('/uploads/base64', { preHandler: [authenticate] }, async (req, reply) => {
     const body = (req.body || {}) as any;
-    const filename = body.originalFilename || body.fileName;
+    const filename = body.originalFilename;
     const contentClass = body.contentClass || (typeof body.contentType === 'string' && body.contentType.startsWith('image/') ? 'avatar' : 'other');
     const invalid = validateUploadMetadata(filename, body.contentType, contentClass);
     if (invalid) return reply.code(400).send(errorResponse(invalid));
     const authority = await authorizeUpload(req, body.patientId);
     if (!authority.allowed) return reply.code(authority.statusCode).send(errorResponse(authority.message));
-    const encoded = body.base64Data || body.base64;
+    const encoded = body.base64Data;
     const maxBytes = Math.min(CLASS_MAX_BYTES[contentClass as ContentClass], 7 * 1024 * 1024);
     if (typeof encoded !== 'string' || encoded.length > Math.ceil(maxBytes / 3) * 4 + 256) return reply.code(413).send(errorResponse('Upload exceeds the allowed size'));
     const raw = encoded.replace(/^data:[^;]+;base64,/, '');
@@ -108,7 +106,7 @@ export default async function uploadRoutes(fastify: FastifyInstance) {
         patientId: body.patientId, objectKey: key, originalFileName: filename, contentClass,
         permittedMimeTypes: [mime], maxSizeBytes: maxBytes, actualSizeBytes: buffer.length, actualMimeType: mime,
         status: 'completed', magicBytesVerified: true, contentValidationPassed: true, malwareClean: false });
-      return reply.send(successResponse({ intentId: intent._id, fileKey: key, objectKey: key, publicUrl: key, url: key }));
+      return reply.send(successResponse({ intentId: intent._id, objectKey: key }));
     } catch (error) { await deleteObjectFromStorage(key).catch(() => {}); throw error; }
   });
 }

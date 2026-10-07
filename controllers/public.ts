@@ -1,14 +1,16 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { publicFacilityType } from "../utilities/facility.ts";
 import { organizationImageReference } from "../services/OrganizationBranding.ts";
 import mongoose from "mongoose";
 import crypto from "node:crypto";
+import { publicSlug, resolvePublicId } from "../utilities/publicLinks.ts";
 import { Organization } from "../models/Organization.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { PatientFeedback } from "../models/PatientFeedback.ts";
-import { getPublicClinicFacets, getSortedPublicClinicPage } from "../utilities/publicClinicCatalog.ts";
+import { getPublicLocationFacets, getSortedPublicLocationPage } from "../utilities/publicLocationCatalog.ts";
 import { Patient } from "../models/Patient.ts";
 import { User } from "../models/User.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
@@ -27,11 +29,10 @@ import {
   getTrackerCapability,
   hashTrackerCapability,
   hasValidTrackerCapability,
-  isTrackerCapabilityEnforced,
 } from "../utilities/publicTracker.ts";
 import { toPublicOrganizationSummary, toPublicOrganizationDetail } from "../types/publicDtos.ts";
-import { canCreateClinicBooking, canCreateOrganizationBooking, getOrganizationBookingAccess } from "../services/billing/SubscriptionAccess.ts";
-import { clinicClockMinutes, clinicDateKey, clinicDayRange, getClinicTimezone } from "../utilities/clinicTime.ts";
+import { canCreateLocationBooking, canCreateOrganizationBooking, getOrganizationBookingAccess } from "../services/billing/SubscriptionAccess.ts";
+import { locationClockMinutes, locationDateKey, locationDayRange, getLocationTimezone } from "../utilities/locationTime.ts";
 import {
   getCursorPaginationParams,
   decodeCursor,
@@ -40,59 +41,60 @@ import {
 } from "../utilities/cursorPagination.ts";
 
 export async function getPublicDoctorProfile(req: FastifyRequest, reply: FastifyReply) {
-  const { doctorId } = req.params as { doctorId: string };
-  if (!mongoose.isValidObjectId(doctorId)) return reply.code(400).send(errorResponse("Invalid doctor link"));
-  const { clinicId } = req.query as { clinicId?: string };
-  if (clinicId && !mongoose.isValidObjectId(clinicId)) return reply.code(400).send(errorResponse("Invalid clinic link"));
   try {
+    const doctorId = await resolvePublicId("doctor", (req.params as { doctorId: string }).doctorId);
+    const query = req.query as { location?: string };
+    const locationLink = query.location;
+    const locationId = locationLink ? await resolvePublicId("location", locationLink) : undefined;
+    if (!doctorId || (locationLink && !locationId)) return reply.code(404).send(errorResponse("Doctor profile is unavailable"));
     const [user, profile] = await Promise.all([
       User.findOne({ _id: doctorId, isActive: true }).select("name").lean(),
       Doctor.findOne({ userId: doctorId, isActive: { $ne: false } }).lean(),
     ]);
-    // Clinic listings are based on active assignments. Older doctors may have
-    // an assignment without a separate Doctor profile record.
+    // Active location assignments establish booking eligibility; profile details are optional.
     if (!user || profile?.isActive === false) return reply.code(404).send(errorResponse("Doctor profile is unavailable"));
     const assignments = await DoctorAssignment.find({ doctorId, isActive: true }).lean();
     if (assignments.length === 0) return reply.code(404).send(errorResponse("Doctor profile is unavailable"));
     const organizations = await Organization.find({ _id: { $in: assignments.map((item) => item.organizationId) }, isActive: { $ne: false }, status: { $ne: "inactive" } })
       .select("name logo_url image_url currency").lean();
     const organizationMap = new Map(organizations.map((item) => [item._id.toString(), item]));
-    const clinics = await Clinic.find({ _id: { $in: assignments.map((item) => item.clinicId) }, isActive: { $ne: false } })
-      .select("name city address logo timezone brandColor organizationId").lean();
-    const clinicMap = new Map(clinics.map((clinic) => [clinic._id.toString(), clinic]));
+    const locationRecords = await Location.find({ _id: { $in: assignments.map((item) => item.locationId) }, isActive: { $ne: false } })
+      .select("name facilityType city address logo timezone brandColor organizationId").lean();
+    const locationMap = new Map(locationRecords.map((location) => [location._id.toString(), location]));
     const publicAssignments = assignments.filter((item) => {
       const organizationId = item.organizationId.toString();
-      return organizationMap.has(organizationId) && clinicMap.get(item.clinicId.toString())?.organizationId?.toString() === organizationId;
+      return organizationMap.has(organizationId) && locationMap.get(item.locationId.toString())?.organizationId?.toString() === organizationId;
     });
-    const selectedAssignment = clinicId
-      ? publicAssignments.find((item) => item.clinicId.toString() === clinicId)
+    const selectedAssignment = locationId
+      ? publicAssignments.find((item) => item.locationId.toString() === locationId)
       : publicAssignments.find((item) => item.organizationId.toString() === profile?.organizationId?.toString()) || publicAssignments[0];
     if (!selectedAssignment) return reply.code(404).send(errorResponse("Doctor profile is unavailable"));
     const organization = organizationMap.get(selectedAssignment.organizationId.toString())!;
     const organizationAssignments = publicAssignments.filter((item) => item.organizationId.toString() === organization._id.toString());
     const locations = await Promise.all(organizationAssignments.map(async (assignment) => {
-      const clinic = clinicMap.get(assignment.clinicId.toString());
-      if (!clinic) return null;
-      const onlineBookingAvailable = await canCreateClinicBooking(clinic._id.toString()).catch((error) => {
-        req.log.warn({ error, clinicId: clinic._id.toString() }, "Could not verify online booking availability");
+      const location = locationMap.get(assignment.locationId.toString());
+      if (!location) return null;
+      const onlineBookingAvailable = await canCreateLocationBooking(location._id.toString()).catch((error) => {
+        req.log.warn({ error, locationId: location._id.toString() }, "Could not verify online booking availability");
         return false;
       });
       return {
-        id: clinic._id.toString(), name: clinic.name, city: clinic.city, address: clinic.address || "",
-        logo: clinic.logo || organizationImageReference(organization, "logo_url") || null,
-        brandColor: clinic.brandColor || "#0F6F66",
+        id: location._id.toString(), slug: await publicSlug("location", location._id.toString(), location.name), name: location.name, facilityType: publicFacilityType(location.facilityType), city: location.city, address: location.address || "",
+        logo: location.logo || organizationImageReference(organization, "logo_url") || null,
+        brandColor: location.brandColor || "#0F6F66",
         fees: assignment.fees, feeType: assignment.feeType, bookingMode: assignment.bookingMode,
         onlineBookingAvailable,
-        bookingStatus: onlineBookingAvailable ? "check_availability" : "contact_clinic",
+        bookingStatus: onlineBookingAvailable ? "check_availability" : "contact_location",
       };
     }));
     const publicLocations = locations.filter((location) => location !== null);
     if (publicLocations.length === 0) return reply.code(404).send(errorResponse("Doctor profile is unavailable"));
     return reply.send(successResponse({
-      id: user._id.toString(), name: user.name, specialization: profile?.specialization || "General Medicine",
+      id: user._id.toString(), slug: await publicSlug("doctor", user._id.toString(), user.name), name: user.name, specialization: profile?.specialization || "General Medicine",
       qualification: profile?.qualification || "", experienceYears: profile?.experience_years || 0,
       description: profile?.description || "", imageUrl: profile?.image_url || null,
       languages: profile?.languages || [], organizationName: organization.name,
+      organizationLocationCount: await Location.countDocuments({ organizationId: organization._id, isActive: { $ne: false } }),
       organizationLogo: organizationImageReference(organization, "logo_url") || organizationImageReference(organization, "image_url") || null,
       currency: organization.currency || "INR", locations: publicLocations,
     }));
@@ -104,7 +106,7 @@ export async function getPublicDoctorProfile(req: FastifyRequest, reply: Fastify
 
 export async function getOrganizations(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const query = req.query as { cursor?: string; limit?: string | number; format?: string };
+    const query = req.query as { cursor?: string; limit?: string | number };
     const pagination = getCursorPaginationParams(query, 20, 100);
     const decoded = decodeCursor(pagination.cursor);
     const cursorFilter = buildCursorFilter(decoded, { timeField: "createdAt", sortDirection: "desc" });
@@ -128,14 +130,6 @@ export async function getOrganizations(req: FastifyRequest, reply: FastifyReply)
     reply.header("X-Page-Limit", String(result.limit));
     reply.header("Access-Control-Expose-Headers", "X-Next-Cursor, X-Has-Next-Page, X-Page-Limit");
 
-    if (query.format === "paginated" || query.cursor) {
-      return reply.code(200).send(successResponse({
-        items: formatted,
-        nextCursor: result.nextCursor,
-        hasNextPage: result.hasNextPage,
-        limit: result.limit,
-      }));
-    }
 
     return reply.code(200).send(successResponse(formatted));
   } catch (err) {
@@ -147,7 +141,7 @@ export async function getOrganizations(req: FastifyRequest, reply: FastifyReply)
 export async function getOrganizationDetails(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id } = req.params as { id: string };
-    
+
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return reply.code(400).send(errorResponse("Invalid organization ID"));
     }
@@ -190,19 +184,19 @@ export async function getOrganizationDetails(req: FastifyRequest, reply: Fastify
   }
 }
 
-export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply) {
+export async function getPublicLocations(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { search, city, specialization, sort, latitude, longitude } = req.query as {
       search?: string; city?: string; specialization?: string; sort?: string; latitude?: string; longitude?: string;
     };
-    if (sort && sort !== "rating" && sort !== "fee_low" && sort !== "nearby") return reply.code(400).send(errorResponse("Unsupported clinic sort"));
+    if (sort && sort !== "rating" && sort !== "fee_low" && sort !== "nearby") return reply.code(400).send(errorResponse("Unsupported location sort"));
     const origin = sort === "nearby" ? { latitude: Number(latitude), longitude: Number(longitude) } : undefined;
     if (origin && (typeof latitude !== "string" || !latitude.trim() || typeof longitude !== "string" || !longitude.trim() ||
       !Number.isFinite(origin.latitude) || Math.abs(origin.latitude) > 90 || !Number.isFinite(origin.longitude) || Math.abs(origin.longitude) > 180)) {
-      return reply.code(400).send(errorResponse("Valid latitude and longitude are required for nearby clinics"));
+      return reply.code(400).send(errorResponse("Valid latitude and longitude are required for nearby locations"));
     }
 
-    // Filter out orphan clinics belonging to deleted organizations
+    // Filter out orphan locations belonging to deleted organizations
     const activeOrgs = await Organization.find({ isActive: true, status: { $ne: "inactive" } }).select("_id").lean();
     const activeOrgIds = activeOrgs.map((o) => o._id);
 
@@ -242,13 +236,13 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
       const profileDoctorIds = profileUsers.map((user) => user._id);
 
       const combinedDoctorUserIds = [...new Set([...userDoctorIds, ...profileDoctorIds])];
-      let doctorClinicIds: mongoose.Types.ObjectId[] = [];
+      let doctorLocationIds: mongoose.Types.ObjectId[] = [];
       if (combinedDoctorUserIds.length > 0) {
         const docAssignments = await DoctorAssignment.find({
           doctorId: { $in: combinedDoctorUserIds },
           isActive: true,
-        }).select("clinicId").lean();
-        doctorClinicIds = docAssignments.map((a: any) => a.clinicId).filter(Boolean);
+        }).select("locationId").lean();
+        doctorLocationIds = docAssignments.map((a: any) => a.locationId).filter(Boolean);
       }
 
       const searchOr: any[] = [
@@ -256,8 +250,8 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
         { city: { $regex: new RegExp(safeSearch, "i") } },
         { address: { $regex: new RegExp(safeSearch, "i") } }
       ];
-      if (doctorClinicIds.length > 0) {
-        searchOr.push({ _id: { $in: doctorClinicIds } });
+      if (doctorLocationIds.length > 0) {
+        searchOr.push({ _id: { $in: doctorLocationIds } });
       }
 
       andConditions.push({ $or: searchOr });
@@ -270,10 +264,10 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
       const activeDoctors = await User.find({ _id: { $in: doctors.map((doctor) => doctor.userId) }, isActive: true }).select("_id").lean();
       const doctorUserIds = activeDoctors.map((user) => user._id);
 
-      const assignments = await DoctorAssignment.find({ doctorId: { $in: doctorUserIds }, isActive: true }).select("clinicId").lean();
-      const clinicIds = assignments.map(a => a.clinicId).filter(Boolean);
+      const assignments = await DoctorAssignment.find({ doctorId: { $in: doctorUserIds }, isActive: true }).select("locationId").lean();
+      const locationIds = assignments.map(a => a.locationId).filter(Boolean);
 
-      andConditions.push({ _id: { $in: clinicIds } });
+      andConditions.push({ _id: { $in: locationIds } });
     }
 
     const pagination = getCursorPaginationParams(req.query as any, 20, 100);
@@ -284,25 +278,25 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
     }
 
     const filter: any = andConditions.length > 1 ? { $and: andConditions } : andConditions[0] || {};
-    const rawClinics = sort ? [] : await Clinic.find(filter)
+    const rawLocations = sort ? [] : await Location.find(filter)
       .sort({ createdAt: -1, _id: -1 })
       .limit(pagination.limit + 1);
 
     let paginatedResult;
     try {
       paginatedResult = sort === "rating" || sort === "fee_low" || sort === "nearby"
-        ? await getSortedPublicClinicPage(filter, sort, pagination.limit, pagination.cursor, origin)
-        : formatCursorResult(rawClinics as any[], pagination.limit, "createdAt");
+        ? await getSortedPublicLocationPage(filter, sort, pagination.limit, pagination.cursor, origin)
+        : formatCursorResult(rawLocations as any[], pagination.limit, "createdAt");
     } catch (error) {
-      if (pagination.cursor && error instanceof Error && (error.message === "Invalid sorted clinic cursor" || error instanceof SyntaxError)) {
-        return reply.code(400).send(errorResponse("Invalid clinic cursor"));
+      if (pagination.cursor && error instanceof Error && (error.message === "Invalid sorted location cursor" || error instanceof SyntaxError)) {
+        return reply.code(400).send(errorResponse("Invalid location cursor"));
       }
       throw error;
     }
-    const clinics = paginatedResult.items;
+    const locations = paginatedResult.items;
 
-    const clinicIds = clinics.map(c => c._id);
-    const allAssignments = await DoctorAssignment.find({ clinicId: { $in: clinicIds }, isActive: true })
+    const locationIds = locations.map(c => c._id);
+    const allAssignments = await DoctorAssignment.find({ locationId: { $in: locationIds }, isActive: true })
       .populate({ path: "doctorId", select: "name email phone isActive" })
       .lean();
 
@@ -315,15 +309,15 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
       profileMap.set(String(p.userId), p);
     }
 
-    const clinicAssignmentsMap = new Map<string, any[]>();
+    const locationAssignmentsMap = new Map<string, any[]>();
     for (const a of allAssignments) {
       if (!a.doctorId || !(a.doctorId as any).isActive || profileMap.get(String((a.doctorId as any)._id))?.isActive === false) continue;
-      const cid = String(a.clinicId);
-      if (!clinicAssignmentsMap.has(cid)) clinicAssignmentsMap.set(cid, []);
-      clinicAssignmentsMap.get(cid)!.push(a);
+      const cid = String(a.locationId);
+      if (!locationAssignmentsMap.has(cid)) locationAssignmentsMap.set(cid, []);
+      locationAssignmentsMap.get(cid)!.push(a);
     }
 
-    const orgIds = [...new Set(clinics.map((c) => (c.organizationId ? String(c.organizationId) : null)).filter((id): id is string => id !== null))];
+    const orgIds = [...new Set(locations.map((c) => (c.organizationId ? String(c.organizationId) : null)).filter((id): id is string => id !== null))];
     const orgs = orgIds.length > 0
       ? await Organization.find({ _id: { $in: orgIds } }).select("_id name logo_url image_url images currency countryCode timezone").lean()
       : [];
@@ -334,23 +328,28 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
     });
 
     const ratingStats = await PatientFeedback.aggregate([
-      { $match: { clinicId: { $in: clinicIds }, rating: { $gte: 1, $lte: 5 } } },
-      { $group: { _id: "$clinicId", rating: { $avg: "$rating" }, reviewsCount: { $sum: 1 } } },
+      { $match: { locationId: { $in: locationIds }, rating: { $gte: 1, $lte: 5 } } },
+      { $group: { _id: "$locationId", rating: { $avg: "$rating" }, reviewsCount: { $sum: 1 } } },
     ]);
     const ratings = new Map(ratingStats.map(item => [String(item._id), item]));
-    const facets = !search && !city && !specialization && !pagination.cursor ? await getPublicClinicFacets(visibility) : undefined;
-    const formattedClinics = clinics.map((c) => {
+    const facets = !search && !city && !specialization && !pagination.cursor ? await getPublicLocationFacets(visibility) : undefined;
+    const locationSlugs = new Map(await Promise.all(locations.map(async c => [c.id, await publicSlug("location", c.id, c.name)] as const)));
+    const doctorSlugs = new Map(await Promise.all(allAssignments.filter((a: any) => a.doctorId?.isActive).map(async (a: any) => [String(a.doctorId._id), await publicSlug("doctor", String(a.doctorId._id), a.doctorId.name)] as const)));
+    const counts = await Location.aggregate([{ $match: { organizationId: { $in: orgs.map(o => o._id) }, isActive: { $ne: false } } }, { $group: { _id: "$organizationId", count: { $sum: 1 } } }]);
+    const organizationCounts = new Map(counts.map(item => [String(item._id), item.count]));
+    const formattedLocations = locations.map((c) => {
       const json = c.toJSON();
       const org = orgMap.get(String(c.organizationId));
       const effectiveLogo = c.logo || organizationImageReference(org, "logo_url") || organizationImageReference(org, "image_url") || null;
       const effectiveImages = (Array.isArray(c.images) && c.images.length > 0) ? c.images : (org?.images || []);
       const effectiveCover = c.images?.[0] || organizationImageReference(org, "image_url") || effectiveLogo || null;
 
-      const assignments = clinicAssignmentsMap.get(String(c._id)) || [];
+      const assignments = locationAssignmentsMap.get(String(c._id)) || [];
       const doctorsSummary = assignments.map((a: any) => {
         const profile = profileMap.get(String(a.doctorId._id));
         return {
           id: a.doctorId._id.toString(),
+          slug: doctorSlugs.get(String(a.doctorId._id)),
           name: a.doctorId.name,
           specialization: profile?.specialization?.trim() || "",
           fees: a.fees ?? 0,
@@ -362,10 +361,13 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
       const minFee = feesList.length > 0 ? Math.min(...feesList) : null;
       const specialties = [...new Set(doctorsSummary.map((d: any) => d.specialization).filter(Boolean))];
       const onlineBookingAvailable = bookingAccess.get(String(c.organizationId)) === true;
-      const bookingStatus = doctorsSummary.length === 0 ? "no_doctors" : onlineBookingAvailable ? "check_availability" : "contact_clinic";
+      const bookingStatus = doctorsSummary.length === 0 ? "no_doctors" : onlineBookingAvailable ? "check_availability" : "contact_location";
 
       return {
         ...json,
+        slug: locationSlugs.get(c.id),
+        organizationLocationCount: organizationCounts.get(String(c.organizationId)) || 1,
+        facilityType: publicFacilityType(c.facilityType),
         ...(sort === "nearby" && "distances" in paginatedResult && paginatedResult.distances instanceof Map ? { distanceKm: paginatedResult.distances.get(String(c._id)) ?? null } : {}),
         logo_url: effectiveLogo,
         image_url: effectiveCover,
@@ -390,54 +392,44 @@ export async function getPublicClinics(req: FastifyRequest, reply: FastifyReply)
     reply.header("X-Page-Limit", String(paginatedResult.limit));
     reply.header("Access-Control-Expose-Headers", "X-Next-Cursor, X-Has-Next-Page, X-Page-Limit");
 
-    const query = req.query as { cursor?: string; format?: string };
-    if (query?.format === "paginated" || query?.cursor) {
-      return reply.code(200).send({ ...successResponse({
-        items: formattedClinics,
-        nextCursor: paginatedResult.nextCursor,
-        hasNextPage: paginatedResult.hasNextPage,
-        limit: paginatedResult.limit,
-      }), ...(facets ? { filters: facets } : {}) });
-    }
 
-    return reply.code(200).send({ ...successResponse(formattedClinics), ...(facets ? { filters: facets } : {}) });
+    return reply.code(200).send({ ...successResponse(formattedLocations), ...(facets ? { filters: facets } : {}) });
   } catch (err) {
-    console.error("getPublicClinics error:", err);
+    console.error("getPublicLocations error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
 
-export async function getPublicClinicDetails(req: FastifyRequest, reply: FastifyReply) {
+export async function getPublicLocationDetails(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { id } = req.params as { id: string };
-    const { doctorId } = req.query as { doctorId?: string };
+    const id = await resolvePublicId("location", (req.params as { id: string }).id);
+    const doctorLink = (req.query as { doctorId?: string }).doctorId;
+    const doctorId = doctorLink ? await resolvePublicId("doctor", doctorLink) : undefined;
+    if (doctorLink && !doctorId) return reply.code(400).send(errorResponse("Invalid doctor link"));
+    if (!id) return reply.code(404).send(errorResponse("Location not found"));
 
-    if (!mongoose.Types.ObjectId.isValid(id) || (doctorId && !mongoose.Types.ObjectId.isValid(doctorId))) {
-      return reply.code(400).send(errorResponse("Invalid clinic or doctor ID"));
+    const location = await Location.findOne({ _id: id, isActive: true });
+    if (!location) {
+      return reply.code(404).send(errorResponse("Location not found"));
     }
-
-    const clinic = await Clinic.findOne({ _id: id, isActive: true });
-    if (!clinic) {
-      return reply.code(404).send(errorResponse("Clinic not found"));
-    }
-    const org = clinic.organizationId
-      ? await Organization.findById(clinic.organizationId)
+    const org = location.organizationId
+      ? await Organization.findById(location.organizationId)
           .select("_id name logo_url image_url images description currency countryCode timezone phone email address city isActive status")
           .lean()
       : null;
     if (!org || org.isActive === false || org.status === "inactive") {
-      return reply.code(404).send(errorResponse("Clinic not found"));
+      return reply.code(404).send(errorResponse("Location not found"));
     }
-    const timezone = clinic.timezone || org?.timezone || "Asia/Kolkata";
-    const onlineBookingAvailable = await canCreateClinicBooking(id).catch((err) => {
+    const timezone = location.timezone || org?.timezone || "Asia/Kolkata";
+    const onlineBookingAvailable = await canCreateLocationBooking(id).catch((err) => {
       req.log.warn({ err }, "Could not verify online booking availability");
       return false;
     });
     const now = new Date();
-    const todayDateStr = clinicDateKey(now, timezone);
-    const { start: startOfDay, end: endOfDay } = clinicDayRange(todayDateStr, timezone);
+    const todayDateStr = locationDateKey(now, timezone);
+    const { start: startOfDay, end: endOfDay } = locationDayRange(todayDateStr, timezone);
 
-    const assignments = await DoctorAssignment.find({ clinicId: id, isActive: true, ...(doctorId ? { doctorId } : {}) })
+    const assignments = await DoctorAssignment.find({ locationId: id, isActive: true, ...(doctorId ? { doctorId } : {}) })
       .populate({
         path: "doctorId",
         select: "name isActive"
@@ -459,7 +451,7 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
     const formattedDoctors = await Promise.all(
       assignments.map(async (assign: any) => {
         if (!assign.doctorId || !assign.doctorId.isActive) return null;
-        
+
         const docProfile = docProfileMap.get(String(assign.doctorId._id));
         if (docProfile?.isActive === false) return null;
 
@@ -483,7 +475,7 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
 
         // Check today's doctor availability override
         const override = await DoctorDayOverride.findOne({
-          clinicId: id,
+          locationId: id,
           doctorId: assign.doctorId._id,
           date: todayDateStr,
         }).lean();
@@ -501,7 +493,7 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
 
         // Live waiting patient count for this doctor today
         const waitingPatientsCount = await Appointment.countDocuments({
-          clinicId: id,
+          locationId: id,
           doctorId: assign.doctorId._id,
           status: { $in: ["pending", "confirmed", "checked-in"] },
           appointmentTime: { $gte: startOfDay, $lte: endOfDay },
@@ -533,7 +525,7 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
             } else {
               const [endH, endM] = (effectiveSchedule.dayEndTime || "17:00").split(":").map(Number);
               const closingMinutes = (endH || 0) * 60 + (endM || 0);
-              const currentMinutes = clinicClockMinutes(now, timezone);
+              const currentMinutes = locationClockMinutes(now, timezone);
               const safetyBuffer = assign.onlineBookingSafetyBuffer ?? 30;
               const allowedOperatingMinutes = closingMinutes - safetyBuffer - currentMinutes;
 
@@ -541,7 +533,7 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
 
               if (estimatedQueueTime + estDuration > allowedOperatingMinutes) {
                 isOnlineBookingClosed = true;
-                onlineBookingClosedReason = `Online same-day booking closed due to queue backlog (${safetyBuffer}m safety buffer enforced before shift end). Walk-in registration accepted at clinic.`;
+                onlineBookingClosedReason = `Online same-day booking closed due to queue backlog (${safetyBuffer}m safety buffer enforced before shift end). Walk-in registration accepted at location.`;
               }
             }
           } catch {
@@ -555,7 +547,7 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
         const maxFutureDateStr = futureDate.toISOString().slice(0, 10);
 
         const upcomingOverrides = await DoctorDayOverride.find({
-          clinicId: id,
+          locationId: id,
           doctorId: assign.doctorId._id,
           date: { $gte: todayDateStr, $lte: maxFutureDateStr },
           status: "unavailable",
@@ -569,7 +561,7 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
 
         return {
           id: assign.doctorId._id.toString(),
-          doctorId: assign.doctorId._id.toString(),
+          slug: await publicSlug("doctor", assign.doctorId._id.toString(), assign.doctorId.name),
           name: assign.doctorId.name,
           specialization: docProfile?.specialization || "General Medicine",
           qualification: docProfile?.qualification || "",
@@ -587,10 +579,8 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
           maxDailyTokens: assign.maxDailyTokens || null,
           isAvailable,
           overrideStatus,
-          availabilityOverrideStatus: overrideStatus,
           overrideReason,
           upcomingHolidays,
-          consultationDuration: assign.appointmentDuration || 15,
           appointmentDuration: assign.appointmentDuration || 15,
           waitingPatientsCount,
           estimatedWaitMinutes,
@@ -602,21 +592,24 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
 
     const cleanDoctors = formattedDoctors.filter(d => d !== null);
 
-    const effectiveLogo = clinic.logo || organizationImageReference(org, "logo_url") || organizationImageReference(org, "image_url") || null;
-    const effectiveImages = (Array.isArray(clinic.images) && clinic.images.length > 0) ? clinic.images : (org?.images || []);
-    const effectiveCover = organizationImageReference(org, "image_url") || clinic.images?.[0] || effectiveLogo || null;
+    const effectiveLogo = location.logo || organizationImageReference(org, "logo_url") || organizationImageReference(org, "image_url") || null;
+    const effectiveImages = (Array.isArray(location.images) && location.images.length > 0) ? location.images : (org?.images || []);
+    const effectiveCover = organizationImageReference(org, "image_url") || location.images?.[0] || effectiveLogo || null;
 
-    const clinicJson = clinic.toJSON();
+    const locationJson = location.toJSON();
     return reply.code(200).send(successResponse({
-      ...clinicJson,
+      ...locationJson,
+      facilityType: publicFacilityType(location.facilityType),
+      slug: await publicSlug("location", location.id, location.name),
+      organizationLocationCount: await Location.countDocuments({ organizationId: location.organizationId, isActive: { $ne: false } }),
       logo_url: effectiveLogo,
       image_url: effectiveCover,
       images: effectiveImages,
-      currency: org?.currency || (clinicJson as any).currency || "INR",
+      currency: org?.currency || (locationJson as any).currency || "INR",
       countryCode: org?.countryCode || null,
       timezone,
       onlineBookingAvailable,
-      bookingStatus: cleanDoctors.length === 0 ? "no_doctors" : onlineBookingAvailable ? "check_availability" : "contact_clinic",
+      bookingStatus: cleanDoctors.length === 0 ? "no_doctors" : onlineBookingAvailable ? "check_availability" : "contact_location",
       organization: org ? {
         id: (org as any)._id.toString(),
         name: org.name,
@@ -635,20 +628,20 @@ export async function getPublicClinicDetails(req: FastifyRequest, reply: Fastify
       doctors: cleanDoctors
     }));
   } catch (err) {
-    console.error("getPublicClinicDetails error:", err);
+    console.error("getPublicLocationDetails error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
 
 /**
  * POST /api/public/join-queue
- * Fast, unauthenticated mobile walk-in queue join flow triggered via Clinic QR Poster.
+ * Fast, unauthenticated mobile walk-in queue join flow triggered via Location QR Poster.
  * Target: Scan → Name/Phone → Doctor → Join Queue → Token → Track.
  */
 export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, doctorId, name, phone, gender, notes } = req.body as {
-      clinicId: string;
+    const { locationId, doctorId, name, phone, gender, notes } = req.body as {
+      locationId: string;
       doctorId: string;
       name: string;
       phone: string;
@@ -656,12 +649,12 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
       notes?: string;
     };
 
-    if (!clinicId || !doctorId || !name?.trim() || !phone?.trim()) {
-      return reply.code(400).send(errorResponse("Clinic, doctor, patient name, and mobile number are required"));
+    if (!locationId || !doctorId || !name?.trim() || !phone?.trim()) {
+      return reply.code(400).send(errorResponse("Location, doctor, patient name, and mobile number are required"));
     }
 
-    if (!mongoose.Types.ObjectId.isValid(clinicId) || !mongoose.Types.ObjectId.isValid(doctorId)) {
-      return reply.code(400).send(errorResponse("Invalid clinic or doctor ID format"));
+    if (!mongoose.Types.ObjectId.isValid(locationId) || !mongoose.Types.ObjectId.isValid(doctorId)) {
+      return reply.code(400).send(errorResponse("Invalid location or doctor ID format"));
     }
 
     const cleanPhone = normalizePhone(phone);
@@ -669,37 +662,37 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
       return reply.code(400).send(errorResponse("Enter an Indian 10-digit number or an international number with +country code"));
     }
 
-    // 1. Verify Clinic & Active Organization
-    const clinic = await Clinic.findOne({ _id: clinicId, isActive: true });
-    if (!clinic) {
-      return reply.code(404).send(errorResponse("Clinic facility not found or currently inactive"));
+    // 1. Verify Location & Active Organization
+    const location = await Location.findOne({ _id: locationId, isActive: true });
+    if (!location) {
+      return reply.code(404).send(errorResponse("Location not found or currently inactive"));
     }
 
-    const orgId = clinic.organizationId || (clinic as any).organization_id;
+    const orgId = location.organizationId || (location as any).organization_id;
     const org = await Organization.findOne({ _id: orgId, isActive: true });
     if (!org) {
       return reply.code(400).send(errorResponse("Healthcare organization is currently inactive"));
     }
     if (!(await canCreateOrganizationBooking(org._id.toString()))) {
-      return reply.code(409).send(errorResponse("Online booking is temporarily unavailable. Please contact the clinic directly."));
+      return reply.code(409).send(errorResponse("Online booking is temporarily unavailable. Please contact reception directly."));
     }
     if (org.countryCode && org.countryCode !== "IN" && !phone.trim().startsWith("+")) {
       return reply.code(400).send(errorResponse("Use the international phone format with +country code"));
     }
 
     // 2. Verify Doctor Assignment
-    const assignment = await DoctorAssignment.findOne({ clinicId, doctorId, isActive: true });
+    const assignment = await DoctorAssignment.findOne({ locationId, doctorId, isActive: true });
     if (!assignment) {
-      return reply.code(400).send(errorResponse("Doctor is not actively assigned to this clinic facility"));
+      return reply.code(400).send(errorResponse("Doctor is not actively assigned to this location"));
     }
 
-    // 3. Verify Doctor Availability for the clinic's local day
-    const timezone = clinic.timezone || org.timezone || "Asia/Kolkata";
-    const todayStr = clinicDateKey(new Date(), timezone);
-    const { start: startOfDay, end: endOfDay } = clinicDayRange(todayStr, timezone);
+    // 3. Verify Doctor Availability for the location's local day
+    const timezone = location.timezone || org.timezone || "Asia/Kolkata";
+    const todayStr = locationDateKey(new Date(), timezone);
+    const { start: startOfDay, end: endOfDay } = locationDayRange(todayStr, timezone);
 
     const override = await DoctorDayOverride.findOne({
-      clinicId,
+      locationId,
       doctorId,
       date: todayStr,
     });
@@ -725,7 +718,7 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
 
     if (patient) {
       const activeAppt = await Appointment.findOne({
-        clinicId,
+        locationId,
         doctorId,
         patientId: patient._id,
         status: { $in: ["pending", "confirmed", "checked-in", "in-consultation"] },
@@ -747,19 +740,19 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
 
     // 5. Atomic Token Generation
     const { getNextAtomicSequence } = await import("../models/Counter.ts");
-    const counterKey = `token_${clinicId}_${doctorId}_${todayStr}`;
+    const counterKey = `token_${locationId}_${doctorId}_${todayStr}`;
     const tokenNumber = await getNextAtomicSequence(counterKey);
 
     // 6. Dynamic Queue Wait Duration Calculation
     const queueCount = await Appointment.countDocuments({
-      clinicId,
+      locationId,
       doctorId,
       status: { $in: ["pending", "confirmed", "checked-in"] },
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
     });
 
     const { duration: adaptiveDuration } = await getAdaptiveConsultationDuration(
-      clinicId,
+      locationId,
       doctorId,
       startOfDay,
       endOfDay,
@@ -773,7 +766,7 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
     const trackerCapability = createTrackerCapability();
     const appointment = await Appointment.create({
       organizationId: org._id,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient._id,
       appointmentTime: new Date(),
@@ -784,18 +777,18 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
       trackerTokenExpiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
       queuePosition: tokenNumber,
       duration: adaptiveDuration || 15,
-      notes: notes?.trim() || "Walk-In self-registered via Clinic QR Poster",
+      notes: notes?.trim() || "Walk-In self-registered via Location QR Poster",
     });
 
     // 8. Real-Time Broadcast & WhatsApp notification dispatch
     try {
-      broadcastQueueUpdate(clinicId.toString(), {
+      broadcastQueueUpdate(locationId.toString(), {
         type: "QUEUE_UPDATED",
         data: {
           appointmentId: appointment._id.toString(),
           status: "checked-in",
           doctorId: doctorId.toString(),
-          clinicId: clinicId.toString(),
+          locationId: locationId.toString(),
           tokenNumber,
         },
         timestamp: new Date().toISOString(),
@@ -817,7 +810,7 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
       estimatedWaitMinutes: estWaitMinutes,
       estimatedCallTime: estCallTime.toISOString(),
       isExisting: false,
-      trackingUrl: `/track/${appointment._id}?t=${encodeURIComponent(trackerCapability.token)}`,
+      trackingUrl: `/track/${appointment._id}#t=${encodeURIComponent(trackerCapability.token)}`,
       trackerToken: trackerCapability.token,
     }, `Token #${appointment.tokenNumber} confirmed! Proceed to waiting lounge.`));
   } catch (err) {
@@ -827,7 +820,6 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
 }
 
 function publicTrackerAccessAllowed(req: FastifyRequest, appointment: { trackerTokenHash?: string | null; trackerTokenExpiresAt?: Date | null }): boolean {
-  if (!isTrackerCapabilityEnforced()) return true;
   return hasValidTrackerCapability(req, appointment);
 }
 
@@ -902,8 +894,8 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
     }
 
     const appointment = await Appointment.findById(appointmentId)
-      .select("+trackerTokenHash trackerTokenExpiresAt clinicId doctorId patientId tokenNumber queuePosition status paymentStatus appointmentTime appointmentType disruptionResponseDeadline triageAction parkedAt parkedReason patientReturned patientReturnedAt consultationPhase investigationSentAt investigationNotes delayNotifiedAt lastNotifiedDelayMinutes isEmergency vitals investigationResults updatedAt")
-      .populate("clinicId", "name city address phone upiVpa merchantName")
+      .select("+trackerTokenHash trackerTokenExpiresAt locationId doctorId patientId tokenNumber queuePosition status paymentStatus appointmentTime appointmentType disruptionResponseDeadline triageAction parkedAt parkedReason patientReturned patientReturnedAt consultationPhase investigationSentAt investigationNotes delayNotifiedAt lastNotifiedDelayMinutes isEmergency vitals investigationResults updatedAt")
+      .populate("locationId", "name city address phone upiVpa merchantName")
       .populate("doctorId", "name specialization")
       .populate({
         path: "patientId",
@@ -918,12 +910,12 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
       return reply.code(401).send(errorResponse("A valid appointment tracker link is required"));
     }
 
-    const clinicId = (appointment.clinicId as any)?._id || appointment.clinicId;
+    const locationId = (appointment.locationId as any)?._id || appointment.locationId;
     const doctorId = (appointment.doctorId as any)?._id || appointment.doctorId;
-    const timezone = await getClinicTimezone(String(clinicId));
+    const timezone = await getLocationTimezone(String(locationId));
 
     // Doctor details & assignment
-    const doctorAssignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true }).select("appointmentDuration").lean();
+    const doctorAssignment = await DoctorAssignment.findOne({ doctorId, locationId, isActive: true }).select("appointmentDuration").lean();
     const defaultDuration = doctorAssignment?.appointmentDuration || 15;
     const docProfile = await Doctor.findOne({ userId: doctorId }).select("specialization").lean();
     const doctorSpecialization = docProfile?.specialization || (appointment.doctorId as any)?.specialization || "General Physician";
@@ -936,13 +928,13 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
       console.warn(`[PublicTracker] Corrupt historical appointmentTime detected for appointment ${appointment._id}`);
     }
     const safeDate = isValidApptDate ? apptDate : new Date();
-    const dateStr = clinicDateKey(safeDate, timezone);
-    const { start: startOfDay, end: endOfDay } = clinicDayRange(dateStr, timezone);
+    const dateStr = locationDateKey(safeDate, timezone);
+    const { start: startOfDay, end: endOfDay } = locationDayRange(dateStr, timezone);
 
     // Check same-day DoctorDayOverride safely
     const dayOverride = await DoctorDayOverride.findOne({
       doctorId,
-      clinicId,
+      locationId,
       date: dateStr,
     }).select("status reason delayMinutes").lean();
 
@@ -955,7 +947,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
 
     // Calculate adaptive consultation duration based on today's actual completed encounters
     const { duration, isAdaptive, sampleCount } = await getAdaptiveConsultationDuration(
-      clinicId,
+      locationId,
       doctorId,
       startOfDay,
       endOfDay,
@@ -964,7 +956,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
 
     // Lightweight status derivation: Query only current active consultation token (Step 5.2)
     const inConsultationAppt = await Appointment.findOne({
-      clinicId,
+      locationId,
       doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
       status: "in-consultation",
@@ -1000,7 +992,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
     } else if (waitingStatuses.some(status => status === appointment.status)) {
       // Indexed count query instead of pulling all appointments into memory
       peopleAhead = await Appointment.countDocuments({
-        clinicId,
+        locationId,
         doctorId,
         appointmentTime: { $gte: startOfDay, $lte: endOfDay },
         status: { $in: [...waitingStatuses, "in-consultation"] },
@@ -1170,14 +1162,14 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
           name: (appointment.doctorId as any)?.name || "Doctor",
           specialization: doctorSpecialization,
         },
-        clinic: {
-          id: (appointment.clinicId as any)?._id || appointment.clinicId,
-          name: (appointment.clinicId as any)?.name || "Clinic",
-          city: (appointment.clinicId as any)?.city || "",
-          address: (appointment.clinicId as any)?.address || "",
-          phone: (appointment.clinicId as any)?.phone || "",
-          upiVpa: (appointment.clinicId as any)?.upiVpa || "",
-          merchantName: (appointment.clinicId as any)?.merchantName || (appointment.clinicId as any)?.name || "",
+        location: {
+          id: (appointment.locationId as any)?._id || appointment.locationId,
+          name: (appointment.locationId as any)?.name || "Location",
+          city: (appointment.locationId as any)?.city || "",
+          address: (appointment.locationId as any)?.address || "",
+          phone: (appointment.locationId as any)?.phone || "",
+          upiVpa: (appointment.locationId as any)?.upiVpa || "",
+          merchantName: (appointment.locationId as any)?.merchantName || (appointment.locationId as any)?.name || "",
           timezone,
         },
         currentlyServingToken,
@@ -1188,7 +1180,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
         isAdaptiveDuration: isAdaptive,
         adaptiveSampleCount: sampleCount,
         doctorAvailability,
-        isToday: dateStr === clinicDateKey(new Date(), timezone),
+        isToday: dateStr === locationDateKey(new Date(), timezone),
         disruptionResponseDeadline: appointment.disruptionResponseDeadline || null,
         triageAction: appointment.triageAction || "pending",
         parkedAt: appointment.parkedAt || null,
@@ -1224,7 +1216,7 @@ export async function processPublicTrackerCheckIn(req: FastifyRequest, reply: Fa
 
     const appointment = await Appointment.findById(appointmentId)
       .select("+trackerTokenHash +checkInTokenHash")
-      .populate("clinicId", "name city")
+      .populate("locationId", "name city")
       .populate("doctorId", "name specialization")
       .populate({
         path: "patientId",
@@ -1246,10 +1238,10 @@ export async function processPublicTrackerCheckIn(req: FastifyRequest, reply: Fa
     }
 
     // Check doctor day override for today
-    const todayStr = clinicDateKey(new Date(), await getClinicTimezone(String((appointment.clinicId as any)?._id || appointment.clinicId)));
+    const todayStr = locationDateKey(new Date(), await getLocationTimezone(String((appointment.locationId as any)?._id || appointment.locationId)));
     const dayOverride = await DoctorDayOverride.findOne({
       doctorId: (appointment.doctorId as any)?._id || appointment.doctorId,
-      clinicId: (appointment.clinicId as any)?._id || appointment.clinicId,
+      locationId: (appointment.locationId as any)?._id || appointment.locationId,
       date: todayStr,
       status: "unavailable",
     });
@@ -1284,17 +1276,17 @@ export async function processPublicTrackerCheckIn(req: FastifyRequest, reply: Fa
       return reply.code(409).send(errorResponse("Self check-in capability has already been used or expired"));
     }
 
-    const clinicIdStr = ((appointment.clinicId as any)?._id || appointment.clinicId).toString();
+    const locationIdStr = ((appointment.locationId as any)?._id || appointment.locationId).toString();
     const doctorIdStr = ((appointment.doctorId as any)?._id || appointment.doctorId).toString();
     const patientName = (appointment.patientId as any)?.name || (appointment.patientId as any)?.userId?.name || "Patient";
 
-    broadcastQueueUpdate(clinicIdStr, {
+    broadcastQueueUpdate(locationIdStr, {
       type: "QUEUE_UPDATED",
       data: {
         appointmentId: appointment._id.toString(),
         tokenNumber: appointment.tokenNumber,
         status: "checked-in",
-        clinicId: clinicIdStr,
+        locationId: locationIdStr,
       },
       timestamp: new Date().toISOString(),
     });
@@ -1315,7 +1307,7 @@ export async function processPublicTrackerCheckIn(req: FastifyRequest, reply: Fa
       action: "PATIENT_SELF_CHECKIN_TRACKER",
       targetId: appointment._id,
       targetModel: "Appointment",
-      details: { tokenNumber: appointment.tokenNumber, clinicId: clinicIdStr },
+      details: { tokenNumber: appointment.tokenNumber, locationId: locationIdStr },
     });
 
     return reply.code(200).send(
@@ -1344,7 +1336,7 @@ export async function processPublicTrackerReturn(req: FastifyRequest, reply: Fas
 
     const appointment = await Appointment.findById(appointmentId)
       .select("+trackerTokenHash")
-      .populate("clinicId", "name")
+      .populate("locationId", "name")
       .populate("doctorId", "name")
       .populate({
         path: "patientId",
@@ -1371,11 +1363,11 @@ export async function processPublicTrackerReturn(req: FastifyRequest, reply: Fas
       (appointment.patientId as any)?.userId?.name ||
       "Patient";
 
-    const clinicIdStr = (appointment.clinicId as any)?._id?.toString() || appointment.clinicId.toString();
+    const locationIdStr = (appointment.locationId as any)?._id?.toString() || appointment.locationId.toString();
 
-    // Broadcast WebSocket event to clinic reception desk
+    // Broadcast WebSocket event to location reception desk
     try {
-      broadcastQueueUpdate(clinicIdStr, {
+      broadcastQueueUpdate(locationIdStr, {
         type: "PATIENT_RETURNED" as any,
         data: {
           appointmentId: appointment._id,
@@ -1385,7 +1377,7 @@ export async function processPublicTrackerReturn(req: FastifyRequest, reply: Fas
         },
         message: `Token #${appointment.tokenNumber} (${patientName}) has returned to the waiting room.`,
       });
-      broadcastQueueUpdate(clinicIdStr, {
+      broadcastQueueUpdate(locationIdStr, {
         type: "QUEUE_UPDATED",
       });
     } catch (wsErr) {
@@ -1421,25 +1413,25 @@ function maskName(name: string): string {
 
 export async function getPublicQueueTv(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const clinicId = (req.params as any)?.clinicId || (req.query as any)?.clinicId;
+    const locationId = (req.params as any)?.locationId || (req.query as any)?.locationId;
     const { doctorId } = req.query as { doctorId?: string };
 
-    if (!clinicId || !mongoose.Types.ObjectId.isValid(clinicId)) {
-      return reply.code(400).send(errorResponse("Invalid clinic ID"));
+    if (!locationId || !mongoose.Types.ObjectId.isValid(locationId)) {
+      return reply.code(400).send(errorResponse("Invalid location ID"));
     }
 
-    const clinic = await Clinic.findById(clinicId).select("name city address phone").lean();
-    if (!clinic) {
-      return reply.code(404).send(errorResponse("Clinic not found"));
+    const location = await Location.findById(locationId).select("name city address phone").lean();
+    if (!location) {
+      return reply.code(404).send(errorResponse("Location not found"));
     }
 
     const now = new Date();
-    const timezone = await getClinicTimezone(clinicId);
-    const dateStr = clinicDateKey(now, timezone);
-    const { start: startOfDay, end: endOfDay } = clinicDayRange(dateStr, timezone);
+    const timezone = await getLocationTimezone(locationId);
+    const dateStr = locationDateKey(now, timezone);
+    const { start: startOfDay, end: endOfDay } = locationDayRange(dateStr, timezone);
 
     const query: any = {
-      clinicId,
+      locationId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
       status: { $nin: ["cancelled"] },
     };
@@ -1490,11 +1482,11 @@ export async function getPublicQueueTv(req: FastifyRequest, reply: FastifyReply)
         isEmergency: (item as any).isEmergency || false,
       }));
 
-    // Check if Doctor / Clinic is currently on an OPD break
+    // Check if Doctor / Location is currently on an OPD break
     const { OpdSession } = await import("../models/OpdSession.ts");
     const { DoctorAssignment } = await import("../models/DoctorAssignment.ts");
 
-    const sessionQuery: any = { clinicId, date: dateStr, status: "active" };
+    const sessionQuery: any = { locationId, date: dateStr, status: "active" };
     if (doctorId && mongoose.Types.ObjectId.isValid(doctorId)) {
       sessionQuery.doctorId = doctorId;
     }
@@ -1512,7 +1504,7 @@ export async function getPublicQueueTv(req: FastifyRequest, reply: FastifyReply)
         };
 
     // Construct Multi-Cabin Polyclinic Grid Matrix
-    const assignments = await DoctorAssignment.find({ clinicId, isActive: true })
+    const assignments = await DoctorAssignment.find({ locationId, isActive: true })
       .populate("doctorId", "name")
       .lean();
 
@@ -1545,7 +1537,7 @@ export async function getPublicQueueTv(req: FastifyRequest, reply: FastifyReply)
       }
     }
 
-    // Also include any doctors present in today's clinic appointments
+    // Also include any doctors present in today's location appointments
     for (const appt of appointments) {
       const dId = (appt.doctorId as any)?._id?.toString() || (appt.doctorId as any)?.id?.toString() || (appt.doctorId as any)?.toString();
       if (dId && !doctorMap.has(dId)) {
@@ -1561,7 +1553,7 @@ export async function getPublicQueueTv(req: FastifyRequest, reply: FastifyReply)
       }
     }
 
-    const activeSessions = await OpdSession.find({ clinicId, date: dateStr, status: "active" }).lean();
+    const activeSessions = await OpdSession.find({ locationId, date: dateStr, status: "active" }).lean();
     const sessionMap = new Map<string, any>();
     for (const s of activeSessions) {
       if (s.doctorId) sessionMap.set(s.doctorId.toString(), s);
@@ -1616,10 +1608,10 @@ export async function getPublicQueueTv(req: FastifyRequest, reply: FastifyReply)
 
     return reply.code(200).send(
       successResponse({
-        clinic: {
-          id: clinic._id,
-          name: clinic.name,
-          city: clinic.city,
+        location: {
+          id: location._id,
+          name: location.name,
+          city: location.city,
         },
         activeToken,
         waitingQueue: waiting,
@@ -1646,7 +1638,7 @@ export async function printPublicTrackerPrescription(req: FastifyRequest, reply:
 
     const appointment = await Appointment.findById(appointmentId)
       .select("+trackerTokenHash")
-      .populate("clinicId", "name address phone city")
+      .populate("locationId", "name address phone city")
       .populate("doctorId", "name")
       .populate({
         path: "patientId",
@@ -1690,7 +1682,7 @@ export async function printPublicTrackerPrescription(req: FastifyRequest, reply:
       patientAge = new Date().getFullYear() - new Date(dob).getFullYear();
     }
 
-    const clinicDoc = appointment.clinicId as any;
+    const locationDoc = appointment.locationId as any;
     const { generatePrintablePrescriptionHtml } = await import("../utilities/prescriptionFormatter.ts");
 
     const docRawName = (appointment.doctorId as any)?.name || "Attending Physician";
@@ -1728,9 +1720,9 @@ export async function printPublicTrackerPrescription(req: FastifyRequest, reply:
     const doctorAdvice = rawDoctorAdvice ? decryptField(rawDoctorAdvice) : undefined;
 
     const html = generatePrintablePrescriptionHtml({
-      clinicName: clinicDoc?.name || "Healthcare Clinic",
-      clinicAddress: clinicDoc?.address || clinicDoc?.city || "Medical Plaza",
-      clinicPhone: clinicDoc?.phone || "Reception",
+      locationName: locationDoc?.name || "Healthcare facility",
+      locationAddress: locationDoc?.address || locationDoc?.city || "Medical Plaza",
+      locationPhone: locationDoc?.phone || "Reception",
       doctorName: formattedDoctorName,
       doctorSpecialty: doctorProfile?.specialization || "General Medicine & Primary Care",
       doctorLicenseNumber: doctorProfile?.licenseNumber,
@@ -1758,9 +1750,9 @@ export async function printPublicTrackerPrescription(req: FastifyRequest, reply:
 // ─── Public Site Traffic & Visitor Tracking ────────────────────────
 export async function trackSiteVisitController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { path, clinicId, organizationId, visitorId, referrer } = (req.body || {}) as {
+    const { path, locationId, organizationId, visitorId, referrer } = (req.body || {}) as {
       path?: string;
-      clinicId?: string;
+      locationId?: string;
       organizationId?: string;
       visitorId?: string;
       referrer?: string;
@@ -1795,7 +1787,7 @@ export async function trackSiteVisitController(req: FastifyRequest, reply: Fasti
     await SiteVisit.create({
       date: todayStr,
       path: routePath,
-      clinicId: clinicId && mongoose.Types.ObjectId.isValid(clinicId) ? clinicId : undefined,
+      locationId: locationId && mongoose.Types.ObjectId.isValid(locationId) ? locationId : undefined,
       organizationId: organizationId && mongoose.Types.ObjectId.isValid(organizationId) ? organizationId : undefined,
       visitorId: visitorId ? String(visitorId).slice(0, 100) : undefined,
       ipAddress: req.ip,

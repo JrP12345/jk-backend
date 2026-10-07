@@ -45,7 +45,7 @@ export async function loadPlatformDashboard(range: DashboardRange, now = new Dat
     ]),
     SaaSPlan.find({}).select("name slug monthlyPrice annualPrice").lean(),
     // SubscriptionPayment.amount is stored in major currency units, including tax.
-    // Never combine currencies or use clinic Invoice/AppointmentPayment amounts here.
+    // Never combine currencies or use location Invoice/AppointmentPayment amounts here.
     SubscriptionPayment.aggregate([
       { $match: { status: "captured", paidAt: { $gte: scanStart, $lte: now } } },
       { $group: { _id: { date: { $dateToString: { date: "$paidAt", format: "%Y-%m-%d", timezone: "UTC" } }, currency: { $ifNull: ["$currency", "INR"] }, organizationId: "$organizationId" }, amount: { $sum: "$amount" }, count: { $sum: 1 } } },

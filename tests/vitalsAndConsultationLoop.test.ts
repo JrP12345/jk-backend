@@ -1,3 +1,5 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { trackerFixtureHeaders } from "./helpers/trackerFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Appointment } from "../models/Appointment.ts";
@@ -13,7 +15,7 @@ describe("Pre-Consultation Vitals, Clinical SOAP Handshake, Pharmacy Queue, STAT
   let adminCookies: string[] = [];
   let orgId: string;
   let adminUserId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let patient1: any;
   let patient2: any;
@@ -22,7 +24,7 @@ describe("Pre-Consultation Vitals, Clinical SOAP Handshake, Pharmacy Queue, STAT
 
   beforeAll(async () => {
     // 1. Setup Organization & Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -35,20 +37,20 @@ describe("Pre-Consultation Vitals, Clinical SOAP Handshake, Pharmacy Queue, STAT
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     const bootstrapData = JSON.parse(bootstrapRes.body).data;
     orgId = bootstrapData.organization.id;
     adminUserId = bootstrapData.user.id || bootstrapData.user._id;
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: { name: "Bangalore Central OPD", city: "Bangalore" },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Doctor
     const docRes = await app.inject({
@@ -69,11 +71,11 @@ describe("Pre-Consultation Vitals, Clinical SOAP Handshake, Pharmacy Queue, STAT
 
     // 4. Assign Doctor with standard fee
     await DoctorAssignment.findOneAndUpdate(
-      { doctorId, clinicId },
+      { doctorId, locationId },
       {
         organizationId: orgId,
         doctorId,
-        clinicId,
+        locationId,
         fees: 800,
         consultationFee: 800,
         appointmentDuration: 15,
@@ -120,7 +122,7 @@ describe("Pre-Consultation Vitals, Clinical SOAP Handshake, Pharmacy Queue, STAT
 
     appt1 = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient1._id,
       appointmentTime: today,
@@ -132,7 +134,7 @@ describe("Pre-Consultation Vitals, Clinical SOAP Handshake, Pharmacy Queue, STAT
 
     appt2 = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient2._id,
       appointmentTime: today,
@@ -244,7 +246,7 @@ describe("Pre-Consultation Vitals, Clinical SOAP Handshake, Pharmacy Queue, STAT
   it("Step 3: In-Clinic Pharmacy Pending Queue immediately receives active prescriptions", async () => {
     const pharmacyRes = await app.inject({
       method: "GET",
-      url: `/api/pharmacy/prescriptions/pending?clinicId=${clinicId}`,
+      url: `/api/pharmacy/prescriptions/pending?locationId=${locationId}`,
       headers: { cookie: adminCookies.join("; ") },
     });
 
@@ -282,6 +284,7 @@ describe("Pre-Consultation Vitals, Clinical SOAP Handshake, Pharmacy Queue, STAT
     const trackerRes = await app.inject({
       method: "GET",
       url: `/api/public/track/${appt2._id}`,
+      headers: await trackerFixtureHeaders(appt2._id),
     });
     expect(trackerRes.statusCode).toBe(200);
     const trackerData = JSON.parse(trackerRes.body).data;
@@ -290,7 +293,7 @@ describe("Pre-Consultation Vitals, Clinical SOAP Handshake, Pharmacy Queue, STAT
     // Verify Public TV Queue display puts emergency patient at top of line
     const tvRes = await app.inject({
       method: "GET",
-      url: `/api/public/queue/tv?clinicId=${clinicId}`,
+      url: `/api/public/queue/tv?locationId=${locationId}`,
     });
     expect(tvRes.statusCode).toBe(200);
     const tvData = JSON.parse(tvRes.body).data;
@@ -312,7 +315,7 @@ describe("Pre-Consultation Vitals, Clinical SOAP Handshake, Pharmacy Queue, STAT
         organizationId: orgId,
       },
       {
-        clinicId,
+        locationId,
         doctorId,
         patientId: patient1._id.toString(),
         appointmentTime: followUpDate.toISOString(),

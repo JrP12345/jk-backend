@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import { redisClient } from "../utilities/redis.ts";
 import { Redis } from "ioredis";
 import { verifyAccessToken } from "../utilities/helpers.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { resolveSession } from '../utilities/sessionResolver.ts';
 import { getEffectivePermissions } from '../utilities/permissions.ts';
 import { isOriginAllowed } from '../middleware/csrf.ts';
@@ -50,7 +50,7 @@ function heartbeatSocket(socket: WebSocket) {
 }
 const sseStreamsMap = new Map<string, Set<FastifyReply>>();
 const userWebSocketsMap = new Map<string, Set<WebSocket>>();
-const clinicQueueWebSocketsMap = new Map<string, Set<WebSocket>>();
+const locationQueueWebSocketsMap = new Map<string, Set<WebSocket>>();
 type RealtimeIdentity = { id: string; role?: string; organization_id?: string; sessionId?: string; authVersion?: number; exp?: number };
 const privateGuards = new WeakMap<object, () => Promise<boolean>>();
 const privateClosers = new Map<string, Set<() => void>>();
@@ -60,7 +60,7 @@ function bindPrivateConnection(user: RealtimeIdentity, connection: object, close
   let pending: Promise<boolean> | undefined;
   const validate = async () => {
     if (user.exp && user.exp * 1000 <= Date.now()) return false;
-    if (!user.sessionId) return process.env.NODE_ENV === 'test';
+    if (!user.sessionId) return false;
     const result = await resolveSession(user.sessionId, user.authVersion);
     return result.valid && result.session?.userId === user.id && result.session?.role === user.role &&
       result.session?.organizationId === user.organization_id && (!extra || await extra());
@@ -78,10 +78,17 @@ function bindPrivateConnection(user: RealtimeIdentity, connection: object, close
 }
 function sendPrivate(connection: object, send: () => void) {
   const guard = privateGuards.get(connection);
-  if (!guard) { if (process.env.NODE_ENV === 'test') send(); return; }
+  if (!guard) return;
   void guard().then(valid => { if (valid && privateGuards.has(connection)) send(); }).catch(() => {});
 }
-const clinicClinicalWebSocketsMap = new Map<string, Set<WebSocket>>();
+const locationClinicalWebSocketsMap = new Map<string, Set<WebSocket>>();
+export const CANARY_LOCATION_ID = "00000000000000000000canary";
+const syntheticClinicalObservers = new Set<(payload: RealtimeMessage) => void>();
+/** In-process diagnostic observer; it receives only the reserved synthetic channel. */
+export function observeSyntheticClinicalBroadcast(listener: (payload: RealtimeMessage) => void): () => void {
+  syntheticClinicalObservers.add(listener);
+  return () => { syntheticClinicalObservers.delete(listener); };
+}
 
 export function getActiveSseConnectionsCount(): number {
   let count = 0;
@@ -128,7 +135,7 @@ export async function bufferCriticalAlert(channelKey: string, payload: RealtimeM
   if (!redisClient || !ALERT_TIER_TYPES.has(payload.type)) return;
 
   try {
-    const key = `healthos:alert_buffer:${channelKey}`;
+    const key = `ekavyu:alert_buffer:${channelKey}`;
     await redisClient.rpush(key, JSON.stringify(payload));
     await redisClient.ltrim(key, -MAX_BUFFERED_ALERTS, -1);
     await redisClient.expire(key, ALERT_BUFFER_TTL_SECONDS);
@@ -141,7 +148,7 @@ export async function getBufferedCriticalAlerts(channelKey: string): Promise<Rea
   if (!redisClient) return [];
 
   try {
-    const key = `healthos:alert_buffer:${channelKey}`;
+    const key = `ekavyu:alert_buffer:${channelKey}`;
     const rawItems = await redisClient.lrange(key, 0, -1);
     return rawItems
       .map((item) => {
@@ -195,37 +202,37 @@ export function registerUserWebSocket(userId: string, socket: WebSocket) {
   });
 }
 
-// ─── WebSocket Registration (Clinic OPD Queue) ────────────────────────
-export function registerClinicQueueWebSocket(clinicId: string, socket: WebSocket) {
-  if (!clinicQueueWebSocketsMap.has(clinicId)) {
-    clinicQueueWebSocketsMap.set(clinicId, new Set());
+// ─── WebSocket Registration (Location OPD Queue) ────────────────────────
+export function registerLocationQueueWebSocket(locationId: string, socket: WebSocket) {
+  if (!locationQueueWebSocketsMap.has(locationId)) {
+    locationQueueWebSocketsMap.set(locationId, new Set());
   }
-  clinicQueueWebSocketsMap.get(clinicId)!.add(socket);
+  locationQueueWebSocketsMap.get(locationId)!.add(socket);
 
   socket.on("close", () => {
-    const sockets = clinicQueueWebSocketsMap.get(clinicId);
+    const sockets = locationQueueWebSocketsMap.get(locationId);
     if (sockets) {
       sockets.delete(socket);
       if (sockets.size === 0) {
-        clinicQueueWebSocketsMap.delete(clinicId);
+        locationQueueWebSocketsMap.delete(locationId);
       }
     }
   });
 }
 
-// ─── WebSocket Registration (Clinic Clinical Staff Displays) ──────────
-export function registerClinicClinicalWebSocket(clinicId: string, socket: WebSocket) {
-  if (!clinicClinicalWebSocketsMap.has(clinicId)) {
-    clinicClinicalWebSocketsMap.set(clinicId, new Set());
+// ─── WebSocket Registration (Location Clinical Staff Displays) ──────────
+export function registerLocationClinicalWebSocket(locationId: string, socket: WebSocket) {
+  if (!locationClinicalWebSocketsMap.has(locationId)) {
+    locationClinicalWebSocketsMap.set(locationId, new Set());
   }
-  clinicClinicalWebSocketsMap.get(clinicId)!.add(socket);
+  locationClinicalWebSocketsMap.get(locationId)!.add(socket);
 
   socket.on("close", () => {
-    const sockets = clinicClinicalWebSocketsMap.get(clinicId);
+    const sockets = locationClinicalWebSocketsMap.get(locationId);
     if (sockets) {
       sockets.delete(socket);
       if (sockets.size === 0) {
-        clinicClinicalWebSocketsMap.delete(clinicId);
+        locationClinicalWebSocketsMap.delete(locationId);
       }
     }
   });
@@ -296,10 +303,10 @@ function sanitizePublicQueueMessage(payload: RealtimeMessage): RealtimeMessage |
   };
 }
 
-export function sendToClinicQueueLocally(clinicId: string, payload: RealtimeMessage) {
+export function sendToLocationQueueLocally(locationId: string, payload: RealtimeMessage) {
   const publicPayload = sanitizePublicQueueMessage(payload);
   if (!publicPayload) return;
-  const webSockets = clinicQueueWebSocketsMap.get(clinicId);
+  const webSockets = locationQueueWebSocketsMap.get(locationId);
   if (webSockets && webSockets.size > 0) {
     const wsString = JSON.stringify(publicPayload);
     webSockets.forEach((socket) => {
@@ -308,14 +315,17 @@ export function sendToClinicQueueLocally(clinicId: string, payload: RealtimeMess
           safeSocketSend(socket, wsString);
         }
       } catch (err) {
-        console.error(`[Queue WebSocket Error] Failed writing to clinic ${clinicId} queue websocket:`, err);
+        console.error(`[Queue WebSocket Error] Failed writing to location ${locationId} queue websocket:`, err);
       }
     });
   }
 }
 
-export function sendToClinicClinicalLocally(clinicId: string, payload: RealtimeMessage) {
-  const webSockets = clinicClinicalWebSocketsMap.get(clinicId);
+export function sendToLocationClinicalLocally(locationId: string, payload: RealtimeMessage) {
+  if (locationId === CANARY_LOCATION_ID && payload.data?.isCanary === true) {
+    for (const listener of syntheticClinicalObservers) listener(payload);
+  }
+  const webSockets = locationClinicalWebSocketsMap.get(locationId);
   if (webSockets && webSockets.size > 0) {
     const wsString = JSON.stringify(payload);
     webSockets.forEach((socket) => {
@@ -324,7 +334,7 @@ export function sendToClinicClinicalLocally(clinicId: string, payload: RealtimeM
           sendPrivate(socket, () => { if (socket.readyState === 1) safeSocketSend(socket, wsString); });
         }
       } catch (err) {
-        console.error(`[Clinical WebSocket Error] Failed writing to clinic ${clinicId} clinical websocket:`, err);
+        console.error(`[Clinical WebSocket Error] Failed writing to location ${locationId} clinical websocket:`, err);
       }
     });
   }
@@ -345,7 +355,7 @@ export function initRedisSubscriber() {
     });
 
     const subscribeChannels = () => {
-      redisSubscriber!.psubscribe("user_notifications:*", "clinic_queue:*", "clinic_clinical:*", "clinic_broadcast:*", (err) => {
+      redisSubscriber!.psubscribe("user_notifications:*", "location_queue:*", "location_clinical:*", (err) => {
         if (err) {
           console.warn("[Redis Subscriber Warning] Failed psubscribe:", err);
         } else {
@@ -377,15 +387,12 @@ export function initRedisSubscriber() {
         if (channel.startsWith("user_notifications:")) {
           const userId = channel.replace("user_notifications:", "");
           sendToUserLocally(userId, payload);
-        } else if (channel.startsWith("clinic_queue:")) {
-          const clinicId = channel.replace("clinic_queue:", "");
-          sendToClinicQueueLocally(clinicId, payload);
-        } else if (channel.startsWith("clinic_clinical:")) {
-          const clinicId = channel.replace("clinic_clinical:", "");
-          sendToClinicClinicalLocally(clinicId, payload);
-        } else if (channel.startsWith("clinic_broadcast:")) {
-          const clinicId = channel.replace("clinic_broadcast:", "");
-          sendToClinicClinicalLocally(clinicId, payload);
+        } else if (channel.startsWith("location_queue:")) {
+          const locationId = channel.replace("location_queue:", "");
+          sendToLocationQueueLocally(locationId, payload);
+        } else if (channel.startsWith("location_clinical:")) {
+          const locationId = channel.replace("location_clinical:", "");
+          sendToLocationClinicalLocally(locationId, payload);
         }
       } catch (err) {
         console.error("[Redis Cluster Listener Error] Failed parsing PubSub message:", err);
@@ -408,7 +415,7 @@ export function closeRealtimeTransports(): void {
   }
   sseStreamsMap.clear();
   const sockets = new Set<WebSocket>();
-  for (const registry of [userWebSocketsMap, clinicQueueWebSocketsMap, clinicClinicalWebSocketsMap]) {
+  for (const registry of [userWebSocketsMap, locationQueueWebSocketsMap, locationClinicalWebSocketsMap]) {
     for (const connections of registry.values()) for (const socket of connections) sockets.add(socket);
     registry.clear();
   }
@@ -474,15 +481,15 @@ export function sanitizeLobbyQueueMessage(payload: RealtimeMessage): RealtimeMes
   return payload;
 }
 
-export function broadcastQueueUpdate(clinicId: string, rawPayload: RealtimeMessage) {
+export function broadcastQueueUpdate(locationId: string, rawPayload: RealtimeMessage) {
   const payload = sanitizeLobbyQueueMessage(rawPayload);
 
-  // 1. Deliver synchronously to local clinic sockets
-  sendToClinicQueueLocally(clinicId, payload);
-  broadcastClinicalRealtime(clinicId, payload);
+  // 1. Deliver synchronously to local location sockets
+  sendToLocationQueueLocally(locationId, payload);
+  broadcastClinicalRealtime(locationId, payload);
 
   // 2. Buffer if critical alert (e.g. STAT or panic alerts)
-  bufferCriticalAlert(`clinic:${clinicId}`, payload);
+  bufferCriticalAlert(`location:${locationId}`, payload);
 
   // 3. Publish to cluster with originNodeId envelope
   if (redisClient) {
@@ -491,7 +498,7 @@ export function broadcastQueueUpdate(clinicId: string, rawPayload: RealtimeMessa
       timestamp: new Date().toISOString(),
       payload,
     };
-    redisClient.publish(`clinic_queue:${clinicId}`, JSON.stringify(envelope)).catch((err) => {
+    redisClient.publish(`location_queue:${locationId}`, JSON.stringify(envelope)).catch((err) => {
       console.warn("[Redis PubSub Warning] Failed to publish queue event to Redis:", err?.message || err);
     });
   }
@@ -500,9 +507,9 @@ export function broadcastQueueUpdate(clinicId: string, rawPayload: RealtimeMessa
 /**
  * Broadcast clinical events (panic alerts, critical lab results) to authenticated clinical staff channels.
  */
-export function broadcastClinicalRealtime(clinicId: string, payload: RealtimeMessage) {
-  sendToClinicClinicalLocally(clinicId, payload);
-  bufferCriticalAlert(`clinic_clinical:${clinicId}`, payload);
+export function broadcastClinicalRealtime(locationId: string, payload: RealtimeMessage) {
+  sendToLocationClinicalLocally(locationId, payload);
+  bufferCriticalAlert(`location_clinical:${locationId}`, payload);
 
   if (redisClient) {
     const envelope: ClusterMessageEnvelope = {
@@ -510,18 +517,12 @@ export function broadcastClinicalRealtime(clinicId: string, payload: RealtimeMes
       timestamp: new Date().toISOString(),
       payload,
     };
-    redisClient.publish(`clinic_clinical:${clinicId}`, JSON.stringify(envelope)).catch((err) => {
+    redisClient.publish(`location_clinical:${locationId}`, JSON.stringify(envelope)).catch((err) => {
       console.warn("[Redis PubSub Warning] Failed to publish clinical broadcast to Redis:", err?.message || err);
     });
   }
 }
 
-/**
- * Backwards-compatible alias for clinic-wide broadcast
- */
-export function broadcastClinicRealtime(clinicId: string, payload: RealtimeMessage) {
-  broadcastClinicalRealtime(clinicId, payload);
-}
 
 // ─── Native WebSocket Connection Handlers ─────────────────────────────
 
@@ -560,7 +561,7 @@ export async function resolveWebSocketAuth(req: FastifyRequest): Promise<Realtim
   try {
     const payload = verifyAccessToken(token);
     if (payload?.id && payload.role !== "guest") {
-      if (!payload.sessionId && process.env.NODE_ENV !== "test") return null;
+      if (!payload.sessionId) return null;
       if (payload.sessionId) {
         const resolution = await resolveSession(payload.sessionId, payload.authVersion);
         if (!resolution.valid || resolution.session?.userId !== payload.id || resolution.session?.role !== payload.role || resolution.session?.organizationId !== payload.organization_id) {
@@ -682,12 +683,12 @@ export async function handleNotificationWebSocket(socket: WebSocket, req: Fastif
 }
 
 /**
- * Fastify WebSocket handler for Clinic OPD Queue Displays (/api/queue/ws & /ws/public/queue/:clinicId)
+ * Fastify WebSocket handler for Location OPD Queue Displays (/api/queue/ws)
  * Public, sanitized queue statistics, rate-limited per IP.
  */
 export async function handleQueueWebSocket(socket: WebSocket, req: FastifyRequest) {
   const clientIp = req.ip || (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || "127.0.0.1";
-  
+
   const rateLimit = checkPublicWsRateLimit(clientIp);
   if (!rateLimit.allowed) {
     safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: rateLimit.reason }));
@@ -695,35 +696,35 @@ export async function handleQueueWebSocket(socket: WebSocket, req: FastifyReques
     return;
   }
 
-  const clinicId = (req.params as any)?.clinicId || (req.query as any)?.clinicId;
-  if (!clinicId || typeof clinicId !== "string" || clinicId.length !== 24) {
-    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Valid 24-character clinicId required" }));
-    socket.close(4004, "Invalid clinicId");
+  const locationId = (req.params as any)?.locationId || (req.query as any)?.locationId;
+  if (!locationId || typeof locationId !== "string" || locationId.length !== 24) {
+    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Valid 24-character locationId required" }));
+    socket.close(4004, "Invalid locationId");
     return;
   }
 
-  // Validate clinic exists and is active
+  // Validate location exists and is active
   try {
-    const clinic = await Clinic.findOne({ _id: clinicId, isActive: true }).select("_id isActive").lean();
-    if (!clinic) {
-      safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Clinic facility not found or inactive" }));
-      socket.close(4004, "Clinic Not Found or Inactive");
+    const location = await Location.findOne({ _id: locationId, isActive: true }).select("_id isActive").lean();
+    if (!location) {
+      safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Location not found or inactive" }));
+      socket.close(4004, "Location Not Found or Inactive");
       return;
     }
   } catch {
-    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Unable to validate clinic facility" }));
-    socket.close(1011, "Clinic lookup failed");
+    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Unable to validate location" }));
+    socket.close(1011, "Location lookup failed");
     return;
   }
 
   incrementPublicWsIp(clientIp);
-  registerClinicQueueWebSocket(clinicId, socket);
+  registerLocationQueueWebSocket(locationId, socket);
 
   safeSocketSend(socket, JSON.stringify({
     type: "CONNECTED",
     transport: "websocket",
-    topic: `clinic_queue:${clinicId}`,
-    message: `Subscribed to real-time OPD Queue updates for clinic ${clinicId}`,
+    topic: `location_queue:${locationId}`,
+    message: `Subscribed to real-time OPD Queue updates for location ${locationId}`,
     timestamp: new Date().toISOString()
   }));
 
@@ -768,7 +769,7 @@ const CLINICAL_STAFF_ROLES = new Set([
 ]);
 
 /**
- * Fastify WebSocket handler for Authenticated Clinical Staff Displays (/api/clinical/ws & /ws/clinical)
+ * Fastify WebSocket handler for Authenticated Clinical Staff Displays (/api/clinical/ws)
  */
 export async function handleClinicalWebSocket(socket: WebSocket, req: FastifyRequest) {
   const user = await resolveWebSocketAuth(req);
@@ -784,23 +785,23 @@ export async function handleClinicalWebSocket(socket: WebSocket, req: FastifyReq
     return;
   }
 
-  const clinicId = (req.params as any)?.clinicId || (req.query as any)?.clinicId;
-  if (!clinicId || typeof clinicId !== "string" || clinicId.length !== 24) {
-    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Valid 24-character clinicId query parameter required" }));
-    socket.close(4004, "Invalid clinicId");
+  const locationId = (req.params as any)?.locationId || (req.query as any)?.locationId;
+  if (!locationId || typeof locationId !== "string" || locationId.length !== 24) {
+    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Valid 24-character locationId query parameter required" }));
+    socket.close(4004, "Invalid locationId");
     return;
   }
 
-  let clinic: any;
+  let location: any;
   try {
-    clinic = await Clinic.findById(clinicId).select("organizationId isActive").lean();
+    location = await Location.findById(locationId).select("organizationId isActive").lean();
   } catch {
-    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Unable to validate clinic access" }));
-    socket.close(1011, "Clinic lookup failed");
+    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Unable to validate location access" }));
+    socket.close(1011, "Location lookup failed");
     return;
   }
-  if (!clinic || clinic.isActive === false || (user.role !== "root" && (!user.organization_id || clinic.organizationId.toString() !== user.organization_id))) {
-    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Forbidden: clinic access denied" }));
+  if (!location || location.isActive === false || (user.role !== "root" && (!user.organization_id || location.organizationId.toString() !== user.organization_id))) {
+    safeSocketSend(socket, JSON.stringify({ type: "ERROR", message: "Forbidden: location access denied" }));
     socket.close(4003, "Forbidden");
     return;
   }
@@ -811,18 +812,18 @@ export async function handleClinicalWebSocket(socket: WebSocket, req: FastifyReq
   };
   if (!await permitted()) { socket.close(4003, 'Clinical permission required'); return; }
   bindPrivateConnection(user, socket, () => socket.close(4001, 'Clinical authority expired or revoked'), permitted);
-  registerClinicClinicalWebSocket(clinicId, socket);
+  registerLocationClinicalWebSocket(locationId, socket);
 
   safeSocketSend(socket, JSON.stringify({
     type: "CONNECTED",
     transport: "websocket",
-    topic: `clinic_clinical:${clinicId}`,
-    message: `Subscribed to real-time clinical alerts for clinic ${clinicId}`,
+    topic: `location_clinical:${locationId}`,
+    message: `Subscribed to real-time clinical alerts for location ${locationId}`,
     timestamp: new Date().toISOString()
   }));
 
   // Replay unacknowledged recent critical alerts for this clinical station
-  getBufferedCriticalAlerts(`clinic_clinical:${clinicId}`).then((buffered) => {
+  getBufferedCriticalAlerts(`location_clinical:${locationId}`).then((buffered) => {
     buffered.forEach((alert) => {
       try {
         if (socket.readyState === 1) {
@@ -858,7 +859,7 @@ export async function handleClinicalWebSocket(socket: WebSocket, req: FastifyReq
   });
 }
 
-// ─── SSE Stream Handler (Backwards-Compatible Fallback) ────────────────
+// ─── SSE Stream Handler (transport recovery) ────────────────
 export async function notificationStreamHandler(req: FastifyRequest, reply: FastifyReply) {
   const userId = req.user?.id;
   if (!userId) {

@@ -6,7 +6,7 @@ import { OrganizationBrandingAsset } from "../models/OrganizationBrandingAsset.t
 import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { detectMagicBytes, scanForActiveMaliciousContent } from "../utilities/fileSecurity.ts";
 import { uploadOrganizationImage, deleteObjectFromStorage, getObjectBuffer } from "../utilities/r2.ts";
-import { brandingReference, brandingAssetId } from "../services/OrganizationBranding.ts";
+import { brandingReference } from "../services/OrganizationBranding.ts";
 import { errorResponse, successResponse } from "../utilities/helpers.ts";
 
 const maxBytes = 5 * 1024 * 1024;
@@ -65,18 +65,5 @@ export default async function organizationBrandingRoutes(app: FastifyInstance) {
     } catch { return reply.code(503).send(); }
   });
 
-  // Resolve existing branding keys by organization and field; never accept an arbitrary vault key.
-  app.get("/api/public/organizations/:id/branding/:slot", async (req, reply) => {
-    const { id, slot } = req.params as { id: string; slot: string };
-    if (!mongoose.isValidObjectId(id) || !/^(logo_url|image_url|\d{1,3})$/.test(slot)) return reply.code(404).send();
-    const org = await Organization.findById(id).select("logo_url image_url images").lean();
-    const value = slot === "logo_url" || slot === "image_url" ? org?.[slot] : org?.images?.[Number(slot)];
-    if (!value || /^https?:\/\//i.test(value) || brandingAssetId(value) || !/^(tenants\/[a-f\d]{24}\/)?[a-f\d-]+\.(png|jpe?g|webp)$/i.test(value)) return reply.code(404).send();
-    try {
-      const buffer = await getObjectBuffer(value);
-      const type = detectMagicBytes(buffer);
-      if (!type || !allowedTypes.has(type)) return reply.code(404).send();
-      return reply.header("Cache-Control", "no-cache").header("X-Content-Type-Options", "nosniff").type(type).send(buffer);
-    } catch { return reply.code(503).send(); }
-  });
+
 }

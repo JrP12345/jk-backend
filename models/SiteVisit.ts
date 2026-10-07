@@ -4,7 +4,7 @@ const SiteVisitSchema = new Schema(
   {
     date: { type: String, required: true, index: true }, // "YYYY-MM-DD"
     path: { type: String, required: true, index: true },
-    clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", index: true },
+    locationId: { type: Schema.Types.ObjectId, ref: "Location", index: true },
     organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
     visitorId: { type: String, index: true }, // Anonymous visitor fingerprint
     ipAddress: { type: String, default: "" },
@@ -18,7 +18,7 @@ const SiteVisitSchema = new Schema(
   { timestamps: true }
 );
 
-SiteVisitSchema.index({ date: 1, clinicId: 1 });
+SiteVisitSchema.index({ date: 1, locationId: 1 });
 SiteVisitSchema.index({ createdAt: -1 });
 
 SiteVisitSchema.virtual("id").get(function () {

@@ -28,7 +28,7 @@ export const SYSTEM_PERMISSIONS_CATALOG = [
   { code: "MANAGE_QUEUE", name: "Manage Patient Queue", category: "Front Desk & Operations", description: "Reorder queue and call patients to consultation rooms" },
   { code: "MANAGE_BILLING", name: "Manage Invoices & Payments", category: "Billing & Finance", description: "Create invoices, record payments, and process receipts" },
   { code: "MANAGE_STAFF", name: "Manage Staff Accounts", category: "Administration", description: "Create and update practitioner and staff profiles" },
-  { code: "MANAGE_CLINICS", name: "Manage Clinic Branches", category: "Administration", description: "Configure clinic operating hours and facility locations" },
+  { code: "MANAGE_LOCATIONS", name: "Manage Locations", category: "Administration", description: "Configure location operating hours and facility locations" },
   { code: "MANAGE_ORGANIZATION", name: "Manage Organization Settings", category: "Administration", description: "Update organization metadata and SaaS billing" },
   { code: "VIEW_ANALYTICS", name: "View Executive BI Analytics", category: "Analytics & Governance", description: "Access business intelligence dashboards and reports" },
   { code: "VIEW_AUDIT_LOGS", name: "View System Audit Logs", category: "Analytics & Governance", description: "Inspect compliance audit trails and security logs" },
@@ -199,7 +199,7 @@ export async function createRole(req: FastifyRequest, reply: FastifyReply) {
 const MANDATORY_ADMIN_PERMISSIONS = new Set([
   "ADMINISTRATIVE_GOVERNANCE",
   "MANAGE_STAFF",
-  "MANAGE_CLINICS",
+  "MANAGE_LOCATIONS",
   "MANAGE_ORGANIZATION",
   "MANAGE_BILLING",
   "VIEW_PATIENTS",

@@ -9,16 +9,14 @@ import { tenantPlugin } from "../utilities/tenantPlugin.ts";
  *   ordered → sample-collected → processing → result-uploaded (terminal)
  *           → cancelled (any non-terminal state, mandatory cancellationReason)
  *
- * Result versioning is prepared via the result sub-document structure.
- * verifiedBy is reserved for future two-step verification workflows.
  */
 const LabOrderSchema = new Schema({
   // ─── Multi-Tenant Isolation ────────────────────────────────────
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization" },
-  clinicId:       { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
+  locationId:       { type: Schema.Types.ObjectId, ref: "Location", required: true, index: true },
 
   // ─── Encounter Aggregate Root Linkage ──────────────────────────
-  // Optional for backward compatibility with pre-v1.6 orders
+  // Optional for standalone laboratory orders
   encounterId: { type: Schema.Types.ObjectId, ref: "Encounter", index: true, default: null },
   appointmentId: { type: Schema.Types.ObjectId, ref: "Appointment", default: null },
 
@@ -32,7 +30,6 @@ const LabOrderSchema = new Schema({
   orderedBy:   { type: Schema.Types.ObjectId, ref: "User", index: true, default: null },
   collectedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
   resultedBy:  { type: Schema.Types.ObjectId, ref: "User", default: null },
-  verifiedBy:  { type: Schema.Types.ObjectId, ref: "User", default: null }, // reserved for two-step verification
 
   // Primary Ordering Physician reference
   doctorId: { type: Schema.Types.ObjectId, ref: "User", index: true },
@@ -50,10 +47,8 @@ const LabOrderSchema = new Schema({
   sampleCollectedAt:  { type: Date, default: null },
   processingStartedAt:{ type: Date, default: null },
   resultedAt:         { type: Date, default: null },
-  completedDate:      { type: Date, default: null }, // alias for resultedAt
 
-  // ─── Structured Result (replaces plain resultValue string) ─────
-  // Prepared for future result versioning (corrected reports).
+  // Structured diagnostic result
   result: {
     value:          { type: String, default: "" },
     unit:           { type: String, default: "" },          // e.g. "mmol/L", "g/dL"
@@ -68,11 +63,6 @@ const LabOrderSchema = new Schema({
     attachmentUrl: { type: String, default: "" },
   },
 
-  // Flat text result representations
-  resultValue:   { type: String, default: "" },
-  resultNotes:   { type: String, default: "" },
-  attachmentUrl: { type: String, default: "" },
-
   // ─── Cancellation Accountability ───────────────────────────────
   cancellationReason: { type: String, default: "" }, // required when status = "cancelled"
   deletedAt: { type: Date, default: null, index: true },
@@ -82,7 +72,7 @@ const LabOrderSchema = new Schema({
 
 LabOrderSchema.index({ appointmentId: 1, status: 1 });
 LabOrderSchema.index({ organizationId: 1, patientId: 1, createdAt: -1 });
-LabOrderSchema.index({ organizationId: 1, clinicId: 1, status: 1, createdAt: -1 });
+LabOrderSchema.index({ organizationId: 1, locationId: 1, status: 1, createdAt: -1 });
 
 // Apply automatic multi-tenant scoping
 LabOrderSchema.plugin(tenantPlugin);
@@ -102,4 +92,3 @@ LabOrderSchema.set("toJSON", {
 });
 
 export const LabOrder = mongoose.models.LabOrder || mongoose.model("LabOrder", LabOrderSchema);
-

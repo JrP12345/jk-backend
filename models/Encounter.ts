@@ -2,7 +2,7 @@ import mongoose, { Schema } from "mongoose";
 
 const EncounterSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true },
-  clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
+  locationId: { type: Schema.Types.ObjectId, ref: "Location", required: true, index: true },
   appointmentId: { type: Schema.Types.ObjectId, ref: "Appointment", index: true },
   patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true },
   doctorId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
@@ -16,9 +16,9 @@ const EncounterSchema = new Schema({
 }, { timestamps: true });
 
 EncounterSchema.index({ organizationId: 1, appointmentId: 1, status: 1 });
-EncounterSchema.index({ clinicId: 1, status: 1 });
+EncounterSchema.index({ locationId: 1, status: 1 });
 EncounterSchema.index({ patientId: 1, createdAt: -1 });
-EncounterSchema.index({ organizationId: 1, clinicId: 1, status: 1, createdAt: -1 });
+EncounterSchema.index({ organizationId: 1, locationId: 1, status: 1, createdAt: -1 });
 
 EncounterSchema.virtual("id").get(function () {
   return this._id.toHexString();

@@ -40,7 +40,7 @@
             "seek"
           ],
           "indexes": [
-            "clinicId_1_status_1_appointmentTime_-1"
+            "locationId_1_status_1_appointmentTime_-1"
           ],
           "docsExamined": 1000,
           "keysExamined": 1000,
@@ -76,7 +76,7 @@
             "seek"
           ],
           "indexes": [
-            "clinicId_1_status_1_appointmentTime_-1"
+            "locationId_1_status_1_appointmentTime_-1"
           ],
           "docsExamined": 10000,
           "keysExamined": 10000,
@@ -89,7 +89,7 @@
       "fixture": {
         "organizations": 50,
         "providers": 500,
-        "clinics": 50,
+        "locations": 50,
         "appointments": 15000,
         "recentAppointments": 5000,
         "retainedAppointments": 10000,
@@ -129,7 +129,7 @@
       "fixture": {
         "organizations": 500,
         "providers": 5000,
-        "clinics": 500,
+        "locations": 500,
         "appointments": 150000,
         "recentAppointments": 50000,
         "retainedAppointments": 100000,

@@ -4,7 +4,7 @@ import { requireModule } from "../middleware/moduleGuard.ts";
 import {
   createAppointmentPaymentOrder,
   verifyAppointmentPayment,
-  selectPayAtClinic,
+  selectPayAtLocation,
   collectCounterPayment,
   reconcileAppointmentPayment,
   reconcileRefund,
@@ -35,7 +35,7 @@ export default async function appointmentPaymentRoutes(app: FastifyInstance) {
 
   app.post("/api/appointment-payments/create-order", paymentAccess, createAppointmentPaymentOrder);
   app.post("/api/appointment-payments/verify", paymentAccess, verifyAppointmentPayment);
-  app.post("/api/appointment-payments/pay-at-clinic", paymentAccess, selectPayAtClinic);
+  app.post("/api/appointment-payments/pay-at-location", paymentAccess, selectPayAtLocation);
   app.post("/api/appointment-payments/collect-counter", counterPaymentAccess, collectCounterPayment);
   app.post("/api/appointment-payments/reconcile", counterPaymentAccess, reconcileAppointmentPayment);
   app.post("/api/appointment-payments/reconcile-refund", {

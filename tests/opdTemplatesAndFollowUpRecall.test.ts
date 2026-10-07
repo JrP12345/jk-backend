@@ -1,7 +1,8 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
@@ -12,7 +13,7 @@ import { OpdTemplate } from "../models/OpdTemplate.ts";
 describe("OPD Clinical Presets, Follow-Up Recall Register & Doorway Summon Suite", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let doctorUserId: string;
   let patientDoc: any;
@@ -21,7 +22,7 @@ describe("OPD Clinical Presets, Follow-Up Recall Register & Doorway Summon Suite
 
   beforeAll(async () => {
     // 1. Setup Organization & Super Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -34,7 +35,7 @@ describe("OPD Clinical Presets, Follow-Up Recall Register & Doorway Summon Suite
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
     // Enable WhatsApp in test org
@@ -56,10 +57,10 @@ describe("OPD Clinical Presets, Follow-Up Recall Register & Doorway Summon Suite
       }
     );
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Apollo Express Clinic",
@@ -68,8 +69,8 @@ describe("OPD Clinical Presets, Follow-Up Recall Register & Doorway Summon Suite
         phone: "9820098200",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Doctor
     const doctorEmail = `dr_verma_${Date.now()}@apollo.com`;
@@ -83,7 +84,7 @@ describe("OPD Clinical Presets, Follow-Up Recall Register & Doorway Summon Suite
         password: "Password123",
         specialization: "General Medicine",
         consultationFee: 500,
-        clinicIds: [clinicId],
+        locationIds: [locationId],
       },
     });
     expect(docRes.statusCode).toBe(201);
@@ -162,7 +163,7 @@ describe("OPD Clinical Presets, Follow-Up Recall Register & Doorway Summon Suite
     // Create a confirmed follow-up appointment in MongoDB
     const followUpAppt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patientDoc._id,
       appointmentTime: in4Days,
@@ -180,7 +181,7 @@ describe("OPD Clinical Presets, Follow-Up Recall Register & Doorway Summon Suite
     // Query follow-up register
     const res = await app.inject({
       method: "GET",
-      url: `/api/appointments/follow-ups?clinicId=${clinicId}`,
+      url: `/api/appointments/follow-ups?locationId=${locationId}`,
       headers: { cookie: adminCookies.join("; ") },
     });
     expect(res.statusCode).toBe(200);
@@ -229,7 +230,7 @@ describe("OPD Clinical Presets, Follow-Up Recall Register & Doorway Summon Suite
     // Create waiting appointment
     const waitingAppt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patientDoc._id,
       appointmentTime: new Date(),
@@ -244,7 +245,7 @@ describe("OPD Clinical Presets, Follow-Up Recall Register & Doorway Summon Suite
       url: "/api/queue/call-next",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         doctorId,
         completePrevious: true,
       },

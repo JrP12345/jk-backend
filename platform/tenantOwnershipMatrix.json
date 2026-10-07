@@ -5,372 +5,372 @@
     "AIChatMessage": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "AIChatSession": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "AIObservabilityMetric": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "AIOrganizationConfig": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "AIPromptTemplate": {
       "classification": "platform",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "AIToolExecutionLog": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "Appointment": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "AppointmentPayment": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "AuditCheckpoint": {
       "classification": "platform",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "AuditLog": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "CDSEvaluation": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "CashierShift": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "ChainTransitionRecord": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "Claim": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
-    "Clinic": {
+    "Location": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "ClinicalNote": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "Counter": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "DPDPConsent": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "DataBreachIncident": {
       "classification": "platform",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "Department": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "Doctor": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "DoctorAssignment": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "DoctorDayOverride": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "DocumentUpload": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "DomainEventOutbox": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "Encounter": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "FamilyRelationship": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "ImagingStudy": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "InsuranceTariff": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "Invoice": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "LabOrder": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "LabTest": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "Medicine": {
       "classification": "tenant",
-      "ownershipField": "clinicId",
-      "clinicField": "clinicId"
+      "ownershipField": "locationId",
+      "locationField": "locationId"
     },
     "MedicineBatch": {
       "classification": "tenant",
-      "ownershipField": "clinicId",
-      "clinicField": "clinicId"
+      "ownershipField": "locationId",
+      "locationField": "locationId"
     },
     "ModuleRegistry": {
       "classification": "platform",
       "ownershipField": null,
-      "clinicField": null
+      "locationField": null
     },
     "Notification": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "NotificationDelivery": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "NotificationLog": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "NotificationPreference": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "Observation": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "ObservationAlert": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "ObservationScore": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "OnboardingDraft": {
       "classification": "public",
       "ownershipField": null,
-      "clinicField": null
+      "locationField": null
     },
     "OpdSession": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "OpdTemplate": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "OrgInvite": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "OrgMember": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "Organization": {
       "classification": "platform",
       "ownershipField": "_id",
-      "clinicField": null
+      "locationField": null
     },
     "OtpVerification": {
       "classification": "public",
       "ownershipField": null,
-      "clinicField": null
+      "locationField": null
     },
     "OutboundMessage": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "Patient": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "primaryClinicId"
+      "locationField": "primaryLocationId"
     },
     "PatientFeedback": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "PendingTwoFactorSetup": {
       "classification": "auth_ephemeral",
       "ownershipField": "userId",
-      "clinicField": null
+      "locationField": null
     },
     "PreAuthorization": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "Prescription": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "Receptionist": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "RefillRequest": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "RefreshToken": {
       "classification": "auth_ephemeral",
       "ownershipField": "userId",
-      "clinicField": null
+      "locationField": null
     },
     "Role": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "SaaSConfig": {
       "classification": "platform",
       "ownershipField": null,
-      "clinicField": null
+      "locationField": null
     },
     "SaaSInvoice": {
       "classification": "platform",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "SaaSPlan": {
       "classification": "platform",
       "ownershipField": null,
-      "clinicField": null
+      "locationField": null
     },
     "ScheduleH1Register": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "ServiceCatalog": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "ShiftRoster": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "SiteVisit": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "SoapTemplate": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "Subscription": {
       "classification": "platform",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "SubscriptionPayment": {
       "classification": "platform",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "Task": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "TeleconsultationSession": {
       "classification": "tenant",
       "ownershipField": "organizationId",
-      "clinicField": "clinicId"
+      "locationField": "locationId"
     },
     "UsageRecord": {
       "classification": "platform",
       "ownershipField": "organizationId",
-      "clinicField": null
+      "locationField": null
     },
     "User": {
       "classification": "user_cross_tenant",
       "ownershipField": "_id",
-      "clinicField": null
+      "locationField": null
     },
     "WorkerLease": {
       "classification": "platform",
       "ownershipField": null,
-      "clinicField": null
+      "locationField": null
     }
   }
 }

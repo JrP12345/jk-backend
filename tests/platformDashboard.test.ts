@@ -1,3 +1,4 @@
+import { fixtureAccessToken } from "./helpers/sessionFixture.ts";
 import { beforeAll, describe, expect, it } from "vitest";
 import mongoose from "mongoose";
 import { app } from "../index.ts";
@@ -10,7 +11,6 @@ import { Subscription } from "../models/Subscription.ts";
 import { SubscriptionPayment } from "../models/SubscriptionPayment.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { AuditLog } from "../models/AuditLog.ts";
-import { generateAccessToken } from "../utilities/helpers.ts";
 import { dashboardPeriod, loadPlatformDashboard } from "../services/platformDashboard.ts";
 
 const now = new Date("2026-10-15T12:00:00Z");
@@ -22,8 +22,8 @@ beforeAll(async () => {
   await Role.create({ name: "admin", permissions: ["MANAGE_ORGANIZATION"] });
   const root = await User.create({ name: "Owner", email: "owner@dashboard.test", role: "root" });
   const admin = await User.create({ name: "Clinic Admin", email: "admin@dashboard.test", role: "admin" });
-  const cookie = (user: typeof root, role: string, organization_id?: string, impersonatedBy?: { id: string; email: string; name: string; originalRole: string }) => `access_token=${generateAccessToken({ id: user.id, email: user.email || "", role, organization_id, impersonatedBy })}`;
-  rootCookie = cookie(root, "root");
+  const cookie = async (user: typeof root, role: string, organization_id?: string, impersonatedBy?: { id: string; email: string; name: string; originalRole: string }) => `access_token=${(await fixtureAccessToken({ id: user.id, email: user.email || "", role, organization_id, impersonatedBy }))}`;
+  rootCookie = (await cookie(root, "root"));
   const paidPlan = await SaaSPlan.create({ name: "Paid plan", slug: "dashboard_paid", description: "Paid", monthlyPrice: 1000, annualPrice: 10000 });
   const freePlan = await SaaSPlan.create({ name: "Free plan", slug: "dashboard_free", description: "Free", monthlyPrice: 0, annualPrice: 0 });
   const specs = [
@@ -54,7 +54,7 @@ beforeAll(async () => {
     await payment(10, "captured", new Date("2026-10-05"), "USD");
     await payment(7000, "captured", null);
     const patient = objectId();
-    const base = { organizationId: org._id, clinicId: objectId(), doctorId: objectId(), patientId: patient, appointmentType: "online", tokenNumber: 1, appointmentTime: new Date("2026-10-11T09:00:00Z") };
+    const base = { organizationId: org._id, locationId: objectId(), doctorId: objectId(), patientId: patient, appointmentType: "online", tokenNumber: 1, appointmentTime: new Date("2026-10-11T09:00:00Z") };
     // Isolated database fixtures avoid unrelated booking/payment providers.
     await Appointment.collection.insertMany([
       { ...base, createdAt: new Date("2026-10-02"), status: "confirmed" },
@@ -72,8 +72,8 @@ beforeAll(async () => {
     await AuditLog.create({ organizationId: org._id, category: "ADMIN", action: "ORGANIZATION_UPDATED", createdAt: new Date("2026-10-14"), details: { password: "private-secret", patientName: "Patient secret" } });
     await AuditLog.create({ organizationId: org._id, category: "CLINICAL_WRITE", action: "PATIENT_UPDATE", createdAt: new Date("2026-10-15"), details: { diagnosis: "clinical secret" } });
   }
-  adminCookie = cookie(admin, "admin", paidId);
-  impersonatedCookie = cookie(admin, "admin", paidId, { id: root.id, email: root.email || "", name: root.name, originalRole: "root" });
+  adminCookie = (await cookie(admin, "admin", paidId));
+  impersonatedCookie = (await cookie(admin, "admin", paidId, { id: root.id, email: root.email || "", name: root.name, originalRole: "root" }));
 });
 
 describe("Platform owner aggregates", () => {

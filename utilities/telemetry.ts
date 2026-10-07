@@ -16,7 +16,7 @@ export interface AlertContext {
   component?: string;
   route?: string;
   action?: string;
-  clinicId?: string;
+  locationId?: string;
   [key: string]: string | undefined;
 }
 
@@ -59,7 +59,7 @@ export function scrubTelemetry<T extends Event>(event: T): T {
   for (const ex of event.exception?.values || []) {
     if (ex.value) ex.value = sanitizeErrorMessage(ex.value);
   }
-  event.tags = { nodeId: NODE_ID, service: 'healthos-backend' };
+  event.tags = { nodeId: NODE_ID, service: 'ekavyu-backend' };
   return event;
 }
 

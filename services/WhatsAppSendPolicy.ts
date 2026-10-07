@@ -1,7 +1,7 @@
 import { Patient } from "../models/Patient.ts";
 import { WhatsAppRecipient } from "../models/WhatsAppRecipient.ts";
 import { WhatsAppTemplate } from "../models/WhatsAppTemplate.ts";
-import { computeBlindIndex } from "../utilities/encryption.ts";
+import { computeBlindIndex } from "../utilities/cryptoEnvelope.ts";
 import { whatsAppCloudApiService } from "./WhatsAppCloudApiService.ts";
 
 export function phoneHash(phone: string) { return computeBlindIndex(whatsAppCloudApiService.formatPhoneNumber(phone)); }

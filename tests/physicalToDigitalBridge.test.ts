@@ -1,7 +1,10 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { providerFixtureSlug } from "./helpers/providerFixture.ts";
+import { trackerFixtureHeaders } from "./helpers/trackerFixture.ts";
+import { describe, it, expect, beforeAll, vi, afterAll } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
@@ -11,13 +14,15 @@ import { Appointment } from "../models/Appointment.ts";
 describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration & Thermal Token Slips)", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctor1Id: string;
   let doctor2Id: string;
 
   beforeAll(async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-07T08:00:00Z"));
     // 1. Bootstrap Healthcare Organization & Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -26,17 +31,17 @@ describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration
         admin_name: "Operations Director",
         admin_email: `bridge_admin_${Date.now()}@bridgehealth.com`,
         admin_password: "Password123",
-        plan: "pro",
+        plan: "professional",
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
-    // 2. Setup Clinic Facility
-    const clinicRes = await app.inject({
+    // 2. Setup Location Facility
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Metro Wellness & OPD Clinic",
@@ -45,8 +50,8 @@ describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration
         phone: "+91 9820011223",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Primary Doctor
     const doc1Res = await app.inject({
@@ -78,10 +83,10 @@ describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration
     expect(doc2Res.statusCode).toBe(201);
     doctor2Id = JSON.parse(doc2Res.body).data.id;
 
-    // 5. Assign both doctors to clinic with sequential queue mode
+    // 5. Assign both doctors to location with sequential queue mode
     await DoctorAssignment.create({
       doctorId: doctor1Id,
-      clinicId,
+      locationId,
       organizationId: orgId,
       fees: 500,
       appointmentDuration: 15,
@@ -92,7 +97,7 @@ describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration
 
     await DoctorAssignment.create({
       doctorId: doctor2Id,
-      clinicId,
+      locationId,
       organizationId: orgId,
       fees: 600,
       appointmentDuration: 20,
@@ -105,17 +110,17 @@ describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration
   it("1. should fetch public clinic details with live doctors, wait estimates & availability", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/api/public/clinics/${clinicId}`,
+      url: `/api/public/locations/${await providerFixtureSlug("location", locationId)}`,
     });
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
-    expect(body.data.id || body.data._id).toBe(clinicId);
+    expect(body.data.id || body.data._id).toBe(locationId);
     expect(body.data.name).toBe("Metro Wellness & OPD Clinic");
     expect(body.data.doctors).toHaveLength(2);
 
-    const doc1 = body.data.doctors.find((d: any) => d.doctorId === doctor1Id);
+    const doc1 = body.data.doctors.find((d: any) => d.id === doctor1Id);
     expect(doc1).toBeDefined();
     expect(doc1.name).toBe("Dr. Ananya Roy");
     expect(doc1.specialization).toBe("Internal Medicine");
@@ -129,7 +134,7 @@ describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration
       method: "POST",
       url: "/api/public/join-queue",
       payload: {
-        clinicId,
+        locationId,
         doctorId: doctor1Id,
         name: "Suresh Tendulkar",
         phone: patientPhone,
@@ -162,14 +167,14 @@ describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration
 
   it("3. should prevent duplicate tokens when same patient re-scans QR poster on the same day", async () => {
     const patientPhone = "9876543210";
-    const before = await Appointment.countDocuments({ clinicId, doctorId: doctor1Id });
+    const before = await Appointment.countDocuments({ locationId, doctorId: doctor1Id });
 
     // Second scan attempt for the same doctor today
     const res = await app.inject({
       method: "POST",
       url: "/api/public/join-queue",
       payload: {
-        clinicId,
+        locationId,
         doctorId: doctor1Id,
         name: "Suresh Tendulkar",
         phone: patientPhone,
@@ -183,7 +188,7 @@ describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration
     expect(body.message).toContain("An active token already exists");
     expect(body.data?.trackingUrl).toBeUndefined();
     expect(body.data?.appointmentId).toBeUndefined();
-    expect(await Appointment.countDocuments({ clinicId, doctorId: doctor1Id })).toBe(before);
+    expect(await Appointment.countDocuments({ locationId, doctorId: doctor1Id })).toBe(before);
   });
 
   it("4. should reject queue join if doctor is marked unavailable/on-leave today via DoctorDayOverride", async () => {
@@ -191,7 +196,7 @@ describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration
     const todayStr = new Date().toISOString().slice(0, 10);
 
     await DoctorDayOverride.create({
-      clinicId,
+      locationId,
       doctorId: doctor2Id,
       date: todayStr,
       status: "unavailable",
@@ -202,7 +207,7 @@ describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration
       method: "POST",
       url: "/api/public/join-queue",
       payload: {
-        clinicId,
+        locationId,
         doctorId: doctor2Id,
         name: "Meena Kumari",
         phone: "9123456780",
@@ -229,7 +234,7 @@ describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration
           method: "POST",
           url: "/api/public/join-queue",
           payload: {
-            clinicId,
+            locationId,
             doctorId: doctor1Id,
             name: p.name,
             phone: p.phone,
@@ -264,7 +269,7 @@ describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration
       method: "POST",
       url: "/api/public/join-queue",
       payload: {
-        clinicId,
+        locationId,
         doctorId: doctor1Id,
         name: "Deepak Chopra",
         phone: "9844444444",
@@ -280,6 +285,7 @@ describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration
     const trackRes = await app.inject({
       method: "GET",
       url: `/api/public/track/${appointmentId}`,
+      headers: await trackerFixtureHeaders(appointmentId),
     });
 
     expect(trackRes.statusCode).toBe(200);
@@ -289,7 +295,9 @@ describe("Physical-to-Digital Bridge (Clinic QR Poster, Mobile Self-Registration
     expect(trackerBody.data.tokenNumber).toBe(tokenNumber);
     expect(trackerBody.data.status).toBe("checked-in");
     expect(trackerBody.data.doctor.name).toBe("Dr. Ananya Roy");
-    expect(trackerBody.data.clinic.name).toBe("Metro Wellness & OPD Clinic");
+    expect(trackerBody.data.location.name).toBe("Metro Wellness & OPD Clinic");
     expect(trackerBody.data.queuePosition).toBeGreaterThanOrEqual(1);
   });
 });
+
+afterAll(() => vi.useRealTimers());

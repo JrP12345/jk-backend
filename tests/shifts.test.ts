@@ -1,4 +1,5 @@
-import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { reuseOnboardingLocation } from "./helpers/locationEssentialsSetup.ts";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { app } from "../index.ts";
 import mongoose from "mongoose";
@@ -8,19 +9,19 @@ import { ShiftRoster } from "../models/ShiftRoster.ts";
 describe("Shift Roster & Staff Scheduling Integration Tests", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let adminUserId: string;
   let shiftId: string;
 
   beforeAll(async () => {
     // 1. Create Organization
-    const orgRes = await app.inject({
+    const orgRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
-        org_name: "HealthOS Shift Roster Hospital",
+        org_name: "Ekavyu Shift Roster Hospital",
         subdomain: `shift-roster-${Date.now()}`,
-        admin_email: `admin_shift_${Date.now()}@ananta.internal`,
+        admin_email: `admin_shift_${Date.now()}@ekavyu.internal`,
         admin_password: "Password123!",
         admin_name: "Shift Manager Lead",
         city: "Hyderabad",
@@ -30,12 +31,12 @@ describe("Shift Roster & Staff Scheduling Integration Tests", () => {
     const orgBody = JSON.parse(orgRes.body);
     orgId = orgBody.data.organization._id || orgBody.data.organization.id;
 
-    adminCookies = orgRes.headers["set-cookie"] as string[];
+    adminCookies = (await provisionedAdminCookies(orgRes));
     const adminUser = orgBody.data.adminUser || orgBody.data.admin || orgBody.data.user;
     adminUserId = adminUser?._id?.toString() || adminUser?.id || new mongoose.Types.ObjectId().toString();
 
-    // 2. Create Clinic
-    const clinicRes = await reuseOnboardingClinic(app, { headers: { cookie: adminCookies.join("; ") }, payload: {
+    // 2. Create Location
+    const locationRes = await reuseOnboardingLocation(app, { headers: { cookie: adminCookies.join("; ") }, payload: {
         name: "Main Ward Clinic",
         code: `MWC-${Date.now()}`,
         city: "Hyderabad",
@@ -43,14 +44,14 @@ describe("Shift Roster & Staff Scheduling Integration Tests", () => {
         phone: "9100055000",
         email: "shiftward@hospital.com",
       } });
-    expect(clinicRes.statusCode).toBe(200);
-    const clinicBody = JSON.parse(clinicRes.body);
-    clinicId = clinicBody.data.id;
+    expect(locationRes.statusCode).toBe(200);
+    const locationBody = JSON.parse(locationRes.body);
+    locationId = locationBody.data.id;
   });
 
   afterAll(async () => {
     if (ShiftRoster) {
-      await ShiftRoster.deleteMany({ clinicId });
+      await ShiftRoster.deleteMany({ locationId });
     }
     await app.close();
   });
@@ -61,7 +62,7 @@ describe("Shift Roster & Staff Scheduling Integration Tests", () => {
       url: "/api/shifts",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         staffId: adminUserId,
         staffName: "Nurse Sarah Jenkins",
         staffRole: "Nurse",
@@ -87,7 +88,7 @@ describe("Shift Roster & Staff Scheduling Integration Tests", () => {
   it("should fetch shifts list with KPI metrics and nurse-to-patient ratio", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/api/shifts?clinicId=${clinicId}`,
+      url: `/api/shifts?locationId=${locationId}`,
       headers: { cookie: adminCookies.join("; ") },
     });
 

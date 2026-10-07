@@ -1,3 +1,4 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import mongoose from "mongoose";
 import { app } from "../index.ts";
@@ -10,7 +11,7 @@ import { AuditLog } from "../models/AuditLog.ts";
 describe("Queue State Integrity & Single-Consultation Guard Tests", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let patient1: any;
   let patient2: any;
@@ -18,8 +19,8 @@ describe("Queue State Integrity & Single-Consultation Guard Tests", () => {
   let appt2: any;
 
   beforeAll(async () => {
-    // 1. Setup Org, Clinic & Doctor
-    const boot = await app.inject({
+    // 1. Setup Org, Location & Doctor
+    const boot = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -32,16 +33,16 @@ describe("Queue State Integrity & Single-Consultation Guard Tests", () => {
       },
     });
     expect(boot.statusCode).toBe(201);
-    adminCookies = (boot.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(boot));
     orgId = JSON.parse(boot.body).data.organization.id;
 
-    const clinicRes = await app.inject({
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: { name: "Pune Central Clinic", city: "Pune" },
     });
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    locationId = JSON.parse(locationRes.body).data.id;
 
     const docRes = await app.inject({
       method: "POST",
@@ -76,7 +77,7 @@ describe("Queue State Integrity & Single-Consultation Guard Tests", () => {
 
     appt1 = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient1._id,
       appointmentTime: now,
@@ -88,7 +89,7 @@ describe("Queue State Integrity & Single-Consultation Guard Tests", () => {
 
     appt2 = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient2._id,
       appointmentTime: now,
@@ -105,7 +106,7 @@ describe("Queue State Integrity & Single-Consultation Guard Tests", () => {
     const [raceAppointmentA, raceAppointmentB] = await Appointment.create([
       {
         organizationId: orgId,
-        clinicId,
+        locationId,
         doctorId: raceDoctorId,
         patientId: patient1._id,
         appointmentTime: now,
@@ -115,7 +116,7 @@ describe("Queue State Integrity & Single-Consultation Guard Tests", () => {
       },
       {
         organizationId: orgId,
-        clinicId,
+        locationId,
         doctorId: raceDoctorId,
         patientId: patient2._id,
         appointmentTime: now,
@@ -157,7 +158,7 @@ describe("Queue State Integrity & Single-Consultation Guard Tests", () => {
       method: "POST",
       url: "/api/queue/call-next",
       headers: { cookie: adminCookies.join("; ") },
-      payload: { clinicId, doctorId },
+      payload: { locationId, doctorId },
     });
 
     expect(res.statusCode).toBe(200);
@@ -176,7 +177,7 @@ describe("Queue State Integrity & Single-Consultation Guard Tests", () => {
       method: "POST",
       url: "/api/queue/call-next",
       headers: { cookie: adminCookies.join("; ") },
-      payload: { clinicId, doctorId },
+      payload: { locationId, doctorId },
     });
 
     expect(res.statusCode).toBe(409);
@@ -193,7 +194,7 @@ describe("Queue State Integrity & Single-Consultation Guard Tests", () => {
       method: "POST",
       url: "/api/queue/call-next",
       headers: { cookie: adminCookies.join("; ") },
-      payload: { clinicId, doctorId, completePrevious: true },
+      payload: { locationId, doctorId, completePrevious: true },
     });
 
     expect(res.statusCode).toBe(200);

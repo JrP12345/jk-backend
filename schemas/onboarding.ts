@@ -1,3 +1,5 @@
+import { FACILITY_TYPES } from "../utilities/facility.ts";
+
 const objectIdPattern = "^[0-9a-fA-F]{24}$";
 const emailPattern = "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$";
 const optionalEmailPattern = "^(|[^@\\s]+@[^@\\s]+\\.[^@\\s]+)$";
@@ -21,14 +23,15 @@ export const createOrganizationSchema = {
       admin_email: { type: "string", pattern: emailPattern },
       admin_password: { type: "string", minLength: 8 },
       admin_phone: { type: "string" },
-      clinic_name: { type: "string" },
-      clinic_city: { type: "string" },
-      clinic_address: { type: "string" },
-      clinic_phone: { type: "string" },
-      clinic_email: { type: "string" },
-      plan: { type: "string", enum: ["starter", "pro", "enterprise"] },
+      location_name: { type: "string" },
+      facilityType: { type: "string", enum: [...FACILITY_TYPES] },
+      location_city: { type: "string" },
+      location_address: { type: "string" },
+      location_phone: { type: "string" },
+      location_email: { type: "string" },
+      plan: { type: "string", enum: ["starter", "professional", "enterprise"] },
       trialDays: { type: "integer", minimum: 1, maximum: 365 },
-      maxClinics: { type: "number" },
+      maxLocations: { type: "number" },
       maxDoctors: { type: "number" },
       maxStaff: { type: "number" },
       taxId: { type: "string" },
@@ -71,8 +74,8 @@ export const updateOrganizationSchema = {
       address: { type: ["string", "null"] },
       phone: { type: ["string", "null"] },
       email: { type: ["string", "null"], pattern: optionalEmailPattern },
-      plan: { type: "string", enum: ["starter", "pro", "enterprise"] },
-      maxClinics: { type: "number", minimum: 1 },
+      plan: { type: "string", enum: ["starter", "professional", "enterprise"] },
+      maxLocations: { type: "number", minimum: 1 },
       maxDoctors: { type: "number", minimum: 1 },
       maxStaff: { type: "number", minimum: 1 },
       status: { type: "string", enum: ["active", "inactive"] },
@@ -104,7 +107,7 @@ export const globalUsersQuerySchema = {
           { type: "string", pattern: objectIdPattern },
         ],
       },
-      clinicId: {
+      locationId: {
         anyOf: [
           { type: "string", enum: ["all"] },
           { type: "string", pattern: objectIdPattern },
@@ -136,16 +139,16 @@ export const addDoctorSchema = {
       registrationNumber: { type: "string" },
       digitalSignatureUrl: { type: "string" },
       letterheadDefaultMode: { type: "string", enum: ["plain_a4", "preprinted_stationery"] },
-      clinicIds: { type: "array", items: { type: "string" } },
-      clinicId: { type: "string" },
+      locationIds: { type: "array", items: { type: "string" } },
+      locationId: { type: "string" },
       consultationFee: { type: "number" },
-      clinicAssignments: {
+      locationAssignments: {
         type: "array",
         items: {
           type: "object",
-          required: ["clinicId", "workingHours", "fees"],
+          required: ["locationId", "workingHours", "fees"],
           properties: {
-            clinicId: { type: "string", pattern: objectIdPattern },
+            locationId: { type: "string", pattern: objectIdPattern },
             workingHours: { type: "string", minLength: 1 },
             fees: { type: "number", minimum: 0 },
             sessionDuration: { type: "number", minimum: 1 }
@@ -168,18 +171,19 @@ export const addReceptionistSchema = {
       password: { type: "string", minLength: 8 },
       phone: { type: "string" },
       shift: { type: "string" },
-      clinicId: { type: "string" }
+      locationId: { type: "string" }
     },
     additionalProperties: false
   }
 };
 
-export const createClinicSchema = {
+export const createLocationSchema = {
   body: {
     type: "object",
     required: ["name", "city"],
     properties: {
       organizationId: { type: "string" },
+      facilityType: { type: "string", enum: [...FACILITY_TYPES] },
       name: { type: "string", minLength: 1 },
       city: { type: "string", minLength: 1 },
       address: { type: "string" },
@@ -188,7 +192,7 @@ export const createClinicSchema = {
       email: { type: "string" },
       timings: { type: "string" },
       workingDays: { type: "string" },
-      facilities: { type: "array", items: { type: "string" } },
+      amenities: { type: "array", items: { type: "string" } },
       image_url: { type: "string" },
       logo: { type: "string" },
       description: { type: "string" },
@@ -202,7 +206,7 @@ export const createClinicSchema = {
   }
 };
 
-export const updateClinicSchema = {
+export const updateLocationSchema = {
   params: {
     type: "object",
     required: ["id"],
@@ -215,6 +219,7 @@ export const updateClinicSchema = {
     required: ["name", "city"],
     properties: {
       name: { type: "string", minLength: 1 },
+      facilityType: { type: "string", enum: [...FACILITY_TYPES] },
       city: { type: "string", minLength: 1 },
       address: { type: "string" },
       timezone: { type: "string" },
@@ -222,7 +227,7 @@ export const updateClinicSchema = {
       email: { type: "string" },
       timings: { type: "string" },
       workingDays: { type: "string" },
-      facilities: { type: "array", items: { type: "string" } },
+      amenities: { type: "array", items: { type: "string" } },
       image_url: { type: "string" },
       logo: { type: "string" },
       description: { type: "string" },
@@ -239,10 +244,10 @@ export const updateClinicSchema = {
 export const assignDoctorSchema = {
   body: {
     type: "object",
-    required: ["doctorId", "clinicId", "workingHours", "fees"],
+    required: ["doctorId", "locationId", "workingHours", "fees"],
     properties: {
       doctorId: { type: "string", pattern: objectIdPattern },
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
       workingHours: { type: "string", minLength: 1 },
       fees: { type: "number", minimum: 0 },
       sessionDuration: { type: "number", minimum: 1 },
@@ -250,7 +255,7 @@ export const assignDoctorSchema = {
       bookingMode: { type: "string", enum: ["time_slot", "sequential_queue"] },
       maxDailyTokens: { type: ["number", "null"], minimum: 1 },
       paymentRequired: { type: "boolean" },
-      allowPayAtClinic: { type: "boolean" }
+      allowPayAtLocation: { type: "boolean" }
     },
     additionalProperties: false
   }
@@ -265,7 +270,7 @@ export const createDepartmentSchema = {
       code: { type: "string", minLength: 1 },
       description: { type: "string" },
       headDoctorId: { type: "string", pattern: objectIdPattern },
-      clinicId: { type: "string", pattern: objectIdPattern },
+      locationId: { type: "string", pattern: objectIdPattern },
     },
     additionalProperties: false,
   },

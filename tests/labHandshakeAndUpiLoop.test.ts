@@ -1,3 +1,5 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { trackerFixtureHeaders } from "./helpers/trackerFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
@@ -11,7 +13,7 @@ import { Invoice } from "../models/Invoice.ts";
 describe("Closed-Loop Diagnostic Lab Order, WhatsApp Rx & BharatPe UPI Settlement Test Suite", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let patient: any;
   let appt: any;
@@ -19,7 +21,7 @@ describe("Closed-Loop Diagnostic Lab Order, WhatsApp Rx & BharatPe UPI Settlemen
 
   beforeAll(async () => {
     // 1. Setup Organization & Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -32,18 +34,18 @@ describe("Closed-Loop Diagnostic Lab Order, WhatsApp Rx & BharatPe UPI Settlemen
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: { name: "Bangalore Main Clinic", city: "Bangalore" },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Doctor
     const docRes = await app.inject({
@@ -64,7 +66,7 @@ describe("Closed-Loop Diagnostic Lab Order, WhatsApp Rx & BharatPe UPI Settlemen
 
     // 4. Assign Doctor with consultation fees
     await DoctorAssignment.findOneAndUpdate(
-      { doctorId, clinicId },
+      { doctorId, locationId },
       {
         organizationId: orgId,
         fees: 600,
@@ -79,7 +81,7 @@ describe("Closed-Loop Diagnostic Lab Order, WhatsApp Rx & BharatPe UPI Settlemen
     // 5. Create Lab Tests in catalog
     await LabTest.create([
       {
-        clinicId,
+        locationId,
         name: "Complete Blood Count (CBC)",
         code: "CBC-01",
         department: "Hematology",
@@ -88,7 +90,7 @@ describe("Closed-Loop Diagnostic Lab Order, WhatsApp Rx & BharatPe UPI Settlemen
         normalRange: "Hb: 13-17 g/dL, WBC: 4000-11000 /mcL",
       },
       {
-        clinicId,
+        locationId,
         name: "Random Blood Sugar (RBS)",
         code: "RBS-02",
         department: "Biochemistry",
@@ -115,7 +117,7 @@ describe("Closed-Loop Diagnostic Lab Order, WhatsApp Rx & BharatPe UPI Settlemen
 
     appt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient._id,
       appointmentTime: today,
@@ -132,7 +134,7 @@ describe("Closed-Loop Diagnostic Lab Order, WhatsApp Rx & BharatPe UPI Settlemen
   it("Step 1: Doctor sends patient for diagnostic tests -> places urgent LabOrders and sets standby", async () => {
     const res = await app.inject({
       method: "POST",
-      url: `/api/queue/${appt._id}/send-investigation`,
+      url: `/api/queue/${appt._id}/order-investigations`,
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         notes: "Patient reports chronic fatigue and dizziness. Urgent CBC and RBS required.",
@@ -171,7 +173,7 @@ describe("Closed-Loop Diagnostic Lab Order, WhatsApp Rx & BharatPe UPI Settlemen
       url: `/api/lab-orders/${cbcOrder._id}/result`,
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        resultValue: "Hb: 10.2 g/dL (Low), WBC: 12500 /mcL (High)",
+        value: "Hb: 10.2 g/dL (Low), WBC: 12500 /mcL (High)",
         notes: "Microcytic hypochromic anemia with leukocytosis",
       },
     });
@@ -186,7 +188,7 @@ describe("Closed-Loop Diagnostic Lab Order, WhatsApp Rx & BharatPe UPI Settlemen
       url: `/api/lab-orders/${rbsOrder._id}/result`,
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        resultValue: "245 mg/dL",
+        value: "245 mg/dL",
         notes: "Marked post-prandial hyperglycemia",
       },
     });
@@ -256,6 +258,7 @@ describe("Closed-Loop Diagnostic Lab Order, WhatsApp Rx & BharatPe UPI Settlemen
     const printRes = await app.inject({
       method: "GET",
       url: `/api/public/track/${appt._id}/prescription/print`,
+      headers: await trackerFixtureHeaders(appt._id),
     });
 
     expect(printRes.statusCode).toBe(200);

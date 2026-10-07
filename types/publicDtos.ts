@@ -1,6 +1,6 @@
 /**
  * Explicit Data Transfer Objects (DTOs) for Public-Facing Endpoints.
- * 
+ *
  * SEC-001 Remediation: Ensures internal organization secrets (SMTP credentials,
  * WhatsApp Cloud API tokens, webhook secrets, tax IDs, internal subscription limits)
  * can NEVER leak across the public API boundary.
@@ -29,7 +29,7 @@ export interface PublicOrganizationSummary {
 
 export interface PublicOrganizationDetail extends PublicOrganizationSummary {
   doctors?: any[];
-  clinics?: any[];
+  locations?: any[];
 }
 
 export function toPublicOrganizationSummary(raw: any): PublicOrganizationSummary {
@@ -60,12 +60,12 @@ export function toPublicOrganizationSummary(raw: any): PublicOrganizationSummary
 export function toPublicOrganizationDetail(
   raw: any,
   doctors: any[] = [],
-  clinics: any[] = []
+  locations: any[] = []
 ): PublicOrganizationDetail {
   const summary = toPublicOrganizationSummary(raw);
   return {
     ...summary,
     doctors,
-    clinics,
+    locations,
   };
 }

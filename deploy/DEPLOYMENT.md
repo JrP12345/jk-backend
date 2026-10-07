@@ -1,14 +1,14 @@
 # Ekavyu Healthcare Platform — VM Deployment Guide (Development Environment)
 
-Target URL: **`https://dev.ekavyu.com`**  
-Target Infrastructure: **Single VM (Google Cloud Compute Engine `e2-medium` or similar)**  
+Target URL: **`https://dev.ekavyu.com`**
+Target Infrastructure: **Single VM (Google Cloud Compute Engine `e2-medium` or similar)**
 Isolation Boundary: Strictly isolated from future production infrastructure and payment credentials. `https://ekavyu.com` remains completely untouched.
 
 ---
 
 ## 1. Architecture Overview
 
-All services run in isolated Docker containers connected to a private bridge network (`healthos-net`). **Caddy is the only service that publishes public ports (80 and 443).**
+All services run in isolated Docker containers connected to a private bridge network (`ekavyu-net`). **Caddy is the only service that publishes public ports (80 and 443).**
 
 ```
 Internet (HTTPS 443 / HTTP 80)
@@ -202,5 +202,5 @@ docker compose down
 - **No Public Database or Cache**: Neither Redis (port 6379) nor MongoDB are bound to the host network.
 - **No Direct App Exposure**: Neither Fastify (port 5000) nor Next.js (port 3000) nor worker health ports (5001-5005) publish host ports. Only Caddy publishes `80:80` and `443:443`.
 - **Non-Root Execution**: Both `backend` and `frontend` Docker images switch to `USER node` before running application processes.
-- **Strict Network Isolation**: All internal communication is restricted to the Docker bridge network `healthos-net`.
+- **Strict Network Isolation**: All internal communication is restricted to the Docker bridge network `ekavyu-net`.
 - **Zero Secrets Committed**: All cryptographic keys, database URIs, and webhook secrets are injected via local `.env`.

@@ -123,7 +123,7 @@ describe("Automated ORM Tenant Isolation & Prescription Sealing Suite", () => {
     beforeAll(async () => {
       testPrescription = await Prescription.create({
         organizationId: new mongoose.Types.ObjectId(orgAId),
-        clinicId: new mongoose.Types.ObjectId(),
+        locationId: new mongoose.Types.ObjectId(),
         encounterId: new mongoose.Types.ObjectId(),
         patientId: patientA._id,
         doctorId: doctorUser._id,
@@ -179,7 +179,7 @@ describe("Automated ORM Tenant Isolation & Prescription Sealing Suite", () => {
       // Create and seal a dedicated test prescription
       const sealedRx = await Prescription.create({
         organizationId: new mongoose.Types.ObjectId(orgAId),
-        clinicId: new mongoose.Types.ObjectId(),
+        locationId: new mongoose.Types.ObjectId(),
         encounterId: new mongoose.Types.ObjectId(),
         patientId: patientA._id,
         doctorId: doctorUser._id,
@@ -203,7 +203,7 @@ describe("Automated ORM Tenant Isolation & Prescription Sealing Suite", () => {
     it("allows regulated amendment and marks predecessor as superseded", async () => {
       const originalRx = await Prescription.create({
         organizationId: new mongoose.Types.ObjectId(orgAId),
-        clinicId: new mongoose.Types.ObjectId(),
+        locationId: new mongoose.Types.ObjectId(),
         encounterId: new mongoose.Types.ObjectId(),
         patientId: patientA._id,
         doctorId: doctorUser._id,

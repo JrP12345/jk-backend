@@ -3,7 +3,7 @@ import { documentBudget } from "../utilities/documentBudget.ts";
 import { auditPlugin } from "../utilities/auditPlugin.ts";
 import { tenantPlugin } from "../utilities/tenantPlugin.ts";
 import { Organization } from "./Organization.ts";
-import { Clinic } from "./Clinic.ts";
+import { Location } from "./Location.ts";
 
 const InvoiceItemSchema = new Schema({
   serviceCatalogId: { type: Schema.Types.ObjectId, ref: "ServiceCatalog" },
@@ -26,9 +26,9 @@ const InvoiceSchema = new Schema({
   patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
   appointmentId: { type: Schema.Types.ObjectId, ref: "Appointment", index: true },
   encounterId: { type: Schema.Types.ObjectId, ref: "Encounter", index: true },
-  clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true },
+  locationId: { type: Schema.Types.ObjectId, ref: "Location", required: true },
   doctorId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
-  
+
   items: [InvoiceItemSchema],
   subtotal: { type: Number, required: true },
   taxableAmount: { type: Number, default: 0 },
@@ -39,26 +39,26 @@ const InvoiceSchema = new Schema({
   // GST Compliance Fields
   supplierGstin: { type: String, trim: true },
   customerGstin: { type: String, trim: true },
-  invoiceType: { 
-    type: String, 
-    enum: ["B2C", "B2B", "SEZ", "EXPORT"], 
-    default: "B2C" 
+  invoiceType: {
+    type: String,
+    enum: ["B2C", "B2B", "SEZ", "EXPORT"],
+    default: "B2C"
   },
   placeOfSupply: { type: String, trim: true },
   isInterstate: { type: Boolean, default: false },
   cgstTotal: { type: Number, default: 0 },
   sgstTotal: { type: Number, default: 0 },
   igstTotal: { type: Number, default: 0 },
-  
+
   // Phase 3 e-Invoice hook fields
   eInvoiceIrn: { type: String, trim: true },
   eInvoiceQrCode: { type: String, trim: true },
 
-  status: { 
-    type: String, 
+  status: {
+    type: String,
     enum: ["unpaid", "partially_paid", "paid", "refunded", "cancelled"],
     default: "unpaid",
-    index: true 
+    index: true
   },
   amountPaid: { type: Number, default: 0 },
   balanceDue: { type: Number },
@@ -73,9 +73,9 @@ const InvoiceSchema = new Schema({
     },
   ],
   dueDate: { type: Date, index: true },
-  paymentMethod: { 
-    type: String, 
-    enum: ["cash", "card", "upi", "net-banking", "insurance", "online", "courtesy_waiver", "other"] 
+  paymentMethod: {
+    type: String,
+    enum: ["cash", "card", "upi", "net-banking", "insurance", "online", "courtesy_waiver", "other"]
   },
   paymentDate: { type: Date },
   notes: { type: String, trim: true },
@@ -83,7 +83,7 @@ const InvoiceSchema = new Schema({
   createdAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 
-InvoiceSchema.index({ clinicId: 1, status: 1 });
+InvoiceSchema.index({ locationId: 1, status: 1 });
 InvoiceSchema.index({ generationKey: 1 }, { unique: true, partialFilterExpression: { generationKey: { $type: "string" } } });
 InvoiceSchema.index({ organizationId: 1, createdAt: -1 });
 InvoiceSchema.index({ organizationId: 1, patientId: 1, createdAt: -1 });
@@ -93,9 +93,9 @@ InvoiceSchema.index({ organizationId: 1, patientId: 1, createdAt: -1 });
 InvoiceSchema.pre("validate", async function () {
   if (!this.isNew || this.currency) return;
   let organizationId = this.organizationId;
-  if (!organizationId && this.clinicId) {
-    const clinic = await Clinic.findById(this.clinicId).select("organizationId").lean();
-    organizationId = clinic?.organizationId;
+  if (!organizationId && this.locationId) {
+    const location = await Location.findById(this.locationId).select("organizationId").lean();
+    organizationId = location?.organizationId;
   }
   if (organizationId) {
     const organization = await Organization.findById(organizationId).select("currency").lean();

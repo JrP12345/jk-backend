@@ -1,9 +1,9 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi, afterAll } from "vitest";
 import app from "../index.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
 import { OrgMember } from "../models/OrgMember.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Patient } from "../models/Patient.ts";
 import { FamilyRelationship } from "../models/FamilyRelationship.ts";
@@ -26,9 +26,11 @@ async function session(user: any, organizationId?: string) {
 }
 
 describe("Browse booking, owner session controls and patient approval", () => {
-  let orgA: any, orgB: any, ownerA: any, ownerB: any, root: any, doctor: any, clinicA: any, clinicB: any, patient: any;
+  let orgA: any, orgB: any, ownerA: any, ownerB: any, root: any, doctor: any, locationA: any, locationB: any, patient: any;
   let ownerACookie: string, ownerBCookie: string, rootCookie: string;
   beforeAll(async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-07T08:00:00Z"));
     orgA = await Organization.create({ name: "Polish A", city: "Surat", email: "polish-a@test.com", plan: "enterprise" });
     orgB = await Organization.create({ name: "Polish B", city: "Surat", email: "polish-b@test.com", plan: "enterprise" });
     ownerA = await User.create({ name: "Owner A", email: "polish-owner-a@test.com", role: "admin" });
@@ -36,13 +38,13 @@ describe("Browse booking, owner session controls and patient approval", () => {
     root = await User.create({ name: "Policy Root", email: "polish-root@test.com", role: "root" });
     doctor = await User.create({ name: "Polish Doctor", email: "polish-doctor@test.com", role: "doctor" });
     await OrgMember.create([{ userId: ownerA._id, organizationId: orgA._id, role: "admin" }, { userId: ownerB._id, organizationId: orgB._id, role: "admin" }, { userId: doctor._id, organizationId: orgB._id, role: "doctor" }]);
-    clinicA = await Clinic.create({ name: "Clinic A", city: "Surat", organizationId: orgA._id });
-    clinicB = await Clinic.create({ name: "Clinic B", city: "Surat", organizationId: orgB._id });
-    await DoctorAssignment.create({ organizationId: orgB._id, doctorId: doctor._id, clinicId: clinicB._id, fees: 0, bookingMode: "sequential_queue", workingHours: JSON.stringify({ all: { start: "00:00", end: "23:59" } }) });
+    locationA = await Location.create({ name: "Clinic A", city: "Surat", organizationId: orgA._id });
+    locationB = await Location.create({ name: "Clinic B", city: "Surat", organizationId: orgB._id });
+    await DoctorAssignment.create({ organizationId: orgB._id, doctorId: doctor._id, locationId: locationB._id, fees: 0, bookingMode: "sequential_queue", workingHours: JSON.stringify({ all: { start: "00:00", end: "23:59" } }) });
     const patientUser = await User.create({ name: "Consent Patient", phone: "9876501234", role: "patient", authMethod: "phone_otp" });
     patient = await Patient.create({ name: "Consent Patient", allergies: ["Penicillin"], medicalNotes: "Other organization private history", userId: patientUser._id, phone: "9876501234", organizationId: orgA._id });
     const yesterday = new Date(Date.now() - 86400000);
-    await Appointment.create([{ organizationId: orgA._id, clinicId: clinicA._id, doctorId: doctor._id, patientId: patient._id, appointmentTime: yesterday, appointmentType: "walk-in", tokenNumber: 1, status: "completed" }, { organizationId: orgB._id, clinicId: clinicB._id, doctorId: doctor._id, patientId: patient._id, appointmentTime: new Date(), appointmentType: "walk-in", tokenNumber: 1, status: "completed" }]);
+    await Appointment.create([{ organizationId: orgA._id, locationId: locationA._id, doctorId: doctor._id, patientId: patient._id, appointmentTime: yesterday, appointmentType: "walk-in", tokenNumber: 1, status: "completed" }, { organizationId: orgB._id, locationId: locationB._id, doctorId: doctor._id, patientId: patient._id, appointmentTime: new Date(), appointmentType: "walk-in", tokenNumber: 1, status: "completed" }]);
     ownerACookie = await session(ownerA, orgA.id);
     ownerBCookie = await session(ownerB, orgB.id);
     rootCookie = await session(root);
@@ -57,7 +59,7 @@ describe("Browse booking, owner session controls and patient approval", () => {
     expect(payload.role).toBe("guest");
     expect(payload.sessionId).toBeTruthy();
     expect(await RefreshToken.exists({ _id: payload.sessionId, isGuest: true })).toBeTruthy();
-    const booking = await app.inject({ method: "POST", url: "/api/appointments", headers: { cookie }, payload: { clinicId: clinicB.id, doctorId: doctor.id, appointmentTime: new Date(Date.now() + 60000).toISOString(), appointmentType: "online" } });
+    const booking = await app.inject({ method: "POST", url: "/api/appointments", headers: { cookie }, payload: { locationId: locationB.id, doctorId: doctor.id, appointmentTime: new Date(Date.now() + 60000).toISOString(), appointmentType: "online" } });
     expect(booking.statusCode, booking.body).toBe(201);
     const detail = await app.inject({ method: "GET", url: `/api/patients/${patient.id}/timeline`, headers: { cookie } });
     expect(detail.statusCode).toBe(403);
@@ -94,12 +96,12 @@ describe("Browse booking, owner session controls and patient approval", () => {
     expect(profile?.userId).toBeUndefined();
     expect(profile?.accountType).toBe("walkin");
     const booking = await app.inject({ method: "POST", url: "/api/appointments", headers: { cookie: cookies(result) }, payload: {
-      clinicId: clinicB.id, doctorId: doctor.id, appointmentTime: new Date(Date.now() + 120000).toISOString(), appointmentType: "online",
+      locationId: locationB.id, doctorId: doctor.id, appointmentTime: new Date(Date.now() + 120000).toISOString(), appointmentType: "online",
     } });
     expect(booking.statusCode, booking.body).toBe(201);
     expect(await FamilyRelationship.countDocuments({ userId: patient.userId })).toBe(relationshipsBefore);
     const wrongPatient = await app.inject({ method: "POST", url: "/api/appointments", headers: { cookie: cookies(result) }, payload: {
-      clinicId: clinicB.id, doctorId: doctor.id, patientId: patient.id, appointmentTime: new Date(Date.now() + 180000).toISOString(), appointmentType: "online",
+      locationId: locationB.id, doctorId: doctor.id, patientId: patient.id, appointmentTime: new Date(Date.now() + 180000).toISOString(), appointmentType: "online",
     } });
     expect(wrongPatient.statusCode, wrongPatient.body).toBe(403);
   });
@@ -185,8 +187,8 @@ describe("Browse booking, owner session controls and patient approval", () => {
   it("calculates local-day totals over all rows and counts payments received today on older bills", async () => {
     const today = new Date();
     const yesterday = new Date(Date.now() - 86400000);
-    await Appointment.insertMany(Array.from({ length: 105 }, () => ({ organizationId: orgB._id, clinicId: clinicB._id, doctorId: doctor._id, patientId: patient._id, appointmentTime: today, appointmentType: "walk-in", tokenNumber: 1, status: "completed" })));
-    await Invoice.create([{ organizationId: orgB._id, clinicId: clinicB._id, doctorId: doctor._id, patientId: patient._id, invoiceNumber: "DAILY-1", items: [{ description: "Visit", amount: 100, quantity: 1 }], subtotal: 100, totalAmount: 100, status: "unpaid", createdAt: today }, { organizationId: orgB._id, clinicId: clinicB._id, doctorId: doctor._id, patientId: patient._id, invoiceNumber: "DAILY-2", items: [{ description: "Old visit", amount: 300, quantity: 1 }], subtotal: 300, totalAmount: 300, status: "partially_paid", amountPaid: 150, createdAt: yesterday, payments: [{ amount: 150, paymentMethod: "cash", paidAt: today }] }]);
+    await Appointment.insertMany(Array.from({ length: 105 }, () => ({ organizationId: orgB._id, locationId: locationB._id, doctorId: doctor._id, patientId: patient._id, appointmentTime: today, appointmentType: "walk-in", tokenNumber: 1, status: "completed" })));
+    await Invoice.create([{ organizationId: orgB._id, locationId: locationB._id, doctorId: doctor._id, patientId: patient._id, invoiceNumber: "DAILY-1", items: [{ description: "Visit", amount: 100, quantity: 1 }], subtotal: 100, totalAmount: 100, status: "unpaid", createdAt: today }, { organizationId: orgB._id, locationId: locationB._id, doctorId: doctor._id, patientId: patient._id, invoiceNumber: "DAILY-2", items: [{ description: "Old visit", amount: 300, quantity: 1 }], subtotal: 300, totalAmount: 300, status: "partially_paid", amountPaid: 150, createdAt: yesterday, payments: [{ amount: 150, paymentMethod: "cash", paidAt: today }] }]);
     const start = new Date(today); start.setHours(0, 0, 0, 0);
     const end = new Date(start); end.setDate(end.getDate() + 1); end.setMilliseconds(-1);
     const result = await app.inject({ method: "GET", url: `/api/analytics/daily-summary?${new URLSearchParams({ startDate: start.toISOString(), endDate: end.toISOString() })}`, headers: { cookie: ownerBCookie } });
@@ -200,15 +202,17 @@ describe("Browse booking, owner session controls and patient approval", () => {
     const missing = await app.inject({ method: "GET", url: "/api/ai/chat/sessions", headers: { cookie: rootCookie } });
     expect(missing.statusCode).toBe(403);
     expect(missing.json().message).toBe("Select a healthcare organization before using clinical AI assistance.");
-    const created = await app.inject({ method: "POST", url: `/api/ai/chat/sessions?clinicId=${clinicA.id}`, headers: { cookie: rootCookie }, payload: { initialTitle: "Selected organization conversation" } });
+    const created = await app.inject({ method: "POST", url: `/api/ai/chat/sessions?locationId=${locationA.id}`, headers: { cookie: rootCookie }, payload: { initialTitle: "Selected organization conversation" } });
     expect(created.statusCode, created.body).toBe(201);
     const chatId = created.json().data.id;
-    const selected = await app.inject({ method: "GET", url: `/api/ai/chat/sessions?clinicId=${clinicA.id}`, headers: { cookie: rootCookie } });
+    const selected = await app.inject({ method: "GET", url: `/api/ai/chat/sessions?locationId=${locationA.id}`, headers: { cookie: rootCookie } });
     expect(selected.statusCode, selected.body).toBe(200);
     expect(selected.json().data.some((chat: any) => chat.id === chatId)).toBe(true);
-    const other = await app.inject({ method: "GET", url: `/api/ai/chat/sessions/${chatId}?clinicId=${clinicB.id}`, headers: { cookie: rootCookie } });
+    const other = await app.inject({ method: "GET", url: `/api/ai/chat/sessions/${chatId}?locationId=${locationB.id}`, headers: { cookie: rootCookie } });
     expect(other.statusCode).toBe(404);
     const spoofed = await app.inject({ method: "POST", url: `/api/ai/chat/sessions?organizationId=${orgB.id}`, headers: { cookie: ownerACookie }, payload: { initialTitle: "Wrong organization" } });
     expect(spoofed.statusCode).toBe(403);
   });
 });
+
+afterAll(() => vi.useRealTimers());

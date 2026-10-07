@@ -1,11 +1,11 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import crypto from 'crypto';
 
 // Initialize the S3 Client for Cloudflare R2
 export const s3Client = new S3Client({
   region: 'auto',
-  endpoint: process.env.CLOUDFLARE_ACCOUNT_ID 
+  endpoint: process.env.CLOUDFLARE_ACCOUNT_ID
     ? `https://${process.env.CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`
     : undefined,
   credentials: {
@@ -14,7 +14,7 @@ export const s3Client = new S3Client({
   },
 });
 
-const BUCKET_NAME = process.env.R2_BUCKET_NAME || 'healthos-private-vault';
+const BUCKET_NAME = process.env.R2_BUCKET_NAME || 'ekavyu-private-vault';
 
 /**
  * Generates an upload URL for a strictly private bucket.
@@ -44,7 +44,7 @@ export const generatePresignedUrl = async (
 
   return {
     uploadUrl: signedUrl,
-    fileKey: uniqueFilename,
+    objectKey: uniqueFilename,
   };
 };
 
@@ -53,37 +53,26 @@ export const generatePresignedUrl = async (
  * Default expiry: 300 seconds (5 minutes).
  */
 export const generatePresignedDownloadUrl = async (
-  fileKey: string,
+  objectKey: string,
   expiresInSeconds: number = 300
 ): Promise<string> => {
   const command = new GetObjectCommand({
     Bucket: BUCKET_NAME,
-    Key: fileKey,
+    Key: objectKey,
     ResponseContentDisposition: 'attachment',
   });
 
   return getSignedUrl(s3Client, command, { expiresIn: expiresInSeconds });
 };
 
-/**
- * Retrieves object metadata (existence, content length, content type).
- */
-export const getObjectMetadata = async (fileKey: string) => {
-  const command = new HeadObjectCommand({
-    Bucket: BUCKET_NAME,
-    Key: fileKey,
-  });
-
-  return s3Client.send(command);
-};
 
 /**
  * Downloads object bytes for magic byte verification and malware scanning.
  */
-export const getObjectBuffer = async (fileKey: string, maxBytes = 50 * 1024 * 1024): Promise<Buffer> => {
+export const getObjectBuffer = async (objectKey: string, maxBytes = 50 * 1024 * 1024): Promise<Buffer> => {
   const command = new GetObjectCommand({
     Bucket: BUCKET_NAME,
-    Key: fileKey,
+    Key: objectKey,
   });
 
   const abort = new AbortController();
@@ -122,10 +111,10 @@ export async function storeVerifiedObject(buffer: Buffer, contentType: string, o
 /**
  * Deletes a file from the private storage bucket.
  */
-export const deleteObjectFromStorage = async (fileKey: string): Promise<void> => {
+export const deleteObjectFromStorage = async (objectKey: string): Promise<void> => {
   const command = new DeleteObjectCommand({
     Bucket: BUCKET_NAME,
-    Key: fileKey,
+    Key: objectKey,
   });
 
   await s3Client.send(command, { abortSignal: AbortSignal.timeout(8_000) });
@@ -137,17 +126,3 @@ export async function uploadOrganizationImage(buffer: Buffer, contentType: strin
   await s3Client.send(new PutObjectCommand({ Bucket: BUCKET_NAME, Key: objectKey, ContentType: contentType, Body: buffer }));
   return objectKey;
 }
-
-/**
- * Direct Base64 upload for avatars/prescriptions into private bucket.
- */
-/** Compatibility helper; request authority must be checked by its caller. */
-export const uploadBase64ToR2 = async (base64Data: string, originalFilename: string, contentType: string, organizationId?: string) => {
-  const { validateUploadMetadata, validateUploadBytes, normalizeUploadMime } = await import('./uploadPolicy.ts');
-  const maxBytes = 10 * 1024 * 1024;
-  if (!organizationId || validateUploadMetadata(originalFilename, contentType, 'other') ||
-      typeof base64Data !== 'string' || base64Data.length > Math.ceil(maxBytes / 3) * 4 + 256) throw new Error('Invalid upload');
-  const buffer = Buffer.from(base64Data.replace(/^data:[^;]+;base64,/, ''), 'base64');
-  validateUploadBytes(buffer, contentType, maxBytes);
-  return { fileKey: await storeVerifiedObject(buffer, normalizeUploadMime(contentType), organizationId) };
-};

@@ -1,6 +1,6 @@
 import { Patient } from "../models/Patient.ts";
 import { User } from "../models/User.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { LabOrder } from "../models/LabOrder.ts";
@@ -201,24 +201,24 @@ class AbdmService {
 
   /**
    * ABDM "Scan & Share" Counter Check-In
-   * When a patient scans clinic counter QR via ABHA / Aarogya Setu app:
+   * When a patient scans location counter QR via ABHA / Aarogya Setu app:
    * 1. Matches or creates verified patient profile
-   * 2. Issues instant OPD queue token for selected doctor/clinic in 3 seconds
+   * 2. Issues instant OPD queue token for selected doctor/location in 3 seconds
    */
   async processScanAndShare(params: {
-    clinicId: string;
+    locationId: string;
     abhaProfile: AbdmProfile;
     doctorId: string;
     appointmentType?: "walk-in" | "reception" | "qr";
     organizationId?: string;
     notes?: string;
   }) {
-    const { clinicId, abhaProfile, doctorId, appointmentType = "qr", organizationId, notes } = params;
+    const { locationId, abhaProfile, doctorId, appointmentType = "qr", organizationId, notes } = params;
 
-    const clinic = await Clinic.findById(clinicId).lean();
-    if (!clinic) throw new Error("Clinic not found");
+    const location = await Location.findById(locationId).lean();
+    if (!location) throw new Error("Location not found");
 
-    const orgId = organizationId || (clinic as any).organizationId;
+    const orgId = organizationId || (location as any).organizationId;
 
     // Find or create user and patient profile
     let patient = await Patient.findOne({
@@ -279,7 +279,7 @@ class AbdmService {
     const bookedAppt = await appointmentService.book(
       { id: String(patient.userId || patient._id), role: "receptionist", organizationId: orgId },
       {
-        clinicId,
+        locationId,
         doctorId,
         appointmentTime,
         appointmentType: appointmentType as any,
@@ -313,14 +313,14 @@ class AbdmService {
   }
 
   /**
-   * Generates QR Standee payload string for clinic OPD counter
+   * Generates QR Standee payload string for location OPD counter
    */
-  getClinicQrStandeePayload(clinic: { id: string; name: string; city?: string }) {
+  getLocationQrStandeePayload(location: { id: string; name: string; city?: string }) {
     return JSON.stringify({
       scheme: "ABDM_SCAN_AND_SHARE_V1",
-      hipId: `IN_HIP_${clinic.id.slice(-8).toUpperCase()}`,
-      clinicId: clinic.id,
-      clinicName: clinic.name,
+      hipId: `IN_HIP_${location.id.slice(-8).toUpperCase()}`,
+      locationId: location.id,
+      locationName: location.name,
       counter: "COUNTER-01",
       timestamp: Date.now(),
     });
@@ -334,28 +334,28 @@ class AbdmService {
   async linkCareContext(params: {
     patientId: string;
     appointmentId: string;
-    clinicId: string;
+    locationId: string;
     organizationId?: string;
     customDisplay?: string;
   }) {
-    const { patientId, appointmentId, clinicId, customDisplay } = params;
+    const { patientId, appointmentId, locationId, customDisplay } = params;
 
     const patient = await Patient.findById(patientId);
     if (!patient) throw new Error("Patient not found");
 
     const appointment = await Appointment.findById(appointmentId)
       .populate("doctorId", "name")
-      .populate("clinicId", "name city");
+      .populate("locationId", "name city");
     if (!appointment) throw new Error("Appointment not found");
 
-    const clinic = await Clinic.findById(clinicId).lean();
-    const hipId = `IN_HIP_${clinicId.slice(-8).toUpperCase()}`;
+    const location = await Location.findById(locationId).lean();
+    const hipId = `IN_HIP_${locationId.slice(-8).toUpperCase()}`;
     const careContextReference = `OPD-ENC-${appointmentId}`;
 
     const doctorName = (appointment.doctorId as any)?.name || "Attending Physician";
-    const clinicName = clinic?.name || (appointment.clinicId as any)?.name || "Clinic";
+    const locationName = location?.name || (appointment.locationId as any)?.name || "Location";
     const apptDate = new Date(appointment.appointmentTime).toISOString().slice(0, 10);
-    const display = customDisplay || `OPD Consultation - Dr. ${doctorName}, ${clinicName} (${apptDate})`;
+    const display = customDisplay || `OPD Consultation - Dr. ${doctorName}, ${locationName} (${apptDate})`;
 
     if (!patient.careContexts) {
       (patient as any).careContexts = [];
@@ -432,13 +432,13 @@ class AbdmService {
   async generateFhirPrescriptionBundle(appointmentId: string) {
     const appointment: any = await Appointment.findById(appointmentId)
       .populate("patientId")
-      .populate("clinicId")
+      .populate("locationId")
       .populate("doctorId");
 
     if (!appointment) throw new Error("Appointment not found");
 
     const patient = appointment.patientId || {};
-    const clinic = appointment.clinicId || {};
+    const location = appointment.locationId || {};
     const doctorUser = appointment.doctorId || {};
 
     const doctorProfile: any = await Doctor.findOne({ userId: doctorUser._id || doctorUser.id }).lean();
@@ -463,7 +463,7 @@ class AbdmService {
 
     const bundleId = `bundle-rx-${appointment.id}`;
     const timestamp = new Date().toISOString();
-    const hipId = `IN_HIP_${String(clinic._id || clinic.id || "00000000").slice(-8).toUpperCase()}`;
+    const hipId = `IN_HIP_${String(location._id || location.id || "00000000").slice(-8).toUpperCase()}`;
 
     const entries: any[] = [
       // 1. Composition
@@ -569,29 +569,29 @@ class AbdmService {
           ],
         },
       },
-      // 3. Organization (Clinic HIP)
+      // 3. Organization (Location HIP)
       {
-        fullUrl: `urn:uuid:organization-${clinic._id || clinic.id}`,
+        fullUrl: `urn:uuid:organization-${location._id || location.id}`,
         resource: {
           resourceType: "Organization",
-          id: String(clinic._id || clinic.id),
+          id: String(location._id || location.id),
           identifier: [
             {
               system: "https://facility.abdm.gov.in",
               value: hipId,
             },
           ],
-          name: clinic.name || "Healthcare Facility",
+          name: location.name || "Healthcare Facility",
           telecom: [
             {
               system: "phone",
-              value: clinic.phone || "011-2345678",
+              value: location.phone || "011-2345678",
             },
           ],
           address: [
             {
-              text: `${clinic.address || ""}, ${clinic.city || "New Delhi"}`,
-              city: clinic.city || "Delhi",
+              text: `${location.address || ""}, ${location.city || "New Delhi"}`,
+              city: location.city || "Delhi",
             },
           ],
         },
@@ -699,13 +699,13 @@ class AbdmService {
   async generateFhirDiagnosticReportBundle(appointmentId: string) {
     const appointment: any = await Appointment.findById(appointmentId)
       .populate("patientId")
-      .populate("clinicId")
+      .populate("locationId")
       .populate("doctorId");
 
     if (!appointment) throw new Error("Appointment not found");
 
     const patient = appointment.patientId || {};
-    const clinic = appointment.clinicId || {};
+    const location = appointment.locationId || {};
 
     const labOrders: any[] = await LabOrder.find({
       $or: [{ appointmentId: appointment._id }, { encounterId: appointment.encounterId }],
@@ -735,8 +735,8 @@ class AbdmService {
           issued: timestamp,
           performer: [
             {
-              reference: `Organization/${clinic._id || clinic.id}`,
-              display: clinic.name,
+              reference: `Organization/${location._id || location.id}`,
+              display: location.name,
             },
           ],
           result: labOrders.map((_, i) => ({
@@ -748,7 +748,7 @@ class AbdmService {
 
     labOrders.forEach((lo, idx) => {
       const testName = lo.testId?.name || lo.clinicalReason || "Laboratory Investigation";
-      const val = lo.result?.value || lo.resultValue || "Recorded";
+      const val = lo.result?.value || "Recorded";
       const unit = lo.result?.unit || "";
       const isCritical = lo.result?.interpretation === "critical";
 

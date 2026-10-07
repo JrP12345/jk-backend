@@ -2,7 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Prescription } from "../models/Prescription.ts";
 import { LabOrder } from "../models/LabOrder.ts";
@@ -17,7 +17,7 @@ import { AIServiceUnavailableError } from "../services/ai/AIService.ts";
 import { aiGateway } from "../services/ai/AIGateway.ts";
 import { timelineService } from "../services/TimelineService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { checkClinicAccess, getRequestClinicIds, resolveTargetOrganizationId } from "../utilities/tenant.ts";
+import { checkLocationAccess, getRequestLocationIds, resolveTargetOrganizationId } from "../utilities/tenant.ts";
 import {
   getCursorPaginationParams,
   decodeCursor,
@@ -85,7 +85,7 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
     if (patientId && patientId !== "me" && mongoose.Types.ObjectId.isValid(patientId)) {
       patient = await Patient.findOne({ _id: patientId, ...patientScope }).populate("userId", "name email phone");
     }
-    
+
     if (!patient && requesterUserId) {
       patient = await Patient.findOne({ userId: requesterUserId, ...patientScope }).populate("userId", "name email phone");
     }
@@ -93,7 +93,7 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
     if (patient) {
       targetPatientId = patient._id.toString();
       const orgId = requesterOrgId || (patient.organizationId ? patient.organizationId.toString() : null);
-      
+
       const patientRecordScope = orgId ? { organizationId: orgId } : {};
       const [activeMeds, recentLabs] = await Promise.all([
         Prescription.find({ patientId: targetPatientId, ...patientRecordScope, status: "active" }).select("medicineName dosage duration").lean(),
@@ -114,7 +114,7 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
           }
         } catch {}
       }
-      
+
       const medsSummary = activeMeds.length ? activeMeds.map(m => `- ${m.medicineName} (${m.dosage || "As directed"})`).join("\n") : "No active prescriptions.";
       const labsSummary = recentLabs.length ? recentLabs.map((l: any) => `- Order #${l.orderNumber || l._id} (Status: ${l.status})`).join("\n") : "No lab orders recorded.";
 
@@ -128,7 +128,7 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
       ? { organizationId: requesterOrgId }
       : { _id: null };
 
-    const clinicsList = await Clinic.find({ ...orgFilter, isActive: true }).lean();
+    const locationsList = await Location.find({ ...orgFilter, isActive: true }).lean();
     const [patientCount, apptCount, doctorsList, samplePatients, recentAppts] = await Promise.all([
       Patient.countDocuments(orgFilter),
       Appointment.countDocuments(orgFilter),
@@ -139,14 +139,14 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
         .lean(),
       Appointment.find(orgFilter)
         .populate({ path: "patientId", populate: { path: "userId", select: "name" } })
-        .populate("clinicId", "name")
+        .populate("locationId", "name")
         .populate("doctorId", "name")
         .sort({ appointmentTime: -1 })
         .limit(10)
         .lean(),
     ]);
 
-    const clinicNames = clinicsList.map(c => `${c.name} (${c.city})`).join(", ") || "No clinic data available";
+    const locationNames = locationsList.map(c => `${c.name} (${c.city})`).join(", ") || "No location data available";
 
     const patientNamesList = samplePatients.map((p, idx) => {
       const uName = (p.userId as any)?.name || "Patient";
@@ -159,7 +159,7 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
 
     const recentApptsList = recentAppts.map((a, idx) => {
       const pName = (a.patientId as any)?.userId?.name || "Patient";
-      const cName = (a.clinicId as any)?.name || "Clinic";
+      const cName = (a.locationId as any)?.name || "Location";
       const dName = (a.doctorId as any)?.name || "Doctor";
       return `${idx + 1}. ${pName} with ${dName} at ${cName} [Status: ${a.status}]`;
     }).join("\n");
@@ -167,16 +167,16 @@ async function buildRAGContext(req: FastifyRequest, patientId?: string, customSu
     const orgObj = requesterOrgId ? await Organization.findById(requesterOrgId).lean() : null;
     const dynamicOrgName = orgObj?.name || "Organization name unavailable";
 
-    const systemStats = `\n\nClinic Facility & Patient Directory:\n` +
+    const systemStats = `\n\nLocation Facility & Patient Directory:\n` +
       `- Organization / Facility: ${dynamicOrgName}\n` +
-      `- Active Clinics (${clinicsList.length}): ${clinicNames}\n` +
+      `- Active Locations (${locationsList.length}): ${locationNames}\n` +
       `- Total Registered Patients: ${patientCount}\n` +
       `- Total Appointments / Patient Visits Booked: ${apptCount}\n` +
       `- Active Doctors (${doctorsList.length}): ${doctorsList.map(d => (d as any).name || "Doctor").join(", ") || "Staff Medical Team"}\n\n` +
       `Registered Patients Roster:\n${patientNamesList || "No registered patients."}\n\n` +
       `Recent Appointments Summary:\n${recentApptsList || "No recent appointments."}`;
 
-    finalSummary = (finalSummary ? finalSummary + systemStats : `Clinic System Context:\nUser: ${(req.user as any)?.name || "Staff"} (${requesterRole || "Clinician"})\nOrganization: ${dynamicOrgName}${systemStats}`);
+    finalSummary = (finalSummary ? finalSummary + systemStats : `Organization workspace context:\nUser: ${(req.user as any)?.name || "Staff"} (${requesterRole || "Clinician"})\nOrganization: ${dynamicOrgName}${systemStats}`);
   }
 
   return { finalSummary, targetPatientId };
@@ -251,7 +251,7 @@ export async function createChatSessionController(req: FastifyRequest, reply: Fa
     const welcomeMsg = {
       id: "m1",
       sender: "ai" as const,
-      text: `Hello ${(req.user as any)?.name || "User"}! I am your Ekavyu Clinical AI Copilot.\n\nI can assist you with real-time patient records, clinic operational analytics, active prescriptions, lab reports, or appointment scheduling. How can I help you today?`,
+      text: `Hello ${(req.user as any)?.name || "User"}! I am your Ekavyu Clinical AI Copilot.\n\nI can assist you with real-time patient records, location operational analytics, active prescriptions, lab reports, or appointment scheduling. How can I help you today?`,
       citations: [],
       suggestedActions: [],
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
@@ -666,8 +666,8 @@ export async function predictNoShowRiskController(req: FastifyRequest, reply: Fa
 
     const appointment = await Appointment.findById(appointmentId);
     if (!appointment) return reply.code(404).send(errorResponse("Appointment not found"));
-    const clinicAccess = await checkClinicAccess(req, appointment.clinicId);
-    if (!clinicAccess.allowed) return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
+    const locationAccess = await checkLocationAccess(req, appointment.locationId);
+    if (!locationAccess.allowed) return reply.code(locationAccess.statusCode).send(errorResponse(locationAccess.message));
 
     const days = Math.max(0, Math.ceil((new Date(appointment.appointmentTime).getTime() - new Date(appointment.createdAt).getTime()) / 86400000));
     const noShows = await Appointment.countDocuments({
@@ -744,27 +744,27 @@ export async function auditBillingAnomaliesController(req: FastifyRequest, reply
 // ─── Phase 4: Module 36 — Pharmacy Inventory Supply Forecasting ──────
 export async function forecastInventorySupplyController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId } = req.query as { clinicId?: string };
-    let clinicFilter: any = {};
-    if (clinicId) {
-      if (!mongoose.Types.ObjectId.isValid(clinicId)) return reply.code(400).send(errorResponse("Invalid clinicId"));
-      const clinicAccess = await checkClinicAccess(req, clinicId);
-      if (!clinicAccess.allowed) return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
-      clinicFilter = { clinicId };
+    const { locationId } = req.query as { locationId?: string };
+    let locationFilter: any = {};
+    if (locationId) {
+      if (!mongoose.Types.ObjectId.isValid(locationId)) return reply.code(400).send(errorResponse("Invalid locationId"));
+      const locationAccess = await checkLocationAccess(req, locationId);
+      if (!locationAccess.allowed) return reply.code(locationAccess.statusCode).send(errorResponse(locationAccess.message));
+      locationFilter = { locationId };
     } else if (req.user?.role !== "root") {
-      const clinicIds = await getRequestClinicIds(req);
-      clinicFilter = { clinicId: { $in: clinicIds || [] } };
+      const locationIds = await getRequestLocationIds(req);
+      locationFilter = { locationId: { $in: locationIds || [] } };
     }
 
-    const medicines = await Medicine.find({ ...clinicFilter, deletedAt: null })
-      .select("name genericName stockQuantity reorderLevel clinicId")
+    const medicines = await Medicine.find({ ...locationFilter, deletedAt: null })
+      .select("name genericName stockQuantity reorderLevel locationId")
       .sort({ name: 1 })
       .lean();
     const forecast = medicines.map((medicine: any) => ({
       medicineId: medicine._id,
       medicineName: medicine.name,
       genericName: medicine.genericName,
-      clinicId: medicine.clinicId,
+      locationId: medicine.locationId,
       currentStock: medicine.stockQuantity,
       avgDailyUsage: null,
       daysRemaining: null,

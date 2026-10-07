@@ -10,7 +10,7 @@ import { ServiceCatalog } from "../models/ServiceCatalog.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { User } from "../models/User.ts";
 import { Appointment } from "../models/Appointment.ts";
-import { generateClinicInvoiceNumber } from "../utilities/invoiceNumber.ts";
+import { generateLocationInvoiceNumber } from "../utilities/invoiceNumber.ts";
 import { isModuleEnabledForOrganization } from "../utilities/moduleAccess.ts";
 
 export interface CapturedChargeItem {
@@ -43,7 +43,7 @@ export async function compileEncounterCharges(
     throw new Error("Encounter not found");
   }
 
-  const { patientId, doctorId, clinicId, organizationId, appointmentId } = encounter;
+  const { patientId, doctorId, locationId, organizationId, appointmentId } = encounter;
   const items: CapturedChargeItem[] = [];
 
   const appointment = appointmentId ? await Appointment.findById(appointmentId) : null;
@@ -61,7 +61,7 @@ export async function compileEncounterCharges(
     }
   }
 
-  const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
+  const assignment = await DoctorAssignment.findOne({ doctorId, locationId, isActive: true });
   const feeType = (appointment as any)?.feeType || (assignment as any)?.feeType || "fixed";
 
   let consultFee = 0;
@@ -86,11 +86,11 @@ export async function compileEncounterCharges(
       category: "consultation" as const,
       isActive: true,
     };
-    let opdCatalogItem = await ServiceCatalog.findOne({ ...catalogBase, clinicId: encounter.clinicId });
+    let opdCatalogItem = await ServiceCatalog.findOne({ ...catalogBase, locationId: encounter.locationId });
     if (!opdCatalogItem) {
       opdCatalogItem = await ServiceCatalog.findOne({
         ...catalogBase,
-        $or: [{ clinicId: { $exists: false } }, { clinicId: null }],
+        $or: [{ locationId: { $exists: false } }, { locationId: null }],
       });
     }
 
@@ -216,7 +216,7 @@ async function generateEncounterInvoice(encounterId: string, createdByUserId?: s
     return null;
   }
 
-  const invoiceNumber = await generateClinicInvoiceNumber(encounter.clinicId.toString());
+  const invoiceNumber = await generateLocationInvoiceNumber(encounter.locationId.toString());
 
   const formattedItems = items.map((i) => {
     const lineBase = i.amount * i.quantity;
@@ -241,7 +241,7 @@ async function generateEncounterInvoice(encounterId: string, createdByUserId?: s
     invoiceNumber,
     organizationId: encounter.organizationId || null,
     patientId: encounter.patientId,
-    clinicId: encounter.clinicId,
+    locationId: encounter.locationId,
     doctorId: encounter.doctorId,
     encounterId: encounter._id,
     items: formattedItems,
@@ -280,7 +280,7 @@ export async function compileAppointmentCharges(
   const appointment = await Appointment.findById(appointmentId)
     .populate({ path: "patientId", populate: { path: "userId", select: "name phone email" } })
     .populate("doctorId", "name specialization")
-    .populate("clinicId", "name address phone gstin")
+    .populate("locationId", "name address phone gstin")
     .populate("invoiceId");
 
   if (!appointment) {
@@ -293,7 +293,7 @@ export async function compileAppointmentCharges(
   // 1. Doctor Consultation Fee
   const assignment = await DoctorAssignment.findOne({
     doctorId: appointment.doctorId,
-    clinicId: appointment.clinicId,
+    locationId: appointment.locationId,
     isActive: true,
   });
   const feeType = (appointment as any)?.feeType || (assignment as any)?.feeType || "fixed";

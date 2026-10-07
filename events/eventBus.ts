@@ -32,15 +32,6 @@ class TypedEventBus extends EventEmitter {
     );
   }
 
-  /**
-   * @deprecated Use publishDurable for crash-safe delivery. Retained for synchronous test execution and fallbacks.
-   */
-  public publish(event: DomainEventPayload): void {
-    setImmediate(() => {
-      this.dispatch(event).catch(error => console.error("[EventBus] Delivery failed:", error));
-    });
-  }
-
   /** Await every subscriber before the durable worker acknowledges the event. */
   public async dispatch(event: DomainEventPayload): Promise<void> {
     const handlers = [...this.rawListeners("notification_event"), ...this.rawListeners(event.eventType)];

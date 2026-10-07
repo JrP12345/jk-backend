@@ -1,3 +1,4 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
@@ -15,15 +16,15 @@ describe("Universal Patient Record & Cross-Facility Access Tests", () => {
   let orgAId: string;
   let orgBId: string;
   let orgCId: string;
-  let clinicAId: string;
-  let clinicBId: string;
+  let locationAId: string;
+  let locationBId: string;
   let docAId: string;
   let docBId: string;
   let patient: any;
 
   beforeAll(async () => {
-    // 1. Setup Organization A & Clinic A
-    const bootOrgA = await app.inject({
+    // 1. Setup Organization A & Location A
+    const bootOrgA = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -36,16 +37,16 @@ describe("Universal Patient Record & Cross-Facility Access Tests", () => {
       },
     });
     expect(bootOrgA.statusCode).toBe(201);
-    adminCookiesOrgA = (bootOrgA.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookiesOrgA = (await provisionedAdminCookies(bootOrgA));
     orgAId = JSON.parse(bootOrgA.body).data.organization.id;
 
-    const clinicARes = await app.inject({
+    const locationARes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookiesOrgA.join("; ") },
       payload: { name: "Apollo Mumbai Central", city: "Mumbai" },
     });
-    clinicAId = JSON.parse(clinicARes.body).data.id;
+    locationAId = JSON.parse(locationARes.body).data.id;
 
     const docARes = await app.inject({
       method: "POST",
@@ -61,8 +62,8 @@ describe("Universal Patient Record & Cross-Facility Access Tests", () => {
     });
     docAId = JSON.parse(docARes.body).data.id;
 
-    // 2. Setup Organization B & Clinic B
-    const bootOrgB = await app.inject({
+    // 2. Setup Organization B & Location B
+    const bootOrgB = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -75,16 +76,16 @@ describe("Universal Patient Record & Cross-Facility Access Tests", () => {
       },
     });
     expect(bootOrgB.statusCode).toBe(201);
-    adminCookiesOrgB = (bootOrgB.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookiesOrgB = (await provisionedAdminCookies(bootOrgB));
     orgBId = JSON.parse(bootOrgB.body).data.organization.id;
 
-    const clinicBRes = await app.inject({
+    const locationBRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookiesOrgB.join("; ") },
       payload: { name: "Fortis Delhi South", city: "Delhi" },
     });
-    clinicBId = JSON.parse(clinicBRes.body).data.id;
+    locationBId = JSON.parse(locationBRes.body).data.id;
 
     const docBRes = await app.inject({
       method: "POST",
@@ -101,7 +102,7 @@ describe("Universal Patient Record & Cross-Facility Access Tests", () => {
     docBId = JSON.parse(docBRes.body).data.id;
 
     // 3. Setup Organization C (unrelated third party)
-    const bootOrgC = await app.inject({
+    const bootOrgC = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -113,7 +114,7 @@ describe("Universal Patient Record & Cross-Facility Access Tests", () => {
         plan: "enterprise",
       },
     });
-    adminCookiesOrgC = (bootOrgC.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookiesOrgC = (await provisionedAdminCookies(bootOrgC));
     orgCId = JSON.parse(bootOrgC.body).data.organization.id;
 
     // 4. Create Universal Patient registered at Org A
@@ -131,7 +132,7 @@ describe("Universal Patient Record & Cross-Facility Access Tests", () => {
     // 5. Create Encounter, Clinical Note, and Invoice at Org A
     const encA = await Encounter.create({
       organizationId: orgAId,
-      clinicId: clinicAId,
+      locationId: locationAId,
       patientId: patient._id,
       doctorId: docAId,
       status: "completed",
@@ -141,7 +142,7 @@ describe("Universal Patient Record & Cross-Facility Access Tests", () => {
 
     await ClinicalNote.create({
       organizationId: orgAId,
-      clinicId: clinicAId,
+      locationId: locationAId,
       encounterId: encA._id,
       patientId: patient._id,
       doctorId: docAId,
@@ -169,7 +170,7 @@ describe("Universal Patient Record & Cross-Facility Access Tests", () => {
 
     await Invoice.create({
       organizationId: orgAId,
-      clinicId: clinicAId,
+      locationId: locationAId,
       doctorId: docAId,
       patientId: patient._id,
       invoiceNumber: `INV-APOLLO-${Date.now()}`,
@@ -200,10 +201,10 @@ describe("Universal Patient Record & Cross-Facility Access Tests", () => {
   });
 
   it("Step 3: An appointment at Clinic B does not unlock records from Clinic A without patient OTP", async () => {
-    // Book appointment for patient at Clinic B today
+    // Book appointment for patient at Location B today
     await Appointment.create({
       organizationId: orgBId,
-      clinicId: clinicBId,
+      locationId: locationBId,
       doctorId: docBId,
       patientId: patient._id,
       appointmentTime: new Date(),

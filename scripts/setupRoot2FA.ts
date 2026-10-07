@@ -4,7 +4,7 @@ import { mkdir, chmod, rm } from "node:fs/promises";
 import path from "node:path";
 import { User } from "../models/User.ts";
 import { TwoFactorService } from "../services/TwoFactorService.ts";
-import { encrypt } from "../utilities/encryption.ts";
+import { encryptField } from "../utilities/cryptoEnvelope.ts";
 
 /**
  * Generates a replacement TOTP secret for one platform-root account.
@@ -14,16 +14,17 @@ import { encrypt } from "../utilities/encryption.ts";
  * that the deployed application never reads.
  */
 const mongodbUri = process.env.MONGODB_URI;
-const rootEmail = (process.env.ROOT_ADMIN_EMAIL || "21amtics177@gmail.com").trim().toLowerCase();
+const rootEmail = (process.env.ROOT_ADMIN_EMAIL || "").trim().toLowerCase();
 const isProduction = process.env.NODE_ENV === "production";
 
 async function setupRootTwoFactor(): Promise<void> {
+  if (!rootEmail) throw new Error("ROOT_ADMIN_EMAIL is required to choose the root account.");
   if (!mongodbUri) {
     throw new Error("MONGODB_URI is required. Refusing to configure 2FA against an implicit local database.");
   }
 
-  if (!process.env.DATA_ENCRYPTION_KEY && !process.env.ENCRYPTION_KEY && !process.env.APP_ENCRYPTION_KEY) {
-    throw new Error("DATA_ENCRYPTION_KEY, ENCRYPTION_KEY or APP_ENCRYPTION_KEY is required so the root 2FA secret can be stored encrypted.");
+  if (!process.env.DATA_ENCRYPTION_KEY) {
+    throw new Error("DATA_ENCRYPTION_KEY is required so the root 2FA secret can be stored encrypted.");
   }
 
   if (isProduction && process.env.ROOT_2FA_CONFIRM !== "RESET") {
@@ -58,7 +59,7 @@ async function setupRootTwoFactor(): Promise<void> {
   try {
     // Rotating the secret invalidates every previously provisioned authenticator.
     user.twoFactorEnabled = true;
-    user.twoFactorSecret = encrypt(secret.base32);
+    user.twoFactorSecret = encryptField(secret.base32);
     await user.save();
   } catch (error) {
     if (qrPath) await rm(qrPath, { force: true });

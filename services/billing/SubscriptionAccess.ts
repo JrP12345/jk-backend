@@ -1,15 +1,15 @@
-import { Clinic } from "../../models/Clinic.ts";
+import { Location } from "../../models/Location.ts";
 import { Organization } from "../../models/Organization.ts";
 import { Subscription } from "../../models/Subscription.ts";
 import { subscriptionService } from "./SubscriptionService.ts";
 import mongoose from "mongoose";
 
-/** Existing care remains available; only creation of new clinic business is gated. */
-export async function canCreateClinicBooking(clinicId: string): Promise<boolean> {
-  if (!mongoose.Types.ObjectId.isValid(clinicId)) return false;
-  const clinic = await Clinic.findById(clinicId).select("organizationId isActive").lean();
-  if (!clinic || clinic.isActive === false || !clinic.organizationId) return false;
-  return canCreateOrganizationBooking(clinic.organizationId.toString());
+/** Existing care remains available; only creation of new location business is gated. */
+export async function canCreateLocationBooking(locationId: string): Promise<boolean> {
+  if (!mongoose.Types.ObjectId.isValid(locationId)) return false;
+  const location = await Location.findById(locationId).select("organizationId isActive").lean();
+  if (!location || location.isActive === false || !location.organizationId) return false;
+  return canCreateOrganizationBooking(location.organizationId.toString());
 }
 
 export async function canCreateOrganizationBooking(organizationId: string): Promise<boolean> {

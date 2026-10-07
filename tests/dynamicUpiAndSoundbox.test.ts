@@ -1,24 +1,26 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { User } from "../models/User.ts";
+import { fixtureAccessToken } from "./helpers/sessionFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { AppointmentPayment } from "../models/AppointmentPayment.ts";
-import { generateAccessToken } from "../utilities/helpers.ts";
 
 describe("Counter-Top Dynamic UPI VPA, Itemized Billing & Soundbox Settlement Test Suite", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let patient: any;
 
   beforeAll(async () => {
-    // 1. Setup Organization & Root/Clinic Admin
-    const bootstrapRes = await app.inject({
+    // 1. Setup Organization & Root/Location Admin
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -31,7 +33,7 @@ describe("Counter-Top Dynamic UPI VPA, Itemized Billing & Soundbox Settlement Te
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
     // 2. Setup Doctor
@@ -78,10 +80,10 @@ describe("Counter-Top Dynamic UPI VPA, Itemized Billing & Soundbox Settlement Te
   });
 
   it("Pillar 1: Clinic creation & update persists custom multi-tenant upiVpa and merchantName", async () => {
-    // Create Clinic with custom UPI VPA
-    const clinicRes = await app.inject({
+    // Create Location with custom UPI VPA
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Apollo South Mumbai Clinic",
@@ -90,28 +92,28 @@ describe("Counter-Top Dynamic UPI VPA, Itemized Billing & Soundbox Settlement Te
         merchantName: "Apollo South Mumbai Clinic Ltd",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
-    const clinicInDb = await Clinic.findById(clinicId);
-    expect(clinicInDb).toBeDefined();
-    expect(clinicInDb?.upiVpa).toBe("apollo.southmumbai@icici");
-    expect(clinicInDb?.merchantName).toBe("Apollo South Mumbai Clinic Ltd");
+    const locationInDb = await Location.findById(locationId);
+    expect(locationInDb).toBeDefined();
+    expect(locationInDb?.upiVpa).toBe("apollo.southmumbai@icici");
+    expect(locationInDb?.merchantName).toBe("Apollo South Mumbai Clinic Ltd");
 
-    // Assign doctor to this clinic
+    // Assign doctor to this location
     await DoctorAssignment.create({
       organizationId: orgId,
       doctorId,
-      clinicId,
+      locationId,
       fees: 500,
       workingHours: "[]",
       isActive: true,
     });
 
-    // Update Clinic UPI VPA via PUT /api/onboarding/clinics/:id
+    // Update Location UPI VPA via PUT /api/onboarding/locations/:id
     const updateRes = await app.inject({
       method: "PUT",
-      url: `/api/onboarding/clinics/${clinicId}`,
+      url: `/api/onboarding/locations/${locationId}`,
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Apollo South Mumbai Clinic",
@@ -122,16 +124,16 @@ describe("Counter-Top Dynamic UPI VPA, Itemized Billing & Soundbox Settlement Te
     });
     expect(updateRes.statusCode).toBe(200);
 
-    const updatedClinic = await Clinic.findById(clinicId);
-    expect(updatedClinic?.upiVpa).toBe("apollo.mumbai.counter@okhdfcbank");
-    expect(updatedClinic?.merchantName).toBe("Apollo Health Care Mumbai");
+    const updatedLocation = await Location.findById(locationId);
+    expect(updatedLocation?.upiVpa).toBe("apollo.mumbai.counter@okhdfcbank");
+    expect(updatedLocation?.merchantName).toBe("Apollo Health Care Mumbai");
   });
 
   it("Pillar 2: Counter-top settlement accepts consolidated bill amount (Consultation + Diagnostics)", async () => {
     // Book an appointment for Suresh Kumar
     const appt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient._id,
       appointmentTime: new Date().toISOString(),
@@ -151,7 +153,7 @@ describe("Counter-Top Dynamic UPI VPA, Itemized Billing & Soundbox Settlement Te
     await Invoice.create({
       invoiceNumber: `DYN-UPI-${Date.now()}`,
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient._id,
       appointmentId: appt._id,
@@ -210,7 +212,7 @@ describe("Counter-Top Dynamic UPI VPA, Itemized Billing & Soundbox Settlement Te
     // Book second appointment for Cash settlement
     const apptCash = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient._id,
       appointmentTime: new Date().toISOString(),
@@ -244,12 +246,13 @@ describe("Counter-Top Dynamic UPI VPA, Itemized Billing & Soundbox Settlement Te
     expect(cashInvoice?.paymentMethod).toBe("cash");
     expect(cashInvoice?.status).toBe("paid");
 
-    const guestToken = generateAccessToken({
-      id: "000000000000000000000001",
+    const guest = await User.create({ name: "Restricted guest", role: "patient" });
+    const guestToken = (await fixtureAccessToken({
+      id: guest.id,
       email: "guest@example.test",
       role: "guest",
       organization_id: orgId,
-    });
+    }));
     const guestRes = await app.inject({
       method: "POST",
       url: "/api/appointment-payments/collect-counter",
@@ -259,7 +262,7 @@ describe("Counter-Top Dynamic UPI VPA, Itemized Billing & Soundbox Settlement Te
     expect(guestRes.statusCode).toBe(403);
   });
 
-  it("requires authentication for the legacy reception check-in route", async () => {
+  it("requires authentication for the reception check-in route", async () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/check-in/qr",

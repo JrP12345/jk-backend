@@ -7,7 +7,7 @@ import "../models/Organization.ts";
 import "../models/OrgMember.ts";
 import "../models/RefreshToken.ts";
 import "../models/AuditLog.ts";
-import "../models/Clinic.ts";
+import "../models/Location.ts";
 import "../models/Doctor.ts";
 import "../models/Receptionist.ts";
 import "../models/DoctorAssignment.ts";
@@ -33,12 +33,12 @@ beforeAll(async () => {
     ? await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: "wiredTiger" } })
     : await MongoMemoryServer.create();
   const uri = mongoServer.getUri();
-  
+
   // Set environment variables for test DB and Cloudflare R2
   process.env.MONGODB_URI = uri;
   process.env.NODE_ENV = "test";
   // Test-only dummy key — NOT a real secret (zero-entropy 64-hex-char to prevent scanner false positives)
-  process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || "00".repeat(32);
+  process.env.DATA_ENCRYPTION_KEY = process.env.DATA_ENCRYPTION_KEY || "00".repeat(32);
   process.env.CLOUDFLARE_ACCOUNT_ID = "test-only-fake-account";
   process.env.R2_ACCESS_KEY_ID = "test-only-fake-access-key";
   process.env.R2_SECRET_ACCESS_KEY = "test-only-fake-secret-key";

@@ -2,7 +2,7 @@ import mongoose, { Schema } from "mongoose";
 import { auditPlugin } from "../utilities/auditPlugin.ts";
 
 const MedicineSchema = new Schema({
-  clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
+  locationId: { type: Schema.Types.ObjectId, ref: "Location", required: true, index: true },
   name: { type: String, required: true, index: true },
   genericName: { type: String, required: true },
   stockQuantity: { type: Number, required: true, default: 0 },
@@ -11,15 +11,15 @@ const MedicineSchema = new Schema({
   expiryDate: { type: Date },
   batchNumber: { type: String },
   manufacturer: { type: String, trim: true },
-  category: { 
-    type: String, 
-    enum: ["tablet", "capsule", "syrup", "injection", "ointment", "drops", "inhaler", "other"], 
-    default: "tablet" 
+  category: {
+    type: String,
+    enum: ["tablet", "capsule", "syrup", "injection", "ointment", "drops", "inhaler", "other"],
+    default: "tablet"
   },
-  scheduleType: { 
-    type: String, 
-    enum: ["general", "schedule_h", "schedule_h1", "schedule_x", "narcotic"], 
-    default: "general" 
+  scheduleType: {
+    type: String,
+    enum: ["general", "schedule_h", "schedule_h1", "schedule_x", "narcotic"],
+    default: "general"
   },
   reorderLevel: { type: Number, default: 20 },
   hsnCode: { type: String, default: "3004" },
@@ -28,7 +28,7 @@ const MedicineSchema = new Schema({
   createdAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 
-MedicineSchema.index({ clinicId: 1, name: 1 });
+MedicineSchema.index({ locationId: 1, name: 1 });
 
 MedicineSchema.virtual("id").get(function() {
   return this._id.toHexString();

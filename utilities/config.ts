@@ -76,13 +76,13 @@ export function validateConfig(): { valid: boolean; errors: string[] } {
       );
     }
 
-    const prescriptionKey = process.env.PRESCRIPTION_SIGNING_KEY || process.env.JWT_SECRET;
-    if (process.env.WORKLOAD_ROLE !== "worker" && (!prescriptionKey || prescriptionKey.length < 32 || prescriptionKey === "healthos-prescription-sealing-key")) {
-      missing.push("PRESCRIPTION_SIGNING_KEY (or legacy JWT_SECRET) must be a persistent secret of at least 32 characters for prescription integrity");
+    const prescriptionKey = process.env.PRESCRIPTION_SIGNING_KEY;
+    if (process.env.WORKLOAD_ROLE !== "worker" && (!prescriptionKey || prescriptionKey.length < 32 || ["healthos-prescription-sealing-key", "ekavyu-development-prescription-key"].includes(prescriptionKey))) {
+      missing.push("PRESCRIPTION_SIGNING_KEY must be a persistent secret of at least 32 characters for prescription integrity");
     }
   }
 
-  const encryptionKey = process.env.DATA_ENCRYPTION_KEY || process.env.ENCRYPTION_KEY || process.env.APP_ENCRYPTION_KEY;
+  const encryptionKey = process.env.DATA_ENCRYPTION_KEY;
   if (!encryptionKey) {
     if (isProd) {
       missing.push("DATA_ENCRYPTION_KEY (Required in production for field-level encryption of PHI and secrets)");

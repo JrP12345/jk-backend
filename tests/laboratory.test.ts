@@ -1,4 +1,5 @@
-import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { reuseOnboardingLocation } from "./helpers/locationEssentialsSetup.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
@@ -8,7 +9,7 @@ import { LabOrder } from "../models/LabOrder.ts";
 
 describe("Pathology Laboratory & LIS Integration Tests", () => {
   let adminCookies: string[] = [];
-  let clinicId: string;
+  let locationId: string;
   let patientId: string;
   let doctorUserId: string;
   let testId: string;
@@ -16,7 +17,7 @@ describe("Pathology Laboratory & LIS Integration Tests", () => {
 
   beforeAll(async () => {
     // 1. Create Organization & Admin
-    const orgRes = await app.inject({
+    const orgRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -28,18 +29,18 @@ describe("Pathology Laboratory & LIS Integration Tests", () => {
       },
     });
     expect(orgRes.statusCode).toBe(201);
-    adminCookies = orgRes.headers["set-cookie"] as string[];
+    adminCookies = (await provisionedAdminCookies(orgRes));
 
-    // 2. Create Clinic
-    const clinicRes = await reuseOnboardingClinic(app, { headers: { cookie: adminCookies.join("; ") }, payload: {
+    // 2. Create Location
+    const locationRes = await reuseOnboardingLocation(app, { headers: { cookie: adminCookies.join("; ") }, payload: {
         name: "Central Clinical Pathology Lab",
         city: "Pune",
         address: "50 Diagnostic Hub",
         phone: "9300022200",
         email: "lab@metropolis.internal",
       } });
-    expect(clinicRes.statusCode).toBe(200);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(200);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Register Patient
     const patientRes = await app.inject({
@@ -47,7 +48,7 @@ describe("Pathology Laboratory & LIS Integration Tests", () => {
       url: "/api/auth/register",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         name: "Pathology Patient Vikram",
         email: `vikram_lab_${Date.now()}@patient.com`,
         phone: "9876543321",
@@ -85,7 +86,7 @@ describe("Pathology Laboratory & LIS Integration Tests", () => {
       url: "/api/lab-tests",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         name: "Glycated Hemoglobin (HbA1c)",
         code: `HBA1C-${Date.now()}`,
         department: "Biochemistry",
@@ -106,7 +107,7 @@ describe("Pathology Laboratory & LIS Integration Tests", () => {
   it("should retrieve lab test catalog via GET /api/lab/tests", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/api/lab-tests?clinicId=${clinicId}`,
+      url: `/api/lab-tests?locationId=${locationId}`,
       headers: { cookie: adminCookies.join("; ") },
     });
 
@@ -123,7 +124,7 @@ describe("Pathology Laboratory & LIS Integration Tests", () => {
       url: "/api/lab-orders",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         patientId,
         doctorId: doctorUserId,
         testId,
@@ -159,8 +160,8 @@ describe("Pathology Laboratory & LIS Integration Tests", () => {
       url: `/api/lab-orders/${orderId}/result`,
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        resultValue: "5.8%",
-        resultNotes: "Pre-diabetic range. Diet and exercise modification recommended.",
+        value: "5.8%",
+        notes: "Pre-diabetic range. Diet and exercise modification recommended.",
       },
     });
 
@@ -168,13 +169,19 @@ describe("Pathology Laboratory & LIS Integration Tests", () => {
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
     expect(body.data.status).toBe("result-uploaded");
-    expect(body.data.resultValue).toBe("5.8%");
+    expect(body.data.result.value).toBe("5.8%");
+  });
+
+  it("rejects removed flat result field names", async () => {
+    const response = await app.inject({ method: "PUT", url: `/api/lab-orders/${orderId}/result`, headers: { cookie: adminCookies.join("; ") }, payload: { resultValue: "5.8%", resultNotes: "Removed representation" } });
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toContain("value");
   });
 
   it("should retrieve TAT metrics via GET /api/lab/tat-metrics", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/api/lab/tat-metrics?clinicId=${clinicId}`,
+      url: `/api/lab/tat-metrics?locationId=${locationId}`,
       headers: { cookie: adminCookies.join("; ") },
     });
 

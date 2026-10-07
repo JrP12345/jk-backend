@@ -54,7 +54,7 @@ describe("Batch 1: AI Provider Security & Schema Validation Tests", () => {
     const validResponse = {
       answer: "The patient has documented hypertension and no reported drug allergies.",
       citations: ["Patient Profile", "Prescription Records"],
-      disclaimer: "ANANTA Clinical Guidance",
+      disclaimer: "EKAVYU Clinical Guidance",
       suggestedActions: [
         { type: "VIEW_PATIENT", label: "View Chart", targetUrl: "/dashboard/patients/123" }
       ]

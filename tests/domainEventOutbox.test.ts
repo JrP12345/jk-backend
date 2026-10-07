@@ -1,3 +1,4 @@
+import { fixtureAccessToken } from "./helpers/sessionFixture.ts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import mongoose from "mongoose";
 import { app } from "../index.ts";
@@ -7,7 +8,6 @@ import { eventBus } from "../events/eventBus.ts";
 import { domainEventBus } from "../platform/events/DomainEventBus.ts";
 import { domainEventDeliveryWorker } from "../services/DomainEventDeliveryWorker.ts";
 import { readEncryptedDomainEvent } from "../services/DomainEventOutboxService.ts";
-import { generateAccessToken } from "../utilities/helpers.ts";
 
 describe("Durable Domain Event Outbox", () => {
   let rootCookie: string;
@@ -24,11 +24,11 @@ describe("Durable Domain Event Outbox", () => {
       role: "root",
     });
 
-    rootCookie = `access_token=${generateAccessToken({
+    rootCookie = `access_token=${(await fixtureAccessToken({
       id: rootUser._id.toString(),
       email: rootUser.email!,
       role: "root",
-    })}`;
+    }))}`;
   });
 
   it("persists domain event to DomainEventOutbox with encrypted payload", async () => {
@@ -123,7 +123,7 @@ describe("Durable Domain Event Outbox", () => {
   it("marks terminal failure and allows dead-letter list & replay via admin operations", async () => {
     const failedDoc = await DomainEventOutbox.create({
       idempotencyKey: `failed_event_${Date.now()}`,
-      eventType: "ANANTA_DEAD_LETTER_EVENT",
+      eventType: "EKAVYU_DEAD_LETTER_EVENT",
       payloadCiphertext: "corrupted_ciphertext_for_test",
       status: "failed",
       attempts: 5,
@@ -143,7 +143,7 @@ describe("Durable Domain Event Outbox", () => {
     expect(listBody.success).toBe(true);
     const item = listBody.data.find((d: any) => d.id === failedDoc._id.toString());
     expect(item).toBeDefined();
-    expect(item.deliveryKind).toBe("ANANTA_DEAD_LETTER_EVENT");
+    expect(item.deliveryKind).toBe("EKAVYU_DEAD_LETTER_EVENT");
     expect(item.payload).toBeUndefined();
     expect(item.payloadCiphertext).toBeUndefined();
 

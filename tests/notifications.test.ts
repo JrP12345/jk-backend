@@ -48,7 +48,7 @@ describe("Notification Infrastructure System", () => {
   });
 
   it("should process domain events published via EventBus and persist notifications", async () => {
-    eventBus.publish({
+    await eventBus.dispatch({
       eventType: EVENT_TYPES.TASK_ASSIGNED,
       category: "task",
       targetUserId: userId,
@@ -57,7 +57,7 @@ describe("Notification Infrastructure System", () => {
       severity: "info",
     });
 
-    // Allow event emitter setImmediate tick to resolve
+    // Allow delivery-worker scheduling to settle.
     await new Promise((r) => setTimeout(r, 300));
 
     const unread = await notificationService.getUnreadCount(userId);
@@ -74,7 +74,7 @@ describe("Notification Infrastructure System", () => {
       categories: { auth: true, organization: true, team: true, task: false, patient: true, billing: true, security: true, system: true },
     });
 
-    eventBus.publish({
+    await eventBus.dispatch({
       eventType: EVENT_TYPES.TASK_ASSIGNED,
       category: "task",
       targetUserId: userId,
@@ -162,7 +162,7 @@ describe("Notification Infrastructure System", () => {
   it("should suppress duplicate events using idempotency key", async () => {
     const eventId = "unique_event_key_123";
 
-    eventBus.publish({
+    await eventBus.dispatch({
       eventId,
       eventType: EVENT_TYPES.TASK_ASSIGNED,
       category: "task",
@@ -175,7 +175,7 @@ describe("Notification Infrastructure System", () => {
     expect(await notificationService.getUnreadCount(userId)).toBe(1);
 
     // Publish identical event with same eventId
-    eventBus.publish({
+    await eventBus.dispatch({
       eventId,
       eventType: EVENT_TYPES.TASK_ASSIGNED,
       category: "task",
@@ -197,7 +197,7 @@ describe("Notification Infrastructure System", () => {
     expect(typeof metricsBefore.queueDepth).toBe("number");
 
     // Publish event with email channel enabled
-    eventBus.publish({
+    await eventBus.dispatch({
       eventType: EVENT_TYPES.SYSTEM_ALERT,
       category: "system",
       targetUserId: userId,
@@ -283,7 +283,7 @@ describe("Notification Infrastructure System", () => {
     });
 
     // Publish critical error event which triggers Critical Escalation Rule
-    eventBus.publish({
+    await eventBus.dispatch({
       eventType: EVENT_TYPES.SECURITY_SUSPICIOUS_LOGIN,
       category: "security",
       severity: "error",

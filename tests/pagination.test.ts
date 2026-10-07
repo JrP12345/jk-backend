@@ -1,14 +1,15 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect } from "vitest";
 import { app } from "../index.ts";
 import { Medicine } from "../models/Medicine.ts";
 
 describe("List Pagination API Integration Tests", () => {
   let adminCookies: string[] = [];
-  let clinicId: string;
+  let locationId: string;
 
   it("should setup organization and clinic", async () => {
     // 1. Create org + admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -21,16 +22,16 @@ describe("List Pagination API Integration Tests", () => {
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
 
-    // 2. Create clinic
-    const clinicRes = await app.inject({
+    // 2. Create location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: { name: "Pagination Branch", city: "Surat" },
     });
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    locationId = JSON.parse(locationRes.body).data.id;
   });
 
   it("should create 5 medicine records for testing pagination", async () => {
@@ -42,7 +43,7 @@ describe("List Pagination API Integration Tests", () => {
         url: "/api/medicines",
         headers: { cookie: adminCookies.join("; ") },
         payload: {
-          clinicId,
+          locationId,
           name: medNames[i],
           genericName: `Generic ${medNames[i]}`,
           stockQuantity: 100,
@@ -55,14 +56,14 @@ describe("List Pagination API Integration Tests", () => {
       expect(res.statusCode).toBe(201);
     }
 
-    const count = await Medicine.countDocuments({ clinicId });
+    const count = await Medicine.countDocuments({ locationId });
     expect(count).toBe(5);
   });
 
   it("should paginate medicines list and return correct headers for page 1", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/api/medicines?clinicId=${clinicId}&limit=2&page=1`,
+      url: `/api/medicines?locationId=${locationId}&limit=2&page=1`,
       headers: { cookie: adminCookies.join("; ") },
     });
 
@@ -82,7 +83,7 @@ describe("List Pagination API Integration Tests", () => {
   it("should paginate medicines list and return correct headers for page 3", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/api/medicines?clinicId=${clinicId}&limit=2&page=3`,
+      url: `/api/medicines?locationId=${locationId}&limit=2&page=3`,
       headers: { cookie: adminCookies.join("; ") },
     });
 
@@ -101,7 +102,7 @@ describe("List Pagination API Integration Tests", () => {
   it("should return empty list and correct headers for out of bounds page", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/api/medicines?clinicId=${clinicId}&limit=2&page=4`,
+      url: `/api/medicines?locationId=${locationId}&limit=2&page=4`,
       headers: { cookie: adminCookies.join("; ") },
     });
 

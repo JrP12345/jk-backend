@@ -52,8 +52,8 @@ export async function getEncounterSummaryReportController(req: FastifyRequest, r
   try {
     const { id: encounterId } = req.params as { id: string };
     if (!mongoose.Types.ObjectId.isValid(encounterId)) return reply.code(400).send(errorResponse('Invalid encounter ID'));
-    const encounter = await Encounter.findById(encounterId).select('patientId clinicId organizationId').lean()
-      || await Encounter.findOne({ appointmentId: encounterId }).select('patientId clinicId organizationId').lean();
+    const encounter = await Encounter.findById(encounterId).select('patientId locationId organizationId').lean()
+      || await Encounter.findOne({ appointmentId: encounterId }).select('patientId locationId organizationId').lean();
     if (!encounter) return reply.code(404).send(errorResponse('Encounter not found'));
     const patientAccess = await checkPatientAccess(req, encounter.patientId.toString());
     if (!patientAccess.allowed) return reply.code(patientAccess.statusCode).send(errorResponse(patientAccess.message));

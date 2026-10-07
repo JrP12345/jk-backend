@@ -6,11 +6,11 @@ export interface IAppointmentPayment extends Document {
   patientId: mongoose.Types.ObjectId;
   amount: number;
   currency: string;
-  paymentMethod: "razorpay" | "pay_at_clinic" | "cash" | "upi" | "card";
+  paymentMethod: "razorpay" | "pay_at_location" | "cash" | "upi" | "card";
   razorpayOrderId?: string;
   razorpayPaymentId?: string;
   razorpaySignature?: string;
-  status: "creating" | "ambiguous" | "created" | "authorized" | "captured" | "failed" | "pay_at_clinic";
+  status: "creating" | "ambiguous" | "created" | "authorized" | "captured" | "failed" | "pay_at_location";
   idempotencyKey?: string;
   orderReceipt?: string;
   createdAt: Date;
@@ -26,7 +26,7 @@ const AppointmentPaymentSchema = new Schema<IAppointmentPayment>(
     currency: { type: String, default: "INR" },
     paymentMethod: {
       type: String,
-      enum: ["razorpay", "pay_at_clinic", "cash", "upi", "card"],
+      enum: ["razorpay", "pay_at_location", "cash", "upi", "card"],
       required: true,
     },
     razorpayOrderId: { type: String, index: true },
@@ -37,7 +37,7 @@ const AppointmentPaymentSchema = new Schema<IAppointmentPayment>(
     razorpaySignature: { type: String },
     status: {
       type: String,
-      enum: ["creating", "ambiguous", "created", "authorized", "captured", "failed", "pay_at_clinic"],
+      enum: ["creating", "ambiguous", "created", "authorized", "captured", "failed", "pay_at_location"],
       default: "created",
     },
     orderReceipt: { type: String, index: true },

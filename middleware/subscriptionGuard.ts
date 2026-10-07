@@ -1,6 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { errorResponse } from "../utilities/helpers.ts";
-import { canCreateClinicBooking, canCreateOrganizationBooking } from "../services/billing/SubscriptionAccess.ts";
+import { canCreateLocationBooking, canCreateOrganizationBooking } from "../services/billing/SubscriptionAccess.ts";
 
 /**
  * Subscription Status Guard Middleware.
@@ -28,12 +28,12 @@ export async function enforceSubscriptionActive(req: FastifyRequest, reply: Fast
   }
 }
 
-/** Booking must use the target clinic, not the caller's possibly unrelated organization. */
+/** Booking must use the target location, not the caller's possibly unrelated organization. */
 export async function enforceNewBookingAllowed(req: FastifyRequest, reply: FastifyReply) {
-  const clinicId = (req.body as { clinicId?: string } | undefined)?.clinicId;
-  if (!clinicId) return;
+  const locationId = (req.body as { locationId?: string } | undefined)?.locationId;
+  if (!locationId) return;
   try {
-    if (await canCreateClinicBooking(clinicId)) return;
+    if (await canCreateLocationBooking(locationId)) return;
     const consumer = ["patient", "family_member", "guest"].includes(req.user?.role || "");
     return reply.code(consumer ? 409 : 402).send(errorResponse(consumer
       ? "Online booking is temporarily unavailable. Please contact the clinic directly."

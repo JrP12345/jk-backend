@@ -4,7 +4,7 @@ import { SaaSInvoice } from "../models/SaaSInvoice.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { resolveAuthorizedOrganizationScope, isRootRequest } from "../utilities/tenant.ts";
 import crypto from "node:crypto";
-import { encrypt } from "../utilities/encryption.ts";
+import { encryptField } from "../utilities/cryptoEnvelope.ts";
 import { getPlatformAccount, publicAccount, resolveWhatsAppAccount, secretProjection } from "../services/WhatsAppAccountService.ts";
 
 export const WHATSAPP_CREDIT_PACKS = {
@@ -158,14 +158,14 @@ export async function updateOrganizationWhatsAppConfig(req: FastifyRequest, repl
   // Dedicated enterprise WABA credentials
   if (body.wabaId?.trim()) updateFields["whatsappConfig.wabaId"] = body.wabaId.trim();
   if (body.phoneNumberId?.trim()) updateFields["whatsappConfig.phoneNumberId"] = body.phoneNumberId.trim();
-  if (body.accessToken?.trim()) updateFields["whatsappConfig.accessToken"] = encrypt(body.accessToken.replace(/\s/g, ""));
-  if (body.appSecret?.trim()) updateFields["whatsappConfig.appSecret"] = encrypt(body.appSecret.trim());
+  if (body.accessToken?.trim()) updateFields["whatsappConfig.accessToken"] = encryptField(body.accessToken.replace(/\s/g, ""));
+  if (body.appSecret?.trim()) updateFields["whatsappConfig.appSecret"] = encryptField(body.appSecret.trim());
   if (body.accessToken?.trim() || body.appSecret?.trim() || (body.wabaId && body.wabaId !== current.whatsappConfig?.wabaId) || (body.phoneNumberId && body.phoneNumberId !== current.whatsappConfig?.phoneNumberId)) {
     updateFields["whatsappConfig.connectionStatus"] = "pending";
     updateFields["whatsappConfig.lastError"] = "";
     updateFields["whatsappConfig.verifiedAt"] = null;
   }
-  if (!current.whatsappConfig?.verifyToken) updateFields["whatsappConfig.verifyToken"] = encrypt(`ananta_${crypto.randomBytes(24).toString("base64url")}`);
+  if (!current.whatsappConfig?.verifyToken) updateFields["whatsappConfig.verifyToken"] = encryptField(`ekavyu_${crypto.randomBytes(24).toString("base64url")}`);
 
   // Granular notification toggles
   if (body.notifications) {
@@ -192,7 +192,7 @@ export async function updateOrganizationWhatsAppConfig(req: FastifyRequest, repl
   const updatedOrg = await Organization.findByIdAndUpdate(
     orgId,
     { $set: updateFields },
-    { new: true }
+    { returnDocument: "after" }
   );
   await AuditLog.create({ userId: (req as any).user?.id, organizationId: orgId, action: "WHATSAPP_SETTINGS_UPDATE", targetId: orgId, targetModel: "Organization", details: { mode: updatedOrg?.whatsappConfig?.mode, credentialsChanged: !!(body.accessToken || body.appSecret) } });
 
@@ -266,7 +266,7 @@ export async function purchaseWhatsAppCredits(req: FastifyRequest, reply: Fastif
         "whatsappConfig.prepaidCredits": pack.credits,
       },
     },
-    { new: true }
+    { returnDocument: "after" }
   );
 
   // Record Audit Trail

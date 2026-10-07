@@ -5,7 +5,7 @@ import { Patient } from "../models/Patient.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { getNextAtomicSequence } from "../models/Counter.ts";
 import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
-import { checkClinicAccess, checkOperationalRecordAccess, getRequestClinicIds, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+import { checkLocationAccess, checkOperationalRecordAccess, getRequestLocationIds, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));
@@ -15,10 +15,10 @@ export async function createPreAuthRequest(req: FastifyRequest, reply: FastifyRe
   try {
     const userId = req.user!.id;
     const {
-      patientId, clinicId, doctorId, tpaName, policyNumber, diagnosisCode, proposedTreatment, requestedAmount
+      patientId, locationId, doctorId, tpaName, policyNumber, diagnosisCode, proposedTreatment, requestedAmount
     } = req.body as {
       patientId: string;
-      clinicId: string;
+      locationId: string;
       doctorId: string;
       tpaName: string;
       policyNumber: string;
@@ -27,36 +27,36 @@ export async function createPreAuthRequest(req: FastifyRequest, reply: FastifyRe
       requestedAmount: number;
     };
 
-    if (!patientId || !clinicId || !doctorId || !tpaName || !policyNumber || !diagnosisCode || !proposedTreatment || requestedAmount === undefined) {
-      return reply.code(400).send(errorResponse("patientId, clinicId, doctorId, tpaName, policyNumber, diagnosisCode, proposedTreatment, and requestedAmount are required"));
+    if (!patientId || !locationId || !doctorId || !tpaName || !policyNumber || !diagnosisCode || !proposedTreatment || requestedAmount === undefined) {
+      return reply.code(400).send(errorResponse("patientId, locationId, doctorId, tpaName, policyNumber, diagnosisCode, proposedTreatment, and requestedAmount are required"));
     }
 
-    if (!mongoose.Types.ObjectId.isValid(patientId) || !mongoose.Types.ObjectId.isValid(clinicId) || !mongoose.Types.ObjectId.isValid(doctorId)) {
-      return reply.code(400).send(errorResponse("Invalid patient, clinic, or doctor ID"));
+    if (!mongoose.Types.ObjectId.isValid(patientId) || !mongoose.Types.ObjectId.isValid(locationId) || !mongoose.Types.ObjectId.isValid(doctorId)) {
+      return reply.code(400).send(errorResponse("Invalid patient, location, or doctor ID"));
     }
     if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) {
       return reply.code(400).send(errorResponse("requestedAmount must be greater than zero"));
     }
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
 
     const patient = await Patient.findById(patientId);
     if (!patient) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
     }
-    if (patient.organizationId && clinicAccess.organizationId && patient.organizationId.toString() !== clinicAccess.organizationId) {
+    if (patient.organizationId && locationAccess.organizationId && patient.organizationId.toString() !== locationAccess.organizationId) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
     }
 
     const currentYear = new Date().getFullYear();
-    const seq = await getNextAtomicSequence(`preauth_${clinicId}_${currentYear}`);
+    const seq = await getNextAtomicSequence(`preauth_${locationId}_${currentYear}`);
     const preAuthNumber = `PA-${currentYear}-${seq.toString().padStart(5, "0")}`;
 
     const preAuth = await PreAuthorization.create({
-      organizationId: clinicAccess.organizationId,
+      organizationId: locationAccess.organizationId,
       preAuthNumber,
       patientId,
-      clinicId,
+      locationId,
       doctorId,
       tpaName: tpaName.trim(),
       policyNumber: policyNumber.trim(),
@@ -84,18 +84,18 @@ export async function createPreAuthRequest(req: FastifyRequest, reply: FastifyRe
 
 export async function getPreAuthList(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, status, tpaName, search, page, limit } = req.query as any;
+    const { locationId, status, tpaName, search, page, limit } = req.query as any;
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
 
     const filter: any = {};
-    if (clinicId) {
-      if (!mongoose.Types.ObjectId.isValid(clinicId)) return reply.code(400).send(errorResponse("Invalid clinic ID"));
-      const clinicAccess = await checkClinicAccess(req, clinicId);
-      if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
-      filter.clinicId = clinicId;
+    if (locationId) {
+      if (!mongoose.Types.ObjectId.isValid(locationId)) return reply.code(400).send(errorResponse("Invalid location ID"));
+      const locationAccess = await checkLocationAccess(req, locationId);
+      if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
+      filter.locationId = locationId;
     } else {
-      const clinicIds = await getRequestClinicIds(req);
-      if (clinicIds) filter.clinicId = { $in: clinicIds };
+      const locationIds = await getRequestLocationIds(req);
+      if (locationIds) filter.locationId = { $in: locationIds };
     }
     const scope = resolveAuthorizedOrganizationScope(req);
     if (!scope.allowed) return sendTenantError(reply, scope);
@@ -115,7 +115,7 @@ export async function getPreAuthList(req: FastifyRequest, reply: FastifyReply) {
     const totalPages = Math.ceil(totalCount / pageSize);
 
     const preAuths = await PreAuthorization.find(filter)
-      .populate("clinicId", "name city")
+      .populate("locationId", "name city")
       .populate("doctorId", "name specialization")
       .populate({
         path: "patientId",

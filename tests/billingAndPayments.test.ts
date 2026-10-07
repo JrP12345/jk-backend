@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 import app from "../index.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { Claim } from "../models/Claim.ts";
@@ -13,7 +13,7 @@ import bcrypt from "bcryptjs";
 describe("Milestone 7: Billing & Payments Platform Integration Tests", () => {
   it("should create medical invoice, generate online payment link, and collect payment", async () => {
     const org = await Organization.create({ name: "Billing Test Health System", city: "Chennai" });
-    const clinic = await Clinic.create({
+    const location = await Location.create({
       organizationId: org._id,
       name: "Billing Ward Clinic",
       city: "Chennai",
@@ -22,7 +22,7 @@ describe("Milestone 7: Billing & Payments Platform Integration Tests", () => {
 
     const staffUser = await User.create({
       name: "Billing Officer",
-      email: "billing_officer@ananta.internal",
+      email: "billing_officer@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "admin",
     });
@@ -35,14 +35,14 @@ describe("Milestone 7: Billing & Payments Platform Integration Tests", () => {
 
     const doctorUser = await User.create({
       name: "Dr. Billing Attending",
-      email: "dr_billing@ananta.internal",
+      email: "dr_billing@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "doctor",
     });
 
     const patientUser = await User.create({
       name: "Billing Patient",
-      email: "billing_patient@ananta.internal",
+      email: "billing_patient@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "patient",
     });
@@ -56,7 +56,7 @@ describe("Milestone 7: Billing & Payments Platform Integration Tests", () => {
       method: "POST",
       url: "/api/auth/login",
       remoteAddress: "10.8.0.1",
-      payload: { email: "billing_officer@ananta.internal", password: "Password123!" },
+      payload: { email: "billing_officer@ekavyu.internal", password: "Password123!" },
     });
     const accessToken = loginRes.cookies.find((c) => c.name === "access_token")?.value || "";
 
@@ -68,7 +68,7 @@ describe("Milestone 7: Billing & Payments Platform Integration Tests", () => {
       headers: { authorization: `Bearer ${accessToken}` },
       payload: {
         patientId: patient._id.toString(),
-        clinicId: clinic._id.toString(),
+        locationId: location._id.toString(),
         doctorId: doctorUser._id.toString(),
         items: [
           { description: "General OPD Consultation", amount: 500, quantity: 1 },
@@ -95,13 +95,13 @@ describe("Milestone 7: Billing & Payments Platform Integration Tests", () => {
       payload: {
         invoiceId: invoice.id,
         amount: 900,
-        customerEmail: "billing_patient@ananta.internal",
+        customerEmail: "billing_patient@ekavyu.internal",
       },
     });
 
     expect(payLinkRes.statusCode).toBe(200);
     const payLinkData = JSON.parse(payLinkRes.body).data;
-    expect(payLinkData.checkoutUrl).toContain("pay.ananta.health");
+    expect(payLinkData.checkoutUrl).toContain("pay.ekavyu.health");
 
     // 3. Collect Payment
     const payRes = await app.inject({
@@ -121,7 +121,7 @@ describe("Milestone 7: Billing & Payments Platform Integration Tests", () => {
 
   it("should submit and adjudicate medical insurance claim", async () => {
     const org = await Organization.create({ name: "Insurance Test Org", city: "Mumbai" });
-    const clinic = await Clinic.create({
+    const location = await Location.create({
       organizationId: org._id,
       name: "Insurance Clinic",
       city: "Mumbai",
@@ -130,7 +130,7 @@ describe("Milestone 7: Billing & Payments Platform Integration Tests", () => {
 
     const staffUser = await User.create({
       name: "Claims Manager",
-      email: "claims_mgr@ananta.internal",
+      email: "claims_mgr@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "admin",
     });
@@ -143,7 +143,7 @@ describe("Milestone 7: Billing & Payments Platform Integration Tests", () => {
 
     const patientUser = await User.create({
       name: "Insured Patient",
-      email: "insured_patient@ananta.internal",
+      email: "insured_patient@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "patient",
     });
@@ -157,7 +157,7 @@ describe("Milestone 7: Billing & Payments Platform Integration Tests", () => {
       method: "POST",
       url: "/api/auth/login",
       remoteAddress: "10.8.0.2",
-      payload: { email: "claims_mgr@ananta.internal", password: "Password123!" },
+      payload: { email: "claims_mgr@ekavyu.internal", password: "Password123!" },
     });
     const accessToken = loginRes.cookies.find((c) => c.name === "access_token")?.value || "";
 
@@ -168,7 +168,7 @@ describe("Milestone 7: Billing & Payments Platform Integration Tests", () => {
       cookies: { access_token: accessToken },
       headers: { authorization: `Bearer ${accessToken}` },
       payload: {
-        clinicId: clinic._id.toString(),
+        locationId: location._id.toString(),
         patientId: patient._id.toString(),
         payerName: "Star Health Insurance",
         policyNumber: "SHI-99887766",

@@ -2,7 +2,7 @@ import mongoose, { Schema, Document } from "mongoose";
 
 export interface IDepartment extends Document {
   organizationId: mongoose.Types.ObjectId;
-  clinicId?: mongoose.Types.ObjectId;
+  locationId?: mongoose.Types.ObjectId;
   name: string;
   code: string;
   description?: string;
@@ -15,7 +15,7 @@ export interface IDepartment extends Document {
 const DepartmentSchema = new Schema<IDepartment>(
   {
     organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
-    clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", index: true },
+    locationId: { type: Schema.Types.ObjectId, ref: "Location", index: true },
     name: { type: String, required: true, trim: true },
     code: { type: String, required: true, uppercase: true, trim: true },
     description: { type: String },

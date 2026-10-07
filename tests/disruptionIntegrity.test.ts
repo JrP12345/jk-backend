@@ -1,8 +1,9 @@
+import { fixtureAccessToken } from "./helpers/sessionFixture.ts";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose from "mongoose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
@@ -17,14 +18,13 @@ import { SmsWhatsAppService } from "../services/SmsWhatsAppService.ts";
 import { AppointmentPayment } from "../models/AppointmentPayment.ts";
 import { Role } from "../models/Role.ts";
 import { app } from "../index.ts";
-import { generateAccessToken } from "../utilities/helpers.ts";
 import { razorpayService, type RazorpayRefund } from "../services/billing/RazorpayService.ts";
 import { resilientHttpClient } from "../utilities/resilientHttpClient.ts";
 import * as notifications from "../utilities/notifications.ts";
 import { DomainEventOutbox } from "../models/DomainEventOutbox.ts";
 
 let replica: MongoMemoryReplSet;
-let orgId: string, clinicId: string, doctorId: string, replacementId: string, foreignDoctorId: string, patientId: string;
+let orgId: string, locationId: string, doctorId: string, replacementId: string, foreignDoctorId: string, patientId: string;
 let rootCookie: string, restrictedCookie: string;
 beforeAll(async () => {
   // These cases verify actual commit/rollback, not the development standalone fallback.
@@ -32,18 +32,18 @@ beforeAll(async () => {
   await mongoose.disconnect(); await mongoose.connect(replica.getUri());
   await Promise.all([Appointment, Invoice, AuditLog, Counter, DoctorAssignment, AppointmentPayment, DomainEventOutbox].map(model => model.createIndexes()));
   const org = await Organization.create({ name: "Integrity Health", city: "Surat", timezone: "Asia/Kolkata", currency: "INR" }); orgId = org.id;
-  const clinics = await Clinic.create([{ name: "Own", city: "Surat", organizationId: orgId }, { name: "Other location", city: "Surat", organizationId: orgId }]); clinicId = clinics[0].id;
+  const locations = await Location.create([{ name: "Own", city: "Surat", organizationId: orgId }, { name: "Other location", city: "Surat", organizationId: orgId }]); locationId = locations[0].id;
   const doctors = await User.create([{ name: "Original", role: "doctor" }, { name: "Replacement", role: "doctor" }, { name: "Foreign", role: "doctor" }]);
   doctorId = doctors[0].id; replacementId = doctors[1].id; foreignDoctorId = doctors[2].id;
   const root = await User.create({ name: "Root", role: "root" });
-  rootCookie = `access_token=${generateAccessToken({ id: root.id, email: "", role: "root" })}`;
+  rootCookie = `access_token=${(await fixtureAccessToken({ id: root.id, email: "", role: "root" }))}`;
   const restricted = await User.create({ name: "Restricted admin", role: "admin" });
   await Role.create({ name: "admin", organizationId: orgId, permissions: [] });
-  restrictedCookie = `access_token=${generateAccessToken({ id: restricted.id, email: "", role: "admin", organization_id: orgId })}`;
+  restrictedCookie = `access_token=${(await fixtureAccessToken({ id: restricted.id, email: "", role: "admin", organization_id: orgId }))}`;
   await DoctorAssignment.create([
-    { clinicId, organizationId: orgId, doctorId, workingHours: '[{"start":"09:00","end":"17:00"}]' },
-    { clinicId, organizationId: orgId, doctorId: replacementId, workingHours: '[{"start":"09:00","end":"17:00"}]' },
-    { clinicId: clinics[1].id, organizationId: orgId, doctorId: foreignDoctorId, workingHours: "[]" },
+    { locationId, organizationId: orgId, doctorId, workingHours: '[{"start":"09:00","end":"17:00"}]' },
+    { locationId, organizationId: orgId, doctorId: replacementId, workingHours: '[{"start":"09:00","end":"17:00"}]' },
+    { locationId: locations[1].id, organizationId: orgId, doctorId: foreignDoctorId, workingHours: "[]" },
   ]);
   const patient = await Patient.create({ name: "Integrity patient", phone: "9876500011", organizationId: orgId }); patientId = patient.id;
 }, 60000);
@@ -59,9 +59,9 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-const visit = (extra = {}) => Appointment.create({ organizationId: orgId, clinicId, doctorId, patientId, appointmentTime: new Date("2027-01-10T03:30:00Z"), appointmentType: "reception", bookingMode: "sequential_queue", status: "disruption_triage", tokenNumber: 1, ...extra });
+const visit = (extra = {}) => Appointment.create({ organizationId: orgId, locationId, doctorId, patientId, appointmentTime: new Date("2027-01-10T03:30:00Z"), appointmentType: "reception", bookingMode: "sequential_queue", status: "disruption_triage", tokenNumber: 1, ...extra });
 async function invoice(appointmentId: string, extra = {}) {
-  return Invoice.create({ organizationId: orgId, clinicId, doctorId, patientId, appointmentId, invoiceNumber: `INV-${new mongoose.Types.ObjectId()}`, items: [{ description: "Consultation", quantity: 1, amount: 600 }], subtotal: 600, totalAmount: 600, amountPaid: 600, balanceDue: 0, status: "paid", paymentMethod: "online", currency: "INR", payments: [{ amount: 600, paymentMethod: "online", referenceNumber: "pay_verifiedFixture", paidAt: new Date() }], ...extra });
+  return Invoice.create({ organizationId: orgId, locationId, doctorId, patientId, appointmentId, invoiceNumber: `INV-${new mongoose.Types.ObjectId()}`, items: [{ description: "Consultation", quantity: 1, amount: 600 }], subtotal: 600, totalAmount: 600, amountPaid: 600, balanceDue: 0, status: "paid", paymentMethod: "online", currency: "INR", payments: [{ amount: 600, paymentMethod: "online", referenceNumber: "pay_verifiedFixture", paidAt: new Date() }], ...extra });
 }
 const reschedule = (appointmentId: string, targetDate = "2027-01-11", targetDoctorId?: string) => disruptionService.priorityReschedule({ appointmentId, targetDate, targetDoctorId, rescheduledByUserId: doctorId });
 const cancel = (appointmentId: string) => disruptionService.cancelByDisruption({ appointmentId, cancelledByUserId: doctorId });
@@ -158,10 +158,10 @@ describe("Disruption persistence and payment integrity", () => {
   it("denies cross-tenant billing reconciliation before contacting the provider", async () => {
     const cashier = await User.create({ name: "Cashier", role: "cashier" });
     await Role.create({ name: "cashier", organizationId: orgId, permissions: ["MANAGE_BILLING"] });
-    const cookie = `access_token=${generateAccessToken({ id: cashier.id, email: "", role: "cashier", organization_id: orgId })}`;
+    const cookie = `access_token=${(await fixtureAccessToken({ id: cashier.id, email: "", role: "cashier", organization_id: orgId }))}`;
     const foreignOrg = await Organization.create({ name: "Foreign", city: "Surat" });
-    const foreignClinic = await Clinic.create({ name: "Foreign", city: "Surat", organizationId: foreignOrg.id });
-    const original = await visit({ clinicId: foreignClinic.id, organizationId: foreignOrg.id, status: "cancelled", paymentStatus: "refund_pending" });
+    const foreignLocation = await Location.create({ name: "Foreign", city: "Surat", organizationId: foreignOrg.id });
+    const original = await visit({ locationId: foreignLocation.id, organizationId: foreignOrg.id, status: "cancelled", paymentStatus: "refund_pending" });
     const gateway = vi.spyOn(razorpayService, "fetchPaymentRefunds");
     expect((await reconcileRefund(original.id, cookie)).statusCode).toBe(404);
     expect(gateway).not.toHaveBeenCalled();
@@ -199,7 +199,7 @@ describe("Disruption persistence and payment integrity", () => {
   });
   it("shares the canonical counter for concurrent queue reschedules", async () => {
     const first = await visit(), second = await visit();
-    await Counter.create({ id: `token_${clinicId}_${doctorId}_2027-02-03`, seq: 0 });
+    await Counter.create({ id: `token_${locationId}_${doctorId}_2027-02-03`, seq: 0 });
     const results = await Promise.all([reschedule(first.id, "2027-02-03"), reschedule(second.id, "2027-02-03")]);
     expect(results.map(result => result.newAppt.tokenNumber).sort()).toEqual([1, 2]);
     const visits = await Appointment.find({ _id: { $in: results.map(result => result.newAppt._id) } });
@@ -213,17 +213,17 @@ describe("Disruption persistence and payment integrity", () => {
     expect((await Appointment.findById(original.id))?.status).toBe("disruption_triage");
     expect(await Appointment.countDocuments({ priorityRescheduledFromId: original._id })).toBe(0);
     expect(String((await Invoice.findById(paid.id))?.appointmentId)).toBe(original.id);
-    expect(await Counter.exists({ id: `token_${clinicId}_${doctorId}_2027-02-04` })).toBeNull();
+    expect(await Counter.exists({ id: `token_${locationId}_${doctorId}_2027-02-04` })).toBeNull();
     expect(eventBus.publishDurable).not.toHaveBeenCalled();
   });
   it("keeps the original visit pending when a target time slot collides", async () => {
-    await DoctorAssignment.updateOne({ clinicId, doctorId: replacementId }, { bookingMode: "time_slot" });
+    await DoctorAssignment.updateOne({ locationId, doctorId: replacementId }, { bookingMode: "time_slot" });
     const original = await visit();
     await visit({ doctorId: replacementId, appointmentTime: new Date("2027-02-05T03:30:00Z"), status: "confirmed", bookingMode: "time_slot" });
     await expect(reschedule(original.id, "2027-02-05", replacementId)).rejects.toMatchObject({ code: 11000 });
     expect((await Appointment.findById(original.id))?.status).toBe("disruption_triage");
     expect(await Appointment.countDocuments({ priorityRescheduledFromId: original._id })).toBe(0);
-    await DoctorAssignment.updateOne({ clinicId, doctorId: replacementId }, { bookingMode: "sequential_queue" });
+    await DoctorAssignment.updateOne({ locationId, doctorId: replacementId }, { bookingMode: "sequential_queue" });
   });
   it("persists cancellation/refund-pending before the provider call and refunds only once", async () => {
     const original = await visit({ paymentStatus: "paid" }); const paid = await invoice(original.id);
@@ -268,7 +268,7 @@ describe("Disruption persistence and payment integrity", () => {
     expect((await Appointment.findById(original.id))?.status).toBe("cancelled");
   });
 
-  it("refunds a canonical capture when a legacy invoice has no receipt array", async () => {
+  it("refunds an online capture before an invoice receipt is attached", async () => {
     const original = await visit({ paymentStatus: "paid" }); const paid = await invoice(original.id, { payments: [] });
     const payment = await paymentRecord(original.id, paid.id);
     await cancel(original.id);
@@ -304,7 +304,7 @@ describe("Disruption persistence and payment integrity", () => {
     const original = await visit({ status: "cancelled", paymentStatus: "refund_pending" }); const unpaid = await invoice(original.id, { status: "unpaid", amountPaid: 0, balanceDue: 600, payments: [] });
     const payment = await paymentRecord(original.id, unpaid.id, "created");
     expect((await verify(payment)).statusCode).toBe(409);
-    for (const action of ["pay-at-clinic", "create-order", "collect-counter"]) {
+    for (const action of ["pay-at-location", "create-order", "collect-counter"]) {
       expect((await app.inject({ method: "POST", url: `/api/appointment-payments/${action}`, headers: { cookie: rootCookie }, payload: { appointmentId: original.id, paymentMethod: "cash" } })).statusCode).toBe(409);
     }
     expect((await Appointment.findById(original.id))?.paymentStatus).toBe("refund_pending");

@@ -42,6 +42,7 @@ export async function getModules(req: FastifyRequest, reply: FastifyReply) {
       return {
         ...mod,
         id: mod._id.toString(),
+        label: def?.label || mod.label,
         route: def?.route || null,
         description: def?.description || null,
         section: def?.section || null,

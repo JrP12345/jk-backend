@@ -60,7 +60,7 @@ function main() {
     const k8sSecretYaml = `apiVersion: v1
 kind: Secret
 metadata:
-  name: healthos-jwt-keys
+  name: ekavyu-jwt-keys
   namespace: default
 type: Opaque
 data:

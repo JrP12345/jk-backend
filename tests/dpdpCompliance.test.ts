@@ -5,7 +5,7 @@ import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Prescription } from "../models/Prescription.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { DPDPConsent } from "../models/DPDPConsent.ts";
@@ -17,7 +17,7 @@ describe("DPDP 2023 Compliance & Data Breach Governance Suite", () => {
   let testStaffUser: any;
   let testPatientUser: any;
   let testPatient: any;
-  let testClinic: any;
+  let testLocation: any;
   let testEncounter: any;
 
   beforeEach(async () => {
@@ -31,8 +31,8 @@ describe("DPDP 2023 Compliance & Data Breach Governance Suite", () => {
     });
     orgId = org._id as mongoose.Types.ObjectId;
 
-    // 2. Create Clinic
-    testClinic = await Clinic.create({
+    // 2. Create Location
+    testLocation = await Location.create({
       organizationId: orgId,
       name: "Apollo Clinic Indiranagar",
       city: "Bangalore",
@@ -82,7 +82,7 @@ describe("DPDP 2023 Compliance & Data Breach Governance Suite", () => {
     // 6. Create Clinical Encounter
     testEncounter = await Encounter.create({
       organizationId: orgId,
-      clinicId: testClinic._id,
+      locationId: testLocation._id,
       patientId: testPatient._id,
       doctorId: testStaffUser._id,
       encounterType: "opd",
@@ -93,7 +93,7 @@ describe("DPDP 2023 Compliance & Data Breach Governance Suite", () => {
     await Appointment.create({
       patientId: testPatient._id,
       organizationId: orgId,
-      clinicId: testClinic._id,
+      locationId: testLocation._id,
       doctorId: testStaffUser._id,
       appointmentTime: new Date(),
       appointmentType: "walk-in",
@@ -106,7 +106,7 @@ describe("DPDP 2023 Compliance & Data Breach Governance Suite", () => {
     await Prescription.create({
       patientId: testPatient._id,
       organizationId: orgId,
-      clinicId: testClinic._id,
+      locationId: testLocation._id,
       encounterId: testEncounter._id,
       doctorId: testStaffUser._id,
       medicineName: "Amlodipine 5mg",
@@ -121,7 +121,7 @@ describe("DPDP 2023 Compliance & Data Breach Governance Suite", () => {
     const exportResult = await DPDPService.exportPatientData(testPatient._id.toString(), orgId.toString());
 
     expect(exportResult).toBeDefined();
-    expect(exportResult.metadata.format).toBe("HEALTHOS_DPDP_EXPORT_V1");
+    expect(exportResult.metadata.format).toBe("EKAVYU_DPDP_EXPORT");
     expect(exportResult.patientProfile.name).toBe("Rahul Sharma");
     expect(exportResult.patientProfile.phone).toBe("9123456780");
     expect(exportResult.patientProfile.allergies).toContain("Penicillin");

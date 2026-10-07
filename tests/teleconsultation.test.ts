@@ -1,3 +1,4 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
@@ -7,7 +8,7 @@ import { TeleconsultationSession } from "../models/TeleconsultationSession.ts";
 
 describe("Teleconsultation & Virtual Care Integration Tests", () => {
   let adminCookies: string[] = [];
-  let clinicId: string;
+  let locationId: string;
   let patientId: string;
   let doctorUserId: string;
   let appointmentId: string;
@@ -16,36 +17,36 @@ describe("Teleconsultation & Virtual Care Integration Tests", () => {
   beforeAll(async () => {
     process.env.TELECONSULTATION_BASE_URL = "https://telehealth.test";
     // 1. Create Organization & Admin
-    const orgRes = await app.inject({
+    const orgRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
-        org_name: "Telehealth HealthOS Systems",
+        org_name: "Telehealth Ekavyu Systems",
         city: "Bengaluru",
         admin_name: "Telehealth Admin",
-        admin_email: `tele_admin_${Date.now()}@healthos.internal`,
+        admin_email: `tele_admin_${Date.now()}@ekavyu.internal`,
         admin_password: "Password123",
         plan: "enterprise",
       },
     });
     expect(orgRes.statusCode).toBe(201);
-    adminCookies = orgRes.headers["set-cookie"] as string[];
+    adminCookies = (await provisionedAdminCookies(orgRes));
 
-    // 2. Create Clinic
-    const clinicRes = await app.inject({
+    // 2. Create Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Virtual Teleconsultation Care Desk",
         city: "Bengaluru",
         address: "100 Cloud Health Way",
         phone: "9400033300",
-        email: "virtual-care@healthos.internal",
+        email: "virtual-care@ekavyu.internal",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Register Patient
     const patientRes = await app.inject({
@@ -83,14 +84,14 @@ describe("Teleconsultation & Virtual Care Integration Tests", () => {
     expect(docRes.statusCode).toBe(201);
     doctorUserId = JSON.parse(docRes.body).data.id;
 
-    // Assign Doctor to Clinic
+    // Assign Doctor to Location
     const assignRes = await app.inject({
       method: "POST",
       url: "/api/onboarding/doctors/assignments",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         doctorId: doctorUserId,
-        clinicId,
+        locationId,
         workingHours: "00:00 - 23:59",
         fees: 500,
       },
@@ -103,7 +104,7 @@ describe("Teleconsultation & Virtual Care Integration Tests", () => {
       url: "/api/appointments",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         patientId,
         doctorId: doctorUserId,
         appointmentTime: new Date().toISOString(),

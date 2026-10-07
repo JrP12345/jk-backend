@@ -1,3 +1,4 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
@@ -11,17 +12,17 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
   let adminCookies: string[] = [];
   let patientCookies: string[] = [];
   let orgId1: string;
-  let clinicId1: string;
+  let locationId1: string;
   let doctorUserId: string;
   let patientUserId: string;
   let patientProfileId: string;
 
   let orgId2: string;
-  let clinicId2: string;
+  let locationId2: string;
 
   it("should setup organizations, clinic, doctor, and patient", async () => {
     // 1. Setup Org 1 + Admin
-    const bootstrapRes1 = await app.inject({
+    const bootstrapRes1 = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -33,17 +34,17 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
         plan: "enterprise",
       },
     });
-    adminCookies = (bootstrapRes1.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes1));
     orgId1 = JSON.parse(bootstrapRes1.body).data.organization.id;
 
-    // 2. Setup Clinic 1
-    const clinicRes1 = await app.inject({
+    // 2. Setup Location 1
+    const locationRes1 = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: { name: "Apollo OPD West", city: "Mumbai" },
     });
-    clinicId1 = JSON.parse(clinicRes1.body).data.id;
+    locationId1 = JSON.parse(locationRes1.body).data.id;
 
     // 3. Setup Doctor in Org 1
     const docRes = await app.inject({
@@ -66,7 +67,7 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         doctorId: doctorUserId,
-        clinicId: clinicId1,
+        locationId: locationId1,
         fees: 500,
         appointmentDuration: 15,
         bookingMode: "time_slot",
@@ -90,8 +91,8 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
     const patProfile = await Patient.findOne({ userId: patientUserId });
     patientProfileId = patProfile!._id.toString();
 
-    // 6. Setup a separate Org 2 + Clinic 2 to test cross-organization booking
-    const bootstrapRes2 = await app.inject({
+    // 6. Setup a separate Org 2 + Location 2 to test cross-organization booking
+    const bootstrapRes2 = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -103,16 +104,16 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
         plan: "enterprise",
       },
     });
-    const org2AdminCookies = (bootstrapRes2.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    const org2AdminCookies = (await provisionedAdminCookies(bootstrapRes2));
     orgId2 = JSON.parse(bootstrapRes2.body).data.organization.id;
 
-    const clinicRes2 = await app.inject({
+    const locationRes2 = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: org2AdminCookies.join("; ") },
       payload: { name: "Fortis Delhi Hub", city: "Delhi" },
     });
-    clinicId2 = JSON.parse(clinicRes2.body).data.id;
+    locationId2 = JSON.parse(locationRes2.body).data.id;
 
     // Add doctor in Org 2
     const docRes2 = await app.inject({
@@ -134,7 +135,7 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
       headers: { cookie: org2AdminCookies.join("; ") },
       payload: {
         doctorId: doc2UserId,
-        clinicId: clinicId2,
+        locationId: locationId2,
         fees: 600,
         appointmentDuration: 15,
         bookingMode: "sequential_queue",
@@ -154,7 +155,7 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
       url: "/api/appointments",
       headers: { cookie: patientCookies.join("; ") },
       payload: {
-        clinicId: clinicId1,
+        locationId: locationId1,
         doctorId: doctorUserId,
         appointmentTime: targetDate.toISOString(),
         appointmentType: "online",
@@ -177,7 +178,7 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
       url: "/api/appointments",
       headers: { cookie: patientCookies.join("; ") },
       payload: {
-        clinicId: clinicId1,
+        locationId: locationId1,
         doctorId: doctorUserId,
         appointmentTime: targetDate.toISOString(),
         appointmentType: "online",
@@ -201,7 +202,7 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
       url: "/api/doctor-overrides",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId: clinicId1,
+        locationId: locationId1,
         doctorId: doctorUserId,
         date: dateStr,
         status: "unavailable",
@@ -218,7 +219,7 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
     // Verify slot service reflects unavailable override
     const slotsRes = await app.inject({
       method: "GET",
-      url: `/api/doctors/${doctorUserId}/slots?clinicId=${clinicId1}&date=${dateStr}`,
+      url: `/api/doctors/${doctorUserId}/slots?locationId=${locationId1}&date=${dateStr}`,
       headers: { cookie: patientCookies.join("; ") },
     });
     expect(slotsRes.statusCode).toBe(200);
@@ -233,7 +234,7 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
       url: "/api/appointments",
       headers: { cookie: patientCookies.join("; ") },
       payload: {
-        clinicId: clinicId1,
+        locationId: locationId1,
         doctorId: doctorUserId,
         appointmentTime: targetDate.toISOString(),
         appointmentType: "online",
@@ -245,7 +246,7 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
 
   it("should allow universal patient records to book across organizations", async () => {
     // Patient was originally created in Org 1 context. Now patient books at Org 2 (Fortis Delhi Hub).
-    const doc2 = await DoctorAssignment.findOne({ clinicId: clinicId2 });
+    const doc2 = await DoctorAssignment.findOne({ locationId: locationId2 });
     expect(doc2).toBeTruthy();
 
     const targetDate = new Date();
@@ -257,7 +258,7 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
       url: "/api/appointments",
       headers: { cookie: patientCookies.join("; ") },
       payload: {
-        clinicId: clinicId2,
+        locationId: locationId2,
         doctorId: doc2!.doctorId.toString(),
         appointmentTime: targetDate.toISOString(),
         appointmentType: "online",
@@ -268,7 +269,7 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
     expect(crossOrgBookingRes.statusCode).toBe(201);
     const body = JSON.parse(crossOrgBookingRes.body);
     expect(body.success).toBe(true);
-    expect(body.data.clinicId).toBe(clinicId2);
+    expect(body.data.locationId).toBe(locationId2);
   });
 
   it("should calculate adaptive EWT using completed encounters", async () => {
@@ -278,7 +279,7 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
     // Check initial queue status (no completed encounters today -> default duration)
     const initialStatusRes = await app.inject({
       method: "GET",
-      url: `/api/queue/status?clinicId=${clinicId1}&doctorId=${doctorUserId}&date=${todayStr}`,
+      url: `/api/queue/status?locationId=${locationId1}&doctorId=${doctorUserId}&date=${todayStr}`,
       headers: { cookie: adminCookies.join("; ") },
     });
     expect(initialStatusRes.statusCode).toBe(200);
@@ -297,7 +298,7 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
     await Encounter.create([
       {
         organizationId: orgId1,
-        clinicId: clinicId1,
+        locationId: locationId1,
         doctorId: doctorUserId,
         patientId: patientProfileId,
         status: "completed",
@@ -306,7 +307,7 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
       },
       {
         organizationId: orgId1,
-        clinicId: clinicId1,
+        locationId: locationId1,
         doctorId: doctorUserId,
         patientId: patientProfileId,
         status: "completed",
@@ -318,7 +319,7 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
     // Check queue status again -> should now adapt to rolling average (~9 mins)
     const adaptiveStatusRes = await app.inject({
       method: "GET",
-      url: `/api/queue/status?clinicId=${clinicId1}&doctorId=${doctorUserId}&date=${todayStr}`,
+      url: `/api/queue/status?locationId=${locationId1}&doctorId=${doctorUserId}&date=${todayStr}`,
       headers: { cookie: adminCookies.join("; ") },
     });
     expect(adaptiveStatusRes.statusCode).toBe(200);

@@ -1,3 +1,4 @@
+import { fixtureAccessToken } from "./helpers/sessionFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import mongoose from "mongoose";
@@ -7,8 +8,7 @@ import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
-import { generateAccessToken } from "../utilities/helpers.ts";
+import { Location } from "../models/Location.ts";
 
 let userAToken: string;
 let userBToken: string;
@@ -17,17 +17,17 @@ let userBId: string;
 let patientAId: string;
 let patientBId: string;
 let doctorId: string;
-let clinicId: string;
+let locationId: string;
 let orgId: string;
 
 beforeAll(async () => {
   const org = await Organization.create({ name: "Patient access fixture", city: "Surat" });
-  const clinic = await Clinic.create({ organizationId: org._id, name: "Patient access clinic", city: "Surat" });
+  const location = await Location.create({ organizationId: org._id, name: "Patient access clinic", city: "Surat" });
   const doctor = await User.create({ name: "Patient access doctor", role: "doctor" });
   orgId = org.id;
-  clinicId = clinic.id;
+  locationId = location.id;
   doctorId = doctor.id;
-  await DoctorAssignment.create({ doctorId, clinicId, organizationId: orgId,
+  await DoctorAssignment.create({ doctorId, locationId, organizationId: orgId,
     workingHours: JSON.stringify({ all: { start: "00:00", end: "23:59" } }), bookingMode: "sequential_queue" });
 
   // Create User A
@@ -38,7 +38,7 @@ beforeAll(async () => {
     authMethod: "phone_otp",
   });
   userAId = userA.id;
-  userAToken = generateAccessToken({ id: userAId, email: "", role: "patient", organization_id: orgId });
+  userAToken = (await fixtureAccessToken({ id: userAId, email: "", role: "patient", organization_id: orgId }));
 
   const patientA = await Patient.create({
     userId: userA._id,
@@ -64,7 +64,7 @@ beforeAll(async () => {
     authMethod: "phone_otp",
   });
   userBId = userB.id;
-  userBToken = generateAccessToken({ id: userBId, email: "", role: "patient", organization_id: orgId });
+  userBToken = (await fixtureAccessToken({ id: userBId, email: "", role: "patient", organization_id: orgId }));
 
   const patientB = await Patient.create({
     userId: userB._id,
@@ -102,7 +102,7 @@ describe("Comprehensive Gap Audit & Security Test Suite", () => {
       headers: { authorization: `Bearer ${userAToken}` },
       payload: {
         doctorId,
-        clinicId,
+        locationId,
         patientId: patientBId,
         appointmentTime: visitTime,
         appointmentType: "online",
@@ -175,7 +175,7 @@ describe("Comprehensive Gap Audit & Security Test Suite", () => {
     const appt: any = await Appointment.create({
       patientId: patientAId,
       doctorId,
-      clinicId,
+      locationId,
       organizationId: orgId,
       bookedByUserId: userAId,
       appointmentTime: new Date(),
@@ -200,15 +200,15 @@ describe("Comprehensive Gap Audit & Security Test Suite", () => {
     expect(verifyRes.statusCode).toBe(400);
   });
 
-  it("should reject pay at clinic if allowPayAtClinic is set to false", async () => {
-    await DoctorAssignment.updateOne({ doctorId, clinicId }, {
-      $set: { fees: 600, allowPayAtClinic: false, paymentRequired: true },
+  it("should reject pay at location if allowPayAtLocation is set to false", async () => {
+    await DoctorAssignment.updateOne({ doctorId, locationId }, {
+      $set: { fees: 600, allowPayAtLocation: false, paymentRequired: true },
     });
 
     const appt: any = await Appointment.create({
       patientId: patientAId,
       doctorId,
-      clinicId,
+      locationId,
       organizationId: orgId,
       bookedByUserId: userAId,
       appointmentTime: new Date(),
@@ -218,15 +218,15 @@ describe("Comprehensive Gap Audit & Security Test Suite", () => {
       paymentStatus: "pending",
     });
 
-    const payAtClinicRes = await app.inject({
+    const payAtLocationRes = await app.inject({
       method: "POST",
-      url: "/api/appointment-payments/pay-at-clinic",
+      url: "/api/appointment-payments/pay-at-location",
       headers: { authorization: `Bearer ${userAToken}` },
       payload: { appointmentId: appt._id.toString() },
     });
 
-    expect(payAtClinicRes.statusCode).toBe(400);
-    const body = JSON.parse(payAtClinicRes.body);
-    expect(body.message).toContain("Pay at clinic is disabled");
+    expect(payAtLocationRes.statusCode).toBe(400);
+    const body = JSON.parse(payAtLocationRes.body);
+    expect(body.message).toContain("Pay at location is disabled");
   });
 });

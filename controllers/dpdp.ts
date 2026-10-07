@@ -95,7 +95,7 @@ export async function updatePatientConsents(req: FastifyRequest, reply: FastifyR
     const auditContext = {
       ipAddress: req.ip,
       userAgent: req.headers["user-agent"] as string,
-      source: req.user?.role === "patient" ? "PATIENT_PORTAL" : "CLINIC_DESK",
+      source: req.user?.role === "patient" ? "PATIENT_PORTAL" : "LOCATION_DESK",
     };
 
     const updated = await DPDPService.updatePatientConsents(patientId, orgId, updates, auditContext);

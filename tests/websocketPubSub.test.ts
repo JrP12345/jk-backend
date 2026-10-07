@@ -1,11 +1,14 @@
+import { EventEmitter } from "node:events";
+import { User } from "../models/User.ts";
+import { createAuthSession } from "../utilities/helpers.ts";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   NODE_ID,
-  registerUserWebSocket,
-  registerClinicQueueWebSocket,
+  handleNotificationWebSocket,
+  registerLocationQueueWebSocket,
   broadcastRealtimeNotification,
   broadcastQueueUpdate,
-  broadcastClinicRealtime,
+  broadcastClinicalRealtime,
   getBufferedCriticalAlerts,
   bufferCriticalAlert,
   type RealtimeMessage,
@@ -23,19 +26,21 @@ describe("Redis PubSub WebSocket Cross-Node Fan-Out & Replay Suite", () => {
     expect(NODE_ID.length).toBeGreaterThan(0);
   });
 
-  it("should deliver real-time messages locally to connected user websockets", () => {
-    const testUserId = "user-test-local-1";
+  it("should deliver real-time messages locally to connected user websockets", async () => {
+    const user = await User.create({ name: "Realtime root", role: "root", email: "realtime@example.test" });
+    const testUserId = user.id;
+    const auth = await createAuthSession({ id: user.id, role: "root", email: user.email! });
     const sentMessages: string[] = [];
 
-    const mockSocket: any = {
+    const mockSocket: any = Object.assign(new EventEmitter(), {
       readyState: 1, // OPEN
       send: vi.fn((msg: string) => {
         sentMessages.push(msg);
       }),
-      on: vi.fn(),
-    };
-
-    registerUserWebSocket(testUserId, mockSocket);
+      ping: vi.fn(), close: vi.fn(),
+    });
+    await handleNotificationWebSocket(mockSocket, { headers: {}, cookies: { access_token: auth.accessToken }, query: {} } as any);
+    mockSocket.send.mockClear(); sentMessages.length = 0;
 
     const payload: RealtimeMessage = {
       type: "NOTIFICATION_RECEIVED",
@@ -45,14 +50,15 @@ describe("Redis PubSub WebSocket Cross-Node Fan-Out & Replay Suite", () => {
 
     broadcastRealtimeNotification(testUserId, payload);
 
-    expect(mockSocket.send).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(mockSocket.send).toHaveBeenCalledTimes(1));
+    mockSocket.emit("close");
     const parsed = JSON.parse(sentMessages[0]);
     expect(parsed.type).toBe("NOTIFICATION_RECEIVED");
     expect(parsed.message).toBe("Dr. Vikram has completed your prescription");
   });
 
-  it("should deliver queue updates locally to connected clinic displays", () => {
-    const testClinicId = "6aa03a085a3bdf2bee3c5e5a";
+  it("should deliver queue updates locally to connected clinic displays", async () => {
+    const testLocationId = "6aa03a085a3bdf2bee3c5e5a";
     const sentMessages: string[] = [];
 
     const mockSocket: any = {
@@ -63,7 +69,7 @@ describe("Redis PubSub WebSocket Cross-Node Fan-Out & Replay Suite", () => {
       on: vi.fn(),
     };
 
-    registerClinicQueueWebSocket(testClinicId, mockSocket);
+    registerLocationQueueWebSocket(testLocationId, mockSocket);
 
     const payload: RealtimeMessage = {
       type: "QUEUE_UPDATED",
@@ -71,7 +77,7 @@ describe("Redis PubSub WebSocket Cross-Node Fan-Out & Replay Suite", () => {
       timestamp: new Date().toISOString(),
     };
 
-    broadcastQueueUpdate(testClinicId, payload);
+    broadcastQueueUpdate(testLocationId, payload);
 
     expect(mockSocket.send).toHaveBeenCalledTimes(1);
     const parsed = JSON.parse(sentMessages[0]);
@@ -80,7 +86,7 @@ describe("Redis PubSub WebSocket Cross-Node Fan-Out & Replay Suite", () => {
   });
 
   it("should buffer critical panic alerts and retrieve them with replayed flag", async () => {
-    const testClinicId = "clinic-panic-test-1";
+    const testLocationId = "clinic-panic-test-1";
 
     const panicPayload: RealtimeMessage = {
       type: "CLINICAL_PANIC_ALERT",
@@ -89,10 +95,10 @@ describe("Redis PubSub WebSocket Cross-Node Fan-Out & Replay Suite", () => {
       timestamp: new Date().toISOString(),
     };
 
-    await bufferCriticalAlert(`clinic:${testClinicId}`, panicPayload);
+    await bufferCriticalAlert(`location:${testLocationId}`, panicPayload);
 
     // Only if Redis is connected in test environment does it store, otherwise safe graceful empty
-    const buffered = await getBufferedCriticalAlerts(`clinic:${testClinicId}`);
+    const buffered = await getBufferedCriticalAlerts(`location:${testLocationId}`);
     if (buffered.length > 0) {
       expect(buffered[0].type).toBe("CLINICAL_PANIC_ALERT");
       expect(buffered[0].replayed).toBe(true);
@@ -103,7 +109,7 @@ describe("Redis PubSub WebSocket Cross-Node Fan-Out & Replay Suite", () => {
   });
 
   it("should ignore non-critical alerts in the panic alert buffer", async () => {
-    const testClinicId = "clinic-routine-test-2";
+    const testLocationId = "clinic-routine-test-2";
 
     const routinePayload: RealtimeMessage = {
       type: "QUEUE_UPDATED",
@@ -111,8 +117,8 @@ describe("Redis PubSub WebSocket Cross-Node Fan-Out & Replay Suite", () => {
       timestamp: new Date().toISOString(),
     };
 
-    await bufferCriticalAlert(`clinic:${testClinicId}`, routinePayload);
-    const buffered = await getBufferedCriticalAlerts(`clinic:${testClinicId}`);
+    await bufferCriticalAlert(`location:${testLocationId}`, routinePayload);
+    const buffered = await getBufferedCriticalAlerts(`location:${testLocationId}`);
     expect(buffered.length).toBe(0);
   });
 

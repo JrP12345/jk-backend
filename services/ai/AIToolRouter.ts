@@ -22,7 +22,7 @@ export class AIToolRouter {
   /**
    * Evaluates natural language user prompt to detect tool intent and extract arguments.
    */
-  detectIntent(prompt: string, contextPatientId?: string, contextClinicId?: string): DetectedToolIntent {
+  detectIntent(prompt: string, contextPatientId?: string, contextLocationId?: string): DetectedToolIntent {
     if (!prompt || !prompt.trim()) return { detected: false, confidence: 0 };
     const p = prompt.trim();
     const lower = p.toLowerCase();
@@ -64,7 +64,7 @@ export class AIToolRouter {
           medicineName: medicineName || "Medication",
           dosage: dosage || "As directed",
           patientId: contextPatientId,
-          clinicId: contextClinicId
+          locationId: contextLocationId
         },
         confidence: medicineName ? 0.95 : 0.82
       };
@@ -82,7 +82,7 @@ export class AIToolRouter {
           action: "SCHEDULE_APPOINTMENT",
           appointmentDate,
           patientId: contextPatientId,
-          clinicId: contextClinicId
+          locationId: contextLocationId
         },
         confidence: appointmentDate ? 0.93 : 0.85
       };
@@ -93,4 +93,3 @@ export class AIToolRouter {
 }
 
 export const aiToolRouter = AIToolRouter.getInstance();
-

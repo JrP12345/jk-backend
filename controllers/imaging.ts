@@ -4,7 +4,7 @@ import { ImagingStudy } from "../models/ImagingStudy.ts";
 import { Patient } from "../models/Patient.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
-import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds } from "../utilities/tenant.ts";
+import { checkLocationAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestLocationIds } from "../utilities/tenant.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));
@@ -13,34 +13,34 @@ function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCod
 export async function createImagingStudy(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userId = req.user!.id;
-    const { patientId, clinicId, modality, studyDescription, dicomWebUrl } = req.body as {
+    const { patientId, locationId, modality, studyDescription, dicomWebUrl } = req.body as {
       patientId: string;
-      clinicId: string;
+      locationId: string;
       modality: "CR" | "DX" | "CT" | "MR" | "US" | "MG";
       studyDescription: string;
       dicomWebUrl?: string;
     };
 
-    if (!patientId || !clinicId || !modality || !studyDescription) {
-      return reply.code(400).send(errorResponse("patientId, clinicId, modality, and studyDescription are required"));
+    if (!patientId || !locationId || !modality || !studyDescription) {
+      return reply.code(400).send(errorResponse("patientId, locationId, modality, and studyDescription are required"));
     }
 
-    if (!mongoose.Types.ObjectId.isValid(patientId) || !mongoose.Types.ObjectId.isValid(clinicId)) {
-      return reply.code(400).send(errorResponse("Invalid patient or clinic ID"));
+    if (!mongoose.Types.ObjectId.isValid(patientId) || !mongoose.Types.ObjectId.isValid(locationId)) {
+      return reply.code(400).send(errorResponse("Invalid patient or location ID"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
 
     const patient = await Patient.findById(patientId).setOptions({ bypassTenantFilter: true });
     if (!patient) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
     }
-    if (patient.organizationId && clinicAccess.organizationId && patient.organizationId.toString() !== clinicAccess.organizationId) {
+    if (patient.organizationId && locationAccess.organizationId && patient.organizationId.toString() !== locationAccess.organizationId) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
     }
-    if (!patient.organizationId && clinicAccess.organizationId) {
-      patient.organizationId = new mongoose.Types.ObjectId(clinicAccess.organizationId);
+    if (!patient.organizationId && locationAccess.organizationId) {
+      patient.organizationId = new mongoose.Types.ObjectId(locationAccess.organizationId);
       await patient.save();
     }
 
@@ -61,7 +61,7 @@ export async function createImagingStudy(req: FastifyRequest, reply: FastifyRepl
     const study = await ImagingStudy.create({
       studyInstanceUid,
       patientId,
-      clinicId,
+      locationId,
       modality,
       studyDescription: studyDescription.trim(),
       dicomWebUrl: configuredPacsUrl
@@ -87,18 +87,18 @@ export async function createImagingStudy(req: FastifyRequest, reply: FastifyRepl
 
 export async function getImagingStudies(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, patientId, modality, page, limit } = req.query as any;
+    const { locationId, patientId, modality, page, limit } = req.query as any;
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
 
     const filter: any = {};
-    if (clinicId) {
-      if (!mongoose.Types.ObjectId.isValid(clinicId)) return reply.code(400).send(errorResponse("Invalid clinic ID"));
-      const clinicAccess = await checkClinicAccess(req, clinicId);
-      if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
-      filter.clinicId = clinicId;
+    if (locationId) {
+      if (!mongoose.Types.ObjectId.isValid(locationId)) return reply.code(400).send(errorResponse("Invalid location ID"));
+      const locationAccess = await checkLocationAccess(req, locationId);
+      if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
+      filter.locationId = locationId;
     } else {
-      const clinicIds = await getRequestClinicIds(req);
-      if (clinicIds) filter.clinicId = { $in: clinicIds };
+      const locationIds = await getRequestLocationIds(req);
+      if (locationIds) filter.locationId = { $in: locationIds };
     }
     if (patientId) {
       if (!mongoose.Types.ObjectId.isValid(patientId)) return reply.code(400).send(errorResponse("Invalid patient ID"));
@@ -112,7 +112,7 @@ export async function getImagingStudies(req: FastifyRequest, reply: FastifyReply
     const totalPages = Math.ceil(totalCount / pageSize);
 
     const studies = await ImagingStudy.find(filter)
-      .populate("clinicId", "name city")
+      .populate("locationId", "name city")
       .populate("radiologistId", "name specialization")
       .populate({
         path: "patientId",

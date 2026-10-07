@@ -1,4 +1,5 @@
-import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { reuseOnboardingLocation } from "./helpers/locationEssentialsSetup.ts";
 import { describe, it, expect } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
@@ -9,7 +10,7 @@ import { LabOrder } from "../models/LabOrder.ts";
 
 describe("Clinical Modules API Integration Tests (Pharmacy, Lab)", () => {
   let adminCookies: string[] = [];
-  let clinicId: string;
+  let locationId: string;
   let patientId: string;
   let medicineId: string;
   let testId: string;
@@ -17,7 +18,7 @@ describe("Clinical Modules API Integration Tests (Pharmacy, Lab)", () => {
 
   it("should setup basic requirements", async () => {
     // 1. Create org + admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -28,20 +29,20 @@ describe("Clinical Modules API Integration Tests (Pharmacy, Lab)", () => {
         admin_password: "Password123",
       },
     });
-    adminCookies = bootstrapRes.headers["set-cookie"] as string[];
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
 
-    // 2. Create clinic
-    const clinicRes = await reuseOnboardingClinic(app, {
+    // 2. Create location
+    const locationRes = await reuseOnboardingLocation(app, {
       headers: { cookie: adminCookies.join("; ") },
       payload: { name: "Pharmacy & Lab Branch", city: "Surat" },
     });
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Register patient
     const patRes = await app.inject({
       method: "POST",
       url: "/api/auth/register",
-      payload: { clinicId: clinicId,  name: "Kishore Kumar", email: "kishore@test.com", password: "Password123" },
+      payload: { locationId: locationId,  name: "Kishore Kumar", email: "kishore@test.com", password: "Password123" },
     });
     const patUser = await User.findOne({ email: "kishore@test.com" });
     const patProfile = await Patient.findOne({ userId: patUser!._id });
@@ -56,7 +57,7 @@ describe("Clinical Modules API Integration Tests (Pharmacy, Lab)", () => {
       url: "/api/medicines",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId: clinicId,
+        locationId: locationId,
         name: "Paracetamol 650mg",
         genericName: "Acetaminophen",
         batchNumber: "P-542",
@@ -77,7 +78,7 @@ describe("Clinical Modules API Integration Tests (Pharmacy, Lab)", () => {
       url: "/api/pharmacy/dispense",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId: clinicId,
+        locationId: locationId,
         patientId: patientId,
         items: [{ medicineId: medicineId, quantity: 10 }],
       },
@@ -100,7 +101,7 @@ describe("Clinical Modules API Integration Tests (Pharmacy, Lab)", () => {
       url: "/api/lab-tests",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId: clinicId,
+        locationId: locationId,
         code: "CBC",
         name: "Complete Blood Count",
         department: "Hematology",
@@ -119,7 +120,7 @@ describe("Clinical Modules API Integration Tests (Pharmacy, Lab)", () => {
       url: "/api/lab-orders",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId: clinicId,
+        locationId: locationId,
         patientId: patientId,
         doctorId: docUser!._id.toString(),
         testId: testId,
@@ -142,8 +143,8 @@ describe("Clinical Modules API Integration Tests (Pharmacy, Lab)", () => {
       url: `/api/lab-orders/${orderId}/result`,
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        resultValue: "Normal CBC",
-        resultNotes: "WBC count is slightly elevated.",
+        value: "Normal CBC",
+        notes: "WBC count is slightly elevated.",
       },
     });
     expect(resultRes.statusCode).toBe(200);

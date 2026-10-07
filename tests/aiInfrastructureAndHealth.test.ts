@@ -12,12 +12,12 @@ describe("Work Package C: Enterprise AI Gateway Infrastructure & Operations Heal
   let testOrgId: string;
 
   beforeAll(async () => {
-    const email = `dr_gateway_infra_${Date.now()}@ananta.internal`;
+    const email = `dr_gateway_infra_${Date.now()}@ekavyu.internal`;
     const password = "Password123!";
 
     const org = await (Organization as any).create({
       name: "Gateway Test Hospital",
-      email: `gateway_test_${Date.now()}@ananta.internal`,
+      email: `gateway_test_${Date.now()}@ekavyu.internal`,
       phone: "+1999888777",
       address: "100 Innovation Way",
       city: "San Francisco",

@@ -4,7 +4,7 @@ import { NotificationLog, type INotificationLog } from "../models/NotificationLo
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { UsageRecord } from "../models/UsageRecord.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { User } from "../models/User.ts";
@@ -17,20 +17,20 @@ import { WhatsAppRecipient } from "../models/WhatsAppRecipient.ts";
 import { WhatsAppTemplate } from "../models/WhatsAppTemplate.ts";
 import { WhatsAppInboundMessage } from "../models/WhatsAppInboundMessage.ts";
 import { WhatsAppBookingSession as DurableBookingSession } from "../models/WhatsAppBookingSession.ts";
-import { encrypt, decrypt } from "../utilities/encryption.ts";
+import { encryptField, decryptField } from "../utilities/cryptoEnvelope.ts";
 import { phoneHash } from "../services/WhatsAppSendPolicy.ts";
 import { getPlatformAccount, secretProjection } from "../services/WhatsAppAccountService.ts";
 import { enqueueWhatsAppWebhook, whatsAppWebhookWorker } from "../services/WhatsAppWebhookService.ts";
 
 interface WhatsAppBookingSession {
   step: "SELECT_DOCTOR" | "SELECT_DATE" | "CONFIRM_BOOKING";
-  clinicId?: string;
-  clinicName?: string;
+  locationId?: string;
+  locationName?: string;
   doctorId?: string;
   doctorName?: string;
   fee?: number;
   date?: string;
-  doctorsList?: Array<{ id: string; clinicId?: string; clinicName?: string; name: string; specialization?: string; fee?: number }>;
+  doctorsList?: Array<{ id: string; locationId?: string; locationName?: string; name: string; specialization?: string; fee?: number }>;
   updatedAt: number;
 }
 
@@ -55,7 +55,7 @@ export async function verifyWhatsAppWebhook(req: FastifyRequest, reply: FastifyR
 
   const platform = await getPlatformAccount();
   const organizations = await Organization.find({ "whatsappConfig.verifyToken": { $ne: null } }).select(secretProjection);
-  const tokens = [platform.verifyToken, ...organizations.map(org => decrypt(org.whatsappConfig?.verifyToken))].filter(value => value && value !== "[DECRYPTION_FAILED]");
+  const tokens = [platform.verifyToken, ...organizations.map(org => decryptField(org.whatsappConfig?.verifyToken))].filter(value => value && value !== "[DECRYPTION_FAILED]");
   const matches = typeof token === "string" && tokens.some(expected => Buffer.byteLength(token) === Buffer.byteLength(expected) && crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expected)));
   if (mode === "subscribe" && matches) {
     return reply.code(200).send(challenge);
@@ -158,7 +158,7 @@ export async function processWhatsAppWebhookPayload(body: any) {
           const digits = fullDigits.startsWith("91") && fullDigits.length === 12 ? fullDigits.slice(2) : fullDigits;
 
           if (!digits) continue;
-          await WhatsAppInboundMessage.updateOne({ scope: owner.scope, wamid: msg.id }, { $setOnInsert: { phoneHash: phoneHash(from), type: msg.type || "unknown", payloadCiphertext: encrypt(JSON.stringify(msg)) } }, { upsert: true });
+          await WhatsAppInboundMessage.updateOne({ scope: owner.scope, wamid: msg.id }, { $setOnInsert: { phoneHash: phoneHash(from), type: msg.type || "unknown", payloadCiphertext: encryptField(JSON.stringify(msg)) } }, { upsert: true });
 
           const stopped = /^(STOP(?:\s+ALL)?|UNSUBSCRIBE|OPT[ -]?OUT)[.!]*$/.test(textBody);
           const started = /^(START|SUBSCRIBE)[.!]*$/.test(textBody);
@@ -175,8 +175,8 @@ export async function processWhatsAppWebhookPayload(body: any) {
 
           // Self-service auto-registration for new patients initiating WhatsApp chat
           if (!patient && owner.organizationId && !stopped) {
-            const clinic = await Clinic.findOne({ organizationId: owner.organizationId }).lean();
-            if (clinic) {
+            const location = await Location.findOne({ organizationId: owner.organizationId }).lean();
+            if (location) {
               const defaultUser = await User.create({
                 name: `WhatsApp Patient (${digits.slice(-4)})`,
                 phone: digits,
@@ -187,7 +187,7 @@ export async function processWhatsAppWebhookPayload(body: any) {
                 userId: defaultUser._id,
                 name: `WhatsApp Patient (${digits.slice(-4)})`,
                 phone: digits,
-                organizationId: clinic.organizationId,
+                organizationId: location.organizationId,
               });
             }
           }
@@ -220,7 +220,7 @@ export async function processWhatsAppWebhookPayload(body: any) {
 
           const sessionKey = `${owner.scope}:${phoneHash(from)}`;
           const storedSession = await DurableBookingSession.findOne({ key: sessionKey, expiresAt: { $gt: new Date() } }).select("+payloadCiphertext");
-          if (storedSession) bookingSessions.set(sessionKey, JSON.parse(decrypt(storedSession.payloadCiphertext)));
+          if (storedSession) bookingSessions.set(sessionKey, JSON.parse(decryptField(storedSession.payloadCiphertext)));
           else bookingSessions.delete(sessionKey);
           const activeSession = bookingSessions.get(sessionKey);
 
@@ -242,11 +242,11 @@ export async function processWhatsAppWebhookPayload(body: any) {
               if (selectedDoc) {
                 activeSession.doctorId = selectedDoc.id;
                 activeSession.doctorName = selectedDoc.name;
-                if (selectedDoc.clinicId) {
-                  activeSession.clinicId = selectedDoc.clinicId;
+                if (selectedDoc.locationId) {
+                  activeSession.locationId = selectedDoc.locationId;
                 }
-                if (selectedDoc.clinicName) {
-                  activeSession.clinicName = selectedDoc.clinicName;
+                if (selectedDoc.locationName) {
+                  activeSession.locationName = selectedDoc.locationName;
                 }
                 activeSession.fee = selectedDoc.fee || 500;
                 activeSession.step = "SELECT_DATE";
@@ -278,7 +278,7 @@ export async function processWhatsAppWebhookPayload(body: any) {
                 activeSession.step = "CONFIRM_BOOKING";
                 activeSession.updatedAt = Date.now();
 
-                replyText = `📋 *Confirm Your OPD Appointment*\n\n• Patient: ${patient.name}\n• Doctor: Dr. ${activeSession.doctorName}\n• Date: ${chosenDate}\n• Clinic: ${activeSession.clinicName || "Medical Clinic"}\n• Consultation Fee: ₹${activeSession.fee} (Pay at Clinic / UPI)\n\nReply *"YES"* or *"CONFIRM"* to book your token now!`;
+                replyText = `📋 *Confirm Your OPD Appointment*\n\n• Patient: ${patient.name}\n• Doctor: Dr. ${activeSession.doctorName}\n• Date: ${chosenDate}\n• Location: ${activeSession.locationName || "Healthcare facility"}\n• Consultation Fee: ₹${activeSession.fee} (Pay at Location / UPI)\n\nReply *"YES"* or *"CONFIRM"* to book your token now!`;
               } else {
                 replyText = `Please reply with:\n1️⃣ *Today*\n2️⃣ *Tomorrow*\nOr type a date in YYYY-MM-DD format (or "CANCEL").`;
               }
@@ -294,7 +294,7 @@ export async function processWhatsAppWebhookPayload(body: any) {
                   const booked = await appointmentService.book(
                     { id: String(patient.userId || patient._id), role: "patient", organizationId: orgIdStr },
                     {
-                      clinicId: activeSession.clinicId!,
+                      locationId: activeSession.locationId!,
                       doctorId: activeSession.doctorId!,
                       appointmentTime,
                       appointmentType: "walk-in",
@@ -308,10 +308,10 @@ export async function processWhatsAppWebhookPayload(body: any) {
                   bookingSessions.delete(sessionKey);
 
                   const trackingUrl = `${frontendUrl}/track/${booked.id}${booked.trackerToken ? `?t=${encodeURIComponent(booked.trackerToken)}` : ""}`;
-                  replyText = `🎉 *Appointment Confirmed!*\n\nHello ${patient.name}, your visit has been booked successfully!\n\n• Your Token: *#${booked.tokenNumber}*\n• Attending Doctor: Dr. ${activeSession.doctorName}\n• Date: ${activeSession.date}\n• Location: ${activeSession.clinicName}\n\n🔗 Live Queue Tracker:\n${trackingUrl}\n\n_Please arrive at the clinic 10 minutes before your slot. Reply "1" anytime to check live queue status!_`;
+                  replyText = `🎉 *Appointment Confirmed!*\n\nHello ${patient.name}, your visit has been booked successfully!\n\n• Your Token: *#${booked.tokenNumber}*\n• Attending Doctor: Dr. ${activeSession.doctorName}\n• Date: ${activeSession.date}\n• Location: ${activeSession.locationName}\n\n🔗 Live Queue Tracker:\n${trackingUrl}\n\n_Please arrive at the location 10 minutes before your slot. Reply "1" anytime to check live queue status!_`;
                 } catch (bErr: any) {
                   bookingSessions.delete(sessionKey);
-                  replyText = `⚠️ Booking could not be completed: ${bErr.message || "Please contact clinic reception directly."}`;
+                  replyText = `⚠️ Booking could not be completed: ${bErr.message || "Please contact reception directly."}`;
                 }
               } else {
                 bookingSessions.delete(sessionKey);
@@ -327,19 +327,19 @@ export async function processWhatsAppWebhookPayload(body: any) {
             // Find all active doctor assignments across this organization
             const assignments = await DoctorAssignment.find({ ...orgFilter, isActive: true })
               .populate("doctorId", "name")
-              .populate("clinicId", "name")
+              .populate("locationId", "name")
               .lean();
 
             let availableDocs: Array<{
               id: string;
-              clinicId?: string;
-              clinicName?: string;
+              locationId?: string;
+              locationName?: string;
               name: string;
               specialization?: string;
               fee?: number;
             }> = [];
-            let defaultClinicId: string | undefined;
-            let defaultClinicName = "Medical Clinic";
+            let defaultLocationId: string | undefined;
+            let defaultLocationName = "Healthcare facility";
 
             if (assignments.length > 0) {
               const docUserIds = assignments.map((a: any) => a.doctorId?._id || a.doctorId).filter(Boolean);
@@ -357,20 +357,20 @@ export async function processWhatsAppWebhookPayload(body: any) {
                 if (!a.doctorId) continue;
                 const docUser = a.doctorId as any;
                 const uId = docUser._id ? docUser._id.toString() : a.doctorId.toString();
-                const clinicObj = a.clinicId as any;
-                const cId = clinicObj?._id ? clinicObj._id.toString() : a.clinicId?.toString();
-                const cName = clinicObj?.name || defaultClinicName;
+                const locationObj = a.locationId as any;
+                const cId = locationObj?._id ? locationObj._id.toString() : a.locationId?.toString();
+                const cName = locationObj?.name || defaultLocationName;
                 const profile = profileMap.get(uId);
 
-                if (!defaultClinicId && cId) {
-                  defaultClinicId = cId;
-                  defaultClinicName = cName;
+                if (!defaultLocationId && cId) {
+                  defaultLocationId = cId;
+                  defaultLocationName = cName;
                 }
 
                 availableDocs.push({
                   id: uId,
-                  clinicId: cId,
-                  clinicName: cName,
+                  locationId: cId,
+                  locationName: cName,
                   name: docUser.name || profile?.name || "Physician",
                   specialization: profile?.specialization || "General Medicine",
                   fee: a.fees || 500,
@@ -378,18 +378,18 @@ export async function processWhatsAppWebhookPayload(body: any) {
               }
             }
 
-            // Fallback: If no assignments found, find clinics in the org
+            // Fallback: If no assignments found, find locations in the org
             if (availableDocs.length === 0) {
-              const clinic = await Clinic.findOne(orgFilter).lean();
-              if (clinic) {
-                defaultClinicId = clinic._id.toString();
-                defaultClinicName = clinic.name;
+              const location = await Location.findOne(orgFilter).lean();
+              if (location) {
+                defaultLocationId = location._id.toString();
+                defaultLocationName = location.name;
                 const docUsers = process.env.NODE_ENV === "test" ? await User.find({ role: "doctor", isActive: true }).limit(3).lean() : [];
                 for (const du of docUsers) {
                   availableDocs.push({
                     id: du._id.toString(),
-                    clinicId: defaultClinicId,
-                    clinicName: defaultClinicName,
+                    locationId: defaultLocationId,
+                    locationName: defaultLocationName,
                     name: du.name,
                     specialization: (du as any).specialization || "General OPD",
                     fee: 500,
@@ -398,13 +398,13 @@ export async function processWhatsAppWebhookPayload(body: any) {
               }
             }
 
-            if (!defaultClinicId) {
-              replyText = `Hello ${patient.name}, no active clinic found for your account. Please visit: ${frontendUrl}`;
+            if (!defaultLocationId) {
+              replyText = `Hello ${patient.name}, no active location found for your account. Please visit: ${frontendUrl}`;
             } else if (availableDocs.length > 0) {
               bookingSessions.set(sessionKey, {
                 step: "SELECT_DOCTOR",
-                clinicId: defaultClinicId,
-                clinicName: defaultClinicName,
+                locationId: defaultLocationId,
+                locationName: defaultLocationName,
                 doctorsList: availableDocs,
                 updatedAt: Date.now(),
               });
@@ -431,22 +431,22 @@ export async function processWhatsAppWebhookPayload(body: any) {
               organizationId: patient.organizationId,
               appointmentTime: { $gte: todayStart, $lte: todayEnd },
               status: { $in: ["pending", "confirmed", "checked-in", "in-consultation", "standby"] },
-            }).populate("clinicId doctorId").sort({ appointmentTime: -1 });
+            }).populate("locationId doctorId").sort({ appointmentTime: -1 });
 
             if (activeAppt) {
               const docName = (activeAppt.doctorId as any)?.name || "Doctor";
-              const clinicName = (activeAppt.clinicId as any)?.name || "Clinic";
+              const locationName = (activeAppt.locationId as any)?.name || "Location";
 
               if (activeAppt.status === "in-consultation") {
-                replyText = `🩺 *Hello ${patient.name}!*\n\nIt is currently your turn! Dr. ${docName} is waiting for you in the consultation room for *Token #${activeAppt.tokenNumber}* at ${clinicName}.\n\nPlease step inside immediately.`;
+                replyText = `🩺 *Hello ${patient.name}!*\n\nIt is currently your turn! Dr. ${docName} is waiting for you in the consultation room for *Token #${activeAppt.tokenNumber}* at ${locationName}.\n\nPlease step inside immediately.`;
               } else {
                 const inConsult = await Appointment.findOne({
-                  clinicId: activeAppt.clinicId,
+                  locationId: activeAppt.locationId,
                   doctorId: activeAppt.doctorId,
                   status: "in-consultation",
                 });
                 const aheadCount = await Appointment.countDocuments({
-                  clinicId: activeAppt.clinicId,
+                  locationId: activeAppt.locationId,
                   doctorId: activeAppt.doctorId,
                   status: "checked-in",
                   queuePosition: { $lt: activeAppt.queuePosition || 999 },
@@ -455,7 +455,7 @@ export async function processWhatsAppWebhookPayload(body: any) {
 
                 const { url } = await issueAppointmentTrackerLink(activeAppt as any);
                 const trackingUrl = `${frontendUrl}${url}`;
-                replyText = `🎫 *Live OPD Queue Status*\n\nHello ${patient.name},\n• Your Token: *#${activeAppt.tokenNumber}*\n• Currently in Cabin: *Token #${inConsult?.tokenNumber || "None"}*\n• Patients Ahead: *${aheadCount}*\n• Est. Wait Time: *~${estWait} mins*\n• Status: *${activeAppt.status.toUpperCase()}*\n\n📍 ${clinicName} (Dr. ${docName})\n\n🔗 Live Queue Tracker:\n${trackingUrl}\n\n_Reply "3" if you are running late and need to postpone._`;
+                replyText = `🎫 *Live OPD Queue Status*\n\nHello ${patient.name},\n• Your Token: *#${activeAppt.tokenNumber}*\n• Currently in Cabin: *Token #${inConsult?.tokenNumber || "None"}*\n• Patients Ahead: *${aheadCount}*\n• Est. Wait Time: *~${estWait} mins*\n• Status: *${activeAppt.status.toUpperCase()}*\n\n📍 ${locationName} (Dr. ${docName})\n\n🔗 Live Queue Tracker:\n${trackingUrl}\n\n_Reply "3" if you are running late and need to postpone._`;
               }
             } else {
             const completedToday = await Appointment.findOne({
@@ -480,7 +480,7 @@ export async function processWhatsAppWebhookPayload(body: any) {
               organizationId: patient.organizationId,
               status: "completed",
               "prescriptions.0": { $exists: true },
-            }).populate("doctorId clinicId").sort({ updatedAt: -1 });
+            }).populate("doctorId locationId").sort({ updatedAt: -1 });
 
             if (latestCompleted && latestCompleted.prescriptions && latestCompleted.prescriptions.length > 0) {
               const docName = (latestCompleted.doctorId as any)?.name || "Attending Physician";
@@ -511,18 +511,18 @@ export async function processWhatsAppWebhookPayload(body: any) {
             const latestAppt = await Appointment.findOne({
               patientId: patient._id,
               organizationId: patient.organizationId,
-              paymentStatus: { $in: ["paid", "pay_at_clinic", "pending"] },
-            }).populate("doctorId clinicId").sort({ updatedAt: -1 });
+              paymentStatus: { $in: ["paid", "pay_at_location", "pending"] },
+            }).populate("doctorId locationId").sort({ updatedAt: -1 });
 
             if (latestAppt) {
-              const clinicName = (latestAppt.clinicId as any)?.name || "Clinic";
+              const locationName = (latestAppt.locationId as any)?.name || "Location";
               const fee = latestAppt.paymentAmount || 500;
               const isPaid = latestAppt.paymentStatus === "paid";
 
               const { token: trackerToken, url } = await issueAppointmentTrackerLink(latestAppt as any);
               const trackingUrl = `${frontendUrl}${url}`;
               const prescriptionUrl = appendTrackerCapability(`/api/public/track/${latestAppt._id}/prescription/print`, trackerToken);
-              replyText = `🧾 *OPD Invoice Summary*\n\n• Patient: ${patient.name}\n• Facility: ${clinicName}\n• Token: #${latestAppt.tokenNumber}\n• Amount: ₹${fee}\n• Payment Status: *${isPaid ? "PAID ✅" : "PENDING ⏳"}*\n\n🔗 View & Pay Online:\n${trackingUrl}`;
+              replyText = `🧾 *OPD Invoice Summary*\n\n• Patient: ${patient.name}\n• Facility: ${locationName}\n• Token: #${latestAppt.tokenNumber}\n• Amount: ₹${fee}\n• Payment Status: *${isPaid ? "PAID ✅" : "PENDING ⏳"}*\n\n🔗 View & Pay Online:\n${trackingUrl}`;
 
               if (isPaid) {
                 // Billing tracker is the authoritative receipt; never attach an Rx as an invoice.
@@ -565,7 +565,7 @@ export async function processWhatsAppWebhookPayload(body: any) {
 
           // Dispatch conversational response to patient's WhatsApp
           const nextSession = bookingSessions.get(sessionKey);
-          if (nextSession) await DurableBookingSession.updateOne({ key: sessionKey }, { $set: { payloadCiphertext: encrypt(JSON.stringify(nextSession)), expiresAt: new Date(Date.now() + 30 * 60_000) } }, { upsert: true });
+          if (nextSession) await DurableBookingSession.updateOne({ key: sessionKey }, { $set: { payloadCiphertext: encryptField(JSON.stringify(nextSession)), expiresAt: new Date(Date.now() + 30 * 60_000) } }, { upsert: true });
           else await DurableBookingSession.deleteOne({ key: sessionKey });
           bookingSessions.delete(sessionKey);
           if (replyText) {

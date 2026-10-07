@@ -4,7 +4,7 @@ import { auditPlugin } from "../utilities/auditPlugin.ts";
 export interface IImagingStudy extends Document {
   studyInstanceUid: string;
   patientId: mongoose.Types.ObjectId;
-  clinicId: mongoose.Types.ObjectId;
+  locationId: mongoose.Types.ObjectId;
   modality: "CR" | "DX" | "CT" | "MR" | "US" | "MG";
   studyDescription: string;
   radiologistId?: mongoose.Types.ObjectId;
@@ -28,9 +28,9 @@ const imagingStudySchema = new Schema<IImagingStudy>(
       required: true,
       index: true,
     },
-    clinicId: {
+    locationId: {
       type: Schema.Types.ObjectId,
-      ref: "Clinic",
+      ref: "Location",
       required: true,
     },
     modality: {
@@ -68,6 +68,6 @@ const imagingStudySchema = new Schema<IImagingStudy>(
 
 imagingStudySchema.plugin(auditPlugin);
 
-imagingStudySchema.index({ clinicId: 1, patientId: 1, createdAt: -1 });
+imagingStudySchema.index({ locationId: 1, patientId: 1, createdAt: -1 });
 
 export const ImagingStudy = mongoose.model<IImagingStudy>("ImagingStudy", imagingStudySchema);

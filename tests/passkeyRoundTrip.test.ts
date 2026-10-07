@@ -1,10 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { encryptField } from "../utilities/cryptoEnvelope.ts";
+import { describe, expect, it, vi } from "vitest";
 import crypto from "node:crypto";
 import { isoCBOR } from "@simplewebauthn/server/helpers";
 import app from "../index.ts";
 import { User } from "../models/User.ts";
 import { Passkey } from "../models/Passkey.ts";
 import { createRefreshTokenDetails, generateAccessToken } from "../utilities/helpers.ts";
+
+vi.mock("../utilities/types.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../utilities/types.ts")>();
+  return { ...actual, AUTH_COOKIE_SCOPE: { secure: true, sameSite: "none", path: "/", domain: "api.example.test" } };
+});
 
 const cookies = (response: any) => response.cookies.map((cookie: any) => `${cookie.name}=${cookie.value}`).join("; ");
 const digest = (value: string | Buffer) => crypto.createHash("sha256").update(value).digest();
@@ -26,6 +32,7 @@ describe("Passkey cryptographic round trip", () => {
     ]) as any);
     const register = await app.inject({ method: "POST", url: "/api/auth/passkeys/register/options", headers: { cookie: accountCookie } });
     expect(register.statusCode, register.body).toBe(200);
+    expect(register.cookies.find(cookie => cookie.name === "ekavyu_passkey_challenge")).toMatchObject({ sameSite: "None", secure: true, httpOnly: true, domain: "api.example.test" });
     const clientDataJSON = b64(Buffer.from(JSON.stringify({ type: "webauthn.create", challenge: register.json().data.challenge, origin: "http://localhost:3000", crossOrigin: false })));
     const length = Buffer.alloc(2); length.writeUInt16BE(credentialId.length);
     const authData = Buffer.concat([digest("localhost"), Buffer.from([0x45]), Buffer.alloc(4), Buffer.alloc(16), length, credentialId, Buffer.from(coseKey)]);
@@ -33,6 +40,7 @@ describe("Passkey cryptographic round trip", () => {
     const enrolled = await app.inject({ method: "POST", url: "/api/auth/passkeys/register/verify", headers: { cookie: `${accountCookie}; ${cookies(register)}` }, payload: { name: "Test device", response: { id: b64(credentialId), rawId: b64(credentialId), type: "public-key", response: { clientDataJSON, attestationObject, transports: ["internal"] }, clientExtensionResults: {} } } });
     expect(enrolled.statusCode, enrolled.body).toBe(200);
     expect(await Passkey.countDocuments({ userId: user._id })).toBe(1);
+    expect(enrolled.cookies.find(cookie => cookie.name === "ekavyu_passkey_challenge")).toMatchObject({ domain: "api.example.test", value: "" });
 
     const signIn = async (counter: number, origin = "http://localhost:3000") => {
       const options = await app.inject({ method: "POST", url: "/api/auth/passkeys/login/options" });
@@ -43,13 +51,17 @@ describe("Passkey cryptographic round trip", () => {
       const signature = crypto.sign("sha256", Buffer.concat([authenticator, digest(client)]), privateKey);
       return app.inject({ method: "POST", url: "/api/auth/passkeys/login/verify", headers: { cookie: cookies(options) }, payload: { response: { id: b64(credentialId), rawId: b64(credentialId), type: "public-key", response: { clientDataJSON: b64(client), authenticatorData: b64(authenticator), signature: b64(signature), userHandle: b64(Buffer.from(user.id)) }, clientExtensionResults: {} } } });
     };
+    const zeroCounter = await signIn(0);
+    expect(zeroCounter.statusCode, zeroCounter.body).toBe(200);
+    const repeatedZeroCounter = await signIn(0);
+    expect(repeatedZeroCounter.statusCode, repeatedZeroCounter.body).toBe(200);
     const signedIn = await signIn(1);
     expect(signedIn.statusCode, signedIn.body).toBe(200);
     expect(signedIn.json().data.user.id).toBe(user.id);
     expect(signedIn.cookies.some((cookie) => cookie.name === "access_token" && cookie.value)).toBe(true);
     const wrongOrigin = await signIn(2, "https://another-site.example");
     expect(wrongOrigin.statusCode).toBe(401);
-    await User.updateOne({ _id: user._id }, { twoFactorEnabled: true, twoFactorSecret: "JBSWY3DPEHPK3PXP" });
+    await User.updateOne({ _id: user._id }, { twoFactorEnabled: true, twoFactorSecret: encryptField("JBSWY3DPEHPK3PXP") });
     const secondFactor = await signIn(2);
     expect(secondFactor.statusCode, secondFactor.body).toBe(200);
     expect(secondFactor.json().data.twoFactorRequired).toBe(true);

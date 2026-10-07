@@ -63,7 +63,7 @@ try {
     CORS_ALLOWED_ORIGINS: "https://startup-check.example.test",
     JWT_PRIVATE_KEY_BASE64: Buffer.from(keys.privateKey).toString("base64"),
     JWT_PUBLIC_KEY_BASE64: Buffer.from(keys.publicKey).toString("base64"),
-    ENCRYPTION_KEY: crypto.randomBytes(32).toString("hex"),
+    DATA_ENCRYPTION_KEY: crypto.randomBytes(32).toString("hex"),
     PRESCRIPTION_SIGNING_KEY: crypto.randomBytes(32).toString("hex"),
     UPI_WEBHOOK_SECRET: crypto.randomBytes(32).toString("hex"),
     ALLOW_SINGLE_NODE_IN_PRODUCTION: "true", RUN_INLINE_JOBS: "false",

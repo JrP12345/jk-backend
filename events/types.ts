@@ -37,16 +37,16 @@ export interface DomainEventPayload {
 
 export const EVENT_TYPES = {
   // Ekavyu Architecture Domain Events
-  PATIENT_REGISTERED: "ananta.patient.registered",
-  CONSENT_GRANTED: "ananta.consent.granted",
-  CONSENT_REVOKED: "ananta.consent.revoked",
-  CLINICAL_ENCOUNTER_STARTED: "ananta.clinical.encounter.started",
-  CLINICAL_ENCOUNTER_COMPLETED: "ananta.clinical.encounter.completed",
-  CLINICAL_NOTE_SIGNED: "ananta.clinical.note.signed",
-  CLINICAL_PRESCRIPTION_SIGNED: "ananta.clinical.prescription.signed",
-  DOCUMENT_UPLOADED: "ananta.document.uploaded",
-  DOCUMENT_OCR_COMPLETED: "ananta.document.ocr_completed",
-  LAB_RESULT_VERIFIED: "ananta.lab.result_verified",
+  PATIENT_REGISTERED: "ekavyu.patient.registered",
+  CONSENT_GRANTED: "ekavyu.consent.granted",
+  CONSENT_REVOKED: "ekavyu.consent.revoked",
+  CLINICAL_ENCOUNTER_STARTED: "ekavyu.clinical.encounter.started",
+  CLINICAL_ENCOUNTER_COMPLETED: "ekavyu.clinical.encounter.completed",
+  CLINICAL_NOTE_SIGNED: "ekavyu.clinical.note.signed",
+  CLINICAL_PRESCRIPTION_SIGNED: "ekavyu.clinical.prescription.signed",
+  DOCUMENT_UPLOADED: "ekavyu.document.uploaded",
+  DOCUMENT_OCR_COMPLETED: "ekavyu.document.ocr_completed",
+  LAB_RESULT_VERIFIED: "ekavyu.lab.result_verified",
 
   // Auth
   AUTH_LOGIN_NEW_DEVICE: "AUTH_LOGIN_NEW_DEVICE",
@@ -95,4 +95,3 @@ export const EVENT_TYPES = {
   SYSTEM_ALERT: "SYSTEM_ALERT",
   SYSTEM_MAINTENANCE: "SYSTEM_MAINTENANCE",
 } as const;
-

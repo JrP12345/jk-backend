@@ -3,7 +3,7 @@ import mongoose, { Schema } from "mongoose";
 const ShiftRosterSchema = new Schema(
   {
     organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
-    clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
+    locationId: { type: Schema.Types.ObjectId, ref: "Location", required: true, index: true },
     departmentId: { type: Schema.Types.ObjectId, ref: "Department", index: true },
     staffId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
     staffName: { type: String, required: true },

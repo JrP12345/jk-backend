@@ -11,18 +11,17 @@ const references = (org: any): string[] => [org?.logo_url, org?.image_url, ...(o
 
 export class BrandingValidationError extends Error {}
 
-/** Validate before any organization write. Existing legacy references remain editable. */
+/** Validate before any organization write. Stored references remain editable. */
 export async function validateBrandingReferences(req: FastifyRequest, next: any, current?: any) {
   const previous = new Set(references(current));
   for (const ref of references(next)) {
-    if (previous.has(ref)) continue;
     const id = brandingAssetId(ref);
     if (!id) {
       // Preserve public external image URLs; reject arbitrary private vault keys.
       if (/^https?:\/\//i.test(ref)) continue;
-      if (process.env.NODE_ENV === "test" && !req.user) continue; // legacy provisioning fixtures
       throw new BrandingValidationError("Upload organization images through the branding uploader");
     }
+    if (previous.has(ref)) continue;
     const asset = await OrganizationBrandingAsset.findById(id).lean();
     if (!asset || asset.state !== "staged" || asset.expiresAt <= new Date() || asset.ownerId.toString() !== req.user?.id) {
       throw new BrandingValidationError("The branding upload is unavailable; select the image again");
@@ -80,5 +79,5 @@ export function organizationImageReference(org: any, slot: "logo_url" | "image_u
   const value = typeof slot === "number" ? org?.images?.[slot] : org?.[slot];
   if (!value) return null;
   if (/^https?:\/\//i.test(value) || brandingAssetId(value)) return value;
-  return `/api/public/organizations/${org._id || org.id}/branding/${slot}`;
+  return null;
 }

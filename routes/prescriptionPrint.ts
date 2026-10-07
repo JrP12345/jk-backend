@@ -27,13 +27,13 @@ export default async function prescriptionPrintRoutes(fastify: FastifyInstance) 
         const note = await ClinicalNote.findOne({ encounterId, isLatest: true })
           .populate("patientId")
           .populate("doctorId", "name role specialization")
-          .populate("clinicId", "name address phone")
+          .populate("locationId", "name address phone")
           .lean() as any;
 
         const prescriptions = await Prescription.find({ encounterId, deletedAt: null })
           .populate("patientId")
           .populate("doctorId", "name role specialization")
-          .populate("clinicId", "name address phone")
+          .populate("locationId", "name address phone")
           .lean() as any[];
 
         if (!note && prescriptions.length === 0) {
@@ -46,20 +46,20 @@ export default async function prescriptionPrintRoutes(fastify: FastifyInstance) 
 
         const patient = note?.patientId || prescriptions[0]?.patientId;
         const doctorUser = note?.doctorId || prescriptions[0]?.doctorId;
-        const clinic = note?.clinicId || prescriptions[0]?.clinicId;
-        if (!patient || !doctorUser || !clinic) {
-          return reply.code(422).send({ error: "Prescription is missing patient, clinician, or clinic identity" });
+        const location = note?.locationId || prescriptions[0]?.locationId;
+        if (!patient || !doctorUser || !location) {
+          return reply.code(422).send({ error: "Prescription is missing patient, clinician, or location identity" });
         }
         const patientUser = patient.userId ? await User.findById(patient.userId).lean() : null;
         const patientName = patientUser?.name || patient.name;
-        if (!patientName || !doctorUser.name || !clinic.name) {
+        if (!patientName || !doctorUser.name || !location.name) {
           return reply.code(422).send({ error: "Prescription identity references are incomplete" });
         }
 
         const html = generatePrintablePrescriptionHtml({
-          clinicName: clinic.name,
-          clinicAddress: clinic.address || "",
-          clinicPhone: clinic.phone || "",
+          locationName: location.name,
+          locationAddress: location.address || "",
+          locationPhone: location.phone || "",
           doctorName: doctorUser.name,
           doctorSpecialty: doctorUser.specialization || "",
           patientName,

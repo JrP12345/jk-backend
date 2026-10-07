@@ -134,7 +134,7 @@ export async function getPatientDetails(req: FastifyRequest, reply: FastifyReply
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return reply.code(400).send(errorResponse("Invalid patient ID"));
     }
-    
+
     const patient = await Patient.findById(id).setOptions({ bypassTenantFilter: true }).populate("userId", "name email phone");
     if (!patient) {
       return reply.code(404).send(errorResponse("Patient not found"));
@@ -170,7 +170,7 @@ export async function getPatientDetails(req: FastifyRequest, reply: FastifyReply
     const appointments = await Appointment.find(appointmentFilter)
       .setOptions({ bypassTenantFilter: Boolean(approved || isSelfAccess) })
       .populate("doctorId", "name email")
-      .populate("clinicId", "name city")
+      .populate("locationId", "name city")
       .sort({ appointmentTime: -1 })
       .limit(50);
 
@@ -234,7 +234,7 @@ export async function submitDoctorReview(req: FastifyRequest, reply: FastifyRepl
     // Calculate new average rating
     const currentRating = doctor.rating || 5;
     const currentReviewsCount = doctor.reviewsCount || 0;
-    
+
     const newReviewsCount = currentReviewsCount + 1;
     const newRating = parseFloat(((currentRating * currentReviewsCount + rating) / newReviewsCount).toFixed(1));
 

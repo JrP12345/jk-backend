@@ -1,3 +1,4 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
@@ -7,7 +8,7 @@ import { ClinicalNote } from "../models/ClinicalNote.ts";
 
 describe("Outpatient Consultation & Clinical Note Integration Tests", () => {
   let adminCookies: string[] = [];
-  let clinicId: string;
+  let locationId: string;
   let patientId: string;
   let doctorUserId: string;
   let encounterId: string;
@@ -15,7 +16,7 @@ describe("Outpatient Consultation & Clinical Note Integration Tests", () => {
 
   beforeAll(async () => {
     // 1. Create Organization & Admin
-    const orgRes = await app.inject({
+    const orgRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -28,12 +29,12 @@ describe("Outpatient Consultation & Clinical Note Integration Tests", () => {
       },
     });
     expect(orgRes.statusCode).toBe(201);
-    adminCookies = orgRes.headers["set-cookie"] as string[];
+    adminCookies = (await provisionedAdminCookies(orgRes));
 
-    // 2. Create Clinic
-    const clinicRes = await app.inject({
+    // 2. Create Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "General OPD Consultation Clinic",
@@ -43,8 +44,8 @@ describe("Outpatient Consultation & Clinical Note Integration Tests", () => {
         email: "opd@stjude.internal",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Register Patient
     const patientRes = await app.inject({
@@ -89,7 +90,7 @@ describe("Outpatient Consultation & Clinical Note Integration Tests", () => {
       url: "/api/encounters",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         patientId,
         doctorId: doctorUserId,
         encounterType: "opd",
@@ -110,7 +111,7 @@ describe("Outpatient Consultation & Clinical Note Integration Tests", () => {
       url: "/api/clinical-notes",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         encounterId,
         patientId,
         chiefComplaint: "Persistent dry cough and mild fever for 4 days",

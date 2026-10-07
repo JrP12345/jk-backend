@@ -5,7 +5,7 @@
  * Non-destructive verification test:
  * 1. Locates the most recent encrypted backup archive
  * 2. Decrypts and decompresses the archive
- * 3. Restores into an isolated temporary drill database (healthos_restore_drill_<timestamp>)
+ * 3. Restores into an isolated temporary drill database (ekavyu_restore_drill_<timestamp>)
  * 4. Audits collection counts, indexes, and document integrity
  * 5. Drops the temporary drill database
  * 6. Emits a signed DR drill report
@@ -26,9 +26,9 @@ import mongoose from "mongoose";
 const MAX_ARCHIVE_BYTES = 128 * 1024 * 1024;
 
 function getBackupKey(): Buffer {
-  const rawBackupKey = process.env.BACKUP_ENCRYPTION_KEY || process.env.ENCRYPTION_KEY;
+  const rawBackupKey = process.env.BACKUP_ENCRYPTION_KEY;
   if (!rawBackupKey) {
-    throw new Error("Either BACKUP_ENCRYPTION_KEY or ENCRYPTION_KEY must be provided to decrypt backups.");
+    throw new Error("BACKUP_ENCRYPTION_KEY is required to decrypt backups.");
   }
   if (/^[0-9a-fA-F]{64}$/.test(rawBackupKey)) {
     return Buffer.from(rawBackupKey, "hex");
@@ -65,7 +65,7 @@ async function fetchLatestFromRemoteStorage(): Promise<{ buffer: Buffer; fileNam
   const listResp = await s3.send(
     new ListObjectsV2Command({
       Bucket: bucket,
-      Prefix: "backups/mongodb/healthos-backup-",
+      Prefix: "backups/mongodb/ekavyu-backup-",
     })
   );
 
@@ -99,7 +99,7 @@ function findLatestBackup(backupsDir: string): string {
   }
 
   const files = fs.readdirSync(backupsDir)
-    .filter((f) => f.startsWith("healthos-backup-") && f.endsWith(".enc.gz"))
+    .filter((f) => f.startsWith("ekavyu-backup-") && f.endsWith(".enc.gz"))
     .map((f) => path.join(backupsDir, f))
     .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
 
@@ -179,7 +179,7 @@ async function runRestoreDrill() {
   console.log(`   • Original Database : ${metadata.databaseName || "Unknown"}`);
 
   // 4. Connect to temporary drill database
-  const drillDbName = `healthos_restore_drill_${Date.now()}`;
+  const drillDbName = `ekavyu_restore_drill_${Date.now()}`;
   console.log(`\n🧪 Connecting to isolated temporary drill database: '${drillDbName}'...`);
 
   // Connect strictly to the isolated temporary drill database via dbName option

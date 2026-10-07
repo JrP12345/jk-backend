@@ -1,8 +1,8 @@
+import { fixtureAccessToken } from "./helpers/sessionFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
-import { generateAccessToken } from "../utilities/helpers.ts";
 
 describe("Root Super-Admin Platform Settings Fallback & Context Resolution", () => {
   let rootCookie: string;
@@ -45,17 +45,17 @@ describe("Root Super-Admin Platform Settings Fallback & Context Resolution", () 
       isActive: true,
     });
 
-    rootCookie = `access_token=${generateAccessToken({
+    rootCookie = `access_token=${(await fixtureAccessToken({
       id: rootUser._id.toString(),
       email: rootUser.email!,
       role: "root",
-    })}`;
+    }))}`;
 
-    nonOrgUserCookie = `access_token=${generateAccessToken({
+    nonOrgUserCookie = `access_token=${(await fixtureAccessToken({
       id: unlinkedUser._id.toString(),
       email: unlinkedUser.email!,
       role: "admin",
-    })}`;
+    }))}`;
   });
 
   it("1. Root without organizationId fallback resolves primary active organization on /api/onboarding/organization/me", async () => {

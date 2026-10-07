@@ -224,12 +224,12 @@ export function buildMetaTemplateParams(options: SendMessageOptions) {
         parameters: [
           patientName,
           v.doctorName || "Doctor",
-          v.clinicName || "Clinic",
+          v.locationName || "Location",
           v.appointmentTime || "Today",
           v.tokenNumber || "1",
           v.trackingUrl || "",
         ],
-        messageContent: `Appointment confirmed with Dr. ${v.doctorName} at ${v.clinicName} for ${v.appointmentTime}. Token #${v.tokenNumber}. Track live: ${v.trackingUrl}`,
+        messageContent: `Appointment confirmed with Dr. ${v.doctorName} at ${v.locationName} for ${v.appointmentTime}. Token #${v.tokenNumber}. Track live: ${v.trackingUrl}`,
       };
 
     case "CONSULTATION_COMPLETED":
@@ -238,7 +238,7 @@ export function buildMetaTemplateParams(options: SendMessageOptions) {
         parameters: [
           patientName,
           v.doctorName || "Doctor",
-          v.clinicName || "Clinic",
+          v.locationName || "Location",
           v.tokenNumber || "1",
           v.trackingUrl || "",
         ],
@@ -264,10 +264,10 @@ export function buildMetaTemplateParams(options: SendMessageOptions) {
         parameters: [
           patientName,
           v.doctorName || "Doctor",
-          v.clinicName || "Clinic",
+          v.locationName || "Location",
           v.appointmentTime || "Today",
         ],
-        messageContent: `Appointment for ${patientName} with Dr. ${v.doctorName} at ${v.clinicName} scheduled for ${v.appointmentTime} has been cancelled.`,
+        messageContent: `Appointment for ${patientName} with Dr. ${v.doctorName} at ${v.locationName} scheduled for ${v.appointmentTime} has been cancelled.`,
       };
 
     case "APPOINTMENT_REMINDER":
@@ -276,10 +276,10 @@ export function buildMetaTemplateParams(options: SendMessageOptions) {
         parameters: [
           patientName,
           v.doctorName || "Doctor",
-          v.clinicName || "Clinic",
+          v.locationName || "Location",
           v.appointmentTime || "Tomorrow",
         ],
-        messageContent: `Reminder: Appointment with Dr. ${v.doctorName} at ${v.clinicName} tomorrow at ${v.appointmentTime}.`,
+        messageContent: `Reminder: Appointment with Dr. ${v.doctorName} at ${v.locationName} tomorrow at ${v.appointmentTime}.`,
       };
 
     case "DOCTOR_DISRUPTION":
@@ -288,12 +288,12 @@ export function buildMetaTemplateParams(options: SendMessageOptions) {
         parameters: [
           patientName,
           v.doctorName || "Doctor",
-          v.clinicName || "Clinic",
+          v.locationName || "Location",
           v.appointmentTime || "Today",
           v.rescheduleUrl || "",
           v.cancelUrl || "",
         ],
-        messageContent: `Important: Dr. ${v.doctorName} at ${v.clinicName} is unavailable on ${v.appointmentTime}. Choose: Reschedule: ${v.rescheduleUrl} | Cancel & Refund: ${v.cancelUrl}`,
+        messageContent: `Important: Dr. ${v.doctorName} at ${v.locationName} is unavailable on ${v.appointmentTime}. Choose: Reschedule: ${v.rescheduleUrl} | Cancel & Refund: ${v.cancelUrl}`,
       };
 
     case "DISRUPTION_TRANSFER":
@@ -303,11 +303,11 @@ export function buildMetaTemplateParams(options: SendMessageOptions) {
           patientName,
           v.originalDoctorName || "Original Doctor",
           v.newDoctorName || "Doctor",
-          v.clinicName || "Clinic",
+          v.locationName || "Location",
           v.tokenNumber || "1",
           v.trackingUrl || "",
         ],
-        messageContent: `Appointment update: Transferred from Dr. ${v.originalDoctorName} to Dr. ${v.newDoctorName} at ${v.clinicName}. Token #${v.tokenNumber}. Track live: ${v.trackingUrl}`,
+        messageContent: `Appointment update: Transferred from Dr. ${v.originalDoctorName} to Dr. ${v.newDoctorName} at ${v.locationName}. Token #${v.tokenNumber}. Track live: ${v.trackingUrl}`,
       };
 
     case "DISRUPTION_REFUND_CONFIRMATION":
@@ -316,11 +316,11 @@ export function buildMetaTemplateParams(options: SendMessageOptions) {
         parameters: [
           patientName,
           v.doctorName || "Doctor",
-          v.clinicName || "Clinic",
+          v.locationName || "Location",
           v.refundAmount || "0",
           v.refundId || "",
         ],
-        messageContent: `Refund confirmed: ₹${v.refundAmount} initiated for cancelled appointment with Dr. ${v.doctorName} at ${v.clinicName} (Ref: ${v.refundId}).`,
+        messageContent: `Refund confirmed: ₹${v.refundAmount} initiated for cancelled appointment with Dr. ${v.doctorName} at ${v.locationName} (Ref: ${v.refundId}).`,
       };
 
     default:
@@ -341,13 +341,13 @@ function buildPlainMessageContent(options: SendMessageOptions): string {
     case "OTP_VERIFICATION":
       return v.purpose === "record_access" ? `Your Ekavyu approval code is ${v.otpCode}. Share it with your clinician only if you agree to let them view your medical history from other organizations for 10 minutes. This code expires in 5 minutes.` : `Your Ekavyu verification code is ${v.otpCode}. Valid for 5 minutes.`;
     case "BOOKING_CONFIRMATION":
-      return `Appointment with Dr. ${v.doctorName} at ${v.clinicName} confirmed for ${v.appointmentTime}. Token #${v.tokenNumber}.`;
+      return `Appointment with Dr. ${v.doctorName} at ${v.locationName} confirmed for ${v.appointmentTime}. Token #${v.tokenNumber}.`;
     case "APPOINTMENT_REMINDER":
-      return `Reminder: Appointment with Dr. ${v.doctorName} at ${v.clinicName} on ${v.appointmentTime}.`;
+      return `Reminder: Appointment with Dr. ${v.doctorName} at ${v.locationName} on ${v.appointmentTime}.`;
     case "DOCTOR_DISRUPTION":
       return `Important: Dr. ${v.doctorName} is unavailable on ${v.appointmentTime}. Reschedule: ${v.rescheduleUrl} | Cancel & Refund: ${v.cancelUrl}`;
     case "DISRUPTION_TRANSFER":
-      return `Appointment at ${v.clinicName} transferred to Dr. ${v.newDoctorName}. Token #${v.tokenNumber}. Track: ${v.trackingUrl}`;
+      return `Appointment at ${v.locationName} transferred to Dr. ${v.newDoctorName}. Token #${v.tokenNumber}. Track: ${v.trackingUrl}`;
     case "DISRUPTION_REFUND_CONFIRMATION":
       return `Refund of ₹${v.refundAmount} initiated for cancelled appointment with Dr. ${v.doctorName}. Ref: ${v.refundId}`;
     case "LAB_RESULTS_READY":
@@ -371,7 +371,7 @@ export const SmsWhatsAppService = {
       patientName?: string;
       tokenNumber: number | string;
       doctorName: string;
-      clinicName?: string;
+      locationName?: string;
       date?: string;
       time?: string;
       appointmentTime?: string;
@@ -390,7 +390,7 @@ export const SmsWhatsAppService = {
         patientName: params.patientName || "Patient",
         tokenNumber: String(params.tokenNumber),
         doctorName: params.doctorName,
-        clinicName: params.clinicName || "Clinic",
+        locationName: params.locationName || "Location",
         appointmentTime:
           params.appointmentTime ||
           `${params.date || ""} ${params.time || ""}`.trim() ||
@@ -465,7 +465,7 @@ export const SmsWhatsAppService = {
     params: {
       patientName?: string;
       doctorName: string;
-      clinicName?: string;
+      locationName?: string;
       appointmentTime?: string;
       rescheduleUrl: string;
       cancelUrl: string;
@@ -484,7 +484,7 @@ export const SmsWhatsAppService = {
       variables: {
         patientName: params.patientName || "Patient",
         doctorName: params.doctorName,
-        clinicName: params.clinicName || "Clinic",
+        locationName: params.locationName || "Location",
         appointmentTime: params.appointmentTime || "Today",
         rescheduleUrl: params.rescheduleUrl,
         cancelUrl: params.cancelUrl,
@@ -512,7 +512,7 @@ export const SmsWhatsAppService = {
       patientName?: string;
       originalDoctorName: string;
       newDoctorName: string;
-      clinicName?: string;
+      locationName?: string;
       tokenNumber: number | string;
       trackingUrl?: string;
     }
@@ -529,7 +529,7 @@ export const SmsWhatsAppService = {
         patientName: params.patientName || "Patient",
         originalDoctorName: params.originalDoctorName,
         newDoctorName: params.newDoctorName,
-        clinicName: params.clinicName || "Clinic",
+        locationName: params.locationName || "Location",
         tokenNumber: String(params.tokenNumber),
         trackingUrl,
       },
@@ -554,7 +554,7 @@ export const SmsWhatsAppService = {
     params: {
       patientName?: string;
       doctorName: string;
-      clinicName?: string;
+      locationName?: string;
       refundAmount: number | string;
       refundId: string;
     }
@@ -569,7 +569,7 @@ export const SmsWhatsAppService = {
       variables: {
         patientName: params.patientName || "Patient",
         doctorName: params.doctorName,
-        clinicName: params.clinicName || "Clinic",
+        locationName: params.locationName || "Location",
         refundAmount: String(params.refundAmount),
         refundId: params.refundId,
       },
@@ -594,7 +594,7 @@ export const SmsWhatsAppService = {
     params: {
       patientName?: string;
       doctorName: string;
-      clinicName?: string;
+      locationName?: string;
       delayMinutes: number | string;
       revisedArrivalTime: string;
       trackerUrl: string;
@@ -610,7 +610,7 @@ export const SmsWhatsAppService = {
       variables: {
         patientName: params.patientName || "Patient",
         doctorName: params.doctorName,
-        clinicName: params.clinicName || "Clinic",
+        locationName: params.locationName || "Location",
         delayMinutes: String(params.delayMinutes),
         revisedArrivalTime: params.revisedArrivalTime,
         trackerUrl: params.trackerUrl,

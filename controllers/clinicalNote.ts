@@ -12,7 +12,7 @@ import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { createTenantRepository } from "../platform/TenantRepository.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { checkClinicAccess, checkOperationalRecordAccess, resolveTargetOrganizationId } from "../utilities/tenant.ts";
+import { checkLocationAccess, checkOperationalRecordAccess, resolveTargetOrganizationId } from "../utilities/tenant.ts";
 import { getNextAtomicSequence } from "../models/Counter.ts";
 import {
   getCursorPaginationParams,
@@ -31,15 +31,15 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
   try {
     let orgId = await resolveTargetOrganizationId(req);
     const userId = req.user?.id;
-    const { clinicId, appointmentId, patientId, doctorId, encounterType } = req.body as {
-      clinicId: string;
+    const { locationId, appointmentId, patientId, doctorId, encounterType } = req.body as {
+      locationId: string;
       appointmentId?: string;
       patientId: string;
       doctorId?: string;
       encounterType?: string;
     };
 
-    let finalClinicId = clinicId;
+    let finalLocationId = locationId;
     let finalPatientId = patientId;
     let finalDoctorId = doctorId || userId;
     let appointmentStatus: string | undefined;
@@ -57,15 +57,15 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
       if (req.user?.role === "doctor" && String(appt.doctorId) !== userId) return reply.code(403).send(errorResponse("This visit belongs to another doctor"));
       finalDoctorId = String(appt.doctorId);
       appointmentStatus = appt.status;
-      if (finalClinicId && mongoose.Types.ObjectId.isValid(finalClinicId) && finalClinicId !== appt.clinicId?.toString()) {
-        return reply.code(400).send(errorResponse("Appointment clinic does not match clinicId"));
+      if (finalLocationId && mongoose.Types.ObjectId.isValid(finalLocationId) && finalLocationId !== appt.locationId?.toString()) {
+        return reply.code(400).send(errorResponse("Appointment location does not match locationId"));
       }
       if (finalPatientId && mongoose.Types.ObjectId.isValid(finalPatientId) && finalPatientId !== appt.patientId?.toString()) {
         return reply.code(400).send(errorResponse("Appointment patient does not match patientId"));
       }
       if (appt) {
-        if (!finalClinicId || !mongoose.Types.ObjectId.isValid(finalClinicId)) {
-          finalClinicId = appt.clinicId?._id?.toString() || appt.clinicId?.toString() || appt.clinicId;
+        if (!finalLocationId || !mongoose.Types.ObjectId.isValid(finalLocationId)) {
+          finalLocationId = appt.locationId?._id?.toString() || appt.locationId?.toString() || appt.locationId;
         }
         if (!finalPatientId || !mongoose.Types.ObjectId.isValid(finalPatientId)) {
           finalPatientId = appt.patientId?._id?.toString() || appt.patientId?.toString() || appt.patientId;
@@ -73,25 +73,25 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
       }
     }
 
-    if (!finalClinicId || !mongoose.Types.ObjectId.isValid(finalClinicId) || !finalPatientId || !mongoose.Types.ObjectId.isValid(finalPatientId)) {
-      return reply.code(400).send(errorResponse("Valid clinicId and patientId are required"));
+    if (!finalLocationId || !mongoose.Types.ObjectId.isValid(finalLocationId) || !finalPatientId || !mongoose.Types.ObjectId.isValid(finalPatientId)) {
+      return reply.code(400).send(errorResponse("Valid locationId and patientId are required"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, finalClinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, finalLocationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
 
-    if (!orgId && clinicAccess.organizationId) {
-      orgId = clinicAccess.organizationId;
+    if (!orgId && locationAccess.organizationId) {
+      orgId = locationAccess.organizationId;
     }
     if (!orgId) return reply.code(403).send(errorResponse("Organization context required"));
 
     const patient = await Patient.findById(finalPatientId).setOptions({ bypassTenantFilter: true });
     if (!patient) return reply.code(404).send(errorResponse("Patient profile not found"));
-    if (patient.organizationId && clinicAccess.organizationId && patient.organizationId.toString() !== clinicAccess.organizationId) {
+    if (patient.organizationId && locationAccess.organizationId && patient.organizationId.toString() !== locationAccess.organizationId) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
     }
-    if (!patient.organizationId && clinicAccess.organizationId) {
-      patient.organizationId = new mongoose.Types.ObjectId(clinicAccess.organizationId);
+    if (!patient.organizationId && locationAccess.organizationId) {
+      patient.organizationId = new mongoose.Types.ObjectId(locationAccess.organizationId);
       await patient.save();
     }
 
@@ -102,9 +102,9 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
       delete existingFilter.status;
     } else {
       existingFilter.patientId = finalPatientId;
-      existingFilter.clinicId = finalClinicId;
+      existingFilter.locationId = finalLocationId;
     }
-    existingFilter.organizationId = clinicAccess.organizationId || orgId;
+    existingFilter.organizationId = locationAccess.organizationId || orgId;
 
     const existingEncounter = await Encounter.findOne(existingFilter).sort({ createdAt: -1 });
     if (existingEncounter) {
@@ -115,8 +115,8 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
     }
 
     const encounter = await Encounter.create({
-      organizationId: clinicAccess.organizationId || orgId,
-      clinicId: finalClinicId,
+      organizationId: locationAccess.organizationId || orgId,
+      locationId: finalLocationId,
       appointmentId: appointmentId || null,
       patientId: finalPatientId,
       doctorId: finalDoctorId,
@@ -137,7 +137,7 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
     let orgId = await resolveTargetOrganizationId(req);
     const userId = req.user?.id;
     const {
-      clinicId,
+      locationId,
       encounterId,
       patientId,
       chiefComplaint,
@@ -171,8 +171,8 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
     }
     if (!orgId) return reply.code(403).send(errorResponse("Organization context required"));
     if (encounter.patientId.toString() !== patientId) return reply.code(400).send(errorResponse("Encounter patient does not match patientId"));
-    if (clinicId && encounter.clinicId.toString() !== clinicId) return reply.code(400).send(errorResponse("Encounter clinic does not match clinicId"));
-    const effectiveClinicId = encounter.clinicId.toString();
+    if (locationId && encounter.locationId.toString() !== locationId) return reply.code(400).send(errorResponse("Encounter location does not match locationId"));
+    const effectiveLocationId = encounter.locationId.toString();
 
     const savedNote = await withClinicalTransaction(async () => {
     let note = await ClinicalNote.findOne({ encounterId, organizationId: orgId, status: "draft", isLatest: true });
@@ -206,7 +206,7 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
         .filter((v) => v.value !== null && v.value !== undefined && v.value !== "")
         .map((v) => ({
           organizationId: orgId,
-          clinicId: effectiveClinicId,
+          locationId: effectiveLocationId,
           encounterId,
           patientId,
           recordedBy: userId,
@@ -234,7 +234,7 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
         .filter((rx: any) => rx.name && rx.dosage && rx.duration)
         .map((rx: any) => ({
           organizationId: orgId,
-          clinicId: effectiveClinicId,
+          locationId: effectiveLocationId,
           encounterId,
           patientId,
           doctorId: userId,
@@ -279,7 +279,7 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
     } else {
       note = await ClinicalNote.create({
         organizationId: orgId,
-        clinicId: effectiveClinicId,
+        locationId: effectiveLocationId,
         encounterId,
         patientId,
         doctorId: userId,
@@ -372,7 +372,7 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
 
     // Complete Encounter and linked Appointment
     updatedEncounter = await Encounter.findOneAndUpdate(
-      { _id: note.encounterId, organizationId: note.organizationId, clinicId: note.clinicId, status: { $nin: ["cancelled", "closed"] } },
+      { _id: note.encounterId, organizationId: note.organizationId, locationId: note.locationId, status: { $nin: ["cancelled", "closed"] } },
       { status: "completed", endedAt: new Date() },
       { returnDocument: "after" }
     );
@@ -381,7 +381,7 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
     if (updatedEncounter.appointmentId) {
       const { Appointment } = await import("../models/Appointment.ts");
       const completed = await Appointment.findOneAndUpdate(
-        { _id: updatedEncounter.appointmentId, clinicId: note.clinicId,
+        { _id: updatedEncounter.appointmentId, locationId: note.locationId,
           status: { $in: ["in-consultation", "completed"] } },
         { $set: { status: "completed" }, $unset: { activeConsultationDoctorDayKey: 1 } },
         { returnDocument: "after" }
@@ -396,15 +396,15 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
         console.error("sendConsultationCompletedNotification on note sign failed:", err)
       );
 
-      const clinicIdStr = note.clinicId?.toString();
-      if (clinicIdStr) {
+      const locationIdStr = note.locationId?.toString();
+      if (locationIdStr) {
         const { broadcastQueueUpdate } = await import("../notifications/websocket.ts");
-        broadcastQueueUpdate(clinicIdStr, {
+        broadcastQueueUpdate(locationIdStr, {
           type: "QUEUE_UPDATED",
           data: {
             appointmentId: updatedEncounter.appointmentId.toString(),
             status: "completed",
-            clinicId: clinicIdStr,
+            locationId: locationIdStr,
           },
           timestamp: new Date().toISOString(),
         });
@@ -436,16 +436,16 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
         const existingFollowUp = await Appointment.findOne({ followUpForAppointmentId: targetFollowUpId });
 
         if (!existingFollowUp) {
-          const { canCreateClinicBooking } = await import("../services/billing/SubscriptionAccess.ts");
-          if (!(await canCreateClinicBooking(String(note.clinicId)))) throw new Error("New follow-up booking is temporarily unavailable");
+          const { canCreateLocationBooking } = await import("../services/billing/SubscriptionAccess.ts");
+          if (!(await canCreateLocationBooking(String(note.locationId)))) throw new Error("New follow-up booking is temporarily unavailable");
           const requestedDate = new Date(note.plan.followUpDate);
           const dateStr = requestedDate.toISOString().slice(0, 10);
-          const counterKey = `token_${note.clinicId}_${note.doctorId}_${dateStr}`;
+          const counterKey = `token_${note.locationId}_${note.doctorId}_${dateStr}`;
           const tokenNumber = await getNextAtomicSequence(counterKey);
 
           await Appointment.create({
             organizationId: note.organizationId || undefined,
-            clinicId: note.clinicId,
+            locationId: note.locationId,
             doctorId: note.doctorId,
             patientId: note.patientId,
             appointmentTime: requestedDate,
@@ -509,7 +509,7 @@ export async function amendClinicalNoteController(req: FastifyRequest, reply: Fa
     const newVersion = parentNote.version + 1;
     const amendedNote = await ClinicalNote.create({
       organizationId: parentNote.organizationId,
-      clinicId: parentNote.clinicId,
+      locationId: parentNote.locationId,
       encounterId: parentNote.encounterId,
       patientId: parentNote.patientId,
       doctorId: userId,

@@ -94,7 +94,7 @@ describe("JWKS & Service Keys Unit Tests", () => {
 
     const payload = {
       id: "test-user-123",
-      email: "doctor@healthos.dev",
+      email: "doctor@ekavyu.dev",
       role: "doctor",
       organization_id: "org-1",
     };

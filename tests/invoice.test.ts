@@ -1,3 +1,4 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
@@ -6,7 +7,7 @@ import { Invoice } from "../models/Invoice.ts";
 
 describe("Invoice & Payment API Integration Tests", () => {
   let adminCookies: string[] = [];
-  let clinicId: string;
+  let locationId: string;
   let patientId: string;
   let invoiceId: string;
 
@@ -15,7 +16,7 @@ describe("Invoice & Payment API Integration Tests", () => {
 
   it("should setup basic requirements", async () => {
     // 1. Create org + admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -28,23 +29,23 @@ describe("Invoice & Payment API Integration Tests", () => {
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
 
-    // 2. Create clinic
-    const clinicRes = await app.inject({
+    // 2. Create location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: { name: "Billing Hub", city: "Surat" },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Register patient
     const patRes = await app.inject({
       method: "POST",
       url: "/api/auth/register",
-      payload: { name: "Raj Kapoor", email: patientEmail, password: "Password123", clinicId },
+      payload: { name: "Raj Kapoor", email: patientEmail, password: "Password123", locationId },
     });
     expect(patRes.statusCode).toBe(201);
     const patUser = await User.findOne({ email: patientEmail });
@@ -54,13 +55,13 @@ describe("Invoice & Payment API Integration Tests", () => {
 
   it("should successfully create a manual invoice with custom itemizations", async () => {
     const docUser = await User.findOne({ email: adminEmail });
-    
+
     const response = await app.inject({
       method: "POST",
       url: "/api/invoices",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId: clinicId,
+        locationId: locationId,
         patientId: patientId,
         doctorId: docUser!._id.toString(),
         items: [
@@ -85,7 +86,7 @@ describe("Invoice & Payment API Integration Tests", () => {
   it("should retrieve list of invoices and retrieve detailed itemization data", async () => {
     const listRes = await app.inject({
       method: "GET",
-      url: `/api/invoices?clinicId=${clinicId}`,
+      url: `/api/invoices?locationId=${locationId}`,
       headers: { cookie: adminCookies.join("; ") },
     });
 

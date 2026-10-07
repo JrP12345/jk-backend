@@ -34,7 +34,7 @@ describe("AI routing cleanup", () => {
     vi.spyOn(InboundPipeline, "process").mockResolvedValue({ ...context, allowedProviders: [primary.name] } as any);
     vi.spyOn(providerRegistry, "getProvider").mockImplementation((name?: string) => (name === "OpenAI" ? backup : primary) as any);
     vi.spyOn(providerRegistry, "listProviders").mockReturnValue([primary.name, backup.name]);
-    await expect(aiGateway.execute({ ...request })).rejects.toThrow("unavailable");
+    await expect(aiGateway.execute({ ...request })).rejects.toThrow("No permitted AI provider completed");
     expect(backup.queryPatientHealthAssistant).not.toHaveBeenCalled();
   });
 });

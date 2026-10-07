@@ -12,7 +12,7 @@ describe("Milestone 6: Notifications & Real-Time Event System Integration Tests"
   it("should retrieve operational metrics for notification queue and active streams", async () => {
     const adminUser = await User.create({
       name: "Notification Metrics Admin",
-      email: "notif_metrics@ananta.internal",
+      email: "notif_metrics@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "admin",
     });
@@ -21,7 +21,7 @@ describe("Milestone 6: Notifications & Real-Time Event System Integration Tests"
       method: "POST",
       url: "/api/auth/login",
       remoteAddress: "10.7.0.1",
-      payload: { email: "notif_metrics@ananta.internal", password: "Password123!" },
+      payload: { email: "notif_metrics@ekavyu.internal", password: "Password123!" },
     });
     const accessToken = loginRes.cookies.find((c) => c.name === "access_token")?.value || "";
 
@@ -42,7 +42,7 @@ describe("Milestone 6: Notifications & Real-Time Event System Integration Tests"
   it("should update user notification preferences via REST API", async () => {
     const user = await User.create({
       name: "Pref User",
-      email: "pref_user@ananta.internal",
+      email: "pref_user@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "doctor",
     });
@@ -51,7 +51,7 @@ describe("Milestone 6: Notifications & Real-Time Event System Integration Tests"
       method: "POST",
       url: "/api/auth/login",
       remoteAddress: "10.7.0.3",
-      payload: { email: "pref_user@ananta.internal", password: "Password123!" },
+      payload: { email: "pref_user@ekavyu.internal", password: "Password123!" },
     });
     const accessToken = loginRes.cookies.find((c) => c.name === "access_token")?.value || "";
 
@@ -87,7 +87,7 @@ describe("Milestone 6: Notifications & Real-Time Event System Integration Tests"
   it("should fetch, mark as read, and delete notifications via REST endpoints", async () => {
     const user = await User.create({
       name: "Notif List User",
-      email: "notif_list_user@ananta.internal",
+      email: "notif_list_user@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "doctor",
     });
@@ -96,7 +96,7 @@ describe("Milestone 6: Notifications & Real-Time Event System Integration Tests"
       method: "POST",
       url: "/api/auth/login",
       remoteAddress: "10.7.0.4",
-      payload: { email: "notif_list_user@ananta.internal", password: "Password123!" },
+      payload: { email: "notif_list_user@ekavyu.internal", password: "Password123!" },
     });
     const accessToken = loginRes.cookies.find((c) => c.name === "access_token")?.value || "";
 

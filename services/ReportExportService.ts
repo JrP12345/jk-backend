@@ -2,7 +2,7 @@ import { Invoice } from "../models/Invoice.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { ClinicalNote } from "../models/ClinicalNote.ts";
 import { MedicineBatch } from "../models/MedicineBatch.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import mongoose from "mongoose";
 import { MAX_REPORT_ROWS } from "../utilities/scalability.ts";
 
@@ -52,13 +52,12 @@ export function escapeCsv(val: any): string {
 }
 
 /**
- * Generates CSV report with strictly typed model-field mappings and versioned column headers.
+ * Generates CSV report with strictly typed model-field mappings and one canonical set of columns.
  */
 export async function generateCsvReport(
   reportType: "billing" | "clinical" | "pharmacy",
   organizationId?: string,
-  clinicId?: string,
-  version: "v1" | "v2" = "v1",
+  locationId?: string,
   startDate?: string,
   endDate?: string,
   maxRows: number = MAX_REPORT_ROWS,
@@ -69,8 +68,8 @@ export async function generateCsvReport(
     filter.organizationId = new mongoose.Types.ObjectId(organizationId);
   }
 
-  if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
-    filter.clinicId = new mongoose.Types.ObjectId(clinicId);
+  if (locationId && mongoose.Types.ObjectId.isValid(locationId)) {
+    filter.locationId = new mongoose.Types.ObjectId(locationId);
   }
 
   if (startDate || endDate) {
@@ -153,32 +152,16 @@ export async function generateCsvReport(
       };
     });
 
-    if (version === "v2") {
-      const headers = "EncounterID,PatientName,DoctorName,EncounterType,Status,ChiefComplaint,StartedAt,CreatedAt\n";
-      const rows = dtos.map(d =>
-        [
-          escapeCsv(d.encounterId),
-          escapeCsv(d.patientName),
-          escapeCsv(d.doctorName),
-          escapeCsv(d.encounterType),
-          escapeCsv(d.status),
-          escapeCsv(d.chiefComplaint),
-          escapeCsv(d.startedAt),
-          escapeCsv(d.createdAt)
-        ].join(",")
-      ).join("\n");
-      return headers + rows;
-    }
-
-    // Version 1 compatibility
-    const headers = "EncounterID,PatientName,DoctorName,Status,ChiefComplaint,CreatedAt\n";
+    const headers = "EncounterID,PatientName,DoctorName,EncounterType,Status,ChiefComplaint,StartedAt,CreatedAt\n";
     const rows = dtos.map(d =>
       [
         escapeCsv(d.encounterId),
         escapeCsv(d.patientName),
         escapeCsv(d.doctorName),
+        escapeCsv(d.encounterType),
         escapeCsv(d.status),
         escapeCsv(d.chiefComplaint),
+        escapeCsv(d.startedAt),
         escapeCsv(d.createdAt)
       ].join(",")
     ).join("\n");
@@ -187,12 +170,12 @@ export async function generateCsvReport(
 
   // 3. PHARMACY STOCK REPORT
   const pharmacyFilter: any = {};
-  if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
-    pharmacyFilter.clinicId = new mongoose.Types.ObjectId(clinicId);
+  if (locationId && mongoose.Types.ObjectId.isValid(locationId)) {
+    pharmacyFilter.locationId = new mongoose.Types.ObjectId(locationId);
   } else if (organizationId && mongoose.Types.ObjectId.isValid(organizationId)) {
-    const orgClinics = await Clinic.find({ organizationId, isActive: { $ne: false } }).select("_id").lean();
-    const clinicIds = orgClinics.map((c) => c._id);
-    pharmacyFilter.clinicId = { $in: clinicIds };
+    const orgLocations = await Location.find({ organizationId, isActive: { $ne: false } }).select("_id").lean();
+    const locationIds = orgLocations.map((c) => c._id);
+    pharmacyFilter.locationId = { $in: locationIds };
   }
 
   const batches = await MedicineBatch.find(pharmacyFilter)
@@ -212,35 +195,18 @@ export async function generateCsvReport(
     status: b.status || "active"
   }));
 
-  if (version === "v2") {
-    const headers = "BatchNumber,MedicineName,MedicineCode,QuantityRemaining,SellingPrice,MRP,ExpiryDate,Status\n";
-    const rows = dtos.map(d =>
-      [
-        escapeCsv(d.batchNumber),
-        escapeCsv(d.medicineName),
-        escapeCsv(d.medicineCode),
-        d.quantityRemaining,
-        d.sellingPrice,
-        d.mrp,
-        escapeCsv(d.expiryDate),
-        escapeCsv(d.status)
-      ].join(",")
-    ).join("\n");
-    return headers + rows;
-  }
-
-  // Version 1 compatibility (PricePerUnit mapped to real sellingPrice, QuantityRemaining mapped to real quantity)
-  const headers = "BatchNumber,MedicineName,QuantityRemaining,PricePerUnit,ExpiryDate,Status\n";
+  const headers = "BatchNumber,MedicineName,MedicineCode,QuantityRemaining,SellingPrice,MRP,ExpiryDate,Status\n";
   const rows = dtos.map(d =>
     [
       escapeCsv(d.batchNumber),
       escapeCsv(d.medicineName),
+      escapeCsv(d.medicineCode),
       d.quantityRemaining,
       d.sellingPrice,
+      d.mrp,
       escapeCsv(d.expiryDate),
       escapeCsv(d.status)
     ].join(",")
   ).join("\n");
-
   return headers + rows;
 }

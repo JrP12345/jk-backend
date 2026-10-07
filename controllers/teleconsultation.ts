@@ -7,7 +7,7 @@ import { getActiveConsultationDoctorDayKey, isActiveConsultationLockConflict } f
 import { Patient } from "../models/Patient.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
-import { checkClinicAccess, checkOperationalRecordAccess, getRequestClinicIds } from "../utilities/tenant.ts";
+import { checkLocationAccess, checkOperationalRecordAccess, getRequestLocationIds } from "../utilities/tenant.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));
@@ -33,8 +33,8 @@ export async function createTeleSession(req: FastifyRequest, reply: FastifyReply
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, appointment.clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, appointment.locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
     if (!(await checkPatientSessionOwnership(req, appointment.patientId))) {
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
@@ -62,7 +62,7 @@ export async function createTeleSession(req: FastifyRequest, reply: FastifyReply
       appointmentId,
       patientId: appointment.patientId,
       doctorId: appointment.doctorId,
-      clinicId: appointment.clinicId,
+      locationId: appointment.locationId,
       meetingUrl,
       status: "scheduled",
     });
@@ -273,17 +273,17 @@ export async function endTeleSession(req: FastifyRequest, reply: FastifyReply) {
 
 export async function getTeleSessions(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, status, page, limit } = req.query as any;
+    const { locationId, status, page, limit } = req.query as any;
 
     const filter: any = {};
-    if (clinicId) {
-      if (!mongoose.Types.ObjectId.isValid(clinicId)) return reply.code(400).send(errorResponse("Invalid clinic ID"));
-      const clinicAccess = await checkClinicAccess(req, clinicId);
-      if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
-      filter.clinicId = clinicId;
+    if (locationId) {
+      if (!mongoose.Types.ObjectId.isValid(locationId)) return reply.code(400).send(errorResponse("Invalid location ID"));
+      const locationAccess = await checkLocationAccess(req, locationId);
+      if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
+      filter.locationId = locationId;
     } else {
-      const clinicIds = await getRequestClinicIds(req);
-      if (clinicIds) filter.clinicId = { $in: clinicIds };
+      const locationIds = await getRequestLocationIds(req);
+      if (locationIds) filter.locationId = { $in: locationIds };
     }
     if (status) filter.status = status;
 
@@ -299,7 +299,7 @@ export async function getTeleSessions(req: FastifyRequest, reply: FastifyReply) 
 
     const sessions = await TeleconsultationSession.find(filter)
       .populate("doctorId", "name specialization")
-      .populate("clinicId", "name city")
+      .populate("locationId", "name city")
       .populate({
         path: "patientId",
         populate: { path: "userId", select: "name phone" }
@@ -363,7 +363,7 @@ export async function getSessionSignals(req: FastifyRequest, reply: FastifyReply
       return reply.code(400).send(errorResponse("Invalid Session ID"));
     }
 
-    const session = await TeleconsultationSession.findById(id).select("clinicId patientId organizationId signals");
+    const session = await TeleconsultationSession.findById(id).select("locationId patientId organizationId signals");
     if (!session) {
       return reply.code(404).send(errorResponse("Teleconsultation session not found"));
     }

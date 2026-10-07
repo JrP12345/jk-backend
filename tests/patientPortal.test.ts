@@ -1,3 +1,4 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import mongoose from "mongoose";
 import { app } from "../index.ts";
@@ -8,18 +9,18 @@ describe("Patient Portal Self-Service Integration Tests", () => {
   let patientCookies: string[] = [];
   let patientUserId: string;
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
 
   beforeAll(async () => {
     // 1. Create Org & Admin
-    const orgRes = await app.inject({
+    const orgRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
         org_name: "Patient Portal Test Hospital",
         subdomain: `patient-portal-${Date.now()}`,
-        admin_email: `admin_portal_${Date.now()}@ananta.internal`,
+        admin_email: `admin_portal_${Date.now()}@ekavyu.internal`,
         admin_password: "Password123!",
         admin_name: "Portal Admin",
         city: "Mumbai",
@@ -29,12 +30,12 @@ describe("Patient Portal Self-Service Integration Tests", () => {
     expect(orgRes.statusCode).toBe(201);
     const orgBody = JSON.parse(orgRes.body);
     orgId = orgBody.data.organization.id;
-    const adminCookies = (orgRes.headers["set-cookie"] as string[]).map(c => c.split(";")[0]);
+    const adminCookies = (await provisionedAdminCookies(orgRes));
 
-    // 2. Create Clinic
-    const clinicRes = await app.inject({
+    // 2. Create Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Self Service Clinic",
@@ -45,19 +46,19 @@ describe("Patient Portal Self-Service Integration Tests", () => {
         email: "portal@hospital.com",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Register Patient Account
     const regRes = await app.inject({
       method: "POST",
       url: "/api/auth/register",
       payload: {
-        email: `patient_self_${Date.now()}@ananta.internal`,
+        email: `patient_self_${Date.now()}@ekavyu.internal`,
         password: "Password123!",
         name: "Alex Mercer",
         role: "patient",
-        clinicId,
+        locationId,
       },
     });
     expect(regRes.statusCode).toBe(201);

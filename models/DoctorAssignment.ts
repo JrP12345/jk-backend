@@ -2,7 +2,7 @@ import mongoose, { Schema } from "mongoose";
 
 const DoctorAssignmentSchema = new Schema({
   doctorId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
-  clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
+  locationId: { type: Schema.Types.ObjectId, ref: "Location", required: true, index: true },
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
   workingHours: { type: String, required: true }, // JSON schedule slots string
   fees: { type: Number, default: 0 },
@@ -11,15 +11,15 @@ const DoctorAssignmentSchema = new Schema({
   bookingMode: { type: String, enum: ["time_slot", "sequential_queue"], default: "sequential_queue" },
   maxDailyTokens: { type: Number, default: null },
   paymentRequired: { type: Boolean, default: false },
-  allowPayAtClinic: { type: Boolean, default: true },
+  allowPayAtLocation: { type: Boolean, default: true },
   onlineBookingSafetyBuffer: { type: Number, default: 30 }, // Minutes before shift end when online same-day booking closes
   cabinNumber: { type: String, default: "Cabin 1" },
   isActive: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now }
 });
 
-// A doctor cannot have duplicate assignments to the same clinic
-DoctorAssignmentSchema.index({ doctorId: 1, clinicId: 1 }, { unique: true });
+// A doctor cannot have duplicate assignments to the same location
+DoctorAssignmentSchema.index({ doctorId: 1, locationId: 1 }, { unique: true });
 
 DoctorAssignmentSchema.virtual("id").get(function() {
   return this._id.toHexString();

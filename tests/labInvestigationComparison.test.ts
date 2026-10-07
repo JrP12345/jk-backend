@@ -1,7 +1,8 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
@@ -13,7 +14,7 @@ describe("In-Cabin Lab Investigation Report Viewer & 1-Click Comparison Suite", 
   let adminCookies: string[] = [];
   let otherOrgCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let patient: any;
   let hba1cTest: any;
@@ -21,7 +22,7 @@ describe("In-Cabin Lab Investigation Report Viewer & 1-Click Comparison Suite", 
 
   beforeAll(async () => {
     // 1. Setup Organization & Super Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -34,13 +35,13 @@ describe("In-Cabin Lab Investigation Report Viewer & 1-Click Comparison Suite", 
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Pune Central Diagnostic Center",
@@ -49,8 +50,8 @@ describe("In-Cabin Lab Investigation Report Viewer & 1-Click Comparison Suite", 
         merchantName: "Pune Diagnostics",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Doctor
     const docRes = await app.inject({
@@ -63,7 +64,7 @@ describe("In-Cabin Lab Investigation Report Viewer & 1-Click Comparison Suite", 
         password: "Password123",
         specialization: "Endocrinology",
         consultationFee: 900,
-        clinicIds: [clinicId],
+        locationIds: [locationId],
       },
     });
     expect(docRes.statusCode).toBe(201);
@@ -72,7 +73,7 @@ describe("In-Cabin Lab Investigation Report Viewer & 1-Click Comparison Suite", 
     await DoctorAssignment.create({
       organizationId: orgId,
       doctorId,
-      clinicId,
+      locationId,
       fees: 900,
       workingHours: "[]",
       isActive: true,
@@ -100,7 +101,7 @@ describe("In-Cabin Lab Investigation Report Viewer & 1-Click Comparison Suite", 
     // 5. Setup Catalog Tests
     hba1cTest = await LabTest.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       name: "HbA1c Glycated Hemoglobin",
       code: "HBA1C",
       department: "Biochemistry",
@@ -111,7 +112,7 @@ describe("In-Cabin Lab Investigation Report Viewer & 1-Click Comparison Suite", 
 
     creatinineTest = await LabTest.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       name: "Serum Creatinine",
       code: "CREAT",
       department: "Biochemistry",
@@ -121,7 +122,7 @@ describe("In-Cabin Lab Investigation Report Viewer & 1-Click Comparison Suite", 
     });
 
     // 6. Setup Unrelated Organization for Access Isolation Test
-    const otherOrgRes = await app.inject({
+    const otherOrgRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -134,7 +135,7 @@ describe("In-Cabin Lab Investigation Report Viewer & 1-Click Comparison Suite", 
       },
     });
     expect(otherOrgRes.statusCode).toBe(201);
-    otherOrgCookies = (otherOrgRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    otherOrgCookies = (await provisionedAdminCookies(otherOrgRes));
   });
 
   it("1. Aggregates lab orders and appointment investigation results with attachments and chronological delta comparison", async () => {
@@ -149,37 +150,33 @@ describe("In-Cabin Lab Investigation Report Viewer & 1-Click Comparison Suite", 
     // Baseline HbA1c Lab Order (2 months ago: 9.2 %)
     await LabOrder.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       patientId: patient._id,
       testId: hba1cTest._id,
       doctorId,
       status: "result-uploaded",
       orderDate: twoMonthsAgo,
       resultedAt: twoMonthsAgo,
-      resultValue: "9.2 %",
-      resultNotes: "Baseline poorly controlled diabetic profile",
-      attachmentUrl: "https://r2.storage/reports/hba1c_baseline.pdf",
+      result: { value: "9.2 %", notes: "Baseline poorly controlled diabetic profile", attachmentUrl: "https://r2.storage/reports/hba1c_baseline.pdf" }
     });
 
     // Today's Follow-Up HbA1c Lab Order (8.4 %)
     await LabOrder.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       patientId: patient._id,
       testId: hba1cTest._id,
       doctorId,
       status: "result-uploaded",
       orderDate: today,
       resultedAt: today,
-      resultValue: "8.4 %",
-      resultNotes: "Noticeable improvement on Metformin regimen",
-      attachmentUrl: "https://r2.storage/reports/hba1c_followup.pdf",
+      result: { value: "8.4 %", notes: "Noticeable improvement on Metformin regimen", attachmentUrl: "https://r2.storage/reports/hba1c_followup.pdf" }
     });
 
     // Appointment with Serum Creatinine investigation result
     await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient._id,
       appointmentTime: oneMonthAgo,

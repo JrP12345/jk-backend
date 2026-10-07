@@ -2,7 +2,7 @@ import mongoose, { Schema } from "mongoose";
 
 const OpdSessionSchema = new Schema(
   {
-    clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
+    locationId: { type: Schema.Types.ObjectId, ref: "Location", required: true, index: true },
     doctorId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
     organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
     date: { type: String, required: true }, // "YYYY-MM-DD"
@@ -27,7 +27,7 @@ const OpdSessionSchema = new Schema(
   { timestamps: true }
 );
 
-OpdSessionSchema.index({ clinicId: 1, doctorId: 1, date: 1 }, { unique: true });
+OpdSessionSchema.index({ locationId: 1, doctorId: 1, date: 1 }, { unique: true });
 
 OpdSessionSchema.virtual("id").get(function () {
   return this._id.toHexString();

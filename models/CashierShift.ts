@@ -3,7 +3,7 @@ import mongoose, { Schema } from "mongoose";
 const CashierShiftSchema = new Schema(
   {
     organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
-    clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
+    locationId: { type: Schema.Types.ObjectId, ref: "Location", required: true, index: true },
     cashierId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
     cashierName: { type: String, required: true },
     shiftDate: { type: String, required: true, index: true }, // "YYYY-MM-DD"
@@ -26,7 +26,7 @@ const CashierShiftSchema = new Schema(
   { timestamps: true }
 );
 
-CashierShiftSchema.index({ clinicId: 1, shiftDate: 1 });
+CashierShiftSchema.index({ locationId: 1, shiftDate: 1 });
 
 CashierShiftSchema.virtual("id").get(function () {
   return this._id.toHexString();

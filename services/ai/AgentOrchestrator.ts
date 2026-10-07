@@ -21,8 +21,8 @@ const agents: Agent[] = [
   },
   {
     name: "ReceptionAgent",
-    role: "Clinic Receptionist & Queue Triage Specialist",
-    systemDirective: "You are Ekavyu Reception AI Agent specializing in clinic calendar management, appointment scheduling, patient intake triage, and OPD queue management.",
+    role: "Receptionist & Queue Triage Specialist",
+    systemDirective: "You are Ekavyu Reception AI Agent specializing in location calendar management, appointment scheduling, patient intake triage, and OPD queue management.",
     matches: (p, r) => r.includes("appointment") || r.includes("queue") || p.includes("appointment") || p.includes("schedule") || p.includes("intake form") || p.includes("patient intake"),
   },
   {

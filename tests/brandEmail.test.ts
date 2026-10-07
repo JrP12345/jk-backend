@@ -7,20 +7,20 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe("Product branding and email delivery compatibility", () => {
-  it.each([undefined, "ANANTA", "Anant Health", "HealthOS"])("uses Ekavyu for platform sender label %s without changing its address", async (legacyName) => {
+describe("Product branding and configured email delivery", () => {
+  it.each([undefined, "Ekavyu"])("uses Ekavyu for platform sender label %s without changing its address", async (configuredName) => {
     vi.stubEnv("SMTP_HOST", "smtp.example.test");
     vi.stubEnv("SMTP_USER", "test-user");
     vi.stubEnv("SMTP_PASS", "test-password");
-    vi.stubEnv("SMTP_FROM_EMAIL", "noreply@anant.health");
-    vi.stubEnv("SMTP_FROM_NAME", legacyName);
+    vi.stubEnv("SMTP_FROM_EMAIL", "noreply@ekavyu.com");
+    vi.stubEnv("SMTP_FROM_NAME", configuredName);
     const sendMail = vi.fn().mockResolvedValue({ messageId: "test-message" });
     vi.spyOn(nodemailer, "createTransport").mockReturnValue({ sendMail } as unknown as ReturnType<typeof nodemailer.createTransport>);
 
     const sent = await new EmailProvider().sendEmail({ to: "patient@example.test", subject: "Ekavyu appointment", html: "<p>Your appointment is confirmed.</p>" });
 
     expect(sent).toBe(true);
-    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({ from: '"Ekavyu" <noreply@anant.health>', to: "patient@example.test", subject: "Ekavyu appointment" }));
+    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({ from: '"Ekavyu" <noreply@ekavyu.com>', to: "patient@example.test", subject: "Ekavyu appointment" }));
   });
 
   it("preserves an organization sender name and delivery configuration", async () => {

@@ -14,8 +14,8 @@ export function createTrackerCapability(): { token: string; hash: string } {
 export async function issueAppointmentTrackerLink(
   appointment: {
     _id: unknown;
-    trackerTokenHash?: string;
-    trackerTokenExpiresAt?: Date;
+    trackerTokenHash?: string | null;
+    trackerTokenExpiresAt?: Date | null;
     save?: () => Promise<unknown>;
   },
   options: { ttlDays?: number; pathPrefix?: string } = {},
@@ -52,14 +52,14 @@ export function hashTrackerCapability(token: string): string {
 export function getTrackerCapability(req: FastifyRequest): string | undefined {
   const header = req.headers["x-tracker-token"];
   const fromHeader = Array.isArray(header) ? header[0] : header;
-  const q = req.query as { trackerToken?: unknown; t?: unknown } | undefined;
-  const query = q?.trackerToken || q?.t;
+  const q = req.query as { trackerToken?: unknown } | undefined;
+  const query = q?.trackerToken;
   const body = (req.body as { trackerToken?: unknown } | undefined)?.trackerToken;
   const candidate = fromHeader || (typeof query === "string" ? query : undefined) || (typeof body === "string" ? body : undefined);
   return candidate && candidate.length <= 256 ? candidate : undefined;
 }
 
-/** Strict proof for private actions; unlike legacy reads, IDs never suffice. */
+/** Every private tracker request requires an unexpired capability. */
 export function hasValidTrackerCapability(
   req: FastifyRequest,
   appointment: { trackerTokenHash?: string | null; trackerTokenExpiresAt?: Date | null },
@@ -79,10 +79,4 @@ export function getCheckInCapability(req: FastifyRequest): string | undefined {
   const body = (req.body as { checkInToken?: unknown } | undefined)?.checkInToken;
   const candidate = fromHeader || (typeof body === "string" ? body : undefined);
   return candidate && candidate.length <= 256 ? candidate : undefined;
-}
-
-export function isTrackerCapabilityEnforced(): boolean {
-  // Production must never fall back to ObjectId-as-secret.  A non-production
-  // rollout can explicitly opt in while old development fixtures are migrated.
-  return process.env.NODE_ENV === "production" || process.env.ENFORCE_TRACKER_CAPABILITIES === "true";
 }

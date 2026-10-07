@@ -1,17 +1,17 @@
 # WhatsApp setup for Ekavyu
 
-WhatsApp runs through the existing Fastify API, Mongoose models, Next.js settings and outbound worker. Shared platform sending, dedicated clinic sending, notification preferences and prepaid credits remain the supported modes.
+WhatsApp runs through the existing Fastify API, Mongoose models, Next.js settings and outbound worker. Shared platform sending, dedicated organization sending, notification preferences and prepaid credits remain the supported modes.
 
 ## Setup
 
 1. Create a Meta app with WhatsApp, a WABA and a registered business phone. Assign the WABA to a system user. Generate a token with `whatsapp_business_messaging` and `whatsapp_business_management`, and obtain the secret from the same Meta app.
-2. Set the existing `DATA_ENCRYPTION_KEY` or `ENCRYPTION_KEY` before saving credentials. Keep it stable and backed up. Set `PUBLIC_API_BASE_URL` to the public HTTPS backend origin and pin `WHATSAPP_API_VERSION` (default `v25.0`). Never commit tokens or secrets.
-3. Open Dashboard → Settings → WhatsApp. Root configures the shared gateway; a clinic owner can choose Dedicated WABA and save its WABA ID, phone ID, system-user token and app secret. Blank secret fields keep the saved values. WABAs cannot be reused across clinics or shared/dedicated senders.
+2. Set the existing `DATA_ENCRYPTION_KEY` before saving credentials. Keep it stable and backed up. Set `PUBLIC_API_BASE_URL` to the public HTTPS backend origin and pin `WHATSAPP_API_VERSION` (default `v25.0`). Never commit tokens or secrets.
+3. Open Dashboard → Settings → WhatsApp. Root configures the shared gateway; a organization administrator can choose Dedicated WABA and save its WABA ID, phone ID, system-user token and app secret. Blank secret fields keep the saved values. WABAs cannot be reused across organizations or shared/dedicated senders.
 4. Save, click **Test connection**, then **Sync templates**. Testing verifies that the phone belongs to the WABA. Credential changes reset connection state to pending. The browser receives readiness flags instead of saved tokens/secrets.
 5. Copy the displayed callback URL and verify token into Meta. Subscribe to `messages`, `message_template_status_update`, `message_template_quality_update`, `template_category_update` and `message_template_components_update`. Subscribe the app to the WABA in Meta.
 6. Create and approve the templates below in WhatsApp Manager and sync again. Match language (`META_WHATSAPP_LANG`, default `en`) and positional variable order. The panel lists missing/unusable templates.
-7. Preview storage migration with `npm run migrate:whatsapp`, then run `npm run migrate:whatsapp -- --apply` during rollout. It encrypts legacy credentials/bodies, normalizes empty WABA IDs, checks duplicate provider IDs and creates indexes without deleting data. Build with `npm run build` first. Production must run `npm run worker:outbound-messages` alongside the API. This worker now handles both outbound delivery and webhook processing. Development starts both inline; `RUN_INLINE_JOBS=true` enables inline processing in production as well.
-8. Use a Meta-approved test recipient first. Check accepted → sent → delivered/read, STOP/START, paused templates, reconnect and provider timeout handling before enabling clinics.
+7. Configure only the current META_WHATSAPP_* credential names. Preview current indexes with `npm run db:indexes`; apply only in a controlled rollout with writes paused. Development schemas use fresh data. Build with `npm run build` and run `npm run worker:outbound-messages` alongside the API. The worker handles outbound delivery and webhook processing. `RUN_INLINE_JOBS=true` is an explicit alternative.
+8. Use a Meta-approved test recipient first. Check accepted → sent → delivered/read, STOP/START, paused templates, reconnect and provider timeout handling before enabling organizations.
 
 For local Meta callbacks, use an HTTPS tunnel and set `PUBLIC_API_BASE_URL` to its backend origin. Meta cannot reach localhost or a private LAN address. Explicit development sandbox mode produces synthetic message IDs; missing live credentials fail instead of pretending to deliver. Sandbox mode is ignored in production.
 
@@ -21,17 +21,17 @@ Use numbered BODY variables in this order. Existing `META_WHATSAPP_*_TEMPLATE` o
 
 | Default template | Ordered BODY variables |
 |---|---|
-| `appointment_booking_confirmation` | patient, doctor, clinic, appointment time, token, tracker URL |
-| `appointment_reminder` | patient, doctor, clinic, appointment time |
-| `appointment_cancelled` | patient, doctor, clinic, appointment time |
-| `consultation_completed` | patient, doctor, clinic, token, tracker URL |
+| `appointment_booking_confirmation` | patient, doctor, location, appointment time, token, tracker URL |
+| `appointment_reminder` | patient, doctor, location, appointment time |
+| `appointment_cancelled` | patient, doctor, location, appointment time |
+| `consultation_completed` | patient, doctor, location, token, tracker URL |
 | `queue_turn_approaching` | patient, token, patients ahead, doctor, tracker URL |
 | `queue_delay_alert` | patient, doctor, delay minutes, tracker URL |
 | `lab_results_ready` | patient, test name, tracker URL |
 | `billing_receipt` | patient, invoice number, amount, tracker URL |
-| `doctor_disruption_alert` | patient, doctor, clinic, appointment time, reschedule URL, cancellation URL |
-| `appointment_transfer_alert` | patient, previous doctor, new doctor, clinic, token, tracker URL |
-| `appointment_refund_confirmation` | patient, doctor, clinic, refund amount, refund ID |
+| `doctor_disruption_alert` | patient, doctor, location, appointment time, reschedule URL, cancellation URL |
+| `appointment_transfer_alert` | patient, previous doctor, new doctor, location, token, tracker URL |
+| `appointment_refund_confirmation` | patient, doctor, location, refund amount, refund ID |
 | `otp_verification` | OTP; the button receives the same OTP |
 | `document_ready` | document filename, document URL; no media HEADER |
 
@@ -41,9 +41,9 @@ Use numbered BODY variables in this order. Existing `META_WHATSAPP_*_TEMPLATE` o
 - Each message POST is attempted once. Only definitive provider rejection can lead to a queue retry. Network uncertainty and recovered `sending` intents surface as `AMBIGUOUS_NETWORK` and are never automatically resent, including through operator replay. Check the patient's delivery before initiating any new message.
 - Meta responses produce **accepted**, not **sent**. Verified callbacks advance ledger state atomically and capture pricing. Duplicate callbacks do not double-count delivery; late callbacks cannot downgrade read. Early callbacks without a ledger row remain queued for retry.
 - Ingress verifies original raw bytes, resolves the WABA/phone owner, stores encrypted per-event jobs, then acknowledges. Unknown WABAs are dropped. Invalid signatures return 401; persistence failures return 503 so Meta can retry. Processing strips raw payloads; inbox records expire after 30 days.
-- Session and consent records use sender scope plus a keyed phone hash from the existing encryption subsystem. STOP on the shared sender blocks that phone across platform sends; dedicated STOP is clinic-scoped. START explicitly restores messaging. All message types check consent. Plain text requires a patient inbound message within 24 hours; outside the window, notifications use approved templates. Explicit window-closed rejection falls back to the notification template.
+- Session and consent records use sender scope plus a keyed phone hash from the existing encryption subsystem. STOP on the shared sender blocks that phone across platform sends; dedicated STOP is organization-scoped. START explicitly restores messaging. All message types check consent. Plain text requires a patient inbound message within 24 hours; outside the window, notifications use approved templates. Explicit window-closed rejection falls back to the notification template.
 - Inbound types and bodies are encrypted with 30-day retention. Non-text messages open the service window without interpreting their media. Booking sessions are encrypted in MongoDB with a 30-minute expiry. A recovered interrupted clinical command is marked uncertain instead of repeating a booking or queue mutation.
-- Dedicated bot queries use the clinic's patient data. The shared bot declines to choose between multiple matching profiles. Live mode has no fallback to a global clinic or unrelated doctor roster.
+- Dedicated bot queries use the organization's patient data. The shared bot declines to choose between multiple matching profiles. Live mode has no fallback to an unrelated organization or doctor roster.
 - Message bodies are encrypted at rest. Settings logs show masked phones and status/error codes. Audit snapshots omit bodies, names, full phones and raw provider responses. The webhook verify token is intentionally visible for Meta setup; other secrets remain write-only.
 
 ## Documents

@@ -12,7 +12,7 @@ x-backend-env: &backend-env
   MONGODB_MIN_POOL_SIZE: ${MONGODB_MIN_POOL_SIZE:-2}
   MONGODB_MAX_POOL_SIZE: ${MONGODB_MAX_POOL_SIZE:-30}
   RUN_INLINE_JOBS: "false"
-  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in .env}
+  DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:?Set DATA_ENCRYPTION_KEY in .env}
   PRESCRIPTION_SIGNING_KEY: ${PRESCRIPTION_SIGNING_KEY:?Set the persistent prescription signing key}
   JWT_PRIVATE_KEY_BASE64: ${JWT_PRIVATE_KEY_BASE64:?Set JWT_PRIVATE_KEY_BASE64 in .env}
   JWT_PUBLIC_KEY_BASE64: ${JWT_PUBLIC_KEY_BASE64:?Set JWT_PUBLIC_KEY_BASE64 in .env}
@@ -62,7 +62,7 @@ services:
       backend:
         condition: service_healthy
     networks:
-      - healthos-net
+      - ekavyu-net
 
   redis:
     image: redis:7-alpine
@@ -72,7 +72,7 @@ services:
     volumes:
       - redis-data:/data
     networks:
-      - healthos-net
+      - ekavyu-net
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
@@ -90,7 +90,7 @@ services:
     environment:
       <<: *backend-env
     networks:
-      - healthos-net
+      - ekavyu-net
     depends_on:
       redis:
         condition: service_healthy
@@ -119,7 +119,7 @@ services:
       MONGODB_MIN_POOL_SIZE: "0"
       MONGODB_MAX_POOL_SIZE: "5"
     networks:
-      - healthos-net
+      - ekavyu-net
     depends_on:
       backend:
         condition: service_healthy
@@ -150,7 +150,7 @@ services:
       MONGODB_MIN_POOL_SIZE: "0"
       MONGODB_MAX_POOL_SIZE: "5"
     networks:
-      - healthos-net
+      - ekavyu-net
     depends_on:
       backend:
         condition: service_healthy
@@ -181,7 +181,7 @@ services:
       MONGODB_MIN_POOL_SIZE: "0"
       MONGODB_MAX_POOL_SIZE: "5"
     networks:
-      - healthos-net
+      - ekavyu-net
     depends_on:
       backend:
         condition: service_healthy
@@ -212,7 +212,7 @@ services:
       MONGODB_MIN_POOL_SIZE: "0"
       MONGODB_MAX_POOL_SIZE: "5"
     networks:
-      - healthos-net
+      - ekavyu-net
     depends_on:
       backend:
         condition: service_healthy
@@ -238,7 +238,7 @@ services:
       NODE_ENV: production
       PORT: 3000
     networks:
-      - healthos-net
+      - ekavyu-net
     depends_on:
       backend:
         condition: service_healthy
@@ -250,8 +250,8 @@ services:
       start_period: 30s
 
 networks:
-  healthos-net:
-    name: healthos-net
+  ekavyu-net:
+    name: ekavyu-net
     driver: bridge
 
 volumes:

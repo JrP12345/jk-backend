@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { trackerFixtureHeaders } from "./helpers/trackerFixture.ts";
+import { describe, it, expect, beforeAll, vi, afterAll } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { Patient } from "../models/Patient.ts";
@@ -10,7 +12,7 @@ import { Invoice } from "../models/Invoice.ts";
 describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV Tests", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let patient1: any;
   let patient2: any;
@@ -20,8 +22,10 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
   let appt3: any;
 
   beforeAll(async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-07T08:00:00Z"));
     // 1. Setup Organization & Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -34,18 +38,18 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: { name: "Mumbai OPD Wing", city: "Mumbai" },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Doctor
     const docRes = await app.inject({
@@ -66,7 +70,7 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
 
     // 4. Assign Doctor
     await DoctorAssignment.findOneAndUpdate(
-      { doctorId, clinicId },
+      { doctorId, locationId },
       {
         organizationId: orgId,
         fees: 600,
@@ -124,7 +128,7 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
 
     appt1 = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient1._id,
       appointmentTime: today,
@@ -137,7 +141,7 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
 
     appt2 = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient2._id,
       appointmentTime: today,
@@ -150,7 +154,7 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
 
     appt3 = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient3._id,
       appointmentTime: today,
@@ -176,6 +180,7 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
     const returnRes = await app.inject({
       method: "POST",
       url: `/api/public/track/${appt1._id}/return`,
+      headers: await trackerFixtureHeaders(appt1._id),
     });
     expect(returnRes.statusCode, returnRes.body).toBe(200);
     const returnData = JSON.parse(returnRes.body).data;
@@ -186,6 +191,7 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
     const trackerRes = await app.inject({
       method: "GET",
       url: `/api/public/track/${appt1._id}`,
+      headers: await trackerFixtureHeaders(appt1._id),
     });
     expect(trackerRes.statusCode).toBe(200);
     const trackerData = JSON.parse(trackerRes.body).data;
@@ -199,7 +205,7 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
       method: "POST",
       url: "/api/queue/call-next",
       headers: { cookie: adminCookies.join("; ") },
-      payload: { clinicId, doctorId },
+      payload: { locationId, doctorId },
     });
     expect(callRes.statusCode).toBe(200);
 
@@ -210,7 +216,7 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
     // 2. Send patient for diagnostic lab tests
     const sendLabRes = await app.inject({
       method: "POST",
-      url: `/api/queue/${appt2._id}/send-investigation`,
+      url: `/api/queue/${appt2._id}/order-investigations`,
       headers: { cookie: adminCookies.join("; ") },
       payload: { notes: "CBC, Ultrasound Abdomen" },
     });
@@ -225,7 +231,7 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
       method: "POST",
       url: "/api/queue/call-next",
       headers: { cookie: adminCookies.join("; ") },
-      payload: { clinicId, doctorId },
+      payload: { locationId, doctorId },
     });
     expect(callNextRes.statusCode).toBe(200);
     const freshAppt3 = await Appointment.findById(appt3._id);
@@ -251,7 +257,7 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
       method: "POST",
       url: "/api/queue/session/start",
       headers: { cookie: adminCookies.join("; ") },
-      payload: { clinicId, doctorId },
+      payload: { locationId, doctorId },
     });
     expect(startRes.statusCode).toBe(200);
     const sessionData = JSON.parse(startRes.body).data;
@@ -261,7 +267,7 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
     // 2. Fetch Session Summary
     const summaryRes = await app.inject({
       method: "GET",
-      url: `/api/queue/session/summary?clinicId=${clinicId}&doctorId=${doctorId}`,
+      url: `/api/queue/session/summary?locationId=${locationId}&doctorId=${doctorId}`,
       headers: { cookie: adminCookies.join("; ") },
     });
     expect(summaryRes.statusCode).toBe(200);
@@ -278,7 +284,7 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
       method: "POST",
       url: "/api/queue/session/end",
       headers: { cookie: adminCookies.join("; ") },
-      payload: { clinicId, doctorId },
+      payload: { locationId, doctorId },
     });
     expect(endRes.statusCode).toBe(200);
     const endData = JSON.parse(endRes.body).data;
@@ -289,13 +295,13 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
     const reconciledAppt1 = await Appointment.findById(appt1._id);
     expect(reconciledAppt1?.status).toBe("standby");
     expect((await Appointment.findById(appt2._id))?.status).toBe("in-consultation");
-    const inferredNoShow = await app.inject({ method: "POST", url: "/api/queue/session/end", headers: { cookie: adminCookies.join("; ") }, payload: { clinicId, doctorId, standbyAction: "mark_no_show" } });
+    const inferredNoShow = await app.inject({ method: "POST", url: "/api/queue/session/end", headers: { cookie: adminCookies.join("; ") }, payload: { locationId, doctorId, standbyAction: "mark_no_show" } });
     expect(inferredNoShow.statusCode).toBe(400);
 
     const invoice = await Invoice.create({
       invoiceNumber: `OPD-CANCEL-${Date.now()}`,
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient1._id,
       appointmentId: appt1._id,
@@ -309,7 +315,7 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
       method: "POST",
       url: "/api/queue/session/end",
       headers: { cookie: adminCookies.join("; ") },
-      payload: { clinicId, doctorId, standbyAction: "cancel_refund" },
+      payload: { locationId, doctorId, standbyAction: "cancel" },
     });
     expect(explicitCancel.statusCode).toBe(200);
     expect((await Appointment.findById(appt1._id))?.status).toBe("cancelled");
@@ -319,11 +325,11 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
   it("4. Public Waiting Room TV endpoint should serve masked queue data without authentication", async () => {
     const tvRes = await app.inject({
       method: "GET",
-      url: `/api/public/queue-tv/${clinicId}`,
+      url: `/api/public/queue-tv/${locationId}`,
     });
     expect(tvRes.statusCode).toBe(200);
     const tvData = JSON.parse(tvRes.body).data;
-    expect(tvData.clinic.name).toBe("Mumbai OPD Wing");
+    expect(tvData.location.name).toBe("Mumbai OPD Wing");
     expect(Array.isArray(tvData.waitingQueue)).toBe(true);
 
     // Check name masking (PHI protection on public screen)
@@ -333,3 +339,5 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
     }
   });
 });
+
+afterAll(() => vi.useRealTimers());

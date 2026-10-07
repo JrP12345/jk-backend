@@ -24,7 +24,7 @@ import onboardingRoutes from "./routes/onboarding.ts";
 import organizationBrandingRoutes from "./routes/organizationBranding.ts";
 import { startOrganizationBrandingJob, stopOrganizationBrandingJob } from "./jobs/organizationBrandingJob.ts";
 import staffRoutes from "./routes/staff.ts";
-import clinicRoutes from "./routes/clinics.ts";
+import locationRoutes from "./routes/locations.ts";
 import appointmentRoutes from "./routes/appointments.ts";
 import clinicalRoutes from "./routes/clinical.ts";
 import laboratoryRoutes from "./routes/laboratory.ts";
@@ -34,6 +34,7 @@ import analyticsRoutes from "./routes/analytics.ts";
 import trafficAnalyticsRoutes from "./routes/trafficAnalytics.ts";
 import searchRoutes from "./routes/search.ts";
 import publicRoutes from "./routes/public.ts";
+import setupRequestRoutes from "./routes/setupRequests.ts";
 import uploadRoutes from "./routes/upload.ts";
 import notificationRoutes from "./routes/notifications.ts";
 import notificationPreferenceRoutes from "./routes/notificationPreferences.ts";
@@ -74,11 +75,10 @@ import syntheticHealthRoutes from "./routes/syntheticHealth.ts";
 import dpdpRoutes from "./routes/dpdp.ts";
 import scheduleH1Routes from "./routes/scheduleH1.ts";
 import outboxOperationsRoutes from "./routes/outboxOperations.ts";
-import { seedDefaultRoles, syncOrganizationPlanQuotas } from "./controllers/onboarding.ts";
+import { seedDefaultRoles } from "./controllers/onboarding.ts";
 
 import fastifySwagger from "@fastify/swagger";
 import fastifySwaggerUi from "@fastify/swagger-ui";
-import { apiV1VersioningPlugin } from "./utilities/versioningPlugin.ts";
 import { csrfProtection } from "./middleware/csrf.ts";
 import { authenticate, requirePlatformRoot } from './middleware/auth.ts';
 import { sanitizeMiddleware } from "./middleware/sanitize.ts";
@@ -111,12 +111,6 @@ const app = fastify({
         : ["127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]),
   connectionTimeout: 30000, // 30s socket timeout
   keepAliveTimeout: 5000,   // 5s keep-alive timeout
-  rewriteUrl: (req) => {
-    if (req.url && req.url.startsWith("/api/v1/")) {
-      return req.url.replace("/api/v1/", "/api/");
-    }
-    return req.url || "/";
-  },
 });
 
 let acceptingTraffic = process.env.NODE_ENV === "test";
@@ -196,9 +190,6 @@ if (process.env.NODE_ENV !== "production") {
   });
 }
 
-// Register API Versioning plugin (/api/v1/*)
-app.register(apiV1VersioningPlugin);
-
 // Register latency and slow-query profiling hooks (Step 5.5)
 registerProfilingHooks(app);
 
@@ -239,7 +230,7 @@ app.setErrorHandler(async (error: any, request, reply) => {
       details: error.validation
     });
   }
-  
+
   const statusCode = error.statusCode || 500;
   if (statusCode >= 500) {
     const route = request.routeOptions.url || 'unmatched';
@@ -318,7 +309,7 @@ app.register(authRoutes);
 app.register(onboardingRoutes);
 app.register(organizationBrandingRoutes);
 app.register(staffRoutes);
-app.register(clinicRoutes);
+app.register(locationRoutes);
 app.register(appointmentRoutes);
 app.register(clinicalRoutes);
 app.register(laboratoryRoutes);
@@ -328,6 +319,7 @@ app.register(analyticsRoutes);
 app.register(trafficAnalyticsRoutes);
 app.register(searchRoutes);
 app.register(publicRoutes);
+app.register(setupRequestRoutes);
 app.register(uploadRoutes, { prefix: '/api' });
 app.register(notificationRoutes);
 app.register(notificationPreferenceRoutes);
@@ -417,12 +409,10 @@ async function startServer(port = getServerPort()) {
   acceptingTraffic = false;
   const address = await app.listen({ port, host: "0.0.0.0" });
   try {
-    // 1. One-time migration guard & bootstrap work
+    // 1. Current role bootstrap
     await seedDefaultRoles();
     app.log.info("✓ Default system roles verified / seeded.");
 
-    await syncOrganizationPlanQuotas();
-    app.log.info("✓ Tenant plan resource quotas verified / synchronized.");
 
     // 3. Start durable consumers when using inline jobs.
     if (process.env.NODE_ENV !== "test" && (process.env.RUN_INLINE_JOBS === "true" || process.env.NODE_ENV !== "production")) {

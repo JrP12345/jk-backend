@@ -1,3 +1,4 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
@@ -8,12 +9,12 @@ import { CDSEvaluation } from "../models/CDSEvaluation.ts";
 describe("Enterprise Clinical Decision Support (CDS) Platform Integration Tests", () => {
   let adminCookies: string[] = [];
   let patientId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorUserId: string;
 
   beforeAll(async () => {
     // 1. Create Organization & Admin
-    const orgRes = await app.inject({
+    const orgRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -26,12 +27,12 @@ describe("Enterprise Clinical Decision Support (CDS) Platform Integration Tests"
       },
     });
     expect(orgRes.statusCode).toBe(201);
-    adminCookies = (orgRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(orgRes));
 
-    // 2. Create Clinic
-    const clinicRes = await app.inject({
+    // 2. Create Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "CDS Main Ward",
@@ -41,8 +42,8 @@ describe("Enterprise Clinical Decision Support (CDS) Platform Integration Tests"
         email: "cds@hospital.com",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Create Doctor
     const docEmail = `ananya.sharma-${Date.now()}@cdstest.com`;
@@ -55,7 +56,7 @@ describe("Enterprise Clinical Decision Support (CDS) Platform Integration Tests"
         email: docEmail,
         password: "Password123",
         specialization: "Clinical Pharmacology",
-        clinicId,
+        locationId,
       },
     });
     expect(doctorRes.statusCode).toBe(201);
@@ -73,7 +74,7 @@ describe("Enterprise Clinical Decision Support (CDS) Platform Integration Tests"
         email: `bob.cds-${Date.now()}@patient.com`,
         password: "Password123",
         phone: `97${Math.floor(10000000 + Math.random() * 90000000)}`,
-        clinicId,
+        locationId,
       },
     });
     expect(patientReg.statusCode).toBe(201);
@@ -90,7 +91,7 @@ describe("Enterprise Clinical Decision Support (CDS) Platform Integration Tests"
     // 5. Seed an active prescription "Warfarin 5mg" for patient
     await Prescription.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       encounterId: "000000000000000000000000",
       patientId,
       doctorId: doctorUserId,
@@ -187,7 +188,7 @@ describe("Enterprise Clinical Decision Support (CDS) Platform Integration Tests"
       url: "/api/prescriptions/override-evaluation",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         patientId,
         findings,
         clinicianDecision: "overridden",

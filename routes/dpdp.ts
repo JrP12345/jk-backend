@@ -23,7 +23,7 @@ export default async function dpdpRoutes(app: FastifyInstance) {
   const complianceAdmin = {
     preHandler: [
       authenticate,
-      checkAnyPermissionOrRoles(["admin", "root", "compliance_officer"], "MANAGE_CLINIC"),
+      checkAnyPermissionOrRoles(["admin", "root", "compliance_officer"], "MANAGE_LOCATION"),
     ],
   };
 

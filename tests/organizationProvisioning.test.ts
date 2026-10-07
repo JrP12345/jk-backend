@@ -1,3 +1,4 @@
+import { provisioningFixtureHeaders } from "./helpers/provisioningFixture.ts";
 import { describe, expect, it, vi } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
@@ -18,15 +19,15 @@ describe("root organization provisioning", () => {
     const lazyInitializer = vi.spyOn(subscriptionService, "getOrInitializeSubscription")
       .mockRejectedValue(new Error("lazy initializer must not be used while creating an organization"));
     try {
-      const response = await app.inject({
+      const response = await app.inject({ headers: await provisioningFixtureHeaders(),
         method: "POST",
         url: "/api/onboarding/organization",
         payload: {
           ...payload("Custom Trial Clinic"),
           plan: "starter",
           trialDays: 23,
-          logo_url: "logos/custom-trial.png",
-          image_url: "covers/custom-trial.png",
+          logo_url: "https://branding.example/logo.png",
+          image_url: "https://branding.example/cover.png",
         },
       });
 
@@ -37,7 +38,7 @@ describe("root organization provisioning", () => {
         Organization.findById(orgId),
         Subscription.findOne({ organizationId: orgId }),
       ]);
-      expect(org).toMatchObject({ logo_url: "logos/custom-trial.png", image_url: "covers/custom-trial.png" });
+      expect(org).toMatchObject({ logo_url: "https://branding.example/logo.png", image_url: "https://branding.example/cover.png" });
       expect(subscription).toMatchObject({ status: "trialing", entitlementSource: "trial" });
       expect(subscription!.trialEndsAt.getTime() - subscription!.trialStartedAt.getTime()).toBe(23 * 24 * 60 * 60 * 1000);
     } finally {
@@ -46,8 +47,8 @@ describe("root organization provisioning", () => {
   });
 
   it("keeps Enterprise manual by default and starts a trial when days are selected", async () => {
-    const defaultResponse = await app.inject({ method: "POST", url: "/api/onboarding/organization", payload: { ...payload("Manual Enterprise Clinic"), plan: "enterprise" } });
-    const trialResponse = await app.inject({ method: "POST", url: "/api/onboarding/organization", payload: { ...payload("Trial Enterprise Clinic"), plan: "enterprise", trialDays: 7 } });
+    const defaultResponse = await app.inject({ headers: await provisioningFixtureHeaders(), method: "POST", url: "/api/onboarding/organization", payload: { ...payload("Manual Enterprise Clinic"), plan: "enterprise" } });
+    const trialResponse = await app.inject({ headers: await provisioningFixtureHeaders(), method: "POST", url: "/api/onboarding/organization", payload: { ...payload("Trial Enterprise Clinic"), plan: "enterprise", trialDays: 7 } });
 
     expect(defaultResponse.statusCode).toBe(201);
     expect(trialResponse.statusCode).toBe(201);
@@ -61,14 +62,14 @@ describe("root organization provisioning", () => {
   });
 
   it.each([0, 366, 1.5])("rejects invalid custom trial duration %s", async (trialDays) => {
-    const response = await app.inject({ method: "POST", url: "/api/onboarding/organization", payload: { ...payload(`Invalid ${trialDays}`), trialDays } });
+    const response = await app.inject({ headers: await provisioningFixtureHeaders(), method: "POST", url: "/api/onboarding/organization", payload: { ...payload(`Invalid ${trialDays}`), trialDays } });
     expect(response.statusCode).toBe(400);
     expect(await Organization.countDocuments({ name: `Invalid ${trialDays}` })).toBe(0);
   });
 
   it("does not leave an organization behind when the administrator email is already registered", async () => {
     const reusedEmail = payload("Custom Trial Clinic").admin_email;
-    const duplicate = await app.inject({
+    const duplicate = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST", url: "/api/onboarding/organization",
       payload: { ...payload("Duplicate Admin Clinic"), admin_email: reusedEmail },
     });

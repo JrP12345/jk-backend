@@ -5,7 +5,7 @@ import {
   verifyAadhaarOtpController,
   searchAbhaController,
   scanAndShareCheckInController,
-  getClinicQrStandeeController,
+  getLocationQrStandeeController,
   linkCareContextController,
   getPatientCareContextsController,
   getFhirBundleController,
@@ -39,11 +39,11 @@ export default async function abdmRoutes(app: FastifyInstance) {
   app.get("/api/abdm/search", clinicalAccess, searchAbhaController);
   app.post("/api/abdm/search-abha", clinicalAccess, searchAbhaController);
 
-  // Clinic counter Scan & Share and Standee
+  // Location counter Scan & Share and Standee
   app.post("/api/abdm/scan-share", clinicalAccess, scanAndShareCheckInController);
   app.post("/api/abdm/scan-and-share", clinicalAccess, scanAndShareCheckInController);
 
-  app.get("/api/abdm/qr-standee/:clinicId", clinicalAccess, getClinicQrStandeeController);
+  app.get("/api/abdm/qr-standee/:locationId", clinicalAccess, getLocationQrStandeeController);
 
   // ABDM Milestone 3 (M3) HIP Care-Contexts & FHIR Bundles
   app.post("/api/abdm/care-contexts/link", clinicalAccess, linkCareContextController);

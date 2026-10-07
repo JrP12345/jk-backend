@@ -1,3 +1,6 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { providerFixtureSlug } from "./helpers/providerFixture.ts";
+import { trackerFixtureHeaders } from "./helpers/trackerFixture.ts";
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
@@ -10,7 +13,7 @@ import { Invoice } from "../models/Invoice.ts";
 describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation Tests", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let doctor2Id: string;
   let patient1: any;
@@ -21,11 +24,11 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
   let appt3: any;
 
   beforeAll(async () => {
-    // Keep capacity/transfer fixtures inside clinic hours regardless of run time.
+    // Keep capacity/transfer fixtures inside location hours regardless of run time.
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-10-04T05:00:00Z"));
     // 1. Setup Organization & Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -38,18 +41,18 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: { name: "Delhi OPD Wing", city: "Delhi" },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Primary Doctor (Doc 1: fee ₹500)
     const doc1Res = await app.inject({
@@ -83,12 +86,12 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
 
     // Set consultation fees via DoctorAssignment
     await DoctorAssignment.findOneAndUpdate(
-      { doctorId, clinicId },
+      { doctorId, locationId },
       { organizationId: orgId, fees: 500, consultationFee: 500, workingHours: "[]", isActive: true },
       { upsert: true, returnDocument: "after" }
     );
     await DoctorAssignment.findOneAndUpdate(
-      { doctorId: doctor2Id, clinicId },
+      { doctorId: doctor2Id, locationId },
       { organizationId: orgId, fees: 800, consultationFee: 800, workingHours: "[]", isActive: true },
       { upsert: true, returnDocument: "after" }
     );
@@ -124,7 +127,7 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
     // Create 2 checked-in waiting patients
     appt1 = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient1._id,
       appointmentTime: today,
@@ -136,7 +139,7 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
 
     appt2 = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient2._id,
       appointmentTime: today,
@@ -184,7 +187,7 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
     const today = new Date();
     appt3 = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient3._id,
       appointmentTime: today,
@@ -235,7 +238,7 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
 
     const delayedRemoteAppt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient3._id,
       appointmentTime: slotTime,
@@ -250,7 +253,7 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
     // Fetch delay status
     const delayStatusRes = await app.inject({
       method: "GET",
-      url: `/api/queue/delay-status?clinicId=${clinicId}&doctorId=${doctorId}`,
+      url: `/api/queue/delay-status?locationId=${locationId}&doctorId=${doctorId}`,
       headers: { cookie: adminCookies.join("; ") },
     });
 
@@ -263,7 +266,7 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
       method: "POST",
       url: "/api/queue/trigger-delay-alerts",
       headers: { cookie: adminCookies.join("; ") },
-      payload: { clinicId, doctorId },
+      payload: { locationId, doctorId },
     });
 
     expect(alertRes.statusCode).toBe(200);
@@ -281,7 +284,7 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
       method: "POST",
       url: "/api/queue/trigger-delay-alerts",
       headers: { cookie: adminCookies.join("; ") },
-      payload: { clinicId, doctorId },
+      payload: { locationId, doctorId },
     });
     const secondAlertBody = JSON.parse(secondAlertRes.body);
     expect(secondAlertBody.data.notifiedCount).toBe(0); // Debounced!
@@ -292,7 +295,7 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
     const today = new Date();
     const apptToTransfer = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient2._id,
       appointmentTime: today,
@@ -305,7 +308,7 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
     // Create original invoice for ₹500
     const invoice = await Invoice.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient2._id,
       appointmentId: apptToTransfer._id,
@@ -342,7 +345,7 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
     // Verify invoice note updated with courtesy waiver
     const freshInvoice = await Invoice.findById(invoice._id);
     expect(freshInvoice?.notes).toContain("Disruption Courtesy: Original fee ₹500 honored");
-    expect(freshInvoice?.notes).toContain("₹300 difference absorbed by clinic");
+    expect(freshInvoice?.notes).toContain("₹300 difference absorbed by location");
 
     // Verify AuditLog recorded the fee absorption
     const audit = await AuditLog.findOne({
@@ -358,7 +361,7 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
     // 1. Create standby appointment
     const standbyAppt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient1._id,
       appointmentTime: new Date(),
@@ -375,6 +378,7 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
     const trackerRes = await app.inject({
       method: "GET",
       url: `/api/public/track/${standbyAppt._id}`,
+      headers: await trackerFixtureHeaders(standbyAppt._id),
     });
 
     expect(trackerRes.statusCode).toBe(200);
@@ -386,15 +390,15 @@ describe("Queue Standby / Park, Delay Cascading & Disruption Fee Reconciliation 
     expect(trackerData.lastNotifiedDelayMinutes).toBe(25);
     expect(trackerData.peopleAhead).toBe(0); // Next up upon return!
 
-    // 3. Call public clinic details
-    const clinicDetailsRes = await app.inject({
+    // 3. Call public location details
+    const locationDetailsRes = await app.inject({
       method: "GET",
-      url: `/api/public/clinics/${clinicId}`,
+      url: `/api/public/locations/${await providerFixtureSlug("location", locationId)}`,
     });
 
-    expect(clinicDetailsRes.statusCode).toBe(200);
-    const clinicData = JSON.parse(clinicDetailsRes.body).data;
-    const docInfo = clinicData.doctors.find((d: any) => d.id === doctorId);
+    expect(locationDetailsRes.statusCode).toBe(200);
+    const locationData = JSON.parse(locationDetailsRes.body).data;
+    const docInfo = locationData.doctors.find((d: any) => d.id === doctorId);
     expect(docInfo).toBeDefined();
     expect(docInfo).toHaveProperty("isOnlineBookingClosed");
   });

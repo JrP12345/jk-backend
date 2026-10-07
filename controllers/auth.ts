@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { User } from "../models/User.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import {
   generateAccessToken,
@@ -32,7 +32,7 @@ import { otpService } from "../services/OtpService.ts";
 import { patientMatchingService } from "../services/PatientMatchingService.ts";
 import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import mongoose from "mongoose";
-import { encrypt, decrypt, isEncrypted } from "../utilities/encryption.ts";
+import { encryptField, decryptField, isEncrypted } from "../utilities/cryptoEnvelope.ts";
 import { verifyGoogleIdToken, authenticateWithGoogleProfile, exchangeGoogleAuthCode } from "../services/GoogleAuthService.ts";
 import { getFrontendBaseUrl } from "../utilities/config.ts";
 import { getEffectivePermissions } from "../utilities/permissions.ts";
@@ -161,7 +161,6 @@ export async function createPublicBookingSession(req: FastifyRequest, reply: Fas
       id: user.id,
       email: user.email || "",
       role: scopedRole,
-      organization_id: (user as any).organization_id,
       permissions: guestPermissions,
     };
     const ipAddress = req.ip || "";
@@ -348,7 +347,7 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
       await patient.save();
     }
 
-    // Check for high-confidence matching unlinked clinic records if patient doesn't exist
+    // Check for high-confidence matching unlinked location records if patient doesn't exist
     let potentialMatch: any = null;
     if (!patient) {
       const matchCriteria: any = { name: nameInput || user.name };
@@ -448,7 +447,7 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
       const updatedUser = await User.findOneAndUpdate(
         { _id: user._id },
         { $inc: { failedLoginAttempts: 1 } },
-        { new: true, returnDocument: "after" }
+        { returnDocument: "after" }
       );
       if (updatedUser && (updatedUser.failedLoginAttempts || 0) >= 5) {
         await User.updateOne(
@@ -503,7 +502,7 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
       return reply.code(401).send(errorResponse("Two-factor authentication is not available for this account"));
     }
 
-    const secret = isEncrypted(user.twoFactorSecret) ? decrypt(user.twoFactorSecret) : user.twoFactorSecret;
+    const secret = isEncrypted(user.twoFactorSecret) ? decryptField(user.twoFactorSecret) : "[DECRYPTION_FAILED]";
     if (!TwoFactorService.normalizeSecret(secret)) {
       req.log.error({ userId: user.id, reason: secret === "[DECRYPTION_FAILED]" ? "mfa_secret_decryption_failed" : "mfa_secret_format_invalid" }, "MFA configuration is unreadable; no login session issued");
       return reply.code(500).send(errorResponse("Two-factor authentication configuration could not be read. Please contact support."));
@@ -514,7 +513,7 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
 
     if (process.env.NODE_ENV === "production" && user.email && !user.isEmailVerified) return reply.code(403).send(errorResponse("Please verify your email address before signing in."));
     const orgMember = await OrgMember.findOne({ userId: user._id });
-    const organization_id = orgMember?.organizationId?.toString() || (user as any).organization_id?.toString();
+    const organization_id = orgMember?.organizationId?.toString();
     if (organization_id && user.role !== "root") {
       const organization = await Organization.findById(organization_id).select("status isActive").lean();
       if (!organization || organization.status === "inactive" || organization.isActive === false) {
@@ -884,7 +883,7 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
           lastActiveAt: new Date(),
         },
       },
-      { new: false }
+      { returnDocument: "before" }
     );
 
     if (!consumed) {
@@ -1005,12 +1004,12 @@ export async function logout(req: FastifyRequest, reply: FastifyReply) {
 // ─── Register (patient self-registration) ───────────────────────
 export async function registerPatient(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { name, email, password, phone, clinicId } = req.body as {
+    const { name, email, password, phone, locationId } = req.body as {
       name: string;
       email: string;
       password: string;
       phone?: string;
-      clinicId?: string;
+      locationId?: string;
     };
 
     if (!name || !email || !password) {
@@ -1032,14 +1031,14 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
       return reply.code(409).send(errorResponse("Email already registered"));
     }
 
-    let selectedClinic: any = null;
-    if (clinicId) {
-      if (!mongoose.isValidObjectId(clinicId)) {
-        return reply.code(400).send(errorResponse("Invalid clinic ID"));
+    let selectedLocation: any = null;
+    if (locationId) {
+      if (!mongoose.isValidObjectId(locationId)) {
+        return reply.code(400).send(errorResponse("Invalid location ID"));
       }
-      selectedClinic = await Clinic.findOne({ _id: clinicId, isActive: true }).lean();
-      if (!selectedClinic) {
-        return reply.code(404).send(errorResponse("Clinic not found or inactive"));
+      selectedLocation = await Location.findOne({ _id: locationId, isActive: true }).lean();
+      if (!selectedLocation) {
+        return reply.code(404).send(errorResponse("Location not found or inactive"));
       }
     }
 
@@ -1064,11 +1063,11 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
         name: name.trim(),
         phone: normalizedPhone,
         email: normalizedEmail,
-        organizationId: selectedClinic?.organizationId,
+        organizationId: selectedLocation?.organizationId,
       });
-      if (selectedClinic?.organizationId) {
+      if (selectedLocation?.organizationId) {
         await OrgMember.findOneAndUpdate(
-          { userId: newUser._id, organizationId: selectedClinic.organizationId },
+          { userId: newUser._id, organizationId: selectedLocation.organizationId },
           { $setOnInsert: { role: "patient" } },
           { upsert: true, returnDocument: "after" }
         );
@@ -1087,7 +1086,7 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
       idempotencyKey: `transactional-email:email-verification:${newUser._id}:${emailVerificationTokenHash}`,
     });
 
-    const organization_id = selectedClinic?.organizationId?.toString();
+    const organization_id = selectedLocation?.organizationId?.toString();
     const permissions = [...await getEffectivePermissions("patient", organization_id, newUser.authVersion)];
     const payload = { id: newUser.id, email: normalizedEmail, role: "patient", organization_id };
     const { accessToken, refreshToken } = await createAuthSession(payload);
@@ -1116,7 +1115,7 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const userId = req.user!.id;
-    
+
     const user = await User.findOne({ _id: userId });
 
     if (!user || !user.isActive) {
@@ -1494,7 +1493,7 @@ export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyR
     if (process.env.NODE_ENV === "production" && user.role === "root" && !user.twoFactorEnabled) return reply.code(403).send(errorResponse("Platform root MFA enrollment is required. Use the authorized recovery/setup procedure."));
     if (user.role !== "root" && await OrgMember.countDocuments({ userId: user._id }) > 1) return reply.code(409).send(errorResponse("Multiple organization memberships require an explicit workspace selection flow; automatic workspace selection is disabled"));
     const orgMember = await OrgMember.findOne({ userId: user._id });
-    const organization_id = orgMember?.organizationId?.toString() || (user as any).organization_id?.toString();
+    const organization_id = orgMember?.organizationId?.toString();
 
     // Enforce Organization Status Lockdown
     if (organization_id && user.role !== "root") {

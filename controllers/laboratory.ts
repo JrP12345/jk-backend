@@ -8,7 +8,7 @@ import { AuditLog } from "../models/AuditLog.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { OrdersService } from "../services/OrdersService.ts";
-import { checkClinicAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestClinicIds, getRequestOrganizationId, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+import { checkLocationAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestLocationIds, getRequestOrganizationId, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
 import { requestHasAnyPermission } from "../utilities/permissions.ts";
 import { isVerifiedClinicalAttachment } from '../utilities/uploadPolicy.ts';
@@ -39,8 +39,8 @@ export async function createLabTest(req: FastifyRequest, reply: FastifyReply) {
       return;
     }
 
-    const { clinicId, name, code, department, sampleType, price, normalRange } = req.body as {
-      clinicId: string;
+    const { locationId, name, code, department, sampleType, price, normalRange } = req.body as {
+      locationId: string;
       name: string;
       code: string;
       department: string;
@@ -49,26 +49,26 @@ export async function createLabTest(req: FastifyRequest, reply: FastifyReply) {
       normalRange: string;
     };
 
-    if (!clinicId || !name || !code || !department || !sampleType || price === undefined || !normalRange) {
-      return reply.code(400).send(errorResponse("All fields (clinicId, name, code, department, sampleType, price, normalRange) are required"));
+    if (!locationId || !name || !code || !department || !sampleType || price === undefined || !normalRange) {
+      return reply.code(400).send(errorResponse("All fields (locationId, name, code, department, sampleType, price, normalRange) are required"));
     }
 
-    if (!mongoose.Types.ObjectId.isValid(clinicId)) {
-      return reply.code(400).send(errorResponse("Invalid clinic ID"));
+    if (!mongoose.Types.ObjectId.isValid(locationId)) {
+      return reply.code(400).send(errorResponse("Invalid location ID"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
 
-    // Check if code is unique within this clinic
-    const existing = await LabTest.findOne({ clinicId, code: code.trim() });
+    // Check if code is unique within this location
+    const existing = await LabTest.findOne({ locationId, code: code.trim() });
     if (existing) {
-      return reply.code(400).send(errorResponse(`A lab test with code ${code} already exists in this clinic`));
+      return reply.code(400).send(errorResponse(`A lab test with code ${code} already exists in this location`));
     }
 
     const test = await LabTest.create({
-      organizationId: clinicAccess.organizationId,
-      clinicId,
+      organizationId: locationAccess.organizationId,
+      locationId,
       name,
       code: code.trim(),
       department,
@@ -86,19 +86,19 @@ export async function createLabTest(req: FastifyRequest, reply: FastifyReply) {
 
 export async function getLabTests(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, page, limit } = req.query as { clinicId?: string; page?: string | number; limit?: string | number };
+    const { locationId, page, limit } = req.query as { locationId?: string; page?: string | number; limit?: string | number };
 
     const query: any = {};
-    if (clinicId) {
-      if (!mongoose.Types.ObjectId.isValid(clinicId)) {
-        return reply.code(400).send(errorResponse("Invalid clinic ID"));
+    if (locationId) {
+      if (!mongoose.Types.ObjectId.isValid(locationId)) {
+        return reply.code(400).send(errorResponse("Invalid location ID"));
       }
-      const clinicAccess = await checkClinicAccess(req, clinicId);
-      if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
-      query.clinicId = clinicId;
+      const locationAccess = await checkLocationAccess(req, locationId);
+      if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
+      query.locationId = locationId;
     } else {
-      const clinicIds = await getRequestClinicIds(req);
-      if (clinicIds) query.clinicId = { $in: clinicIds };
+      const locationIds = await getRequestLocationIds(req);
+      if (locationIds) query.locationId = { $in: locationIds };
     }
 
     const totalCount = await LabTest.countDocuments(query);
@@ -136,8 +136,8 @@ export async function updateLabTest(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(404).send(errorResponse("Lab test not found"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, test.clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, test.locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
 
     if (code && code !== test.code) {
       const existing = await LabTest.findOne({ code, _id: { $ne: id } });
@@ -167,19 +167,19 @@ export async function updateLabTest(req: FastifyRequest, reply: FastifyReply) {
  */
 export async function getLabTatMetrics(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId } = req.query as { clinicId?: string };
+    const { locationId } = req.query as { locationId?: string };
 
     const filter: any = { status: "result-uploaded" };
-    if (clinicId) {
-      if (!mongoose.Types.ObjectId.isValid(clinicId)) {
-        return reply.code(400).send(errorResponse("Invalid clinic ID"));
+    if (locationId) {
+      if (!mongoose.Types.ObjectId.isValid(locationId)) {
+        return reply.code(400).send(errorResponse("Invalid location ID"));
       }
-      const clinicAccess = await checkClinicAccess(req, clinicId);
-      if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
-      filter.clinicId = clinicId;
+      const locationAccess = await checkLocationAccess(req, locationId);
+      if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
+      filter.locationId = locationId;
     } else {
-      const clinicIds = await getRequestClinicIds(req);
-      if (clinicIds) filter.clinicId = { $in: clinicIds };
+      const locationIds = await getRequestLocationIds(req);
+      if (locationIds) filter.locationId = { $in: locationIds };
     }
 
     const completedOrders = await LabOrder.find(filter).populate("testId", "name code category");
@@ -193,7 +193,7 @@ export async function getLabTatMetrics(req: FastifyRequest, reply: FastifyReply)
 
     completedOrders.forEach((order: any) => {
       const start = new Date(order.orderDate || order.createdAt).getTime();
-      const end = new Date(order.completedDate || order.updatedAt).getTime();
+      const end = new Date(order.resultedAt || order.updatedAt).getTime();
       const diffMinutes = Math.max(1, Math.round((end - start) / (1000 * 60)));
 
       totalTatMinutes += diffMinutes;
@@ -252,8 +252,8 @@ export async function deleteLabTest(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(404).send(errorResponse("Lab test not found"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, test.clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, test.locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
 
     await LabTest.findByIdAndDelete(id);
     return reply.code(200).send(successResponse(null, "Lab test catalog entry deleted successfully"));
@@ -273,34 +273,34 @@ export async function createLabOrder(req: FastifyRequest, reply: FastifyReply) {
       return;
     }
 
-    const { clinicId, patientId, doctorId, testId } = req.body as {
-      clinicId: string;
+    const { locationId, patientId, doctorId, testId } = req.body as {
+      locationId: string;
       patientId: string;
       doctorId: string;
       testId: string;
     };
 
-    if (!clinicId || !patientId || !doctorId || !testId) {
-      return reply.code(400).send(errorResponse("Missing required fields: clinicId, patientId, doctorId, testId"));
+    if (!locationId || !patientId || !doctorId || !testId) {
+      return reply.code(400).send(errorResponse("Missing required fields: locationId, patientId, doctorId, testId"));
     }
 
-    if (!mongoose.Types.ObjectId.isValid(clinicId) || !mongoose.Types.ObjectId.isValid(patientId) || !mongoose.Types.ObjectId.isValid(doctorId) || !mongoose.Types.ObjectId.isValid(testId)) {
+    if (!mongoose.Types.ObjectId.isValid(locationId) || !mongoose.Types.ObjectId.isValid(patientId) || !mongoose.Types.ObjectId.isValid(doctorId) || !mongoose.Types.ObjectId.isValid(testId)) {
       return reply.code(400).send(errorResponse("Invalid ObjectID reference"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
 
     // Verify patient
     const patient = await Patient.findById(patientId);
     if (!patient) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
     }
-    if (patient.organizationId && clinicAccess.organizationId && patient.organizationId.toString() !== clinicAccess.organizationId) {
+    if (patient.organizationId && locationAccess.organizationId && patient.organizationId.toString() !== locationAccess.organizationId) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
     }
-    if (!patient.organizationId && clinicAccess.organizationId) {
-      patient.organizationId = new mongoose.Types.ObjectId(clinicAccess.organizationId);
+    if (!patient.organizationId && locationAccess.organizationId) {
+      patient.organizationId = new mongoose.Types.ObjectId(locationAccess.organizationId);
       await patient.save();
     }
 
@@ -309,8 +309,8 @@ export async function createLabOrder(req: FastifyRequest, reply: FastifyReply) {
     if (!test) {
       return reply.code(404).send(errorResponse("Lab test not found in catalog"));
     }
-    if (test.clinicId.toString() !== clinicId) {
-      return reply.code(404).send(errorResponse("Lab test not found in clinic catalog"));
+    if (test.locationId.toString() !== locationId) {
+      return reply.code(404).send(errorResponse("Lab test not found in location catalog"));
     }
 
     const labOrder = await withTransaction(async (session) => {
@@ -324,8 +324,8 @@ export async function createLabOrder(req: FastifyRequest, reply: FastifyReply) {
         invoice = await createWithSession(Invoice, {
           invoiceNumber,
           patientId,
-          clinicId,
-          organizationId: clinicAccess.organizationId || undefined,
+          locationId,
+          organizationId: locationAccess.organizationId || undefined,
           doctorId,
           items: [{
             description: `Laboratory Diagnostic Test: ${test.name} (${test.code})`,
@@ -340,8 +340,8 @@ export async function createLabOrder(req: FastifyRequest, reply: FastifyReply) {
         }, session);
 
         createdOrder = await createWithSession(LabOrder, {
-          organizationId: clinicAccess.organizationId || undefined,
-          clinicId,
+          organizationId: locationAccess.organizationId || undefined,
+          locationId,
           patientId,
           doctorId,
           orderedBy: doctorId,
@@ -351,7 +351,7 @@ export async function createLabOrder(req: FastifyRequest, reply: FastifyReply) {
 
         await createWithSession(AuditLog, {
           userId,
-          organizationId: clinicAccess.organizationId || undefined,
+          organizationId: locationAccess.organizationId || undefined,
           action: "LAB_ORDER_CREATE",
           targetId: createdOrder._id,
           targetModel: "LabOrder",
@@ -381,8 +381,8 @@ export async function getLabOrders(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
     const userId = req.user!.id;
-    const { clinicId, patientId, status, page, limit } = req.query as {
-      clinicId?: string;
+    const { locationId, patientId, status, page, limit } = req.query as {
+      locationId?: string;
       patientId?: string;
       status?: string;
       page?: string | number;
@@ -396,16 +396,16 @@ export async function getLabOrders(req: FastifyRequest, reply: FastifyReply) {
       if (!patient) return reply.code(200).send(successResponse([]));
       query.patientId = patient.id;
     } else {
-      if (clinicId) {
-        if (!mongoose.Types.ObjectId.isValid(clinicId)) {
-          return reply.code(400).send(errorResponse("Invalid clinic ID"));
+      if (locationId) {
+        if (!mongoose.Types.ObjectId.isValid(locationId)) {
+          return reply.code(400).send(errorResponse("Invalid location ID"));
         }
-        const clinicAccess = await checkClinicAccess(req, clinicId);
-        if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
-        query.clinicId = clinicId;
+        const locationAccess = await checkLocationAccess(req, locationId);
+        if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
+        query.locationId = locationId;
       } else {
-        const clinicIds = await getRequestClinicIds(req);
-        if (clinicIds) query.clinicId = { $in: clinicIds };
+        const locationIds = await getRequestLocationIds(req);
+        if (locationIds) query.locationId = { $in: locationIds };
       }
       if (patientId) {
         if (!mongoose.Types.ObjectId.isValid(patientId)) {
@@ -479,7 +479,7 @@ export async function collectSample(req: FastifyRequest, reply: FastifyReply) {
     // Create Audit Log
     await AuditLog.create({
       userId,
-      organizationId: order.organizationId || (order.clinicId as any)?.organizationId || (req as any).user?.organizationId,
+      organizationId: order.organizationId || (order.locationId as any)?.organizationId || (req as any).user?.organizationId,
       action: "LAB_SAMPLE_COLLECT",
       targetId: order._id,
       targetModel: "LabOrder",
@@ -506,14 +506,14 @@ export async function uploadLabResult(req: FastifyRequest, reply: FastifyReply) 
       return reply.code(400).send(errorResponse("Invalid lab order ID"));
     }
 
-    const { resultValue, resultNotes, attachmentUrl } = req.body as {
-      resultValue: string;
-      resultNotes?: string;
+    const { value, notes, attachmentUrl } = req.body as {
+      value: string;
+      notes?: string;
       attachmentUrl?: string;
     };
 
-    if (!resultValue) {
-      return reply.code(400).send(errorResponse("resultValue is required to finalize order"));
+    if (!value) {
+      return reply.code(400).send(errorResponse("value is required to finalize order"));
     }
 
     const order = await LabOrder.findById(id).populate("testId", "name code");
@@ -536,19 +536,16 @@ export async function uploadLabResult(req: FastifyRequest, reply: FastifyReply) 
     if (!order.sampleCollectedAt) order.sampleCollectedAt = new Date();
     if (!order.processingStartedAt) order.processingStartedAt = new Date();
     order.resultedAt = new Date();
-    order.resultValue = resultValue;
-    order.resultNotes = resultNotes || "";
-    order.attachmentUrl = attachmentUrl || "";
-    order.completedDate = new Date();
+    order.result = { value, notes: notes || "", attachmentUrl: attachmentUrl || "" };
 
     await order.save();
 
-    await syncLabOrderToAppointment(order, resultValue, resultNotes);
+    await syncLabOrderToAppointment(order, value, notes);
 
     // Create Audit Log
     await AuditLog.create({
       userId,
-      organizationId: order.organizationId || (order.clinicId as any)?.organizationId || (req as any).user?.organizationId,
+      organizationId: order.organizationId || (order.locationId as any)?.organizationId || (req as any).user?.organizationId,
       action: "LAB_RESULT_UPLOAD",
       targetId: order._id,
       targetModel: "LabOrder",
@@ -603,7 +600,7 @@ async function syncLabOrderToAppointment(order: any, resultVal?: string, notes?:
 
     const testDoc = order.testId as any;
     const testName = testDoc?.name || "Diagnostic Test";
-    const val = resultVal || order.resultValue || order.result?.value || "Completed";
+    const val = resultVal || order.result?.value || "Completed";
     const refRange = testDoc?.normalRange || order.result?.referenceRange || "Standard Reference";
 
     const panicCheck = evaluatePanicCriticalValue(testName, val);
@@ -637,8 +634,8 @@ async function syncLabOrderToAppointment(order: any, resultVal?: string, notes?:
       unit: order.result?.unit || "",
       referenceRange: refRange,
       isAbnormal,
-      resultNotes: notes || order.resultNotes || (panicCheck.isPanic ? `CRITICAL PANIC: ${panicCheck.reason}` : ""),
-      attachmentUrl: order.attachmentUrl || order.result?.attachmentUrl || "",
+      resultNotes: notes || order.result?.notes || (panicCheck.isPanic ? `CRITICAL PANIC: ${panicCheck.reason}` : ""),
+      attachmentUrl: order.result?.attachmentUrl || "",
       resultedAt: new Date(),
       labOrderId: order._id,
     };
@@ -656,7 +653,7 @@ async function syncLabOrderToAppointment(order: any, resultVal?: string, notes?:
       const panicAlert = {
         type: "CLINICAL_PANIC_ALERT" as const,
         data: {
-          clinicId: order.clinicId.toString(),
+          locationId: order.locationId.toString(),
           appointmentId: appt._id.toString(),
           tokenNumber: appt.tokenNumber,
           testName,
@@ -668,7 +665,7 @@ async function syncLabOrderToAppointment(order: any, resultVal?: string, notes?:
       };
 
       // 1. Broadcast panic alert to authenticated clinical staff channel
-      broadcastClinicalRealtime(order.clinicId.toString(), panicAlert);
+      broadcastClinicalRealtime(order.locationId.toString(), panicAlert);
 
       // 2. Direct real-time alert to ordering doctor
       if (appt.doctorId) {
@@ -679,7 +676,7 @@ async function syncLabOrderToAppointment(order: any, resultVal?: string, notes?:
     const labResultAlert = {
       type: "LAB_RESULTS_READY" as const,
       data: {
-        clinicId: order.clinicId.toString(),
+        locationId: order.locationId.toString(),
         appointmentId: appt._id.toString(),
         tokenNumber: appt.tokenNumber,
         testName,
@@ -693,7 +690,7 @@ async function syncLabOrderToAppointment(order: any, resultVal?: string, notes?:
     };
 
     // 1. Broadcast to authenticated clinical staff channel
-    broadcastClinicalRealtime(order.clinicId.toString(), labResultAlert);
+    broadcastClinicalRealtime(order.locationId.toString(), labResultAlert);
 
     // 2. Direct alert to ordering doctor
     if (appt.doctorId) {
@@ -701,10 +698,10 @@ async function syncLabOrderToAppointment(order: any, resultVal?: string, notes?:
     }
 
     // 3. Sanitized status update for public waiting-room TV (token number only, zero PHI/lab data)
-    broadcastQueueUpdate(order.clinicId.toString(), {
+    broadcastQueueUpdate(order.locationId.toString(), {
       type: "QUEUE_UPDATED",
       data: {
-        clinicId: order.clinicId.toString(),
+        locationId: order.locationId.toString(),
         appointmentId: appt._id.toString(),
         tokenNumber: appt.tokenNumber,
       },
@@ -758,7 +755,6 @@ export async function updateLabOrderStatus(req: FastifyRequest, reply: FastifyRe
     } else if (status === "result-uploaded") {
       order.resultedBy = userId;
       order.resultedAt = new Date();
-      order.completedDate = order.resultedAt;
     } else if (status === "cancelled") {
       if (!cancellationReason?.trim()) return reply.code(400).send(errorResponse("cancellationReason is required"));
       order.cancellationReason = cancellationReason.trim();
@@ -785,7 +781,7 @@ export async function updateLabOrderStatus(req: FastifyRequest, reply: FastifyRe
   }
 }
 
-// ─── v1.6.0: Encounter-Scoped Orders & Results Controllers ───────────────────
+// ─── Encounter-Scoped Orders & Results Controllers ───────────────────
 
 /**
  * POST /api/encounters/:id/orders
@@ -800,10 +796,10 @@ export async function placeOrderController(req: FastifyRequest, reply: FastifyRe
     if (!scope.allowed) return sendTenantError(reply, scope);
     const orgId = scope.organizationId;
     let {
-      testId, clinicId, patientId,
+      testId, locationId, patientId,
       priority, clinicalReason,
     } = req.body as {
-      testId: string; clinicId?: string; patientId?: string;
+      testId: string; locationId?: string; patientId?: string;
       priority?: "routine" | "urgent" | "stat"; clinicalReason?: string;
     };
 
@@ -812,25 +808,25 @@ export async function placeOrderController(req: FastifyRequest, reply: FastifyRe
       if (encounter) {
         const encounterAccess = await checkOperationalRecordAccess(req, encounter);
         if (!encounterAccess.allowed) return sendTenantError(reply, encounterAccess);
-        if (!clinicId) clinicId = encounter.clinicId?.toString();
+        if (!locationId) locationId = encounter.locationId?.toString();
         if (!patientId) patientId = encounter.patientId?.toString();
       }
     }
 
-    if (!testId || !clinicId || !patientId) {
-      return reply.code(400).send(errorResponse("testId, clinicId, and patientId are required"));
+    if (!testId || !locationId || !patientId) {
+      return reply.code(400).send(errorResponse("testId, locationId, and patientId are required"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
     const patientAccess = await checkPatientAccess(req, patientId);
     if (!patientAccess.allowed && !(patientAccess.statusCode === 404 && req.user?.role !== "patient")) {
       return sendTenantError(reply, patientAccess);
     }
 
     const { order, test } = await OrdersService.placeOrder({
-      organizationId: (clinicAccess.organizationId || orgId || "") as string,
-      clinicId,
+      organizationId: (locationAccess.organizationId || orgId || "") as string,
+      locationId,
       encounterId,
       patientId,
       testId,
@@ -1112,8 +1108,8 @@ export async function getPatientLabComparison(req: FastifyRequest, reply: Fastif
         };
       }
 
-      const val = order.resultValue || order.result?.value || "";
-      const dateStr = (order.resultedAt || order.completedDate || order.orderDate || (order as any).createdAt).toISOString();
+      const val = order.result?.value || "";
+      const dateStr = (order.resultedAt || order.orderDate || (order as any).createdAt).toISOString();
       const numVal = extractNumber(val);
 
       testMap[name].readings.push({
@@ -1125,8 +1121,8 @@ export async function getPatientLabComparison(req: FastifyRequest, reply: Fastif
         unit: order.result?.unit || "",
         referenceRange: order.result?.referenceRange || t?.normalRange || "",
         isAbnormal: Boolean(order.result?.isAbnormal || (val && (val.toLowerCase().includes("high") || val.toLowerCase().includes("critical") || val.toLowerCase().includes("positive")))),
-        notes: order.resultNotes || order.result?.notes || "",
-        attachmentUrl: order.attachmentUrl || order.result?.attachmentUrl || "",
+        notes: order.result?.notes || "",
+        attachmentUrl: order.result?.attachmentUrl || "",
         doctorName: (order.doctorId as any)?.name || "Ordering Physician",
         orderId: order._id.toString(),
         appointmentId: order.appointmentId?.toString(),

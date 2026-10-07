@@ -1,6 +1,7 @@
 import { SearchEngine } from '../platform/search/SearchEngine.ts';
 import { revokeUserSessions } from '../utilities/sessionResolver.ts';
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { isFacilityType } from "../utilities/facility.ts";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
@@ -10,7 +11,7 @@ import { OrgMember } from "../models/OrgMember.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { Receptionist } from "../models/Receptionist.ts";
 import { Role } from "../models/Role.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Encounter } from "../models/Encounter.ts";
@@ -38,10 +39,10 @@ import {
 } from "../utilities/helpers.ts";
 import { setAuthCookies } from "../utilities/types.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
-import { checkClinicAccess, resolveAuthorizedOrganizationScope, resolveTargetOrganizationId, isRootRequest } from "../utilities/tenant.ts";
+import { checkLocationAccess, resolveAuthorizedOrganizationScope, resolveTargetOrganizationId, isRootRequest } from "../utilities/tenant.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
-import { encrypt, decrypt } from "../utilities/encryption.ts";
+import { encryptField, decryptField } from "../utilities/cryptoEnvelope.ts";
 import { seedModulesForOrg } from "./moduleRegistry.ts";
 import { subscriptionService } from "../services/billing/SubscriptionService.ts";
 import { summarizeSubscription } from "../services/billing/subscriptionSummary.ts";
@@ -55,7 +56,7 @@ import {
   LAB_TECH_PERMISSIONS,
   PHARMACIST_PERMISSIONS,
   CASHIER_PERMISSIONS,
-  CLINIC_MANAGER_PERMISSIONS,
+  LOCATION_MANAGER_PERMISSIONS,
   PATIENT_PERMISSIONS,
   FAMILY_MEMBER_PERMISSIONS,
   getEffectivePermissions,
@@ -69,7 +70,7 @@ export {
   LAB_TECH_PERMISSIONS,
   PHARMACIST_PERMISSIONS,
   CASHIER_PERMISSIONS,
-  CLINIC_MANAGER_PERMISSIONS,
+  LOCATION_MANAGER_PERMISSIONS,
   PATIENT_PERMISSIONS,
   FAMILY_MEMBER_PERMISSIONS,
 };
@@ -94,10 +95,10 @@ export async function seedDefaultRoles(session?: any) {
       permissions: ADMIN_PERMISSIONS,
     },
     {
-      name: "clinic_manager",
-      description: "Small clinic all-in-one desk operator (OPD Queue, Pharmacy, Cashier).",
+      name: "location_manager",
+      description: "Practice desk operator (OPD Queue, Pharmacy, Cashier).",
       isSystemRole: true,
-      permissions: CLINIC_MANAGER_PERMISSIONS,
+      permissions: LOCATION_MANAGER_PERMISSIONS,
     },
     {
       name: "doctor",
@@ -176,55 +177,27 @@ export async function seedDefaultRoles(session?: any) {
 export async function createOrganization(req: FastifyRequest, reply: FastifyReply) {
 
   try {
-    // ── Security Gate: Onboarding Secret / Root Admin ─────────────
-    let userRole = (req as any).user?.role;
-    if (!userRole) {
-      let token =
-        req.cookies?.access_token ||
-        (req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.split(" ")[1] : undefined);
-
-      if (!token && req.headers.cookie) {
-        const match = req.headers.cookie.match(/access_token=([^;]+)/);
-        if (match) token = decodeURIComponent(match[1]);
-      }
-
-      if (token) {
-        try {
-          const decoded = verifyAccessToken(token);
-          (req as any).user = decoded;
-          userRole = decoded.role;
-        } catch {
-          // ignore
-        }
-      }
-    }
-
-    const isRootUser = userRole === "root";
-
-    // Organization provisioning is a platform operation. A reusable shared
-    // header secret is not an authorization boundary: it is easily copied to a
-    // browser, log, or third-party sales tool. Test fixtures alone may bypass
-    // this so isolated integration databases can be bootstrapped.
-    if (!isRootUser && process.env.NODE_ENV !== "test") {
-      return reply.code(403).send(errorResponse("Organization provisioning requires an authenticated platform administrator"));
-    }
+    const isRootUser = req.user?.role === "root";
+    if (!isRootUser) return reply.code(403).send(errorResponse("Organization provisioning requires an authenticated platform administrator"));
 
     const {
       org_name, city, address, org_phone, org_email, description, image_url, logo_url, timings, working_days, trialDays,
       admin_name, admin_email, admin_password, admin_phone,
-      clinic_name, clinic_city, clinic_address, clinic_phone, clinic_email,
+      location_name, location_city, location_address, location_phone, location_email, facilityType,
       taxId, licenseNumber, countryCode, currency, timezone, sendWelcomeEmail,
     } = req.body as {
       org_name: string; city: string; address?: string; org_phone?: string; org_email?: string;
       description?: string; image_url?: string; logo_url?: string; timings?: string; working_days?: string; trialDays?: number;
       admin_name: string; admin_email: string; admin_password: string; admin_phone?: string;
-      clinic_name?: string; clinic_city?: string; clinic_address?: string; clinic_phone?: string; clinic_email?: string;
+      location_name?: string; location_city?: string; location_address?: string; location_phone?: string; location_email?: string;
+      facilityType?: string;
       taxId?: string; licenseNumber?: string; countryCode?: CountryCode; currency?: string; timezone?: string; sendWelcomeEmail?: boolean;
     };
 
     if (!org_name || !city || !admin_name || !admin_email) {
       return reply.code(400).send(errorResponse("org_name, city, admin_name, and admin_email are required"));
     }
+    if (facilityType !== undefined && !isFacilityType(facilityType)) return reply.code(400).send(errorResponse("Invalid facility type"));
 
     if (/^[0-9+\s-]{6,}$/.test(city.trim())) {
       return reply.code(400).send(errorResponse("City appears to be a phone number. Please enter a valid city name (e.g. Mumbai, San Francisco)."));
@@ -251,17 +224,15 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
     return await withTransaction(async (session) => {
       // Plans and quotas are commercial entitlements. Only a platform root can
       // select a plan, and no caller can set quotas directly through onboarding.
-      const canConfigureCommercialTerms = isRootUser || process.env.NODE_ENV === "test";
-      const selectedPlan = canConfigureCommercialTerms ? ((req.body as any).plan || "starter") : "starter";
-      const configuredPlan = await SaaSPlan.findOne({ slug: selectedPlan, status: "active" }).lean()
-        || (selectedPlan === "pro" ? await SaaSPlan.findOne({ slug: "professional", status: "active" }).lean() : null);
+      const selectedPlan = (req.body as any).plan || "starter";
+      const configuredPlan = await SaaSPlan.findOne({ slug: selectedPlan, status: "active" }).lean();
       const fallbackLimits = selectedPlan === "enterprise"
-        ? { maxClinics: 99, maxDoctors: 999, maxStaff: 999 }
-        : selectedPlan === "pro"
-          ? { maxClinics: 5, maxDoctors: 15, maxStaff: 25 }
-          : { maxClinics: 1, maxDoctors: 2, maxStaff: 5 };
+        ? { maxLocations: 99, maxDoctors: 999, maxStaff: 999 }
+        : selectedPlan === "professional"
+          ? { maxLocations: 5, maxDoctors: 15, maxStaff: 25 }
+          : { maxLocations: 1, maxDoctors: 2, maxStaff: 5 };
       const planLimits = {
-        maxClinics: configuredPlan?.limits?.maxClinics ?? fallbackLimits.maxClinics,
+        maxLocations: configuredPlan?.limits?.maxLocations ?? fallbackLimits.maxLocations,
         maxDoctors: configuredPlan?.limits?.maxDoctors ?? fallbackLimits.maxDoctors,
         maxStaff: configuredPlan?.limits?.maxStaff ?? fallbackLimits.maxStaff,
       };
@@ -299,7 +270,7 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
         countryCode,
         currency: countryCode ? COUNTRY_SETTINGS[countryCode].currency : (currency || "INR"),
         timezone: timezone || (countryCode ? COUNTRY_SETTINGS[countryCode].defaultTimezone : null) || "Asia/Kolkata",
-        onboardingStatus: "CLINIC_CREATED",
+        onboardingStatus: "LOCATION_CREATED",
         isOnboarded: false,
       }, session);
 
@@ -321,14 +292,15 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
         role: "admin",
       }, session);
 
-      // Automatically create Primary Clinic branch for the Organization
-      await createWithSession(Clinic, {
+      // Automatically create the primary physical Location.
+      await createWithSession(Location, {
         organizationId: org._id,
-        name: clinic_name?.trim() || org_name.trim(),
-        city: clinic_city?.trim() || city,
-        address: clinic_address || address || null,
-        phone: clinic_phone || org_phone || admin_phone || null,
-        email: clinic_email || org_email || admin_email || null,
+        name: location_name?.trim() || org_name.trim(),
+        facilityType: facilityType || null,
+        city: location_city?.trim() || city,
+        address: location_address || address || null,
+        phone: location_phone || org_phone || admin_phone || null,
+        email: location_email || org_email || admin_email || null,
         timings: timings || null,
       }, session);
 
@@ -344,14 +316,6 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
       // Provision the subscription in the same transaction as the organization.
       // The lazy initializer cannot see an organization that has not committed yet.
       await subscriptionService.createInitialSubscription(orgIdStr, selectedPlan, trialDays, session);
-
-      // Only set auth cookies if this is an initial unauthenticated onboarding flow (not a root admin adding orgs)
-      if (!isRootUser) {
-        const userIdStr = adminUser._id.toString();
-        const payload = { id: userIdStr, email: adminUser.email, role: adminUser.role, organization_id: orgIdStr };
-        const { accessToken, refreshToken } = await createAuthSession(payload);
-        setAuthCookies(reply, accessToken, refreshToken);
-      }
 
       await eventBus.publishDurable({
         eventType: EVENT_TYPES.ORG_CREATED,
@@ -447,7 +411,7 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
   try {
     const { id } = req.params as { id: string };
     const {
-      name, city, address, phone, email, plan, maxClinics, maxDoctors, maxStaff, status,
+      name, city, address, phone, email, plan, maxLocations, maxDoctors, maxStaff, status,
       taxId, licenseNumber, countryCode, currency, timezone, image_url, logo_url, images, description, timings, working_days, workflowPreferences
     } = req.body as any;
 
@@ -519,10 +483,10 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
       return reply.code(400).send(errorResponse("Change plans through Billing so payment and subscription dates stay in sync"));
     }
     if (req.user?.role === "root") {
-      if (maxClinics !== undefined) updateData.maxClinics = maxClinics;
+      if (maxLocations !== undefined) updateData.maxLocations = maxLocations;
       if (maxDoctors !== undefined) updateData.maxDoctors = maxDoctors;
       if (maxStaff !== undefined) updateData.maxStaff = maxStaff;
-    } else if (maxClinics !== undefined || maxDoctors !== undefined || maxStaff !== undefined) {
+    } else if (maxLocations !== undefined || maxDoctors !== undefined || maxStaff !== undefined) {
       return reply.code(403).send(errorResponse("Only Root can adjust organization quota overrides"));
     }
 
@@ -540,14 +504,14 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
       const { revokeOrganizationSessions } = await import("../utilities/sessionResolver.ts");
       await revokeOrganizationSessions(id, "organization_suspended");
     }
-    // Synchronize primary clinic details if city, address, phone, or email changed
-    const clinicUpdates: any = {};
-    if (city) clinicUpdates.city = city;
-    if (address !== undefined) clinicUpdates.address = address;
-    if (phone !== undefined) clinicUpdates.phone = phone;
-    if (email !== undefined) clinicUpdates.email = email;
-    if (Object.keys(clinicUpdates).length > 0) {
-      await Clinic.findOneAndUpdate({ organizationId: id }, clinicUpdates);
+    // Synchronize primary location details if city, address, phone, or email changed
+    const locationUpdates: any = {};
+    if (city) locationUpdates.city = city;
+    if (address !== undefined) locationUpdates.address = address;
+    if (phone !== undefined) locationUpdates.phone = phone;
+    if (email !== undefined) locationUpdates.email = email;
+    if (Object.keys(locationUpdates).length > 0) {
+      await Location.findOneAndUpdate({ organizationId: id }, locationUpdates);
     }
 
     return reply.send(successResponse({ ...updatedOrg, id: (updatedOrg as any)._id.toString() }, "Organization updated successfully"));
@@ -586,9 +550,9 @@ export async function addDoctor(req: FastifyRequest, reply: FastifyReply) {
     if (!orgId) return reply.code(403).send(errorResponse("Select an organization first"));
     if (!orgId) return reply.code(400).send(errorResponse("You are not linked to any organization"));
 
-    const { 
+    const {
       name, email, password, phone, specialization, qualification, experience_years,
-      fees, timings, working_days, description, image_url 
+      fees, timings, working_days, description, image_url
     } = req.body as {
       name: string; email: string; password: string; phone?: string;
       specialization?: string; qualification?: string; experience_years?: number;
@@ -676,8 +640,8 @@ export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) 
     if (!orgId) return reply.code(403).send(errorResponse("Select an organization first"));
     if (!orgId) return reply.code(400).send(errorResponse("You are not linked to any organization"));
 
-    const { name, email, password, phone, shift, clinicId } = req.body as {
-      name: string; email: string; password: string; phone?: string; shift?: string; clinicId?: string;
+    const { name, email, password, phone, shift, locationId } = req.body as {
+      name: string; email: string; password: string; phone?: string; shift?: string; locationId?: string;
     };
 
     if (!name || !email || !password) return reply.code(400).send(errorResponse("name, email and password are required"));
@@ -714,7 +678,7 @@ export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) 
       await createWithSession(Receptionist, {
         userId: newRecUser._id,
         organizationId: orgId,
-        clinicId: clinicId || null,
+        locationId: locationId || null,
         shift: shift || null,
       }, session);
 
@@ -735,7 +699,7 @@ export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) 
       }, session);
 
       return reply.code(201).send(
-        successResponse({ id: newRecUser._id.toString(), name, email, role: "receptionist", organization_id: orgId, shift, clinicId }, "Receptionist registered successfully")
+        successResponse({ id: newRecUser._id.toString(), name, email, role: "receptionist", organization_id: orgId, shift, locationId }, "Receptionist registered successfully")
       );
     });
   } catch (err) {
@@ -754,13 +718,13 @@ export async function getOrgStaff(req: FastifyRequest, reply: FastifyReply) {
     }
 
     let effectiveOrgId = scope.organizationId;
-    const queryClinicId = (req.query as any)?.clinicId;
-    if (queryClinicId) {
-      const clinicCheck = await checkClinicAccess(req, queryClinicId);
-      if (!clinicCheck.allowed) {
-        return reply.code(clinicCheck.statusCode).send(errorResponse(clinicCheck.message));
+    const queryLocationId = (req.query as any)?.locationId;
+    if (queryLocationId) {
+      const locationCheck = await checkLocationAccess(req, queryLocationId);
+      if (!locationCheck.allowed) {
+        return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
       }
-      effectiveOrgId = clinicCheck.organizationId;
+      effectiveOrgId = locationCheck.organizationId;
     }
 
     // Root may explicitly request all staff without tenant context. Non-root
@@ -771,7 +735,7 @@ export async function getOrgStaff(req: FastifyRequest, reply: FastifyReply) {
     const doctors = await Doctor.find(orgFilter).populate("userId");
     const receptionists = await Receptionist.find(orgFilter)
       .populate("userId")
-      .populate("clinicId", "name");
+      .populate("locationId", "name");
 
     const formattedDoctors = doctors
       .filter((d: any) => d.userId && d.userId.isActive)
@@ -798,8 +762,8 @@ export async function getOrgStaff(req: FastifyRequest, reply: FastifyReply) {
         email: r.userId.email,
         phone: r.userId.phone,
         shift: r.shift,
-        clinicId: r.clinicId?.id || r.clinicId?._id?.toString() || r.clinicId || null,
-        clinicName: r.clinicId?.name || null,
+        locationId: r.locationId?.id || r.locationId?._id?.toString() || r.locationId || null,
+        locationName: r.locationId?.name || null,
         image_url: r.userId?.image_url || null,
       }));
 
@@ -1074,9 +1038,9 @@ export async function updateDoctor(req: FastifyRequest, reply: FastifyReply) {
     const orgId = scope.organizationId;
     if (!orgId) return reply.code(403).send(errorResponse("Select an organization first"));
     const { id } = req.params as { id: string };
-    const { 
+    const {
       name, email, phone, specialization, qualification, experience_years,
-      fees, timings, working_days, description, image_url 
+      fees, timings, working_days, description, image_url
     } = req.body as any;
 
     if (!name) return reply.code(400).send(errorResponse("name is required"));
@@ -1127,14 +1091,14 @@ export async function updateReceptionist(req: FastifyRequest, reply: FastifyRepl
     const orgId = scope.organizationId;
     if (!orgId) return reply.code(403).send(errorResponse("Select an organization first"));
     const { id } = req.params as { id: string };
-    const { name, email, phone, shift, clinicId } = req.body as any;
+    const { name, email, phone, shift, locationId } = req.body as any;
 
     if (!name) return reply.code(400).send(errorResponse("name is required"));
 
     const receptionist = await Receptionist.findOne({ userId: id, organizationId: orgId });
     if (!receptionist) return reply.code(404).send(errorResponse("Receptionist not found or not in your organization"));
     if (req.user?.role !== "root" && await OrgMember.exists({ userId: id, organizationId: { $ne: orgId } })) return reply.code(409).send(errorResponse("Global identity changes for a shared account require platform review"));
-    if (clinicId && !await Clinic.exists({ _id: clinicId, organizationId: orgId })) return reply.code(403).send(errorResponse("Clinic does not belong to this organization"));
+    if (locationId && !await Location.exists({ _id: locationId, organizationId: orgId })) return reply.code(403).send(errorResponse("Location does not belong to this organization"));
 
     if (email && email.trim()) {
       const cleanEmail = email.trim().toLowerCase();
@@ -1147,7 +1111,7 @@ export async function updateReceptionist(req: FastifyRequest, reply: FastifyRepl
       await User.updateOne({ _id: id }, { name, phone: phone || null });
     }
 
-    await Receptionist.updateOne({ userId: id, organizationId: orgId }, { shift: shift || null, clinicId: clinicId || null });
+    await Receptionist.updateOne({ userId: id, organizationId: orgId }, { shift: shift || null, locationId: locationId || null });
 
     return reply.code(200).send(successResponse(null, "Receptionist updated successfully"));
   } catch (err) {
@@ -1164,9 +1128,9 @@ export async function updateStaff(req: FastifyRequest, reply: FastifyReply) {
     const orgId = scope.organizationId;
     if (!orgId) return reply.code(403).send(errorResponse("Select an organization first"));
     const { id } = req.params as { id: string };
-    const { 
+    const {
       name, email, phone, specialization, qualification, experience_years,
-      fees, timings, working_days, description, image_url, shift, clinicId 
+      fees, timings, working_days, description, image_url, shift, locationId
     } = req.body as any;
 
     if (!name) return reply.code(400).send(errorResponse("Name is required"));
@@ -1174,7 +1138,7 @@ export async function updateStaff(req: FastifyRequest, reply: FastifyReply) {
     const orgMember = await OrgMember.findOne({ userId: id, organizationId: orgId });
     if (!orgMember) return reply.code(404).send(errorResponse("Staff member not found in your organization"));
     if (req.user?.role !== "root" && await OrgMember.exists({ userId: id, organizationId: { $ne: orgId } })) return reply.code(409).send(errorResponse("Global identity changes for a shared account require platform review"));
-    if (clinicId && !await Clinic.exists({ _id: clinicId, organizationId: orgId })) return reply.code(403).send(errorResponse("Clinic does not belong to this organization"));
+    if (locationId && !await Location.exists({ _id: locationId, organizationId: orgId })) return reply.code(403).send(errorResponse("Location does not belong to this organization"));
 
     const userUpdates: any = { name, phone: phone || null };
     if (image_url !== undefined) userUpdates.image_url = image_url;
@@ -1210,7 +1174,7 @@ export async function updateStaff(req: FastifyRequest, reply: FastifyReply) {
     // If receptionist profile exists, update receptionist details
     const receptionist = await Receptionist.findOne({ userId: id, organizationId: orgId });
     if (receptionist) {
-      await Receptionist.updateOne({ userId: id, organizationId: orgId }, { shift: shift || null, clinicId: clinicId || null });
+      await Receptionist.updateOne({ userId: id, organizationId: orgId }, { shift: shift || null, locationId: locationId || null });
     }
 
     return reply.code(200).send(successResponse(null, "Staff member updated successfully"));
@@ -1390,7 +1354,7 @@ export async function updateOrganizationSmtp(req: FastifyRequest, reply: Fastify
     // Only update password if user typed a real new value (not the masked placeholder)
     // Encrypt the password before storing in MongoDB (AES-256-GCM)
     if (pass && pass !== "••••••••" && !pass.startsWith("•")) {
-      smtpUpdate["smtp.pass"] = encrypt(pass);
+      smtpUpdate["smtp.pass"] = encryptField(pass);
     }
 
     const result = await Organization.findByIdAndUpdate(
@@ -1528,7 +1492,7 @@ export async function verifyOnboardingTOTP(req: FastifyRequest, reply: FastifyRe
     // 1. Mark User 2FA as enabled and save verified secret (encrypted at rest)
     await User.findByIdAndUpdate(userId, {
       twoFactorEnabled: true,
-      twoFactorSecret: encrypt(activeSecret),
+      twoFactorSecret: encryptField(activeSecret),
     });
     await revokeUserSessions(userId, 'two_factor_enabled');
     const auth = await createAuthSession({ id: userId, email: user.email || '', role: user.role, organization_id: orgId }, {
@@ -1578,18 +1542,27 @@ export async function verifyOnboardingTOTP(req: FastifyRequest, reply: FastifyRe
 // ─── Department Management ───────────────────────────────────────
 export async function createDepartment(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const orgId = req.user!.organization_id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
     if (!orgId) return reply.code(400).send(errorResponse("Organization ID required"));
 
-    const { name, code, description, headDoctorId, clinicId } = req.body as {
-      name: string; code: string; description?: string; headDoctorId?: string; clinicId?: string;
+    const { name, code, description, headDoctorId, locationId } = req.body as {
+      name: string; code: string; description?: string; headDoctorId?: string; locationId?: string;
     };
 
     if (!name || !code) return reply.code(400).send(errorResponse("name and code are required"));
+    if (!await Organization.exists({ _id: orgId })) return reply.code(404).send(errorResponse("Organization not found"));
+    if (locationId && (!mongoose.isValidObjectId(locationId) || !await Location.exists({ _id: locationId, organizationId: orgId, isActive: { $ne: false } }))) {
+      return reply.code(404).send(errorResponse("Location not found in this organization"));
+    }
+    if (headDoctorId && (!mongoose.isValidObjectId(headDoctorId) || !await OrgMember.exists({ userId: headDoctorId, organizationId: orgId }) || !await User.exists({ _id: headDoctorId, isActive: true }))) {
+      return reply.code(404).send(errorResponse("Department head not found in this organization"));
+    }
 
     const dept = await Department.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       name,
       code: code.toUpperCase(),
       description,
@@ -1606,12 +1579,9 @@ export async function createDepartment(req: FastifyRequest, reply: FastifyReply)
 
 export async function getDepartments(req: FastifyRequest, reply: FastifyReply) {
   try {
-    let orgId = req.user?.organization_id;
-    const query = req.query as any;
-
-    if (req.user?.role === "root" && query?.organizationId) {
-      orgId = query.organizationId;
-    }
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    const orgId = scope.organizationId;
 
     const filter: any = {};
     if (orgId) {
@@ -1620,7 +1590,7 @@ export async function getDepartments(req: FastifyRequest, reply: FastifyReply) {
 
     const departments = await Department.find(filter)
       .populate("headDoctorId", "name email specialization")
-      .populate("clinicId", "name city")
+      .populate("locationId", "name city")
       .sort({ name: 1 });
 
     return reply.code(200).send(successResponse(departments));
@@ -1630,64 +1600,6 @@ export async function getDepartments(req: FastifyRequest, reply: FastifyReply) {
   }
 }
 
-/**
- * Synchronize organization quotas and linked subscriptions to ensure all tenants
- * have quotas that match their current plan tier (e.g. Pro = 5 clinics, Enterprise = 99 clinics).
- */
-export async function syncOrganizationPlanQuotas() {
-  try {
-    const plans = await SaaSPlan.find().lean();
-    const planMap = new Map<string, any>();
-    for (const p of plans) {
-      planMap.set(p.slug.toLowerCase(), p);
-    }
-
-    const orgs = await Organization.find({}).lean();
-    let updatedCount = 0;
-
-    for (const org of orgs) {
-      const plan = (org.plan || "starter").toLowerCase();
-      const planSlugs = [plan];
-      if (plan === "pro") planSlugs.push("professional");
-      if (plan === "professional") planSlugs.push("pro");
-
-      let matchedPlan: any = null;
-      for (const slug of planSlugs) {
-        if (planMap.has(slug)) {
-          matchedPlan = planMap.get(slug);
-          break;
-        }
-      }
-
-      const expectedMaxClinics = matchedPlan?.limits?.maxClinics ?? (plan === "enterprise" ? 99 : plan === "pro" ? 5 : 1);
-      const expectedMaxDoctors = matchedPlan?.limits?.maxDoctors ?? (plan === "enterprise" ? 999 : plan === "pro" ? 15 : 2);
-      const expectedMaxStaff = matchedPlan?.limits?.maxStaff ?? (plan === "enterprise" ? 999 : plan === "pro" ? 25 : 5);
-
-      const needsQuotaSync =
-        (org.maxClinics === undefined || org.maxClinics < expectedMaxClinics) ||
-        (org.maxDoctors === undefined || org.maxDoctors < expectedMaxDoctors) ||
-        (org.maxStaff === undefined || org.maxStaff < expectedMaxStaff);
-
-      if (needsQuotaSync) {
-        await Organization.findByIdAndUpdate(org._id, {
-          maxClinics: Math.max(org.maxClinics || 1, expectedMaxClinics),
-          maxDoctors: Math.max(org.maxDoctors || 2, expectedMaxDoctors),
-          maxStaff: Math.max(org.maxStaff || 5, expectedMaxStaff),
-        });
-        updatedCount++;
-      }
-
-      // Subscription state is owned by Billing. A quota sync must not activate
-      // an unpaid or expired commercial plan.
-    }
-
-    if (updatedCount > 0) {
-      console.log(`[QuotaSync] ✓ Synchronized quotas for ${updatedCount} organizations.`);
-    }
-  } catch (err) {
-    console.error("[QuotaSync] Error synchronizing organization quotas:", err);
-  }
-}
 
 /**
  * Get all members and personnel of a specific organization for Root / Org Admin
@@ -1832,7 +1744,7 @@ export async function getGlobalUsers(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(403).send(errorResponse("Only platform Root Superadmin can access global users"));
     }
 
-    const { q, role, organizationId, clinicId, page = "1", limit = "50" } = (req.query as any) || {};
+    const { q, role, organizationId, locationId, page = "1", limit = "50" } = (req.query as any) || {};
 
     const filter: any = {};
     if (role && role !== "all") {
@@ -1843,42 +1755,41 @@ export async function getGlobalUsers(req: FastifyRequest, reply: FastifyReply) {
     if (organizationId && organizationId !== "all") {
       if (mongoose.isValidObjectId(organizationId)) {
         const orgObjId = new mongoose.Types.ObjectId(organizationId);
-        const [orgMemberUsers, doctorUsers, recUsers, directUsers] = await Promise.all([
+        const [orgMemberUsers, doctorUsers, recUsers] = await Promise.all([
           OrgMember.find({ organizationId: orgObjId }).distinct("userId"),
           Doctor.find({ organizationId: orgObjId }).distinct("userId"),
           Receptionist.find({ organizationId: orgObjId }).distinct("userId"),
-          User.find({ organization_id: orgObjId }).distinct("_id"),
         ]);
         const matchedUserIds = Array.from(
           new Set([
             ...orgMemberUsers.map((id) => id.toString()),
             ...doctorUsers.map((id) => id.toString()),
             ...recUsers.map((id) => id.toString()),
-            ...directUsers.map((id) => id.toString()),
           ])
         );
         filter._id = { $in: matchedUserIds.map((id: string) => new mongoose.Types.ObjectId(id)) };
       }
     }
 
-    // Correlate clinic/branch filter
-    if (clinicId && clinicId !== "all") {
-      if (mongoose.isValidObjectId(clinicId)) {
-        const clinicObjId = new mongoose.Types.ObjectId(clinicId);
+    // Correlate location/branch filter
+    if (locationId && locationId !== "all") {
+      if (mongoose.isValidObjectId(locationId)) {
+        const locationObjId = new mongoose.Types.ObjectId(locationId);
         const [docAssignments, recs] = await Promise.all([
-          DoctorAssignment.find({ clinicId: clinicObjId }).distinct("doctorId"),
-          Receptionist.find({ clinicId: clinicObjId }).distinct("userId"),
+          DoctorAssignment.find({ locationId: locationObjId }).distinct("doctorId"),
+          Receptionist.find({ locationId: locationObjId }).distinct("userId"),
         ]);
-        const doctors = await Doctor.find({ _id: { $in: docAssignments } }).distinct("userId");
-        const clinicUserIds = Array.from(
+        // DoctorAssignment.doctorId references User, not the Doctor profile ID.
+        const doctors = docAssignments;
+        const locationUserIds = Array.from(
           new Set([...doctors.map((id: any) => id.toString()), ...recs.map((id: any) => id.toString())])
         );
         if (filter._id) {
           const currentIds: string[] = (filter._id.$in || []).map((id: any) => id.toString());
-          const intersection: string[] = currentIds.filter((id: string) => clinicUserIds.includes(id));
+          const intersection: string[] = currentIds.filter((id: string) => locationUserIds.includes(id));
           filter._id = { $in: intersection.map((id: string) => new mongoose.Types.ObjectId(id)) };
         } else {
-          filter._id = { $in: clinicUserIds.map((id: string) => new mongoose.Types.ObjectId(id)) };
+          filter._id = { $in: locationUserIds.map((id: string) => new mongoose.Types.ObjectId(id)) };
         }
       }
     }
@@ -1916,7 +1827,7 @@ export async function getGlobalUsers(req: FastifyRequest, reply: FastifyReply) {
     ]);
 
     const userOrgMap = new Map<string, string>();
-    const userClinicMap = new Map<string, string>();
+    const userLocationMap = new Map<string, string>();
 
     // Map OrgMember
     for (const om of orgMembers) {
@@ -1930,18 +1841,18 @@ export async function getGlobalUsers(req: FastifyRequest, reply: FastifyReply) {
       if (rec.organizationId && !userOrgMap.has(rec.userId.toString())) {
         userOrgMap.set(rec.userId.toString(), rec.organizationId.toString());
       }
-      if (rec.clinicId) {
-        userClinicMap.set(rec.userId.toString(), rec.clinicId.toString());
+      if (rec.locationId) {
+        userLocationMap.set(rec.userId.toString(), rec.locationId.toString());
       }
     }
 
     // Map Doctor & DoctorAssignment
     const doctorIds = doctors.map((d) => d._id);
     const docAssignments = await DoctorAssignment.find({ doctorId: { $in: doctorIds } }).lean();
-    const docToClinicMap = new Map<string, string>();
+    const docToLocationMap = new Map<string, string>();
     for (const da of docAssignments) {
-      if (da.clinicId) {
-        docToClinicMap.set(da.doctorId.toString(), da.clinicId.toString());
+      if (da.locationId) {
+        docToLocationMap.set(da.doctorId.toString(), da.locationId.toString());
       }
     }
 
@@ -1949,9 +1860,9 @@ export async function getGlobalUsers(req: FastifyRequest, reply: FastifyReply) {
       if (doc.organizationId && !userOrgMap.has(doc.userId.toString())) {
         userOrgMap.set(doc.userId.toString(), doc.organizationId.toString());
       }
-      const cId = docToClinicMap.get(doc._id.toString());
+      const cId = docToLocationMap.get(doc._id.toString());
       if (cId) {
-        userClinicMap.set(doc.userId.toString(), cId);
+        userLocationMap.set(doc.userId.toString(), cId);
       }
     }
 
@@ -1963,28 +1874,28 @@ export async function getGlobalUsers(req: FastifyRequest, reply: FastifyReply) {
       }
     }
 
-    // 2. Fetch Organizations & Clinics
+    // 2. Fetch Organizations & Locations
     const allOrgIds = Array.from(new Set([...userOrgMap.values(), ...orgMembers.map((m) => m.organizationId.toString())])).filter((id) =>
       mongoose.isValidObjectId(id)
     );
-    const allClinicIds = Array.from(new Set(Array.from(userClinicMap.values()))).filter((id) =>
+    const allLocationIds = Array.from(new Set(Array.from(userLocationMap.values()))).filter((id) =>
       mongoose.isValidObjectId(id)
     );
 
-    const [orgs, clinics] = await Promise.all([
+    const [orgs, locations] = await Promise.all([
       Organization.find({ _id: { $in: allOrgIds } }).select("name plan city status").lean(),
-      Clinic.find({ _id: { $in: allClinicIds } }).select("name city organizationId").lean(),
+      Location.find({ _id: { $in: allLocationIds } }).select("name city organizationId").lean(),
     ]);
 
     const orgMap = new Map(orgs.map((o) => [o._id.toString(), o]));
-    const clinicMap = new Map(clinics.map((c) => [c._id.toString(), c]));
+    const locationMap = new Map(locations.map((c) => [c._id.toString(), c]));
 
     const formattedUsers = users.map((u: any) => {
       const uId = u._id.toString();
       const orgId = userOrgMap.get(uId) || null;
-      const clinicId = userClinicMap.get(uId) || null;
+      const locationId = userLocationMap.get(uId) || null;
       const org = orgId ? orgMap.get(orgId) : null;
-      const clinic = clinicId ? clinicMap.get(clinicId) : null;
+      const location = locationId ? locationMap.get(locationId) : null;
 
       let orgName = "Unassigned";
       if (u.role === "root") {
@@ -2009,9 +1920,9 @@ export async function getGlobalUsers(req: FastifyRequest, reply: FastifyReply) {
           organizationName: (orgMap.get(member.organizationId.toString()) as any)?.name || "Organization",
           role: member.role,
         })),
-        clinicId: clinicId,
-        clinicName: clinic ? (clinic as any).name : null,
-        clinicCity: clinic ? (clinic as any).city : null,
+        locationId: locationId,
+        locationName: location ? (location as any).name : null,
+        locationCity: location ? (location as any).city : null,
         createdAt: u.createdAt,
       };
     });
@@ -2041,10 +1952,10 @@ export async function getPlatformHierarchy(req: FastifyRequest, reply: FastifyRe
       return reply.code(403).send(errorResponse("Only platform Root Superadmin can access platform hierarchy"));
     }
 
-    // 1. Fetch all Organizations & Clinics
-    const [organizations, clinics, rootUsers] = await Promise.all([
+    // 1. Fetch all Organizations & Locations
+    const [organizations, locations, rootUsers] = await Promise.all([
       Organization.find().sort({ name: 1 }).lean(),
-      Clinic.find({ isActive: true }).sort({ name: 1 }).lean(),
+      Location.find({ isActive: true }).sort({ name: 1 }).lean(),
       User.find({ role: "root" }).select("name email phone role isActive createdAt").lean(),
     ]);
 
@@ -2066,20 +1977,20 @@ export async function getPlatformHierarchy(req: FastifyRequest, reply: FastifyRe
     // 3. Fetch Doctor Assignments for branch correlation
     const docIds = doctors.map((d) => d._id);
     const doctorAssignments = await DoctorAssignment.find({ doctorId: { $in: docIds } }).lean();
-    const docToClinicMap = new Map<string, string>();
+    const docToLocationMap = new Map<string, string>();
     for (const da of doctorAssignments) {
-      if (da.clinicId) {
-        docToClinicMap.set(da.doctorId.toString(), da.clinicId.toString());
+      if (da.locationId) {
+        docToLocationMap.set(da.doctorId.toString(), da.locationId.toString());
       }
     }
 
-    // Group clinics by organization
-    const orgClinicsMap = new Map<string, any[]>();
-    for (const c of clinics) {
+    // Group locations by organization
+    const orgLocationsMap = new Map<string, any[]>();
+    for (const c of locations) {
       if (c.organizationId) {
         const orgKey = c.organizationId.toString();
-        if (!orgClinicsMap.has(orgKey)) orgClinicsMap.set(orgKey, []);
-        orgClinicsMap.get(orgKey)!.push({
+        if (!orgLocationsMap.has(orgKey)) orgLocationsMap.set(orgKey, []);
+        orgLocationsMap.get(orgKey)!.push({
           id: c._id.toString(),
           name: c.name,
           city: c.city,
@@ -2093,7 +2004,7 @@ export async function getPlatformHierarchy(req: FastifyRequest, reply: FastifyRe
     // Map organization members
     const orgHierarchies = organizations.map((org: any) => {
       const orgIdStr = org._id.toString();
-      const branches = orgClinicsMap.get(orgIdStr) || [];
+      const branches = orgLocationsMap.get(orgIdStr) || [];
       const branchMap = new Map<string, any>(branches.map((b) => [b.id, b]));
 
       const admins: any[] = [];
@@ -2145,7 +2056,7 @@ export async function getPlatformHierarchy(req: FastifyRequest, reply: FastifyRe
           isActive: u.isActive !== false,
         };
 
-        const branchId = rec.clinicId ? rec.clinicId.toString() : null;
+        const branchId = rec.locationId ? rec.locationId.toString() : null;
         if (branchId && branchMap.has(branchId)) {
           branchMap.get(branchId).members.push(memberData);
         } else {
@@ -2173,7 +2084,7 @@ export async function getPlatformHierarchy(req: FastifyRequest, reply: FastifyRe
           isActive: u.isActive !== false,
         };
 
-        const branchId = docToClinicMap.get(doc._id.toString());
+        const branchId = docToLocationMap.get(doc._id.toString());
         if (branchId && branchMap.has(branchId)) {
           branchMap.get(branchId).members.push(memberData);
         } else if (branches.length === 1) {
@@ -2195,7 +2106,7 @@ export async function getPlatformHierarchy(req: FastifyRequest, reply: FastifyRe
         address: org.address,
         plan: org.plan || "starter",
         status: org.status || (org.isActive === false ? "inactive" : "active"),
-        maxClinics: org.maxClinics ?? 1,
+        maxLocations: org.maxLocations ?? 1,
         maxDoctors: org.maxDoctors ?? 2,
         maxStaff: org.maxStaff ?? 5,
         branches,
@@ -2215,7 +2126,7 @@ export async function getPlatformHierarchy(req: FastifyRequest, reply: FastifyRe
       successResponse({
         summary: {
           totalOrganizations: organizations.length,
-          totalBranches: clinics.length,
+          totalBranches: locations.length,
           totalMembers,
           totalPlatformAdmins: rootUsers.length,
         },

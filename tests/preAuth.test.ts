@@ -1,4 +1,5 @@
-import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { reuseOnboardingLocation } from "./helpers/locationEssentialsSetup.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
@@ -7,13 +8,13 @@ import { PreAuthorization } from "../models/PreAuthorization.ts";
 
 describe("Insurance Claims & TPA Pre-Authorization Integration Tests", () => {
   let adminCookies: string[] = [];
-  let clinicId: string;
+  let locationId: string;
   let patientId: string;
   let doctorUserId: string;
 
   beforeAll(async () => {
     // 1. Create Organization & Admin
-    const orgRes = await app.inject({
+    const orgRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -25,18 +26,18 @@ describe("Insurance Claims & TPA Pre-Authorization Integration Tests", () => {
       },
     });
     expect(orgRes.statusCode, orgRes.body).toBe(201);
-    adminCookies = orgRes.headers["set-cookie"] as string[];
+    adminCookies = (await provisionedAdminCookies(orgRes));
 
-    // 2. Create Clinic
-    const clinicRes = await reuseOnboardingClinic(app, { headers: { cookie: adminCookies.join("; ") }, payload: {
+    // 2. Create Location
+    const locationRes = await reuseOnboardingLocation(app, { headers: { cookie: adminCookies.join("; ") }, payload: {
         name: "Central Insurance Desk Clinic",
         city: "Hyderabad",
         address: "300 Healthcare Park",
         phone: "9700066600",
         email: "tpa-desk@apex.internal",
       } });
-    expect(clinicRes.statusCode, clinicRes.body).toBe(200);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode, locationRes.body).toBe(200);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Register Patient
     const patientRes = await app.inject({
@@ -44,7 +45,7 @@ describe("Insurance Claims & TPA Pre-Authorization Integration Tests", () => {
       url: "/api/auth/register",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         name: "Insured Patient Ramesh",
         email: `ramesh_tpa_${Date.now()}@patient.com`,
         phone: "9112233445",
@@ -82,7 +83,7 @@ describe("Insurance Claims & TPA Pre-Authorization Integration Tests", () => {
       url: "/api/pre-auth",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         patientId,
         doctorId: doctorUserId,
         tpaName: "Medi Assist TPA",
@@ -105,7 +106,7 @@ describe("Insurance Claims & TPA Pre-Authorization Integration Tests", () => {
   it("should retrieve pre-authorization requests via GET /api/pre-auth", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/api/pre-auth?clinicId=${clinicId}`,
+      url: `/api/pre-auth?locationId=${locationId}`,
       headers: { cookie: adminCookies.join("; ") },
     });
 
@@ -120,7 +121,7 @@ describe("Insurance Claims & TPA Pre-Authorization Integration Tests", () => {
   it("should update pre-authorization approval status and generate validUntil via PUT /api/pre-auth/:id", async () => {
     const listRes = await app.inject({
       method: "GET",
-      url: `/api/pre-auth?clinicId=${clinicId}`,
+      url: `/api/pre-auth?locationId=${locationId}`,
       headers: { cookie: adminCookies.join("; ") },
     });
     const preAuthItem = JSON.parse(listRes.body).data[0];

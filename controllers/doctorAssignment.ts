@@ -1,7 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { User } from "../models/User.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
@@ -14,19 +14,19 @@ export async function assignDoctor(req: FastifyRequest, reply: FastifyReply) {
     const orgId = scope.organizationId;
     if (!orgId) return reply.code(400).send(errorResponse("You are not linked to any organization"));
 
-    const { doctorId, clinicId, workingHours, fees, feeType, appointmentDuration, bookingMode, maxDailyTokens } = req.body as {
-      doctorId: string; clinicId: string; workingHours: string; fees: number;
+    const { doctorId, locationId, workingHours, fees, feeType, appointmentDuration, bookingMode, maxDailyTokens } = req.body as {
+      doctorId: string; locationId: string; workingHours: string; fees: number;
       feeType?: "fixed" | "post_consultation" | "free"; appointmentDuration?: number;
       bookingMode?: "time_slot" | "sequential_queue"; maxDailyTokens?: number | null;
     };
 
-    if (!doctorId || !clinicId || !workingHours || fees === undefined) {
-      return reply.code(400).send(errorResponse("doctorId, clinicId, workingHours, and fees are required"));
+    if (!doctorId || !locationId || !workingHours || fees === undefined) {
+      return reply.code(400).send(errorResponse("doctorId, locationId, workingHours, and fees are required"));
     }
 
-    // Verify Clinic belongs to the organization
-    const clinic = await Clinic.findOne({ _id: clinicId, organizationId: orgId, isActive: true });
-    if (!clinic) return reply.code(404).send(errorResponse("Clinic not found in your organization"));
+    // Verify Location belongs to the organization
+    const location = await Location.findOne({ _id: locationId, organizationId: orgId, isActive: true });
+    if (!location) return reply.code(404).send(errorResponse("Location not found in your organization"));
 
     // Verify Doctor exists and belongs to organization
     const doctorUser = await User.findOne({ _id: doctorId, isActive: true });
@@ -37,7 +37,7 @@ export async function assignDoctor(req: FastifyRequest, reply: FastifyReply) {
 
     // Upsert DoctorAssignment
     const assignment = await DoctorAssignment.findOneAndUpdate(
-      { doctorId, clinicId, organizationId: orgId },
+      { doctorId, locationId, organizationId: orgId },
       {
         workingHours,
         fees,
@@ -50,7 +50,7 @@ export async function assignDoctor(req: FastifyRequest, reply: FastifyReply) {
       { returnDocument: "after", upsert: true }
     );
 
-    return reply.code(201).send(successResponse(assignment, "Doctor assigned to clinic successfully"));
+    return reply.code(201).send(successResponse(assignment, "Doctor assigned to location successfully"));
   } catch (err) {
     console.error("assignDoctor error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -63,7 +63,7 @@ export async function getDoctorAssignments(req: FastifyRequest, reply: FastifyRe
     const scope = resolveAuthorizedOrganizationScope(req);
     if (!scope.allowed && userRole !== "patient") return reply.code(scope.statusCode).send(errorResponse(scope.message));
     const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
-    const { doctorId, clinicId } = req.query as { doctorId?: string; clinicId?: string };
+    const { doctorId, locationId } = req.query as { doctorId?: string; locationId?: string };
 
     const query: any = { isActive: true };
 
@@ -73,17 +73,17 @@ export async function getDoctorAssignments(req: FastifyRequest, reply: FastifyRe
     if (doctorId && mongoose.Types.ObjectId.isValid(doctorId)) {
       query.doctorId = doctorId;
     }
-    if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
-      query.clinicId = clinicId;
+    if (locationId && mongoose.Types.ObjectId.isValid(locationId)) {
+      query.locationId = locationId;
     }
 
-    if (!orgId && !doctorId && !clinicId && userRole !== "patient") {
+    if (!orgId && !doctorId && !locationId && userRole !== "patient") {
       return reply.code(400).send(errorResponse("You are not linked to any organization"));
     }
 
     const assignments = await DoctorAssignment.find(query)
       .populate("doctorId", "name email phone")
-      .populate("clinicId", "name city address");
+      .populate("locationId", "name city address");
 
     return reply.code(200).send(successResponse(assignments));
   } catch (err) {

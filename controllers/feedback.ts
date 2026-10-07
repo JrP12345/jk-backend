@@ -4,7 +4,7 @@ import { PatientFeedback } from "../models/PatientFeedback.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
-import { checkClinicAccess, getRequestClinicIds } from "../utilities/tenant.ts";
+import { checkLocationAccess, getRequestLocationIds } from "../utilities/tenant.ts";
 
 export async function submitFeedback(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -36,8 +36,8 @@ export async function submitFeedback(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, appointment.clinicId);
-    if (!clinicAccess.allowed) {
+    const locationAccess = await checkLocationAccess(req, appointment.locationId);
+    if (!locationAccess.allowed) {
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
 
@@ -57,7 +57,7 @@ export async function submitFeedback(req: FastifyRequest, reply: FastifyReply) {
       appointmentId,
       patientId: appointment.patientId,
       doctorId: appointment.doctorId,
-      clinicId: appointment.clinicId,
+      locationId: appointment.locationId,
       rating: Number(rating),
       npsScore: Number(npsScore),
       comments: comments?.trim(),
@@ -81,16 +81,16 @@ export async function submitFeedback(req: FastifyRequest, reply: FastifyReply) {
 
 export async function getFeedbackStats(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, doctorId } = req.query as { clinicId?: string; doctorId?: string };
+    const { locationId, doctorId } = req.query as { locationId?: string; doctorId?: string };
 
     const filter: any = {};
-    if (clinicId) {
-      if (!(await checkClinicAccess(req, clinicId)).allowed) {
-        return reply.code(404).send(errorResponse("Clinic not found"));
+    if (locationId) {
+      if (!(await checkLocationAccess(req, locationId)).allowed) {
+        return reply.code(404).send(errorResponse("Location not found"));
       }
-      filter.clinicId = clinicId;
+      filter.locationId = locationId;
     } else if (req.user?.role !== "root") {
-      filter.clinicId = { $in: await getRequestClinicIds(req) };
+      filter.locationId = { $in: await getRequestLocationIds(req) };
     }
     if (doctorId && mongoose.Types.ObjectId.isValid(doctorId)) filter.doctorId = doctorId;
 
@@ -140,21 +140,21 @@ export async function getFeedbackStats(req: FastifyRequest, reply: FastifyReply)
 
 export async function getFeedback(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, doctorId, page, limit } = req.query as {
-      clinicId?: string;
+    const { locationId, doctorId, page, limit } = req.query as {
+      locationId?: string;
       doctorId?: string;
       page?: string | number;
       limit?: string | number;
     };
     const filter: any = {};
 
-    if (clinicId) {
-      if (!(await checkClinicAccess(req, clinicId)).allowed) {
-        return reply.code(404).send(errorResponse("Clinic not found"));
+    if (locationId) {
+      if (!(await checkLocationAccess(req, locationId)).allowed) {
+        return reply.code(404).send(errorResponse("Location not found"));
       }
-      filter.clinicId = clinicId;
+      filter.locationId = locationId;
     } else if (req.user?.role !== "root") {
-      filter.clinicId = { $in: await getRequestClinicIds(req) };
+      filter.locationId = { $in: await getRequestLocationIds(req) };
     }
     if (doctorId) {
       if (!mongoose.Types.ObjectId.isValid(doctorId)) {
@@ -166,7 +166,7 @@ export async function getFeedback(req: FastifyRequest, reply: FastifyReply) {
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
     const totalCount = await PatientFeedback.countDocuments(filter);
     const feedback = await PatientFeedback.find(filter)
-      .populate("clinicId", "name city")
+      .populate("locationId", "name city")
       .populate("doctorId", "name specialization")
       .populate("patientId", "userId")
       .sort({ createdAt: -1 })

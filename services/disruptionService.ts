@@ -16,7 +16,7 @@ import { withClinicalTransaction } from "../utilities/transaction.ts";
 import { Counter, getNextAtomicSequence } from "../models/Counter.ts";
 import { AppointmentDomainError, validateAppointmentAvailability } from "./AppointmentService.ts";
 import { issueAppointmentTrackerLink } from "../utilities/publicTracker.ts";
-import { clinicClockMinutes, clinicDateKey, clinicDayRange, clinicLocalTimeToDate, getClinicTimezone } from "../utilities/clinicTime.ts";
+import { locationClockMinutes, locationDateKey, locationDayRange, locationLocalTimeToDate, getLocationTimezone } from "../utilities/locationTime.ts";
 
 function requirePendingDisruption(appointment: any) {
   if (appointment.status !== "disruption_triage" || appointment.triageAction !== "pending") {
@@ -24,16 +24,16 @@ function requirePendingDisruption(appointment: any) {
   }
 }
 
-async function nextDisruptionToken(clinicId: string, doctorId: string, date: string, start: Date, end: Date) {
-  const key = `token_${clinicId}_${doctorId}_${date}`;
-  const last = await Appointment.findOne({ clinicId, doctorId, appointmentTime: { $gte: start, $lte: end } }).sort({ tokenNumber: -1 }).select("tokenNumber");
-  // Adopt legacy/imported tokens without moving the canonical counter backwards.
+async function nextDisruptionToken(locationId: string, doctorId: string, date: string, start: Date, end: Date) {
+  const key = `token_${locationId}_${doctorId}_${date}`;
+  const last = await Appointment.findOne({ locationId, doctorId, appointmentTime: { $gte: start, $lte: end } }).sort({ tokenNumber: -1 }).select("tokenNumber");
+  // Adopt imported queue tokens without moving the canonical counter backwards.
   await Counter.findOneAndUpdate({ id: key }, { $max: { seq: last?.tokenNumber || 0 } }, { upsert: true });
   return getNextAtomicSequence(key);
 }
 
 export interface ProcessDisruptionParams {
-  clinicId: string;
+  locationId: string;
   doctorId: string;
   date: string; // YYYY-MM-DD
   status: "available" | "unavailable" | "delayed" | "extended";
@@ -87,7 +87,7 @@ export const disruptionService = {
    */
   async processDoctorDisruption(params: ProcessDisruptionParams) {
     const {
-      clinicId,
+      locationId,
       doctorId,
       date,
       status,
@@ -98,8 +98,8 @@ export const disruptionService = {
       disruptionId,
     } = params;
 
-    const timezone = await getClinicTimezone(clinicId);
-    const { start: startOfDay, end: endOfDay } = clinicDayRange(date, timezone);
+    const timezone = await getLocationTimezone(locationId);
+    const { start: startOfDay, end: endOfDay } = locationDayRange(date, timezone);
 
     let closingMinutes = 24 * 60;
     if (effectiveEndTime && status !== "unavailable") {
@@ -108,12 +108,12 @@ export const disruptionService = {
     }
 
     const appointments = await Appointment.find({
-      clinicId,
+      locationId,
       doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
       status: { $in: ["in-consultation", "checked-in", "confirmed", "pending"] },
     })
-      .populate("clinicId", "name phone organizationId")
+      .populate("locationId", "name phone organizationId")
       .populate("doctorId", "name email")
       .populate({
         path: "patientId",
@@ -130,7 +130,7 @@ export const disruptionService = {
 
     for (const appt of appointments) {
       const apptDate = new Date(appt.appointmentTime);
-      const apptMinutes = clinicClockMinutes(apptDate, timezone);
+      const apptMinutes = locationClockMinutes(apptDate, timezone);
       const isAffected = status === "unavailable" || apptMinutes >= closingMinutes;
 
       if (!isAffected) continue;
@@ -161,7 +161,7 @@ export const disruptionService = {
           },
           { returnDocument: "after" },
         )
-          .populate("clinicId", "name phone organizationId")
+          .populate("locationId", "name phone organizationId")
           .populate("doctorId", "name email")
           .populate({ path: "patientId", populate: { path: "userId", select: "name email phone" } });
         if (!triagedAppointment) continue;
@@ -184,7 +184,7 @@ export const disruptionService = {
           actionUrl: `/dashboard/queue`,
           metadata: {
             appointmentId: triagedAppointment._id.toString(),
-            clinicId,
+            locationId,
             doctorId,
             tokenNumber: triagedAppointment.tokenNumber,
           },
@@ -212,7 +212,7 @@ export const disruptionService = {
           },
           { returnDocument: "after" },
         )
-          .populate("clinicId", "name phone organizationId")
+          .populate("locationId", "name phone organizationId")
           .populate("doctorId", "name email")
           .populate({ path: "patientId", populate: { path: "userId", select: "name email phone" } });
         if (!triagedAppointment) continue;
@@ -226,7 +226,7 @@ export const disruptionService = {
         const patientPhone = patientDoc?.phone || patientDoc?.userId?.phone;
         const patientName = patientDoc?.name || patientDoc?.userId?.name || "Patient";
         const doctorName = (triagedAppointment.doctorId as any)?.name || "Doctor";
-        const clinicName = (triagedAppointment.clinicId as any)?.name || "Clinic";
+        const locationName = (triagedAppointment.locationId as any)?.name || "Location";
         const formattedTime = new Date(triagedAppointment.appointmentTime).toLocaleDateString("en-US", {
           timeZone: timezone,
           month: "short",
@@ -242,12 +242,12 @@ export const disruptionService = {
         if (patientPhone) {
           SmsWhatsAppService.sendDisruptionAlert(
             triagedAppointment._id.toString(),
-            organizationId || (triagedAppointment.clinicId as any)?.organizationId?.toString() || "",
+            organizationId || (triagedAppointment.locationId as any)?.organizationId?.toString() || "",
             patientPhone,
             {
               patientName,
               doctorName,
-              clinicName,
+              locationName,
               appointmentTime: formattedTime,
               rescheduleUrl,
               cancelUrl,
@@ -269,7 +269,7 @@ export const disruptionService = {
           actionUrl: trackerUrl,
           metadata: {
             appointmentId: triagedAppointment._id.toString(),
-            clinicId,
+            locationId,
             doctorId,
             deadline: responseDeadline.toISOString(),
           },
@@ -277,27 +277,27 @@ export const disruptionService = {
       }
     }
 
-    // Broadcast alert to clinic reception if checked-in patients require triage
+    // Broadcast alert to location reception if checked-in patients require triage
     if (checkedInTriageCount > 0) {
-      broadcastQueueUpdate(clinicId, {
+      broadcastQueueUpdate(locationId, {
         type: "DISRUPTION_TRIAGE_REQUIRED",
         message: `${checkedInTriageCount} waiting patient(s) need immediate transfer or assistance.`,
         data: {
           title: "Urgent: Patients Require Triage",
           severity: "urgent",
           actionUrl: `/dashboard/queue`,
-          clinicId,
+          locationId,
           doctorId,
           count: checkedInTriageCount,
         },
       });
     }
 
-    // Broadcast queue update for clinic
-    broadcastQueueUpdate(clinicId, {
+    // Broadcast queue update for location
+    broadcastQueueUpdate(locationId, {
       type: "QUEUE_UPDATED",
       data: {
-        clinicId,
+        locationId,
         doctorId,
         date,
         overrideStatus: status,
@@ -317,7 +317,7 @@ export const disruptionService = {
       targetId: disruptionId,
       targetModel: "DoctorDayOverride",
       details: {
-        clinicId,
+        locationId,
         doctorId,
         date,
         status,
@@ -337,28 +337,28 @@ export const disruptionService = {
   },
 
   /**
-   * Finds eligible replacement doctors at the same clinic.
+   * Finds eligible replacement doctors at the same location.
    * Doctor must:
-   * 1. Have active DoctorAssignment at this clinic
+   * 1. Have active DoctorAssignment at this location
    * 2. Not be the original disrupted doctor
    * 3. Not have an 'unavailable' DoctorDayOverride on this date
    */
-  async getEligibleReplacementDoctors(clinicId: string, date: string, originalDoctorId: string) {
+  async getEligibleReplacementDoctors(locationId: string, date: string, originalDoctorId: string) {
     const assignments = await DoctorAssignment.find({
-      clinicId,
+      locationId,
       doctorId: { $ne: new mongoose.Types.ObjectId(originalDoctorId) },
       isActive: true,
     }).populate("doctorId", "name email specialization");
 
     const eligibleDoctors: any[] = [];
-    const timezone = await getClinicTimezone(clinicId);
-    const { start: startOfDay, end: endOfDay } = clinicDayRange(date, timezone);
+    const timezone = await getLocationTimezone(locationId);
+    const { start: startOfDay, end: endOfDay } = locationDayRange(date, timezone);
     const doctorIds = assignments.flatMap(assignment => assignment.doctorId ? [(assignment.doctorId as any)._id] : []);
     if (!doctorIds.length) return eligibleDoctors;
     const [overrides, loads] = await Promise.all([
-      DoctorDayOverride.find({ clinicId, doctorId: { $in: doctorIds }, date }).select("doctorId status").lean(),
+      DoctorDayOverride.find({ locationId, doctorId: { $in: doctorIds }, date }).select("doctorId status").lean(),
       Appointment.aggregate<{ _id: mongoose.Types.ObjectId; count: number }>([
-        { $match: { clinicId: new mongoose.Types.ObjectId(clinicId), doctorId: { $in: doctorIds },
+        { $match: { locationId: new mongoose.Types.ObjectId(locationId), doctorId: { $in: doctorIds },
           appointmentTime: { $gte: startOfDay, $lte: endOfDay }, status: { $in: ["confirmed", "checked-in", "in-consultation"] } } },
         { $group: { _id: "$doctorId", count: { $sum: 1 } } },
       ]),
@@ -402,9 +402,9 @@ export const disruptionService = {
   async transferPatient(params: TransferPatientParams) {
     const { appointmentId, replacementDoctorId, transferredByUserId, reason } = params;
 
-    const { appt, clinicId, previousDoctorId, previousDoctorName, targetDoctor, patientDoc, newTokenNumber } = await withClinicalTransaction(async () => {
+    const { appt, locationId, previousDoctorId, previousDoctorName, targetDoctor, patientDoc, newTokenNumber } = await withClinicalTransaction(async () => {
       const appt = await Appointment.findById(appointmentId)
-        .populate("clinicId", "name phone organizationId")
+        .populate("locationId", "name phone organizationId")
         .populate("doctorId", "name email")
         .populate({
           path: "patientId",
@@ -420,7 +420,7 @@ export const disruptionService = {
       const previousDoctorId = appt.doctorId?._id?.toString() || appt.doctorId?.toString();
       const previousDoctorName = (appt.doctorId as any)?.name || "Doctor";
       const previousToken = appt.tokenNumber;
-      const clinicId = appt.clinicId?._id?.toString() || appt.clinicId?.toString();
+      const locationId = appt.locationId?._id?.toString() || appt.locationId?.toString();
       const isWaiting = appt.status === "checked-in" || appt.status === "disruption_triage";
 
       const targetDoctor = await User.findById(replacementDoctorId);
@@ -428,33 +428,33 @@ export const disruptionService = {
         throw new Error("Replacement doctor not found");
       }
       if (replacementDoctorId === previousDoctorId) throw new AppointmentDomainError("Choose a different replacement doctor", 400);
-      const replacementAssignment = await DoctorAssignment.findOne({ clinicId, doctorId: replacementDoctorId, isActive: true });
-      if (!replacementAssignment || String(replacementAssignment.organizationId) !== String(appt.organizationId || (appt.clinicId as any)?.organizationId)) {
-        throw new AppointmentDomainError("Replacement doctor is not assigned to this clinic", 404);
+      const replacementAssignment = await DoctorAssignment.findOne({ locationId, doctorId: replacementDoctorId, isActive: true });
+      if (!replacementAssignment || String(replacementAssignment.organizationId) !== String(appt.organizationId || (appt.locationId as any)?.organizationId)) {
+        throw new AppointmentDomainError("Replacement doctor is not assigned to this location", 404);
       }
       await validateAppointmentAvailability({ role: "doctor" }, {
-        clinicId, doctorId: replacementDoctorId, appointmentTime: new Date(appt.appointmentTime).toISOString(),
+        locationId, doctorId: replacementDoctorId, appointmentTime: new Date(appt.appointmentTime).toISOString(),
         appointmentType: appt.appointmentType, duration: appt.duration,
       }, replacementAssignment, appt.id);
 
       // Determine target date boundary
       const apptDate = new Date(appt.appointmentTime);
-      const timezone = await getClinicTimezone(clinicId);
-      const { start: startOfDay, end: endOfDay } = clinicDayRange(clinicDateKey(apptDate, timezone), timezone);
+      const timezone = await getLocationTimezone(locationId);
+      const { start: startOfDay, end: endOfDay } = locationDayRange(locationDateKey(apptDate, timezone), timezone);
 
-      const newTokenNumber = await nextDisruptionToken(clinicId, replacementDoctorId, clinicDateKey(apptDate, timezone), startOfDay, endOfDay);
+      const newTokenNumber = await nextDisruptionToken(locationId, replacementDoctorId, locationDateKey(apptDate, timezone), startOfDay, endOfDay);
       if (replacementAssignment.maxDailyTokens && newTokenNumber > replacementAssignment.maxDailyTokens) throw new AppointmentDomainError("Replacement doctor's daily token limit has been reached", 409);
       const claimed = await Appointment.updateOne({ _id: appt._id, status: "disruption_triage", triageAction: "pending" }, { $set: { triageAction: "transferred" } });
       if (!claimed.modifiedCount) throw new AppointmentDomainError("Appointment was changed by another request", 409);
 
       // Determine Queue Priority:
-      // When a patient already waiting at the clinic is transferred to Doctor B,
+      // When a patient already waiting at the location is transferred to Doctor B,
       // they must be placed IMMEDIATELY behind Doctor B's active consultation -> Next Up (queuePosition = 1)!
       let assignedQueuePosition = 1;
       if (isWaiting) {
         // Find all existing waiting patients for Doctor B today
         const existingWaiting = await Appointment.find({
-          clinicId,
+          locationId,
           doctorId: replacementDoctorId,
           appointmentTime: { $gte: startOfDay, $lte: endOfDay },
           status: { $in: ["checked-in", "confirmed", "pending"] },
@@ -470,7 +470,7 @@ export const disruptionService = {
         }
       } else {
         const countWaiting = await Appointment.countDocuments({
-          clinicId,
+          locationId,
           doctorId: replacementDoctorId,
           appointmentTime: { $gte: startOfDay, $lte: endOfDay },
           status: { $in: ["checked-in", "confirmed", "pending"] },
@@ -481,8 +481,8 @@ export const disruptionService = {
 
       // Calculate Fee Variance & Financial Reconciliation between previous and replacement doctor
       const [prevAssignment, repAssignment] = await Promise.all([
-        DoctorAssignment.findOne({ doctorId: previousDoctorId, clinicId }),
-        DoctorAssignment.findOne({ doctorId: replacementDoctorId, clinicId }),
+        DoctorAssignment.findOne({ doctorId: previousDoctorId, locationId }),
+        DoctorAssignment.findOne({ doctorId: replacementDoctorId, locationId }),
       ]);
 
       const prevFee = (prevAssignment?.fees ?? (prevAssignment as any)?.consultationFee) || 0;
@@ -517,7 +517,7 @@ export const disruptionService = {
 
       // Update corresponding Invoice doctor reference, notes, and fee waiver documentation
       const feeNote = feeVariance > 0
-        ? ` | Disruption Courtesy: Original fee ₹${prevFee} honored (₹${feeVariance} difference absorbed by clinic)`
+        ? ` | Disruption Courtesy: Original fee ₹${prevFee} honored (₹${feeVariance} difference absorbed by location)`
         : feeVariance < 0
         ? ` | Disruption Reassignment: Original fee ₹${prevFee} vs Replacement fee ₹${repFee}`
         : "";
@@ -540,7 +540,7 @@ export const disruptionService = {
       // Immutable Audit Log: APPOINTMENT_TRANSFERRED { fromDoctor, toDoctor, reason, staffId, feeVariance }
       await AuditLog.create({
         userId: auditUserId,
-        organizationId: appt.organizationId || (appt.clinicId as any)?.organizationId,
+        organizationId: appt.organizationId || (appt.locationId as any)?.organizationId,
         action: "APPOINTMENT_TRANSFERRED",
         targetId: appt._id,
         targetModel: "Appointment",
@@ -563,7 +563,7 @@ export const disruptionService = {
         },
       });
 
-      return { appt, clinicId, previousDoctorId, previousDoctorName, replacementDoctorId, targetDoctor, patientDoc, newTokenNumber };
+      return { appt, locationId, previousDoctorId, previousDoctorName, replacementDoctorId, targetDoctor, patientDoc, newTokenNumber };
     });
     appt.$session(null);
     const { url: trackerUrl } = await issueAppointmentTrackerLink(appt as any);
@@ -572,7 +572,7 @@ export const disruptionService = {
     await eventBus.publishDurable({
       eventType: EVENT_TYPES.PATIENT_TRANSFERRED_DOCTOR,
       category: "patient",
-      organizationId: (appt.clinicId as any)?.organizationId?.toString(),
+      organizationId: (appt.locationId as any)?.organizationId?.toString(),
       targetUserId: patientDoc?.userId?._id?.toString() || patientDoc?.userId?.toString(),
       title: "Appointment Transferred",
       message: `Your appointment has been transferred to Dr. ${targetDoctor.name}. Your new token is #${newTokenNumber}.`,
@@ -589,18 +589,18 @@ export const disruptionService = {
     // WhatsApp Notification
     const patientPhone = patientDoc?.phone || patientDoc?.userId?.phone;
     const patientName = patientDoc?.name || patientDoc?.userId?.name || "Patient";
-    const clinicName = (appt.clinicId as any)?.name || "Clinic";
+    const locationName = (appt.locationId as any)?.name || "Location";
 
     if (patientPhone) {
       SmsWhatsAppService.sendDisruptionTransferAlert(
         appt._id.toString(),
-        (appt.clinicId as any)?.organizationId?.toString() || "",
+        (appt.locationId as any)?.organizationId?.toString() || "",
         patientPhone,
         {
           patientName,
           originalDoctorName: previousDoctorName,
           newDoctorName: targetDoctor.name,
-          clinicName,
+          locationName,
           tokenNumber: newTokenNumber,
           trackingUrl: trackerUrl,
         }
@@ -608,16 +608,16 @@ export const disruptionService = {
     }
 
     // Real-time queue broadcasts for both doctors
-    broadcastQueueUpdate(clinicId, {
+    broadcastQueueUpdate(locationId, {
       type: "QUEUE_UPDATED",
-      data: { clinicId, doctorId: previousDoctorId },
+      data: { locationId, doctorId: previousDoctorId },
       message: `Patient transferred to Dr. ${targetDoctor.name}`,
       timestamp: new Date().toISOString(),
     });
 
-    broadcastQueueUpdate(clinicId, {
+    broadcastQueueUpdate(locationId, {
       type: "QUEUE_UPDATED",
-      data: { clinicId, doctorId: replacementDoctorId },
+      data: { locationId, doctorId: replacementDoctorId },
       message: `New patient transferred from Dr. ${previousDoctorName}`,
       timestamp: new Date().toISOString(),
     });
@@ -632,7 +632,7 @@ export const disruptionService = {
     const { appointmentId, cancelledByUserId, reason, timeoutClaimToken } = params;
 
     let appt = await Appointment.findById(appointmentId)
-      .populate("clinicId", "name phone organizationId")
+      .populate("locationId", "name phone organizationId")
       .populate("doctorId", "name email")
       .populate({
         path: "patientId",
@@ -655,17 +655,17 @@ export const disruptionService = {
         cancellationReason: reason || "Doctor schedule disruption",
         notes: `${appt!.notes ? `${appt!.notes} | ` : ""}[Cancelled due to doctor disruption: ${reason || "Doctor unavailable"}]` } },
       { returnDocument: "after" },
-    ).populate("clinicId", "name phone organizationId").populate("doctorId", "name email")
+    ).populate("locationId", "name phone organizationId").populate("doctorId", "name email")
       .populate({ path: "patientId", populate: { path: "userId", select: "name email phone" } }));
     if (!claimed) throw new AppointmentDomainError("Appointment was changed by another request", 409);
     appt = claimed;
     appt.$session(null);
 
     const patientDoc = appt.patientId as any;
-    const clinicId = appt.clinicId?._id?.toString() || appt.clinicId?.toString();
+    const locationId = appt.locationId?._id?.toString() || appt.locationId?.toString();
     const doctorId = appt.doctorId?._id?.toString() || appt.doctorId?.toString();
     const doctorName = (appt.doctorId as any)?.name || "Doctor";
-    const clinicName = (appt.clinicId as any)?.name || "Clinic";
+    const locationName = (appt.locationId as any)?.name || "Location";
     const patientName = patientDoc?.name || patientDoc?.userId?.name || "Patient";
     const patientPhone = patientDoc?.phone || patientDoc?.userId?.phone;
 
@@ -686,7 +686,7 @@ export const disruptionService = {
       appt.paymentStatus = "refund_pending";
 
       if (source) {
-        await AuditLog.create({ userId: auditUserId, organizationId: appt.organizationId || (appt.clinicId as any)?.organizationId,
+        await AuditLog.create({ userId: auditUserId, organizationId: appt.organizationId || (appt.locationId as any)?.organizationId,
           action: "REFUND_REQUESTED", targetId: appt._id, targetModel: "Appointment", category: "BILLING",
           details: { paymentId: source.paymentId, amount: source.amount, currency: source.currency } });
         // Cash, split receipts and missing provider references need manual billing review.
@@ -719,7 +719,7 @@ export const disruptionService = {
           await eventBus.publishDurable({
             eventType: EVENT_TYPES.PATIENT_DISRUPTION_REFUNDED,
             category: "billing",
-            organizationId: (appt.clinicId as any)?.organizationId?.toString(),
+            organizationId: (appt.locationId as any)?.organizationId?.toString(),
             targetUserId: patientDoc?.userId?._id?.toString() || patientDoc?.userId?.toString(),
             title: "Refund Processed",
             message: `A refund of ₹${refundAmount} has been processed for your appointment with Dr. ${doctorName}.`,
@@ -732,12 +732,12 @@ export const disruptionService = {
           if (patientPhone) {
             SmsWhatsAppService.sendDisruptionRefundAlert(
               appt._id.toString(),
-              (appt.clinicId as any)?.organizationId?.toString() || "",
+              (appt.locationId as any)?.organizationId?.toString() || "",
               patientPhone,
               {
                 patientName,
                 doctorName,
-                clinicName,
+                locationName,
                 refundAmount,
                 refundId,
               }
@@ -746,7 +746,7 @@ export const disruptionService = {
           // Immutable Audit Log: APPOINTMENT_REFUNDED
           await AuditLog.create({
             userId: auditUserId,
-            organizationId: (appt.clinicId as any)?.organizationId,
+            organizationId: (appt.locationId as any)?.organizationId,
             action: "APPOINTMENT_REFUNDED",
             targetId: invoice?._id || appt._id,
             targetModel: "Invoice",
@@ -772,7 +772,7 @@ export const disruptionService = {
     // Immutable Audit Log: APPOINTMENT_CANCELLED
     await AuditLog.create({
       userId: auditUserId,
-      organizationId: appt.organizationId || (appt.clinicId as any)?.organizationId,
+      organizationId: appt.organizationId || (appt.locationId as any)?.organizationId,
       action: "APPOINTMENT_CANCELLED",
       targetId: appt._id,
       targetModel: "Appointment",
@@ -781,7 +781,7 @@ export const disruptionService = {
         appointmentId: appt._id.toString(),
         fromDoctor: doctorId,
         doctorId,
-        clinicId,
+        locationId,
         staffId: cancelledByUserId,
         refundProcessed,
         refundAmount,
@@ -794,7 +794,7 @@ export const disruptionService = {
     await eventBus.publishDurable({
       eventType: EVENT_TYPES.PATIENT_DISRUPTION_CANCELLED,
       category: "patient",
-      organizationId: (appt.clinicId as any)?.organizationId?.toString(),
+      organizationId: (appt.locationId as any)?.organizationId?.toString(),
       targetUserId: patientDoc?.userId?._id?.toString() || patientDoc?.userId?.toString(),
       title: "Appointment Cancelled",
       message: `Your appointment with Dr. ${doctorName} has been cancelled due to doctor unavailability.`,
@@ -804,9 +804,9 @@ export const disruptionService = {
     });
 
     // Real-time queue broadcast
-    broadcastQueueUpdate(clinicId, {
+    broadcastQueueUpdate(locationId, {
       type: "QUEUE_UPDATED",
-      data: { clinicId, doctorId },
+      data: { locationId, doctorId },
       message: "Appointment cancelled due to schedule disruption",
       timestamp: new Date().toISOString(),
     });
@@ -821,9 +821,9 @@ export const disruptionService = {
   async priorityReschedule(params: PriorityRescheduleParams) {
     const { appointmentId, targetDate, targetDoctorId, targetTimeSlot, rescheduledByUserId, reason } = params;
 
-    const { originalAppt, newAppt, clinicId, doctorId, patientDoc, newTokenNumber, newAppointmentTime, timezone } = await withClinicalTransaction(async () => {
+    const { originalAppt, newAppt, locationId, doctorId, patientDoc, newTokenNumber, newAppointmentTime, timezone } = await withClinicalTransaction(async () => {
       const originalAppt = await Appointment.findById(appointmentId)
-        .populate("clinicId", "name phone organizationId")
+        .populate("locationId", "name phone organizationId")
         .populate("doctorId", "name email")
         .populate({
           path: "patientId",
@@ -836,33 +836,33 @@ export const disruptionService = {
 
       requirePendingDisruption(originalAppt);
 
-      const clinicId = originalAppt.clinicId?._id?.toString() || originalAppt.clinicId?.toString();
+      const locationId = originalAppt.locationId?._id?.toString() || originalAppt.locationId?.toString();
       const doctorId = targetDoctorId || originalAppt.doctorId?._id?.toString() || originalAppt.doctorId?.toString();
 
-      const timezone = await getClinicTimezone(clinicId);
+      const timezone = await getLocationTimezone(locationId);
       let newAppointmentTime: Date;
-      try { newAppointmentTime = clinicLocalTimeToDate(targetDate, targetTimeSlot || "09:00", timezone); }
-      catch { throw new AppointmentDomainError("Invalid clinic date or time", 400); }
-      const { start: startOfDay, end: endOfDay } = clinicDayRange(targetDate, timezone);
+      try { newAppointmentTime = locationLocalTimeToDate(targetDate, targetTimeSlot || "09:00", timezone); }
+      catch { throw new AppointmentDomainError("Invalid location date or time", 400); }
+      const { start: startOfDay, end: endOfDay } = locationDayRange(targetDate, timezone);
 
-      const assignment = await DoctorAssignment.findOne({ clinicId, doctorId, isActive: true });
-      if (!assignment || String(assignment.organizationId) !== String(originalAppt.organizationId || (originalAppt.clinicId as any)?.organizationId)) {
-        throw new AppointmentDomainError("Doctor is not assigned to this clinic", 404);
+      const assignment = await DoctorAssignment.findOne({ locationId, doctorId, isActive: true });
+      if (!assignment || String(assignment.organizationId) !== String(originalAppt.organizationId || (originalAppt.locationId as any)?.organizationId)) {
+        throw new AppointmentDomainError("Doctor is not assigned to this location", 404);
       }
       const actor = mongoose.Types.ObjectId.isValid(rescheduledByUserId) ? await User.findById(rescheduledByUserId).select("role") : null;
       await validateAppointmentAvailability({ role: actor?.role || "patient" }, {
-        clinicId, doctorId, appointmentTime: newAppointmentTime.toISOString(), appointmentType: originalAppt.appointmentType,
+        locationId, doctorId, appointmentTime: newAppointmentTime.toISOString(), appointmentType: originalAppt.appointmentType,
         duration: originalAppt.duration,
       }, assignment, originalAppt.id);
 
       // Get next token on target date
-      const newTokenNumber = await nextDisruptionToken(clinicId, doctorId, targetDate, startOfDay, endOfDay);
+      const newTokenNumber = await nextDisruptionToken(locationId, doctorId, targetDate, startOfDay, endOfDay);
       if (assignment.maxDailyTokens && newTokenNumber > assignment.maxDailyTokens) throw new AppointmentDomainError("Doctor's daily token limit has been reached", 409);
       const claimed = await Appointment.updateOne({ _id: originalAppt._id, status: "disruption_triage", triageAction: "pending" }, { $set: { status: "cancelled", triageAction: "rescheduled" } });
       if (!claimed.modifiedCount) throw new AppointmentDomainError("Appointment was changed by another request", 409);
 
       if (assignment.bookingMode === "sequential_queue") {
-        const waiting = await Appointment.find({ clinicId, doctorId, appointmentTime: { $gte: startOfDay, $lte: endOfDay },
+        const waiting = await Appointment.find({ locationId, doctorId, appointmentTime: { $gte: startOfDay, $lte: endOfDay },
           status: { $in: ["pending", "confirmed", "checked-in"] }, _id: { $ne: originalAppt._id } }).sort({ queuePosition: 1, tokenNumber: 1 });
         for (let index = 0; index < waiting.length; index++) {
           waiting[index].queuePosition = index + 2;
@@ -872,8 +872,8 @@ export const disruptionService = {
 
       // Create new priority appointment
       const newAppt = await Appointment.create({
-        organizationId: originalAppt.organizationId || (originalAppt.clinicId as any)?.organizationId,
-        clinicId,
+        organizationId: originalAppt.organizationId || (originalAppt.locationId as any)?.organizationId,
+        locationId,
         doctorId,
         patientId: originalAppt.patientId?._id || originalAppt.patientId,
         bookedByUserId: originalAppt.bookedByUserId,
@@ -888,7 +888,7 @@ export const disruptionService = {
         duration: originalAppt.duration || 15,
         reasonForVisit: originalAppt.reasonForVisit,
         priorityRescheduledFromId: originalAppt._id,
-        notes: `[Priority Rescheduled from ${clinicDateKey(new Date(originalAppt.appointmentTime), timezone)}: ${reason || "Disruption"}]`,
+        notes: `[Priority Rescheduled from ${locationDateKey(new Date(originalAppt.appointmentTime), timezone)}: ${reason || "Disruption"}]`,
       });
 
       // Mark original appointment as rescheduled
@@ -919,7 +919,7 @@ export const disruptionService = {
       // Immutable Audit Log: APPOINTMENT_RESCHEDULED
       await AuditLog.create({
         userId: auditUserId,
-        organizationId: originalAppt.organizationId || (originalAppt.clinicId as any)?.organizationId,
+        organizationId: originalAppt.organizationId || (originalAppt.locationId as any)?.organizationId,
         action: "APPOINTMENT_RESCHEDULED",
         targetId: originalAppt._id,
         targetModel: "Appointment",
@@ -937,7 +937,7 @@ export const disruptionService = {
         },
       });
 
-      return { originalAppt, newAppt, clinicId, doctorId, patientDoc, newTokenNumber, newAppointmentTime, timezone };
+      return { originalAppt, newAppt, locationId, doctorId, patientDoc, newTokenNumber, newAppointmentTime, timezone };
     });
     originalAppt.$session(null);
     newAppt.$session(null);
@@ -947,7 +947,7 @@ export const disruptionService = {
     await eventBus.publishDurable({
       eventType: EVENT_TYPES.PATIENT_PRIORITY_RESCHEDULED,
       category: "patient",
-      organizationId: (originalAppt.clinicId as any)?.organizationId?.toString(),
+      organizationId: (originalAppt.locationId as any)?.organizationId?.toString(),
       targetUserId: patientDoc?.userId?._id?.toString() || patientDoc?.userId?.toString(),
       title: "Appointment Rescheduled",
       message: `Your appointment has been rescheduled to ${targetDate} with token #${newTokenNumber}.`,
@@ -969,13 +969,13 @@ export const disruptionService = {
     if (patientPhone) {
       SmsWhatsAppService.sendBookingConfirmation(
         newAppt._id.toString(),
-        (originalAppt.clinicId as any)?.organizationId?.toString() || "",
+        (originalAppt.locationId as any)?.organizationId?.toString() || "",
         patientPhone,
         {
           patientName,
           tokenNumber: newTokenNumber,
           doctorName: doctor?.name || "Doctor",
-          clinicName: (originalAppt.clinicId as any)?.name || "Clinic",
+          locationName: (originalAppt.locationId as any)?.name || "Location",
           date: targetDate,
           appointmentTime: newAppointmentTime.toLocaleTimeString([], { timeZone: timezone, hour: "2-digit", minute: "2-digit" }),
           trackingUrl: newAppointmentTrackerUrl,
@@ -984,9 +984,9 @@ export const disruptionService = {
     }
 
     // Real-time queue broadcast
-    broadcastQueueUpdate(clinicId, {
+    broadcastQueueUpdate(locationId, {
       type: "QUEUE_UPDATED",
-      data: { clinicId, doctorId },
+      data: { locationId, doctorId },
       message: "New appointment scheduled via priority reschedule",
       timestamp: new Date().toISOString(),
     });

@@ -2,7 +2,7 @@ import mongoose, { Schema } from "mongoose";
 
 const UsageRecordSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, unique: true, index: true },
-  clinicsCount: { type: Number, default: 0 },
+  locationsCount: { type: Number, default: 0 },
   doctorsCount: { type: Number, default: 0 },
   staffCount: { type: Number, default: 0 },
   patientsCount: { type: Number, default: 0 },

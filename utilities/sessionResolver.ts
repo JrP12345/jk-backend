@@ -111,7 +111,7 @@ export async function revokeSession(sessionId: string, reason: string = "logout"
     const doc = await RefreshToken.findByIdAndUpdate(
       sessionId,
       { revoked: true, revocationReason: reason },
-      { new: true }
+      { returnDocument: "after" }
     ).lean();
 
     const userId = doc?.userId?.toString();
@@ -119,7 +119,7 @@ export async function revokeSession(sessionId: string, reason: string = "logout"
     // 2. Update Redis session record to revoked state
     if (redisClient) {
       try {
-        const redisKey = `healthos:session:${sessionId}`;
+        const redisKey = `ekavyu:session:${sessionId}`;
         const existing = await redisClient.get(redisKey);
         if (existing) {
           const parsed = JSON.parse(existing);

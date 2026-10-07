@@ -6,7 +6,7 @@
  *
  * Each module has:
  *  - route:     The frontend dashboard route
- *  - priority:  P1 (clinic essential), P2 (important), P3 (hospital/specialty)
+ *  - priority:  P1 (location essential), P2 (important), P3 (hospital/specialty)
  *  - label:     Human-readable display name
  *  - alwaysOn:  If true, module cannot be disabled (e.g., Dashboard, Settings)
  */
@@ -21,7 +21,7 @@ export interface ModuleDefinition {
 }
 
 export const MODULE_KEYS: Record<string, ModuleDefinition> = {
-  // ─── P1 — Clinic Essentials ──────────────────────────────────────
+  // ─── P1 — Location Essentials ──────────────────────────────────────
   "dashboard":       { route: "/dashboard",              priority: "P1", label: "Dashboard Overview",    alwaysOn: true, section: "Core Workspace",         description: "Main dashboard with overview metrics and quick actions" },
   "notifications":   { route: "/dashboard/notifications", priority: "P1", label: "Notifications",        alwaysOn: true, section: "Core Workspace",         description: "System notifications and alerts center" },
   "settings":        { route: "/dashboard/settings",      priority: "P1", label: "System Settings",      alwaysOn: true, section: "Administration",         description: "Organization, AI, notification, and billing settings" },
@@ -32,7 +32,7 @@ export const MODULE_KEYS: Record<string, ModuleDefinition> = {
   "billing":         { route: "/dashboard/billing",        priority: "P1", label: "Patient Billing",                     section: "Billing & Finance",      description: "Create, manage, and track patient invoices" },
   "pharmacy":        { route: "/dashboard/pharmacy",       priority: "P1", label: "Pharmacy Inventory",                  section: "Diagnostics & Pharmacy", description: "Medicine stock management, batches, and dispensing" },
   "staff":           { route: "/dashboard/staff",          priority: "P1", label: "Staff Accounts",                      section: "Administration",         description: "Manage doctors, nurses, receptionists, and other staff" },
-  "clinics":         { route: "/dashboard/clinics",        priority: "P1", label: "Clinic Branches",                     section: "Administration",         description: "Add and manage multi-location clinic branches" },
+  "locations":         { route: "/dashboard/locations",        priority: "P1", label: "Locations",                          section: "Administration",         description: "Add and manage healthcare locations" },
 
   // ─── P2 — Important / Extended ────────────────────────────────────
   "laboratory":      { route: "/dashboard/laboratory",     priority: "P2", label: "Laboratory & LIS",                   section: "Diagnostics & Pharmacy", description: "Lab test ordering, sample tracking, and result management" },

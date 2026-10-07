@@ -1,3 +1,4 @@
+import { fixtureAccessToken } from "./helpers/sessionFixture.ts";
 import { describe, it, expect } from "vitest";
 import app from "../index.ts";
 import { User } from "../models/User.ts";
@@ -5,11 +6,10 @@ import { Patient } from "../models/Patient.ts";
 import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import { OutboundMessage } from "../models/OutboundMessage.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { DocumentUpload } from "../models/DocumentUpload.ts";
-import { generateAccessToken } from "../utilities/helpers.ts";
 import { contextEngine } from "../services/ai/ContextEngine.ts";
 import { Role } from "../models/Role.ts";
 import { getEffectivePermissions } from "../utilities/permissions.ts";
@@ -17,11 +17,11 @@ import { getEffectivePermissions } from "../utilities/permissions.ts";
 describe("Production security remediation", () => {
   async function tenant(name: string) {
     const org = await Organization.create({ name, city: "Test City" });
-    const clinic = await Clinic.create({ name: `${name} Clinic`, city: "Test City", organizationId: org._id });
+    const location = await Location.create({ name: `${name} Clinic`, city: "Test City", organizationId: org._id });
     const admin = await User.create({ name: `${name} Admin`, role: "admin" });
     await OrgMember.create({ userId: admin._id, organizationId: org._id, role: "admin" });
-    const cookie = `access_token=${generateAccessToken({ id: admin.id, email: "", role: "admin", organization_id: org.id })}`;
-    return { org, clinic, admin, cookie };
+    const cookie = `access_token=${(await fixtureAccessToken({ id: admin.id, email: "", role: "admin", organization_id: org.id }))}`;
+    return { org, location, admin, cookie };
   }
 
   it("keeps anonymous booking contact out of an existing account's recovery identity", async () => {
@@ -73,21 +73,21 @@ describe("Production security remediation", () => {
   it("rejects a foreign clinic filter and explicitly scopes analytics aggregation", async () => {
     const a = await tenant("Analytics A");
     const b = await tenant("Analytics B");
-    // Include an inconsistent clinic/org pair to verify the explicit aggregate
-    // organization condition as well as clinic ownership validation.
+    // Include an inconsistent location/org pair to verify the explicit aggregate
+    // organization condition as well as location ownership validation.
     await Invoice.collection.insertMany([
-      { invoiceNumber: "AUDIT-B", organizationId: b.org._id, clinicId: b.clinic._id, status: "paid", totalAmount: 777 },
-      { invoiceNumber: "AUDIT-INCONSISTENT", organizationId: b.org._id, clinicId: a.clinic._id, status: "paid", totalAmount: 888 },
-      { invoiceNumber: "AUDIT-A", organizationId: a.org._id, clinicId: a.clinic._id, status: "paid", totalAmount: 123 },
+      { invoiceNumber: "AUDIT-B", organizationId: b.org._id, locationId: b.location._id, status: "paid", totalAmount: 777 },
+      { invoiceNumber: "AUDIT-INCONSISTENT", organizationId: b.org._id, locationId: a.location._id, status: "paid", totalAmount: 888 },
+      { invoiceNumber: "AUDIT-A", organizationId: a.org._id, locationId: a.location._id, status: "paid", totalAmount: 123 },
     ]);
-    const foreign = await app.inject({ method: "GET", url: `/api/analytics/executive?clinicId=${b.clinic.id}`, headers: { cookie: a.cookie } });
+    const foreign = await app.inject({ method: "GET", url: `/api/analytics/executive?locationId=${b.location.id}`, headers: { cookie: a.cookie } });
     expect(foreign.statusCode, foreign.body).toBe(404);
-    const own = await app.inject({ method: "GET", url: `/api/analytics/executive?clinicId=${a.clinic.id}`, headers: { cookie: a.cookie } });
+    const own = await app.inject({ method: "GET", url: `/api/analytics/executive?locationId=${a.location.id}`, headers: { cookie: a.cookie } });
     expect(own.statusCode, own.body).toBe(200);
     expect(own.json().data.overall.totalRevenue).toBe(123);
     const root = await User.create({ name: "Analytics Root", role: "root" });
-    const rootCookie = `access_token=${generateAccessToken({ id: root.id, email: "", role: "root" })}`;
-    const global = await app.inject({ method: "GET", url: `/api/analytics/executive?clinicId=${b.clinic.id}`, headers: { cookie: rootCookie } });
+    const rootCookie = `access_token=${(await fixtureAccessToken({ id: root.id, email: "", role: "root" }))}`;
+    const global = await app.inject({ method: "GET", url: `/api/analytics/executive?locationId=${b.location.id}`, headers: { cookie: rootCookie } });
     expect(global.statusCode, global.body).toBe(200);
     expect(global.json().data.overall.totalRevenue).toBe(777);
     const empty = await Organization.create({ name: "Empty root scope", city: "Test" });
@@ -97,14 +97,14 @@ describe("Production security remediation", () => {
 
   it("keeps empty-tenant AI context empty and does not let a route grant financial permissions", async () => {
     const b = await tenant("AI B");
-    await Invoice.collection.insertOne({ invoiceNumber: "AUDIT-AI-B", organizationId: b.org._id, clinicId: b.clinic._id, status: "paid", totalAmount: 777 });
+    await Invoice.collection.insertOne({ invoiceNumber: "AUDIT-AI-B", organizationId: b.org._id, locationId: b.location._id, status: "paid", totalAmount: 777 });
     const emptyOrg = await Organization.create({ name: "AI Empty", city: "Test" });
     const admin = await User.create({ name: "AI Empty Admin", role: "admin" });
     await OrgMember.create({ userId: admin._id, organizationId: emptyOrg._id, role: "admin" });
     const empty = await contextEngine.build6DContext({ userId: admin.id, organizationId: emptyOrg.id, currentRoute: "/billing" });
     expect(empty.organizationContext).not.toContain("AI B Clinic");
     expect(empty.organizationContext).not.toContain("777");
-    expect(empty.organizationContext).toContain("Active Clinics (0)");
+    expect(empty.organizationContext).toContain("Active Locations (0)");
     const nurse = await User.create({ name: "AI Nurse", role: "nurse" });
     await OrgMember.create({ userId: nurse._id, organizationId: b.org._id, role: "nurse" });
     const forbidden = await contextEngine.build6DContext({ userId: nurse.id, organizationId: b.org.id, currentRoute: "/billing", userRole: "admin" });
@@ -120,7 +120,7 @@ describe("Production security remediation", () => {
     const consumer = await User.create({ name: "Other patient", role: "patient" });
     const patient = await Patient.create({ userId: victim._id, organizationId: org._id, conditions: ["PRIVATE-CONDITION"] });
     await DocumentUpload.create({ patientId: patient._id, organizationId: org._id, fileName: "Private.pdf", fileUrl: "private-key", mimeType: "application/pdf", uploadedByUserId: victim._id });
-    const cookie = `access_token=${generateAccessToken({ id: consumer.id, email: "", role: "patient", organization_id: org.id })}`;
+    const cookie = `access_token=${(await fixtureAccessToken({ id: consumer.id, email: "", role: "patient", organization_id: org.id }))}`;
     const denied = await app.inject({ method: "GET", url: `/api/documents/patient/${patient.id}`, headers: { cookie } });
     expect(denied.statusCode, denied.body).toBe(404);
     await expect(contextEngine.build6DContext({ userId: consumer.id, organizationId: org.id, activePatientId: patient.id })).rejects.toThrow("Patient not found");

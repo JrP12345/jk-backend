@@ -1,11 +1,12 @@
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
+import { developmentDatabaseName, assertDevelopmentDatabaseEmpty } from "./developmentDatabase.ts";
 
 // Import Models
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
 import { OrgMember } from "../models/OrgMember.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Department } from "../models/Department.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
@@ -34,83 +35,48 @@ import { PendingTwoFactorSetup } from "../models/PendingTwoFactorSetup.ts";
 import { OnboardingDraft } from "../models/OnboardingDraft.ts";
 import { RefreshToken } from "../models/RefreshToken.ts";
 
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/ananta_health";
+const MONGODB_URI = process.env.MONGODB_URI || "";
 
 async function runSeed() {
-  if (process.env.NODE_ENV === "production") {
-    console.error("FATAL: Destructive database seed scripts cannot be executed in production!");
-    process.exit(1);
+  developmentDatabaseName(MONGODB_URI, process.argv.slice(2), process.env.NODE_ENV);
+  const rootEmail = process.env.ROOT_ADMIN_EMAIL?.trim().toLowerCase();
+  const rootPassword = process.env.ROOT_ADMIN_PASSWORD;
+  if (!rootEmail || !rootPassword || rootPassword.length < 12) {
+    throw new Error("ROOT_ADMIN_EMAIL and ROOT_ADMIN_PASSWORD (at least 12 characters) are required");
   }
 
   console.log("=======================================================================");
-  console.log("🚀 [Ekavyu HEALTHCARE SYSTEM] COMPLETE DATABASE PURGE & FRESH RESEED");
+  console.log("🚀 [Ekavyu HEALTHCARE SYSTEM] DEVELOPMENT DEMO DATA");
   console.log("=======================================================================");
 
   try {
     await mongoose.connect(MONGODB_URI);
-    console.log("✓ Connected to MongoDB Atlas cluster.");
+    console.log("✓ Connected to the confirmed local development database.");
+
+    await assertDevelopmentDatabaseEmpty(mongoose.connection);
 
     // -------------------------------------------------------------------------
-    // 1. WIPE ALL EXISTING COLLECTIONS
+    // 2. CREATE ORGANIZATION & LOCATION
     // -------------------------------------------------------------------------
-    console.log("\n🧹 Purging all database collections...");
-    await Promise.all([
-      User.deleteMany({}),
-      Organization.deleteMany({}),
-      OrgMember.deleteMany({}),
-      Clinic.deleteMany({}),
-      Department.deleteMany({}),
-      Doctor.deleteMany({}),
-      DoctorAssignment.deleteMany({}),
-      Receptionist.deleteMany({}),
-      Patient.deleteMany({}),
-      Encounter.deleteMany({}),
-      Appointment.deleteMany({}),
-      ClinicalNote.deleteMany({}),
-      Prescription.deleteMany({}),
-      Medicine.deleteMany({}),
-      LabTest.deleteMany({}),
-      LabOrder.deleteMany({}),
-      Observation.deleteMany({}),
-      ObservationScore.deleteMany({}),
-      ObservationAlert.deleteMany({}),
-      CDSEvaluation.deleteMany({}),
-      Invoice.deleteMany({}),
-      TaskModel.deleteMany({}),
-      Notification.deleteMany({}),
-      NotificationDelivery.deleteMany({}),
-      NotificationPreference.deleteMany({}),
-      AuditLog.deleteMany({}),
-      Counter.deleteMany({}),
-      Role.deleteMany({}),
-      PendingTwoFactorSetup.deleteMany({}),
-      OnboardingDraft.deleteMany({}),
-      RefreshToken.deleteMany({}),
-    ]);
-    console.log("✓ All collections purged successfully.");
-
-    // -------------------------------------------------------------------------
-    // 2. CREATE ORGANIZATIONS & CLINICS
-    // -------------------------------------------------------------------------
-    console.log("\n🏢 Seeding Organization & Clinic architecture...");
+    console.log("\n🏢 Seeding Organization & Location architecture...");
     const org = await Organization.create({
       name: "Ekavyu Healthcare & Research Institute",
       city: "San Francisco",
       address: "100 Medical Center Drive, Suite 500",
       phone: "+1 415 555 0199",
-      email: "contact@ananta.health",
+      email: "contact@ekavyu.health",
       onboardingStatus: "COMPLETED",
       isOnboarded: true,
       isActive: true,
     });
 
-    const clinic = await Clinic.create({
+    const location = await Location.create({
       organizationId: org._id,
       name: "Ekavyu Central Hospital & Emergency Pavilion",
       city: "San Francisco",
       address: "100 Medical Center Drive, Main Pavilion",
       phone: "+1 415 555 0100",
-      email: "central@ananta.health",
+      email: "central@ekavyu.health",
     });
 
     // -------------------------------------------------------------------------
@@ -121,9 +87,9 @@ async function runSeed() {
 
     // Root Admin
     const rootAdmin = await User.create({
-      name: "Jay (Root Super Admin)",
-      email: "21amtics177@gmail.com",
-      password: defaultPassword,
+      name: "Ekavyu Root Administrator",
+      email: rootEmail,
+      password: await bcrypt.hash(rootPassword, 12),
       phone: "+1 415 555 9001",
       role: "root",
       // 2FA is provisioned with `npm run setup:root-2fa`; never create an
@@ -135,7 +101,7 @@ async function runSeed() {
     // Hospital Admin
     const hospitalAdmin = await User.create({
       name: "Arthur Pendelton (Hospital Director)",
-      email: "admin@ananta.health",
+      email: "admin@ekavyu.health",
       password: defaultPassword,
       phone: "+1 415 555 9002",
       role: "admin",
@@ -146,7 +112,7 @@ async function runSeed() {
     // Doctors
     const drSarahUser = await User.create({
       name: "Dr. Sarah Jenkins, MD",
-      email: "dr.sarah@ananta.health",
+      email: "dr.sarah@ekavyu.health",
       password: defaultPassword,
       phone: "+1 415 555 9101",
       role: "doctor",
@@ -155,7 +121,7 @@ async function runSeed() {
 
     const drMarcusUser = await User.create({
       name: "Dr. Marcus Vance, MD",
-      email: "dr.marcus@ananta.health",
+      email: "dr.marcus@ekavyu.health",
       password: defaultPassword,
       phone: "+1 415 555 9102",
       role: "doctor",
@@ -164,7 +130,7 @@ async function runSeed() {
 
     const drPriyaUser = await User.create({
       name: "Dr. Priya Sharma, MD",
-      email: "dr.priya@ananta.health",
+      email: "dr.priya@ekavyu.health",
       password: defaultPassword,
       phone: "+1 415 555 9103",
       role: "doctor",
@@ -173,7 +139,7 @@ async function runSeed() {
 
     const drChenUser = await User.create({
       name: "Dr. David Chen, MD",
-      email: "dr.chen@ananta.health",
+      email: "dr.chen@ekavyu.health",
       password: defaultPassword,
       phone: "+1 415 555 9104",
       role: "doctor",
@@ -183,7 +149,7 @@ async function runSeed() {
     // Staff Users
     const receptionLisaUser = await User.create({
       name: "Lisa Ray (Morning Receptionist)",
-      email: "reception.lisa@ananta.health",
+      email: "reception.lisa@ekavyu.health",
       password: defaultPassword,
       phone: "+1 415 555 9201",
       role: "receptionist",
@@ -192,7 +158,7 @@ async function runSeed() {
 
     const nurseEmilyUser = await User.create({
       name: "Emily Watson, RN (ICU Nurse Lead)",
-      email: "nurse.emily@ananta.health",
+      email: "nurse.emily@ekavyu.health",
       password: defaultPassword,
       phone: "+1 415 555 9301",
       role: "nurse",
@@ -201,7 +167,7 @@ async function runSeed() {
 
     const labRobertUser = await User.create({
       name: "Robert Taylor (Lead Lab Technologist)",
-      email: "lab.robert@ananta.health",
+      email: "lab.robert@ekavyu.health",
       password: defaultPassword,
       phone: "+1 415 555 9401",
       role: "lab_tech",
@@ -210,7 +176,7 @@ async function runSeed() {
 
     const pharmHannahUser = await User.create({
       name: "Hannah Abbott, PharmD (Chief Pharmacist)",
-      email: "pharm.hannah@ananta.health",
+      email: "pharm.hannah@ekavyu.health",
       password: defaultPassword,
       phone: "+1 415 555 9501",
       role: "pharmacist",
@@ -292,7 +258,7 @@ async function runSeed() {
 
     const deptCardiology = await Department.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       name: "Cardiology & Vascular Medicine",
       code: "CARD",
       description: "Comprehensive cardiovascular diagnosis, intervention, and preventive care.",
@@ -302,7 +268,7 @@ async function runSeed() {
 
     const deptEmergency = await Department.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       name: "Emergency & Critical Care Medicine",
       code: "EMERG",
       description: "24/7 Level 1 Emergency trauma response and Intensive Care Unit.",
@@ -312,7 +278,7 @@ async function runSeed() {
 
     const deptInternal = await Department.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       name: "Internal Medicine",
       code: "INTMED",
       description: "Primary care, chronic disease management, and inpatient care.",
@@ -322,7 +288,7 @@ async function runSeed() {
 
     const deptNeurology = await Department.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       name: "Neurology & Brain Sciences",
       code: "NEURO",
       description: "Neurovascular, epilepsy, stroke, and neuromuscular disorders.",
@@ -394,7 +360,7 @@ async function runSeed() {
     // Doctor Assignments
     await DoctorAssignment.create({
       doctorId: drSarahUser._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       organizationId: org._id,
       workingHours: "09:00 - 17:00",
       fees: 150,
@@ -404,7 +370,7 @@ async function runSeed() {
 
     await DoctorAssignment.create({
       doctorId: drMarcusUser._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       organizationId: org._id,
       workingHours: "08:00 - 20:00",
       fees: 200,
@@ -414,7 +380,7 @@ async function runSeed() {
 
     await DoctorAssignment.create({
       doctorId: drPriyaUser._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       organizationId: org._id,
       workingHours: "09:00 - 16:00",
       fees: 120,
@@ -424,7 +390,7 @@ async function runSeed() {
 
     await DoctorAssignment.create({
       doctorId: drChenUser._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       organizationId: org._id,
       workingHours: "10:00 - 18:00",
       fees: 180,
@@ -436,7 +402,7 @@ async function runSeed() {
     await Receptionist.create({
       userId: receptionLisaUser._id,
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       shift: "Morning (07:00 - 15:30)",
     });
 
@@ -506,7 +472,7 @@ async function runSeed() {
     console.log("\n💊 Seeding Pharmacy Inventory & Medications...");
 
     const medLisinopril = await Medicine.create({
-      clinicId: clinic._id,
+      locationId: location._id,
       name: "Lisinopril 10mg Tablets",
       genericName: "Lisinopril",
       stockQuantity: 250,
@@ -517,7 +483,7 @@ async function runSeed() {
     });
 
     const medAtorvastatin = await Medicine.create({
-      clinicId: clinic._id,
+      locationId: location._id,
       name: "Atorvastatin 20mg Film-coated",
       genericName: "Atorvastatin Calcium",
       stockQuantity: 180,
@@ -528,7 +494,7 @@ async function runSeed() {
     });
 
     const medAmoxicillin = await Medicine.create({
-      clinicId: clinic._id,
+      locationId: location._id,
       name: "Amoxicillin 500mg Capsules",
       genericName: "Amoxicillin Trihydrate",
       stockQuantity: 300,
@@ -539,7 +505,7 @@ async function runSeed() {
     });
 
     const medAlbuterol = await Medicine.create({
-      clinicId: clinic._id,
+      locationId: location._id,
       name: "Albuterol HFA Inhaler 90mcg",
       genericName: "Salbutamol Sulfate",
       stockQuantity: 85,
@@ -550,7 +516,7 @@ async function runSeed() {
     });
 
     const medMetformin = await Medicine.create({
-      clinicId: clinic._id,
+      locationId: location._id,
       name: "Metformin 850mg ER Tablets",
       genericName: "Metformin Hydrochloride",
       stockQuantity: 400,
@@ -561,7 +527,7 @@ async function runSeed() {
     });
 
     const medParacetamol = await Medicine.create({
-      clinicId: clinic._id,
+      locationId: location._id,
       name: "Paracetamol 500mg Tablets",
       genericName: "Acetaminophen",
       stockQuantity: 1000,
@@ -572,7 +538,7 @@ async function runSeed() {
     });
 
     const medNormalSaline = await Medicine.create({
-      clinicId: clinic._id,
+      locationId: location._id,
       name: "IV Normal Saline 0.9% 500ml",
       genericName: "Sodium Chloride Solution",
       stockQuantity: 150,
@@ -588,7 +554,7 @@ async function runSeed() {
     console.log("\n🔬 Seeding Diagnostic Lab Catalog & Master Tests...");
 
     const testCBC = await LabTest.create({
-      clinicId: clinic._id,
+      locationId: location._id,
       name: "Complete Blood Count with Differential (CBC)",
       code: "LAB-CBC-01",
       department: "Hematology",
@@ -598,7 +564,7 @@ async function runSeed() {
     });
 
     const testCMP = await LabTest.create({
-      clinicId: clinic._id,
+      locationId: location._id,
       name: "Comprehensive Metabolic Panel (CMP)",
       code: "LAB-CMP-02",
       department: "Biochemistry",
@@ -608,7 +574,7 @@ async function runSeed() {
     });
 
     const testLipid = await LabTest.create({
-      clinicId: clinic._id,
+      locationId: location._id,
       name: "Lipid Profile Panel",
       code: "LAB-LIP-03",
       department: "Biochemistry",
@@ -618,7 +584,7 @@ async function runSeed() {
     });
 
     const testHbA1c = await LabTest.create({
-      clinicId: clinic._id,
+      locationId: location._id,
       name: "HbA1c Glycated Hemoglobin",
       code: "LAB-A1C-04",
       department: "Endocrinology",
@@ -628,7 +594,7 @@ async function runSeed() {
     });
 
     const testTroponin = await LabTest.create({
-      clinicId: clinic._id,
+      locationId: location._id,
       name: "High-Sensitivity Troponin I",
       code: "LAB-TROP-05",
       department: "Cardiology",
@@ -638,7 +604,7 @@ async function runSeed() {
     });
 
     const testXRay = await LabTest.create({
-      clinicId: clinic._id,
+      locationId: location._id,
       name: "Chest Radiograph PA View (Digital X-Ray)",
       code: "RAD-CXR-06",
       department: "Radiology",
@@ -654,9 +620,9 @@ async function runSeed() {
 
     // ------------------- WORKFLOW 1: JOHN DOE (OPD Consultation - Yesterday) -------------------
     const yesterdayDate = new Date(Date.now() - 24 * 3600 * 1000);
-    
+
     const johnAppt = await Appointment.create({
-      clinicId: clinic._id,
+      locationId: location._id,
       doctorId: drSarahUser._id,
       patientId: johnPatient._id,
       appointmentTime: yesterdayDate,
@@ -676,7 +642,7 @@ async function runSeed() {
 
     const johnEncounter = await Encounter.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       appointmentId: johnAppt._id,
       patientId: johnPatient._id,
       doctorId: drSarahUser._id,
@@ -690,7 +656,7 @@ async function runSeed() {
     // Observations / Vitals
     const obsJohnBP = await Observation.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: johnEncounter._id,
       patientId: johnPatient._id,
       recordedBy: drSarahUser._id,
@@ -704,7 +670,7 @@ async function runSeed() {
 
     const obsJohnHR = await Observation.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: johnEncounter._id,
       patientId: johnPatient._id,
       recordedBy: drSarahUser._id,
@@ -718,7 +684,7 @@ async function runSeed() {
 
     await ObservationScore.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: johnEncounter._id,
       patientId: johnPatient._id,
       algorithmId: "NEWS2",
@@ -733,7 +699,7 @@ async function runSeed() {
     // Prescriptions
     const johnRx1 = await Prescription.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: johnEncounter._id,
       patientId: johnPatient._id,
       doctorId: drSarahUser._id,
@@ -748,7 +714,7 @@ async function runSeed() {
 
     const johnRx2 = await Prescription.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: johnEncounter._id,
       patientId: johnPatient._id,
       doctorId: drSarahUser._id,
@@ -764,7 +730,7 @@ async function runSeed() {
     // Lab Order (Lipid Profile - Completed with high LDL)
     const johnLabOrder = await LabOrder.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: johnEncounter._id,
       patientId: johnPatient._id,
       testId: testLipid._id,
@@ -779,8 +745,6 @@ async function runSeed() {
       sampleCollectedAt: yesterdayDate,
       processingStartedAt: yesterdayDate,
       resultedAt: yesterdayDate,
-      completedDate: yesterdayDate,
-      resultValue: "Total Cholesterol: 240 mg/dL, Triglycerides: 180 mg/dL, HDL: 38 mg/dL, LDL: 166 mg/dL",
       result: {
         value: "240",
         unit: "mg/dL",
@@ -788,13 +752,13 @@ async function runSeed() {
         interpretation: "high",
         isAbnormal: true,
         notes: "Marked elevation in LDL-C and Total Cholesterol. Statin therapy initiated.",
-      },
+      }
     });
 
     // SOAP Clinical Note
     const johnClinicalNote = await ClinicalNote.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: johnEncounter._id,
       patientId: johnPatient._id,
       doctorId: drSarahUser._id,
@@ -836,7 +800,7 @@ async function runSeed() {
     // CDS Evaluation for John Doe
     await CDSEvaluation.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: johnEncounter._id,
       patientId: johnPatient._id,
       prescriptionIds: [johnRx1._id, johnRx2._id],
@@ -856,7 +820,7 @@ async function runSeed() {
       invoiceNumber: "INV-2026-0001",
       patientId: johnPatient._id,
       appointmentId: johnAppt._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       doctorId: drSarahUser._id,
       items: [
         { description: "Cardiology OPD Consultation Fee", amount: 150, quantity: 1 },
@@ -876,7 +840,7 @@ async function runSeed() {
     const nowTime = new Date();
 
     const mariaAppt = await Appointment.create({
-      clinicId: clinic._id,
+      locationId: location._id,
       doctorId: drMarcusUser._id,
       patientId: mariaPatient._id,
       appointmentTime: nowTime,
@@ -896,7 +860,7 @@ async function runSeed() {
 
     const mariaEncounter = await Encounter.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       appointmentId: mariaAppt._id,
       patientId: mariaPatient._id,
       doctorId: drMarcusUser._id,
@@ -909,7 +873,7 @@ async function runSeed() {
     // Critical Vitals / Observations for Maria Garcia
     const obsMariaBP = await Observation.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: mariaEncounter._id,
       patientId: mariaPatient._id,
       recordedBy: nurseEmilyUser._id,
@@ -923,7 +887,7 @@ async function runSeed() {
 
     const obsMariaHR = await Observation.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: mariaEncounter._id,
       patientId: mariaPatient._id,
       recordedBy: nurseEmilyUser._id,
@@ -937,7 +901,7 @@ async function runSeed() {
 
     const obsMariaSpO2 = await Observation.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: mariaEncounter._id,
       patientId: mariaPatient._id,
       recordedBy: nurseEmilyUser._id,
@@ -951,7 +915,7 @@ async function runSeed() {
 
     const obsMariaRR = await Observation.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: mariaEncounter._id,
       patientId: mariaPatient._id,
       recordedBy: nurseEmilyUser._id,
@@ -966,7 +930,7 @@ async function runSeed() {
     // NEWS2 Score & Critical Alert
     const mariaScore = await ObservationScore.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: mariaEncounter._id,
       patientId: mariaPatient._id,
       algorithmId: "NEWS2",
@@ -980,7 +944,7 @@ async function runSeed() {
 
     const mariaAlert = await ObservationAlert.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: mariaEncounter._id,
       patientId: mariaPatient._id,
       scoreId: mariaScore._id,
@@ -994,7 +958,7 @@ async function runSeed() {
     // Prescriptions for Maria
     const mariaRx1 = await Prescription.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: mariaEncounter._id,
       patientId: mariaPatient._id,
       doctorId: drMarcusUser._id,
@@ -1009,7 +973,7 @@ async function runSeed() {
 
     const mariaRx2 = await Prescription.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: mariaEncounter._id,
       patientId: mariaPatient._id,
       doctorId: drMarcusUser._id,
@@ -1025,7 +989,7 @@ async function runSeed() {
     // Urgent Lab Orders for Maria
     const mariaLabCBC = await LabOrder.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: mariaEncounter._id,
       patientId: mariaPatient._id,
       testId: testCBC._id,
@@ -1042,7 +1006,7 @@ async function runSeed() {
 
     const mariaLabXRay = await LabOrder.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: mariaEncounter._id,
       patientId: mariaPatient._id,
       testId: testXRay._id,
@@ -1060,7 +1024,7 @@ async function runSeed() {
       invoiceNumber: "INV-2026-0002",
       patientId: mariaPatient._id,
       appointmentId: mariaAppt._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       doctorId: drMarcusUser._id,
       items: [
         { description: "Urgent Clinic Consultation", amount: 500, quantity: 1 },
@@ -1081,7 +1045,7 @@ async function runSeed() {
 
     const robertEncounter = await Encounter.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       patientId: robertSmithPatient._id,
       doctorId: drPriyaUser._id,
       encounterType: "opd",
@@ -1093,7 +1057,7 @@ async function runSeed() {
 
     const robertRx = await Prescription.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: robertEncounter._id,
       patientId: robertSmithPatient._id,
       doctorId: drPriyaUser._id,
@@ -1108,7 +1072,7 @@ async function runSeed() {
 
     const robertLabOrder = await LabOrder.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       encounterId: robertEncounter._id,
       patientId: robertSmithPatient._id,
       testId: testHbA1c._id,
@@ -1122,8 +1086,6 @@ async function runSeed() {
       orderDate: threeDaysAgo,
       sampleCollectedAt: threeDaysAgo,
       resultedAt: yesterdayDate,
-      completedDate: yesterdayDate,
-      resultValue: "HbA1c: 7.8%",
       result: {
         value: "7.8",
         unit: "%",
@@ -1131,14 +1093,14 @@ async function runSeed() {
         interpretation: "high",
         isAbnormal: true,
         notes: "Suboptimal glycemic control. Metformin ER escalated to 850mg BD.",
-      },
+      }
     });
 
     // Paid Invoice via Insurance for Robert Smith
     await Invoice.create({
       invoiceNumber: "INV-2026-0003",
       patientId: robertSmithPatient._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       doctorId: drPriyaUser._id,
       items: [
         { description: "Specialist Comprehensive Consultation", amount: 800, quantity: 1 },
@@ -1157,7 +1119,7 @@ async function runSeed() {
 
     // ------------------- WORKFLOW 4: EMILY DAVIS & JAMES WILSON (Today's OPD Queue & Post-Op) -------------------
     await Appointment.create({
-      clinicId: clinic._id,
+      locationId: location._id,
       doctorId: drPriyaUser._id,
       patientId: emilyDavisPatient._id,
       appointmentTime: new Date(nowTime.getTime() + 1 * 3600 * 1000),
@@ -1173,7 +1135,7 @@ async function runSeed() {
     });
 
     await Appointment.create({
-      clinicId: clinic._id,
+      locationId: location._id,
       doctorId: drMarcusUser._id,
       patientId: jamesWilsonPatient._id,
       appointmentTime: new Date(nowTime.getTime() + 3 * 3600 * 1000),
@@ -1334,34 +1296,35 @@ async function runSeed() {
     console.log("🎉 DATABASE SEEDED SUCCESSFULLY WITH HIGHLY REALISTIC DATA!");
     console.log("=======================================================================");
     console.log("Organization      : Ekavyu Healthcare & Research Institute");
-    console.log("Primary Clinic    : Ekavyu Central Hospital & Emergency Pavilion");
+    console.log("Primary Location    : Ekavyu Central Hospital & Emergency Pavilion");
     console.log("Departments (5)   : CARD, EMERG, INTMED, NEURO, SURG");
     console.log("Beds (6)          : ICU-101, ICU-102 (Occupied), ICU-103, GW-201 (Occupied), GW-202, VIP-301 (Occupied)");
     console.log("Patients (5)      : John Doe, Maria Garcia, Robert Smith, Emily Davis, James Wilson");
     console.log("Pharmacy Stock (7): Lisinopril, Atorvastatin, Amoxicillin, Albuterol, Metformin, Paracetamol, IV Saline");
     console.log("Lab Catalog (6)   : CBC, CMP, Lipid Profile, HbA1c, Troponin I, Chest X-Ray");
     console.log("-----------------------------------------------------------------------");
-    console.log("🔑 MASTER CREDENTIALS (Password for ALL accounts: Password123!):");
+    console.log("🔑 DEMO STAFF CREDENTIALS (Password: Password123!; root configured separately):");
     console.log("-----------------------------------------------------------------------");
-    console.log("1. Root Super Admin : 21amtics177@gmail.com");
-    console.log("2. Hospital Admin   : admin@ananta.health");
-    console.log("3. Cardiology Lead  : dr.sarah@ananta.health");
-    console.log("4. Emergency Lead   : dr.marcus@ananta.health");
-    console.log("5. Internal Med     : dr.priya@ananta.health");
-    console.log("6. Neurologist      : dr.chen@ananta.health");
-    console.log("7. ICU Lead Nurse   : nurse.emily@ananta.health");
-    console.log("8. Lead Lab Tech    : lab.robert@ananta.health");
-    console.log("9. Chief Pharmacist : pharm.hannah@ananta.health");
-    console.log("10. Receptionist    : reception.lisa@ananta.health");
+    console.log("1. Root Super Admin : configured ROOT_ADMIN_EMAIL (separate password)");
+    console.log("2. Hospital Admin   : admin@ekavyu.health");
+    console.log("3. Cardiology Lead  : dr.sarah@ekavyu.health");
+    console.log("4. Emergency Lead   : dr.marcus@ekavyu.health");
+    console.log("5. Internal Med     : dr.priya@ekavyu.health");
+    console.log("6. Neurologist      : dr.chen@ekavyu.health");
+    console.log("7. ICU Lead Nurse   : nurse.emily@ekavyu.health");
+    console.log("8. Lead Lab Tech    : lab.robert@ekavyu.health");
+    console.log("9. Chief Pharmacist : pharm.hannah@ekavyu.health");
+    console.log("10. Receptionist    : reception.lisa@ekavyu.health");
     console.log("11. Patient Account : john.doe@gmail.com");
     console.log("=======================================================================\n");
 
   } catch (err) {
+    process.exitCode = 1;
     console.error("❌ Seed database failed:", err);
   } finally {
     await mongoose.disconnect();
-    process.exit(0);
+
   }
 }
 
-runSeed();
+runSeed().catch(error => { console.error(error.message); process.exitCode = 1; });

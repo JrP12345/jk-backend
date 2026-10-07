@@ -42,7 +42,7 @@ export async function isVerifiedClinicalAttachment(value: unknown, organizationI
 export async function authorizeUpload(req: FastifyRequest, patientId?: unknown, write = true) {
   const consumer = ['patient', 'family_member'].includes(req.user?.role || '');
   if (req.user?.role === 'guest') return { allowed: false, statusCode: 403, message: 'Guest uploads are not permitted' };
-  if (!consumer && !await requestHasAnyPermission(req, ...(write ? ['MANAGE_EHR', 'MANAGE_PATIENTS', 'MANAGE_ORDERS', 'MANAGE_STAFF', 'MANAGE_CLINICS'] : ['VIEW_EHR']))) {
+  if (!consumer && !await requestHasAnyPermission(req, ...(write ? ['MANAGE_EHR', 'MANAGE_PATIENTS', 'MANAGE_ORDERS', 'MANAGE_STAFF', 'MANAGE_LOCATIONS'] : ['VIEW_EHR']))) {
     return { allowed: false, statusCode: 403, message: 'File permission is required' };
   }
   if (patientId) {

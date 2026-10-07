@@ -1,8 +1,10 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { providerFixtureSlug } from "./helpers/providerFixture.ts";
 import { describe, it, expect } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Appointment } from "../models/Appointment.ts";
@@ -11,7 +13,7 @@ import { Subscription } from "../models/Subscription.ts";
 describe("Appointments & Queue API Integration Tests", () => {
   let adminCookies: string[] = [];
   let patientCookies: string[] = [];
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string; // Doctor profile ID (from Doctor schema, not User ID)
   let doctorUserId: string;
   let patientId: string; // Patient profile ID
@@ -20,7 +22,7 @@ describe("Appointments & Queue API Integration Tests", () => {
 
   it("should setup organization, clinic, doctor, and patient", async () => {
     // 1. Create org + admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -32,19 +34,19 @@ describe("Appointments & Queue API Integration Tests", () => {
         plan: "enterprise",
       },
     });
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map(c => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
 
-    // 2. Create clinic
-    const clinicRes = await app.inject({
+    // 2. Create location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Apollo Clinic Branch",
         city: "Surat",
       },
     });
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Add Doctor
     const docRes = await app.inject({
@@ -62,14 +64,14 @@ describe("Appointments & Queue API Integration Tests", () => {
     const docProfile = await Doctor.findOne({ userId: doctorUserId });
     doctorId = docProfile!._id.toString();
 
-    // 4. Assign Doctor to Clinic Branch
+    // 4. Assign Doctor to Location Branch
     const assignRes = await app.inject({
       method: "POST",
       url: "/api/onboarding/doctors/assignments",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         doctorId: doctorUserId,
-        clinicId: clinicId,
+        locationId: locationId,
         fees: 350,
         appointmentDuration: 15,
         workingHours: JSON.stringify([{ start: "10:00", end: "12:00" }]),
@@ -104,7 +106,7 @@ describe("Appointments & Queue API Integration Tests", () => {
       url: "/api/appointments",
       headers: { cookie: patientCookies.join("; ") },
       payload: {
-        clinicId: clinicId,
+        locationId: locationId,
         doctorId: doctorUserId, // Controller routes expect user ID of doctor
         appointmentTime: targetDate.toISOString(),
         appointmentType: "online",
@@ -130,7 +132,7 @@ describe("Appointments & Queue API Integration Tests", () => {
       url: "/api/appointments",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId: clinicId,
+        locationId: locationId,
         doctorId: doctorUserId,
         appointmentTime: targetDate.toISOString(),
         appointmentType: "walk-in",
@@ -156,7 +158,7 @@ describe("Appointments & Queue API Integration Tests", () => {
     // 1. Get queue for tomorrow
     const queueRes = await app.inject({
       method: "GET",
-      url: `/api/queue?clinicId=${clinicId}&doctorId=${doctorUserId}&date=${tomorrowDateStr}`,
+      url: `/api/queue?locationId=${locationId}&doctorId=${doctorUserId}&date=${tomorrowDateStr}`,
       headers: { cookie: adminCookies.join("; ") },
     });
 
@@ -174,7 +176,7 @@ describe("Appointments & Queue API Integration Tests", () => {
       url: "/api/queue/reorder",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId: clinicId,
+        locationId: locationId,
         doctorId: doctorUserId,
         date: tomorrowDateStr,
         orderedAppointmentIds: [secondApptId, firstApptId],
@@ -182,7 +184,7 @@ describe("Appointments & Queue API Integration Tests", () => {
     });
 
     expect(reorderRes.statusCode).toBe(200);
-    
+
     // Check if new queue is stored in DB
     const firstObj = await Appointment.findById(appointmentId);
     expect(firstObj!.queuePosition).toBe(2);
@@ -211,18 +213,18 @@ describe("Appointments & Queue API Integration Tests", () => {
 
   it("lists past unresolved appointments for staff without changing their stored status", async () => {
     await Appointment.findByIdAndUpdate(appointmentId, { appointmentTime: new Date(Date.now() - 25 * 60 * 60 * 1000), status: "pending" });
-    const review = await app.inject({ method: "GET", url: `/api/appointments?clinicId=${clinicId}&reviewOnly=1`, headers: { cookie: adminCookies.join("; ") } });
+    const review = await app.inject({ method: "GET", url: `/api/appointments?locationId=${locationId}&reviewOnly=1`, headers: { cookie: adminCookies.join("; ") } });
     expect(review.statusCode).toBe(200);
     expect(review.json().data.find((visit: { id: string }) => visit.id === appointmentId)?.reviewState).toBe("unresolved");
     expect((await Appointment.findById(appointmentId))?.status).toBe("pending");
   });
 
   it("blocks new patient and staff bookings after expiry while retaining existing appointments and public clinic details", async () => {
-    const clinic = await Clinic.findById(clinicId);
-    const subscription = await Subscription.findOne({ organizationId: clinic!.organizationId });
+    const location = await Location.findById(locationId);
+    const subscription = await Subscription.findOne({ organizationId: location!.organizationId });
     expect(subscription).not.toBeNull();
     await Subscription.findByIdAndUpdate(subscription!._id, { status: "trialing", trialEndsAt: new Date(Date.now() - 60_000) });
-    const booking = { clinicId, doctorId: doctorUserId, appointmentTime: new Date(Date.now() + 2 * 86400000).toISOString(), appointmentType: "online" };
+    const booking = { locationId, doctorId: doctorUserId, appointmentTime: new Date(Date.now() + 2 * 86400000).toISOString(), appointmentType: "online" };
     const patientAttempt = await app.inject({ method: "POST", url: "/api/appointments", headers: { cookie: patientCookies.join("; ") }, payload: booking });
     expect(patientAttempt.statusCode).toBe(409);
     expect(patientAttempt.body).toContain("Online booking is temporarily unavailable");
@@ -230,10 +232,10 @@ describe("Appointments & Queue API Integration Tests", () => {
     expect(staffAttempt.statusCode).toBe(402);
     const portalAttempt = await app.inject({ method: "POST", url: "/api/patient-portal/self-book", headers: { cookie: patientCookies.join("; ") }, payload: booking });
     expect(portalAttempt.statusCode).toBe(409);
-    const walkInAttempt = await app.inject({ method: "POST", url: "/api/public/join-queue", payload: { clinicId, doctorId: doctorUserId, name: "Walk-in", phone: "+919876543210" } });
+    const walkInAttempt = await app.inject({ method: "POST", url: "/api/public/join-queue", payload: { locationId, doctorId: doctorUserId, name: "Walk-in", phone: "+919876543210" } });
     expect(walkInAttempt.statusCode).toBe(409);
     expect(walkInAttempt.body).not.toContain("subscription");
-    const publicDetails = await app.inject({ method: "GET", url: `/api/public/clinics/${clinicId}` });
+    const publicDetails = await app.inject({ method: "GET", url: `/api/public/locations/${await providerFixtureSlug("location", locationId)}` });
     expect(publicDetails.statusCode).toBe(200);
     expect(JSON.parse(publicDetails.body).data.onlineBookingAvailable).toBe(false);
     const existingVisit = await app.inject({ method: "GET", url: `/api/appointments/${appointmentId}`, headers: { cookie: patientCookies.join("; ") } });

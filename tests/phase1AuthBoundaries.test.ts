@@ -1,3 +1,4 @@
+import { encryptField } from "../utilities/cryptoEnvelope.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import crypto from "node:crypto";
 import { app } from "../index.ts";
@@ -35,7 +36,7 @@ describe("Phase 1 authentication authority", () => {
   });
   it("requires local MFA after Google identity proof without creating a login session", async () => {
     const user = await User.create({ name: "Google MFA", email: "phase1-mfa@example.test", role: "root",
-      twoFactorEnabled: true, twoFactorSecret: "JBSWY3DPEHPK3PXP" });
+      twoFactorEnabled: true, twoFactorSecret: encryptField("JBSWY3DPEHPK3PXP") });
     const res = await app.inject({ method: "POST", url: "/api/auth/google",
       payload: { credential: `mock_google_token_${user.email}` } });
     expect(res.statusCode).toBe(200);
@@ -90,7 +91,7 @@ describe("Phase 1 authentication authority", () => {
     vi.stubEnv("SSO_CALLBACK_AUDIENCE", "phase1-app");
     const org = await Organization.create({ name: "SSO fixture", city: "Pune" });
     const user = await User.create({ name: "SSO MFA", email: "phase1-sso@example.test", role: "admin",
-      twoFactorEnabled: true, twoFactorSecret: "JBSWY3DPEHPK3PXP" });
+      twoFactorEnabled: true, twoFactorSecret: encryptField("JBSWY3DPEHPK3PXP") });
     await OrgMember.create({ userId: user._id, organizationId: org._id, role: "admin" });
     const now = Math.floor(Date.now() / 1000);
     const body = { email: user.email, name: user.name, provider: "okta", externalId: "provisioned-subject",

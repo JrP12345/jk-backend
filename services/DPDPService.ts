@@ -65,7 +65,7 @@ export class DPDPService {
 
     return {
       metadata: {
-        format: "HEALTHOS_DPDP_EXPORT_V1",
+        format: "EKAVYU_DPDP_EXPORT",
         governingLaw: "Digital Personal Data Protection Act, 2023 (Section 11)",
         exportedAt: new Date().toISOString(),
         organizationId: patient.organizationId,
@@ -406,7 +406,7 @@ export class DPDPService {
         {
           component: "DPDPCompliance",
           incidentId,
-          clinicId: data.organizationId,
+          locationId: data.organizationId,
         }
       );
     }
@@ -450,7 +450,7 @@ export class DPDPService {
       dataFiduciary: {
         name: org?.name || "Ekavyu Facility",
         identifier: org?._id || incident.organizationId,
-        contactEmail: org?.email || "compliance@ananta.health",
+        contactEmail: org?.email || "compliance@ekavyu.health",
       },
       incidentDetails: {
         incidentTrackingNumber: incident.incidentId,
@@ -467,7 +467,7 @@ export class DPDPService {
       affectedSubjectNotificationPlan: {
         notifiedAt: incident.notifiedSubjectsAt || null,
         channelsUsed: ["WHATSAPP", "EMAIL", "SMS"],
-        supportContact: "dpo@ananta.health",
+        supportContact: "dpo@ekavyu.health",
       },
     };
   }

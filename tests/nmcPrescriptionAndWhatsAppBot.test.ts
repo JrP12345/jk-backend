@@ -1,8 +1,9 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { outboundMessageDeliveryWorker } from "../services/OutboundMessageDeliveryWorker.ts";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Doctor } from "../models/Doctor.ts";
@@ -12,7 +13,7 @@ import { NotificationLog } from "../models/NotificationLog.ts";
 describe("NMC Doctor Credentials & Two-Way Interactive WhatsApp Bot Suite", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let doctorUserId: string;
   let patient: any;
@@ -20,8 +21,10 @@ describe("NMC Doctor Credentials & Two-Way Interactive WhatsApp Bot Suite", () =
   const patientPhone = "919876599999";
 
   beforeAll(async () => {
+    process.env.META_WHATSAPP_WABA_ID = "WABA_ID_TEST";
+    process.env.META_WHATSAPP_PHONE_NUMBER_ID = "PHONE_ID";
     // 1. Setup Organization & Super Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -34,13 +37,13 @@ describe("NMC Doctor Credentials & Two-Way Interactive WhatsApp Bot Suite", () =
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "NMC Care OPD Centre",
@@ -49,8 +52,8 @@ describe("NMC Doctor Credentials & Two-Way Interactive WhatsApp Bot Suite", () =
         phone: "+911122334455",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Doctor with NMC Registration and Qualifications
     const docRes = await app.inject({
@@ -64,7 +67,7 @@ describe("NMC Doctor Credentials & Two-Way Interactive WhatsApp Bot Suite", () =
         specialization: "General Medicine",
         qualification: "MBBS, MD (Internal Medicine)",
         registrationNumber: "MCI-48291/2012",
-        clinicIds: [clinicId],
+        locationIds: [locationId],
         consultationFee: 600,
       },
     });
@@ -92,7 +95,7 @@ describe("NMC Doctor Credentials & Two-Way Interactive WhatsApp Bot Suite", () =
     // 5. Create Active Checked-In Appointment for Today
     appointment = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient._id,
       tokenNumber: 22,

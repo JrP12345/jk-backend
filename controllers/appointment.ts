@@ -24,18 +24,18 @@ import {
   validateSlotLockForBooking,
   forceReleaseSlotLock,
 } from "../services/SlotLockService.ts";
-import { checkClinicAccess, getRequestClinicIds } from "../utilities/tenant.ts";
+import { checkLocationAccess, getRequestLocationIds } from "../utilities/tenant.ts";
 import { getNextAtomicSequence } from "../models/Counter.ts";
-import { clinicDateKey, getClinicTimezone } from "../utilities/clinicTime.ts";
+import { locationDateKey, getLocationTimezone } from "../utilities/locationTime.ts";
 
 import { appointmentService, AppointmentDomainError, validateAppointmentAvailability, type BookAppointmentInput } from "../services/AppointmentService.ts";
 
-async function ensureAppointmentClinicAccess(
+async function ensureAppointmentLocationAccess(
   req: FastifyRequest,
   reply: FastifyReply,
-  clinicId: unknown,
+  locationId: unknown,
 ): Promise<boolean> {
-  const check = await checkClinicAccess(req, clinicId);
+  const check = await checkLocationAccess(req, locationId);
   if (!check.allowed) {
     reply.code(check.statusCode).send(errorResponse(check.message));
     return false;
@@ -53,17 +53,17 @@ function recordId(value: unknown): string {
 }
 
 /**
- * Clinic membership alone is not enough for a patient-facing appointment URL:
- * patients can book at any active clinic, so a known appointment ID must still
+ * Location membership alone is not enough for a patient-facing appointment URL:
+ * patients can book at any active location, so a known appointment ID must still
  * be bound to the caller's own or active family-member patient profile.
  */
 async function ensureAppointmentObjectAccess(
   req: FastifyRequest,
   reply: FastifyReply,
-  appointment: { clinicId: unknown; doctorId: unknown; patientId: unknown; bookedByUserId?: unknown },
+  appointment: { locationId: unknown; doctorId: unknown; patientId: unknown; bookedByUserId?: unknown },
   purpose: AppointmentAccessPurpose = "view",
 ): Promise<boolean> {
-  if (!(await ensureAppointmentClinicAccess(req, reply, appointment.clinicId))) return false;
+  if (!(await ensureAppointmentLocationAccess(req, reply, appointment.locationId))) return false;
 
   const { role, id: userId } = req.user!;
   if (["patient", "family_member", "guest"].includes(role)) {
@@ -82,16 +82,16 @@ async function ensureAppointmentObjectAccess(
     }
 
     if (purpose === "staff-mutation") {
-      reply.code(403).send(errorResponse("Forbidden: Appointment clinical status can only be changed by clinic staff"));
+      reply.code(403).send(errorResponse("Forbidden: Appointment clinical status can only be changed by organization staff"));
       return false;
     }
 
     return true;
   }
 
-  // A doctor may work at multiple clinics, but may only alter consultations
+  // A doctor may work at multiple locations, but may only alter consultations
   // assigned to that doctor. Reception and authorised operational roles retain
-  // their clinic-scoped workflow access.
+  // their location-scoped workflow access.
   if (role === "doctor" && recordId(appointment.doctorId) !== String(userId)) {
     reply.code(403).send(errorResponse("Forbidden: You can only access appointments assigned to you"));
     return false;
@@ -124,15 +124,15 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
     let orgId = req.user?.organization_id;
 
     const body = (req.body || {}) as BookAppointmentInput;
-    if (!body?.clinicId || !body?.doctorId || !body?.appointmentTime || !body?.appointmentType) {
-      return reply.code(400).send(errorResponse("clinicId, doctorId, appointmentTime, and appointmentType are required"));
+    if (!body?.locationId || !body?.doctorId || !body?.appointmentTime || !body?.appointmentType) {
+      return reply.code(400).send(errorResponse("locationId, doctorId, appointmentTime, and appointmentType are required"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, body.clinicId);
-    if (!clinicAccess.allowed) {
-      return reply.code(clinicAccess.statusCode).send(errorResponse(clinicAccess.message));
+    const locationAccess = await checkLocationAccess(req, body.locationId);
+    if (!locationAccess.allowed) {
+      return reply.code(locationAccess.statusCode).send(errorResponse(locationAccess.message));
     }
-    if (!orgId && clinicAccess.organizationId) orgId = clinicAccess.organizationId;
+    if (!orgId && locationAccess.organizationId) orgId = locationAccess.organizationId;
 
     const appointment = await appointmentService.book(
       { id: userId, role: userRole, organizationId: orgId, bookingPatientId: req.user?.bookingPatientId },
@@ -144,7 +144,7 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
       successResponse(
         {
           id: appointment.id,
-          clinicId: appointment.clinicId,
+          locationId: appointment.locationId,
           doctorId: appointment.doctorId,
           patientId: appointment.patientId,
           appointmentTime: appointment.appointmentTime,
@@ -178,7 +178,7 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
     const userRole = req.user!.role;
     const userId = req.user!.id;
     const orgId = req.user?.organization_id;
-    const { clinicId, doctorId, status, date, startDate, endDate, page, limit, search, reviewOnly } = req.query as any;
+    const { locationId, doctorId, status, date, startDate, endDate, page, limit, search, reviewOnly } = req.query as any;
     const { appointmentReviewState, reviewCandidateFilter } = await import("../utilities/appointmentReview.ts");
 
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
@@ -203,13 +203,13 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
       filter.doctorId = userId;
     }
 
-    if (clinicId) {
-      if (!(await ensureAppointmentClinicAccess(req, reply, clinicId))) return;
-      filter.clinicId = clinicId;
+    if (locationId) {
+      if (!(await ensureAppointmentLocationAccess(req, reply, locationId))) return;
+      filter.locationId = locationId;
     } else if (orgId && userRole !== "patient" && userRole !== "family_member") {
-      // Limit to clinics in requesting user's organization
-      const clinicIds = await getRequestClinicIds(req);
-      filter.clinicId = { $in: clinicIds };
+      // Limit to locations in requesting user's organization
+      const locationIds = await getRequestLocationIds(req);
+      filter.locationId = { $in: locationIds };
     }
 
     if (doctorId && userRole !== "doctor") filter.doctorId = doctorId;
@@ -262,7 +262,7 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
     const [totalCount, rawAppointments] = await Promise.all([
       Appointment.countDocuments(filter),
       Appointment.find(filter)
-        .populate("clinicId", "name city address")
+        .populate("locationId", "name city address")
         .populate("doctorId", "name specialization fees")
         .populate({
           path: "patientId",
@@ -415,7 +415,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
           if (!cdsOverrideReason || !cdsOverrideReason.trim()) {
             await CDSEvaluation.create({
               organizationId: (appointment as any).organizationId,
-              clinicId: appointment.clinicId,
+              locationId: appointment.locationId,
               patientId: appointment.patientId,
               engineVersion: evaluation.engineVersion,
               terminologyVersion: evaluation.terminologyVersion,
@@ -494,7 +494,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
       if (!existingEncounter) {
         await Encounter.create({
           organizationId: (appointment as any).organizationId,
-          clinicId: appointment.clinicId,
+          locationId: appointment.locationId,
           appointmentId: appointment._id,
           patientId: appointment.patientId,
           doctorId: appointment.doctorId,
@@ -512,7 +512,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
       if (!encounter) {
         encounter = await Encounter.create({
           organizationId: (appointment as any).organizationId,
-          clinicId: appointment.clinicId,
+          locationId: appointment.locationId,
           appointmentId: appointment._id,
           patientId: appointment.patientId,
           doctorId: appointment.doctorId,
@@ -535,7 +535,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
           if (!p.name || !p.name.trim()) continue;
           const rxDoc = await Prescription.create({
             organizationId: (appointment as any).organizationId,
-            clinicId: appointment.clinicId,
+            locationId: appointment.locationId,
             encounterId: encounter._id,
             patientId: appointment.patientId,
             doctorId: appointment.doctorId,
@@ -559,7 +559,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
         const { CDSEvaluation } = await import("../models/CDSEvaluation.ts");
         await CDSEvaluation.create({
           organizationId: (appointment as any).organizationId,
-          clinicId: appointment.clinicId,
+          locationId: appointment.locationId,
           encounterId: encounter._id,
           patientId: appointment.patientId,
           prescriptionIds: createdPrescriptionIds,
@@ -632,7 +632,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
         if (!note) {
           await ClinicalNote.create({
             organizationId: (appointment as any).organizationId,
-            clinicId: appointment.clinicId,
+            locationId: appointment.locationId,
             encounterId: encounter._id,
             patientId: appointment.patientId,
             doctorId: appointment.doctorId,
@@ -684,22 +684,22 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
       }
 
       // Auto-schedule confirmed follow-up review appointment in MongoDB
-      if (followUpRecommended && followUpDate && appointment.clinicId && appointment.patientId && appointment.doctorId) {
+      if (followUpRecommended && followUpDate && appointment.locationId && appointment.patientId && appointment.doctorId) {
         try {
           const existingFollowUp = await Appointment.findOne({
             followUpForAppointmentId: appointment._id,
             status: { $ne: "cancelled" },
           });
 
-          const { canCreateClinicBooking } = await import("../services/billing/SubscriptionAccess.ts");
-          if (!existingFollowUp && await canCreateClinicBooking(String(appointment.clinicId))) {
-            const dateStr = clinicDateKey(followUpDate, await getClinicTimezone(String(appointment.clinicId)));
-            const counterKey = `token_${appointment.clinicId}_${appointment.doctorId}_${dateStr}`;
+          const { canCreateLocationBooking } = await import("../services/billing/SubscriptionAccess.ts");
+          if (!existingFollowUp && await canCreateLocationBooking(String(appointment.locationId))) {
+            const dateStr = locationDateKey(followUpDate, await getLocationTimezone(String(appointment.locationId)));
+            const counterKey = `token_${appointment.locationId}_${appointment.doctorId}_${dateStr}`;
             const tokenNumber = await getNextAtomicSequence(counterKey);
 
             const followUp = await Appointment.create({
               organizationId: (appointment as any).organizationId || undefined,
-              clinicId: appointment.clinicId,
+              locationId: appointment.locationId,
               doctorId: appointment.doctorId,
               patientId: appointment.patientId,
               appointmentTime: followUpDate,
@@ -737,7 +737,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
       }
 
       // Real-time pharmacy broadcast for dispensary desk
-      if (createdPrescriptionIds.length > 0 && appointment.clinicId) {
+      if (createdPrescriptionIds.length > 0 && appointment.locationId) {
         try {
           const { broadcastQueueUpdate } = await import("../notifications/websocket.ts");
           let patientName = "Patient";
@@ -750,7 +750,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
             patientName = patientDoc?.userId?.name || patientDoc?.name || "Patient";
           }
 
-          broadcastQueueUpdate(appointment.clinicId.toString(), {
+          broadcastQueueUpdate(appointment.locationId.toString(), {
             type: "PRESCRIPTION_ISSUED",
             data: {
               appointmentId: appointment._id.toString(),
@@ -767,7 +767,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
                 duration: p.duration || "5 days",
                 instructions: optionalDocumentation ? (p.instructions || "") : (p.instructions || "Follow prescribed meal instructions"),
               })),
-              clinicId: appointment.clinicId.toString(),
+              locationId: appointment.locationId.toString(),
             },
             timestamp: new Date().toISOString(),
           });
@@ -804,16 +804,16 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
     }
 
     // Real-time queue broadcast
-    const clinicIdStr = appointment.clinicId?.toString();
-    if (clinicIdStr) {
+    const locationIdStr = appointment.locationId?.toString();
+    if (locationIdStr) {
       const { broadcastQueueUpdate } = await import("../notifications/websocket.ts");
-      broadcastQueueUpdate(clinicIdStr, {
+      broadcastQueueUpdate(locationIdStr, {
         type: "QUEUE_UPDATED",
         data: {
           appointmentId: appointment._id.toString(),
           status: appointment.status,
           doctorId: appointment.doctorId?.toString(),
-          clinicId: clinicIdStr,
+          locationId: locationIdStr,
         },
         timestamp: new Date().toISOString(),
       });
@@ -822,7 +822,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
     // Autonomous Queue Pacing (P2): If consultation began, completed, or cancelled, advance pacing for waiting queue
     if (["in-consultation", "completed", "cancelled", "no-show"].includes(status)) {
       const { triggerTurnApproachingPacing } = await import("./queue.ts");
-      triggerTurnApproachingPacing(appointment.clinicId, appointment.doctorId).catch((err) =>
+      triggerTurnApproachingPacing(appointment.locationId, appointment.doctorId).catch((err) =>
         console.error("Background turn approaching pacing error on appointment status update:", err)
       );
     }
@@ -937,10 +937,10 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
     }
 
     // Validate slot lock anti-double booking (only in time_slot mode)
-    const rescheduleAssignment = await DoctorAssignment.findOne({ doctorId: appointment.doctorId, clinicId: appointment.clinicId, isActive: true });
-    if (!rescheduleAssignment) return reply.code(409).send(errorResponse("The doctor is no longer assigned to this clinic"));
+    const rescheduleAssignment = await DoctorAssignment.findOne({ doctorId: appointment.doctorId, locationId: appointment.locationId, isActive: true });
+    if (!rescheduleAssignment) return reply.code(409).send(errorResponse("The doctor is no longer assigned to this location"));
     await validateAppointmentAvailability({ role: req.user!.role }, {
-      doctorId: appointment.doctorId.toString(), clinicId: appointment.clinicId.toString(),
+      doctorId: appointment.doctorId.toString(), locationId: appointment.locationId.toString(),
       appointmentTime: newTime, appointmentType: appointment.appointmentType as BookAppointmentInput["appointmentType"],
       duration: appointment.duration,
     }, rescheduleAssignment, appointment._id.toString());
@@ -949,7 +949,7 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
     let lockValidation: { valid: boolean; message?: string; lockKey?: string } = { valid: true };
     if (!rescheduleIsQueue) {
       lockValidation = await validateSlotLockForBooking(
-        appointment.clinicId.toString(),
+        appointment.locationId.toString(),
         appointment.doctorId.toString(),
         newTime,
         userId,
@@ -963,8 +963,8 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
     const oldTimeStr = new Date(appointment.appointmentTime).toISOString();
 
     // Recalculate atomic daily token number & queue position for the new date
-    const newDateStr = clinicDateKey(newDateObj, await getClinicTimezone(String(appointment.clinicId)));
-    const counterKey = `token_${appointment.clinicId}_${appointment.doctorId}_${newDateStr}`;
+    const newDateStr = locationDateKey(newDateObj, await getLocationTimezone(String(appointment.locationId)));
+    const counterKey = `token_${appointment.locationId}_${appointment.doctorId}_${newDateStr}`;
     const originalStatus = appointment.status;
     await withClinicalTransaction(async () => {
     const tokenNumber = await getNextAtomicSequence(counterKey);
@@ -1026,22 +1026,22 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
 export async function getDoctorSlots(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { doctorId } = req.params as { doctorId: string };
-    const { clinicId, date } = req.query as { clinicId: string; date: string };
+    const { locationId, date } = req.query as { locationId: string; date: string };
 
-    if (!doctorId || !clinicId || !date) {
-      return reply.code(400).send(errorResponse("doctorId, clinicId, and date (YYYY-MM-DD) are required"));
+    if (!doctorId || !locationId || !date) {
+      return reply.code(400).send(errorResponse("doctorId, locationId, and date (YYYY-MM-DD) are required"));
     }
 
-    if (req.user && !(await ensureAppointmentClinicAccess(req, reply, clinicId))) return;
+    if (req.user && !(await ensureAppointmentLocationAccess(req, reply, locationId))) return;
     if (!req.user || ["patient", "family_member", "guest"].includes(req.user.role)) {
-      const { canCreateClinicBooking } = await import("../services/billing/SubscriptionAccess.ts");
-      if (!(await canCreateClinicBooking(clinicId))) {
-        return reply.code(409).send(errorResponse("Online booking is temporarily unavailable. Please contact the clinic directly."));
+      const { canCreateLocationBooking } = await import("../services/billing/SubscriptionAccess.ts");
+      if (!(await canCreateLocationBooking(locationId))) {
+        return reply.code(409).send(errorResponse("Online booking is temporarily unavailable. Please contact reception directly."));
       }
     }
 
     const { getDoctorAvailableSlots } = await import("../services/SlotService.ts");
-    const result = await getDoctorAvailableSlots(doctorId, clinicId, date, req.user?.id);
+    const result = await getDoctorAvailableSlots(doctorId, locationId, date, req.user?.id);
 
     return reply.code(200).send(successResponse(result));
   } catch (err: any) {
@@ -1108,7 +1108,7 @@ export async function getAppointmentById(req: FastifyRequest, reply: FastifyRepl
     }
 
     const appointment = await Appointment.findById(id)
-      .populate("clinicId", "name city address")
+      .populate("locationId", "name city address")
       .populate("doctorId", "name specialization fees email phone")
       .populate({
         path: "patientId",
@@ -1133,19 +1133,19 @@ export async function getAppointmentById(req: FastifyRequest, reply: FastifyRepl
 export async function lockSlot(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userId = req.user!.id;
-    const { clinicId, doctorId, slotTime } = req.body as {
-      clinicId: string;
+    const { locationId, doctorId, slotTime } = req.body as {
+      locationId: string;
       doctorId: string;
       slotTime: string;
     };
 
-    if (!clinicId || !doctorId || !slotTime) {
-      return reply.code(400).send(errorResponse("clinicId, doctorId, and slotTime are required"));
+    if (!locationId || !doctorId || !slotTime) {
+      return reply.code(400).send(errorResponse("locationId, doctorId, and slotTime are required"));
     }
 
-    if (!(await ensureAppointmentClinicAccess(req, reply, clinicId))) return;
+    if (!(await ensureAppointmentLocationAccess(req, reply, locationId))) return;
 
-    const result = await acquireSlotLock(clinicId, doctorId, slotTime, userId);
+    const result = await acquireSlotLock(locationId, doctorId, slotTime, userId);
 
     if (!result.success) {
       return reply.code(409).send(errorResponse(result.message, { heldBy: result.heldBy }));
@@ -1171,20 +1171,20 @@ export async function lockSlot(req: FastifyRequest, reply: FastifyReply) {
 export async function unlockSlot(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userId = req.user!.id;
-    const { clinicId, doctorId, slotTime, lockId } = req.body as {
-      clinicId: string;
+    const { locationId, doctorId, slotTime, lockId } = req.body as {
+      locationId: string;
       doctorId: string;
       slotTime: string;
       lockId: string;
     };
 
-    if (!clinicId || !doctorId || !slotTime || !lockId) {
-      return reply.code(400).send(errorResponse("clinicId, doctorId, slotTime, and lockId are required"));
+    if (!locationId || !doctorId || !slotTime || !lockId) {
+      return reply.code(400).send(errorResponse("locationId, doctorId, slotTime, and lockId are required"));
     }
 
-    if (!(await ensureAppointmentClinicAccess(req, reply, clinicId))) return;
+    if (!(await ensureAppointmentLocationAccess(req, reply, locationId))) return;
 
-    const result = await releaseSlotLock(clinicId, doctorId, slotTime, userId, lockId);
+    const result = await releaseSlotLock(locationId, doctorId, slotTime, userId, lockId);
 
     if (!result.success) {
       return reply.code(403).send(errorResponse(result.message));
@@ -1200,19 +1200,19 @@ export async function unlockSlot(req: FastifyRequest, reply: FastifyReply) {
 // ─── Slot Lock: Check Lock Status ─────────────────────────────
 export async function getSlotLockStatus(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, doctorId, slotTime } = req.query as {
-      clinicId: string;
+    const { locationId, doctorId, slotTime } = req.query as {
+      locationId: string;
       doctorId: string;
       slotTime: string;
     };
 
-    if (!clinicId || !doctorId || !slotTime) {
-      return reply.code(400).send(errorResponse("clinicId, doctorId, and slotTime are required"));
+    if (!locationId || !doctorId || !slotTime) {
+      return reply.code(400).send(errorResponse("locationId, doctorId, and slotTime are required"));
     }
 
-    if (!(await ensureAppointmentClinicAccess(req, reply, clinicId))) return;
+    if (!(await ensureAppointmentLocationAccess(req, reply, locationId))) return;
 
-    const info = await checkSlotLock(clinicId, doctorId, slotTime);
+    const info = await checkSlotLock(locationId, doctorId, slotTime);
 
     return reply.code(200).send(
       successResponse({
@@ -1230,15 +1230,15 @@ export async function getSlotLockStatus(req: FastifyRequest, reply: FastifyReply
 // ─── Follow-Up Care-Gap & Patient Recall Register ───────────────
 export async function getFollowUpRegister(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, doctorId, timeframe, search } = (req.query || {}) as {
-      clinicId?: string;
+    const { locationId, doctorId, timeframe, search } = (req.query || {}) as {
+      locationId?: string;
       doctorId?: string;
       timeframe?: "all" | "today" | "upcoming" | "overdue";
       search?: string;
     };
 
     if (["patient", "family_member", "guest"].includes(req.user!.role)) {
-      return reply.code(403).send(errorResponse("Forbidden: Follow-up register is available to clinic staff only"));
+      return reply.code(403).send(errorResponse("Forbidden: Follow-up register is available to organization staff only"));
     }
 
     const query: any = {
@@ -1248,12 +1248,12 @@ export async function getFollowUpRegister(req: FastifyRequest, reply: FastifyRep
       ],
     };
 
-    if (clinicId) {
-      if (!(await ensureAppointmentClinicAccess(req, reply, clinicId))) return;
-      query.clinicId = clinicId;
+    if (locationId) {
+      if (!(await ensureAppointmentLocationAccess(req, reply, locationId))) return;
+      query.locationId = locationId;
     } else if (req.user?.organization_id) {
-      const { getRequestClinicIds } = await import("../utilities/tenant.ts");
-      query.clinicId = { $in: await getRequestClinicIds(req) };
+      const { getRequestLocationIds } = await import("../utilities/tenant.ts");
+      query.locationId = { $in: await getRequestLocationIds(req) };
     }
 
     if (req.user!.role === "doctor") {
@@ -1276,7 +1276,7 @@ export async function getFollowUpRegister(req: FastifyRequest, reply: FastifyRep
         populate: { path: "userId", select: "name email phone" },
       })
       .populate("doctorId", "name specialization")
-      .populate("clinicId", "name city")
+      .populate("locationId", "name city")
       .sort({ appointmentTime: 1 })
       .lean();
 
@@ -1322,9 +1322,9 @@ export async function getFollowUpRegister(req: FastifyRequest, reply: FastifyRep
           name: appt.doctorId?.name || "Doctor",
           specialization: appt.doctorId?.specialization || "General Medicine",
         },
-        clinic: {
-          id: appt.clinicId?._id?.toString() || appt.clinicId?.id,
-          name: appt.clinicId?.name || "Clinic",
+        location: {
+          id: appt.locationId?._id?.toString() || appt.locationId?.id,
+          name: appt.locationId?.name || "Location",
         },
         diagnosis: appt.diagnosis || "",
         symptoms: appt.symptoms || "",
@@ -1389,7 +1389,7 @@ export async function sendFollowUpReminder(req: FastifyRequest, reply: FastifyRe
         populate: { path: "userId", select: "name email phone" },
       })
       .populate("doctorId", "name specialization")
-      .populate("clinicId", "name city phone");
+      .populate("locationId", "name city phone");
 
     if (!appointment) {
       return reply.code(404).send(errorResponse("Appointment not found"));

@@ -1,10 +1,11 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { Patient } from "../models/Patient.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Invoice } from "../models/Invoice.ts";
 
 describe("Multi-Tenancy Data Isolation Integration Tests", () => {
@@ -20,11 +21,11 @@ describe("Multi-Tenancy Data Isolation Integration Tests", () => {
     await Organization.deleteMany({});
     await OrgMember.deleteMany({});
     await Patient.deleteMany({});
-    await Clinic.deleteMany({});
+    await Location.deleteMany({});
     await Invoice.deleteMany({});
 
     // 1. Bootstrap Org A + Admin A
-    const resOrgA = await app.inject({
+    const resOrgA = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -37,20 +38,20 @@ describe("Multi-Tenancy Data Isolation Integration Tests", () => {
       }
     });
     expect(resOrgA.statusCode).toBe(201);
-    orgACookies = resOrgA.cookies.map((c: any) => `${c.name}=${c.value}`);
+    orgACookies = await provisionedAdminCookies(resOrgA);
 
-    // Create Clinic A for Org A
-    const resClinicA = await app.inject({
+    // Create Location A for Org A
+    const resLocationA = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: orgACookies.join("; ") },
       payload: { name: "Clinic A", city: "Mumbai" }
     });
-    expect(resClinicA.statusCode).toBe(201);
-    const clinicAId = JSON.parse(resClinicA.body).data.id;
+    expect(resLocationA.statusCode).toBe(201);
+    const locationAId = JSON.parse(resLocationA.body).data.id;
 
     // 2. Bootstrap Org B + Admin B
-    const resOrgB = await app.inject({
+    const resOrgB = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -63,7 +64,7 @@ describe("Multi-Tenancy Data Isolation Integration Tests", () => {
       }
     });
     expect(resOrgB.statusCode).toBe(201);
-    orgBCookies = resOrgB.cookies.map((c: any) => `${c.name}=${c.value}`);
+    orgBCookies = await provisionedAdminCookies(resOrgB);
 
     // Create Doctor A for Org A
     const resDocA = await app.inject({
@@ -80,12 +81,12 @@ describe("Multi-Tenancy Data Isolation Integration Tests", () => {
     expect(resDocA.statusCode).toBe(201);
     const docAUserId = JSON.parse(resDocA.body).data.id;
 
-    // Assign Doctor A to Clinic A
+    // Assign Doctor A to Location A
     const resAssign = await app.inject({
       method: "POST",
       url: "/api/onboarding/doctors/assignments",
       headers: { cookie: orgACookies.join("; ") },
-      payload: { doctorId: docAUserId, clinicId: clinicAId, fees: 500, workingHours: "00:00 - 23:59" }
+      payload: { doctorId: docAUserId, locationId: locationAId, fees: 500, workingHours: "00:00 - 23:59" }
     });
     expect(resAssign.statusCode).toBe(201);
 
@@ -95,7 +96,7 @@ describe("Multi-Tenancy Data Isolation Integration Tests", () => {
       url: "/api/appointments",
       headers: { cookie: orgACookies.join("; ") },
       payload: {
-        clinicId: clinicAId,
+        locationId: locationAId,
         doctorId: docAUserId,
         appointmentTime: new Date().toISOString(),
         appointmentType: "walk-in",
@@ -120,7 +121,7 @@ describe("Multi-Tenancy Data Isolation Integration Tests", () => {
       headers: { cookie: orgACookies.join("; ") },
       payload: {
         patientId: orgAPatientId,
-        clinicId: clinicAId,
+        locationId: locationAId,
         doctorId: docAUserId,
         items: [{ description: "Blood Test", amount: 1500 }]
       }

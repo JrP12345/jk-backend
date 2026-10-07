@@ -1,3 +1,4 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import crypto from "node:crypto";
 import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { app } from "../index.ts";
@@ -24,12 +25,12 @@ describe("WhatsApp setup, isolation and durable delivery", () => {
   const wabaId = "100001";
   const phoneNumberId = "200001";
   beforeAll(async () => {
-    const response = await app.inject({ method: "POST", url: "/api/onboarding/organization", payload: {
+    const response = await app.inject({ headers: await provisioningFixtureHeaders(), method: "POST", url: "/api/onboarding/organization", payload: {
       org_name: "WhatsApp Reliability Clinic", city: "Mumbai", admin_name: "Admin",
-      admin_email: `wa-reliability-${Date.now()}@example.com`, admin_password: "Password123", plan: "pro",
+      admin_email: `wa-reliability-${Date.now()}@example.com`, admin_password: "Password123", plan: "professional",
     } });
     expect(response.statusCode).toBe(201);
-    cookie = (response.headers["set-cookie"] as string[]).map(row => row.split(";")[0]).join("; ");
+    cookie = (await provisionedAdminCookies(response)).join("; ");
     organizationId = response.json().data.organization.id;
   });
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
@@ -57,7 +58,7 @@ describe("WhatsApp setup, isolation and durable delivery", () => {
     expect(config.body).not.toContain(secret);
     expect(config.body).not.toContain("test-access-token");
     expect(config.json().data.connection).toMatchObject({ configured: true, connectionStatus: "pending", hasToken: true, hasAppSecret: true });
-    expect(config.json().data.connection.verifyToken).toMatch(/^ananta_/);
+    expect(config.json().data.connection.verifyToken).toMatch(/^ekavyu_/);
   });
   it("denies tenant users access to root settings and rejects WABA reuse", async () => {
     expect((await app.inject({ method: "GET", url: "/api/admin/whatsapp", headers: { cookie } })).statusCode).toBe(403);

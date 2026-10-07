@@ -5,7 +5,7 @@ export interface IPreAuthorization extends Document {
   organizationId: mongoose.Types.ObjectId;
   preAuthNumber: string;
   patientId: mongoose.Types.ObjectId;
-  clinicId: mongoose.Types.ObjectId;
+  locationId: mongoose.Types.ObjectId;
   doctorId: mongoose.Types.ObjectId;
   claimId?: mongoose.Types.ObjectId;
   tpaName: string;
@@ -43,9 +43,9 @@ const preAuthorizationSchema = new Schema<IPreAuthorization>(
       required: true,
       index: true,
     },
-    clinicId: {
+    locationId: {
       type: Schema.Types.ObjectId,
-      ref: "Clinic",
+      ref: "Location",
       required: true,
       index: true,
     },

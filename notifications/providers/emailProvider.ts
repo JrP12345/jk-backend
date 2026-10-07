@@ -1,7 +1,7 @@
 import nodemailer, { type Transporter } from "nodemailer";
 import { withConcurrencyBudget } from "../../utilities/concurrencyBudget.ts";
 import { MAX_PROVIDER_CONCURRENCY } from "../../utilities/scalability.ts";
-import { decrypt, isEncrypted } from "../../utilities/encryption.ts";
+import { decryptField, isEncrypted } from "../../utilities/cryptoEnvelope.ts";
 
 export interface EmailOptions {
   to: string;
@@ -62,7 +62,7 @@ export class EmailProvider {
    * Build a one-time transporter from an org-level SMTP config (decrypting password if encrypted).
    */
   private buildTransientTransporter(cfg: SmtpConfig): Transporter {
-    const rawPass = cfg.pass && isEncrypted(cfg.pass) ? decrypt(cfg.pass) : cfg.pass;
+    const rawPass = cfg.pass && isEncrypted(cfg.pass) ? decryptField(cfg.pass) : cfg.pass;
     return nodemailer.createTransport({
       host: cfg.host,
       port: cfg.port || 587,
@@ -84,13 +84,9 @@ export class EmailProvider {
     return withConcurrencyBudget("provider:email", MAX_PROVIDER_CONCURRENCY, () => this.sendEmailBounded(options, orgSmtp));
   }
   private async sendEmailBounded(options: EmailOptions, orgSmtp?: SmtpConfig | null): Promise<boolean> {
-    const fromEmail = orgSmtp?.fromEmail || options.from || process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER || "noreply@anant.health";
-    // Old platform SMTP display names can survive in deployed environment
-    // settings. Normalize only those labels; preserve tenant names and addresses.
+    const fromEmail = orgSmtp?.fromEmail || options.from || process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER || "noreply@ekavyu.com";
     const configuredName = process.env.SMTP_FROM_NAME?.trim();
-    const platformName = !configuredName || /^(?:ananta?|health\s?os|clinic\s?os)(?:\s+health(?:care)?)?$/i.test(configuredName)
-      ? "Ekavyu"
-      : configuredName;
+    const platformName = configuredName || "Ekavyu";
     const fromName = orgSmtp?.fromName || platformName;
     const formattedFrom = fromEmail.includes("<") ? fromEmail : `"${fromName}" <${fromEmail}>`;
 

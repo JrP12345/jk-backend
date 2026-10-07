@@ -1,8 +1,9 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { Receptionist } from "../models/Receptionist.ts";
 
@@ -11,11 +12,11 @@ describe("Onboarding & Clinic API Integration Tests", () => {
   const password = "Password123";
   let adminCookies: string[] = [];
   let organizationId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorUserId: string;
 
   it("should successfully bootstrap a new organization and admin user", async () => {
-    const response = await app.inject({
+    const response = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -24,7 +25,7 @@ describe("Onboarding & Clinic API Integration Tests", () => {
         admin_name: "Hitesh Patel",
         admin_email: adminEmail,
         admin_password: password,
-        plan: "pro",
+        plan: "professional",
       },
     });
 
@@ -37,13 +38,13 @@ describe("Onboarding & Clinic API Integration Tests", () => {
     organizationId = body.data.organization.id;
 
     // Save cookies
-    adminCookies = response.headers["set-cookie"] as string[];
+    adminCookies = (await provisionedAdminCookies(response));
   });
 
   it("should allow admin to create a clinic location", async () => {
     const response = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: {
         cookie: adminCookies.join("; "),
       },
@@ -60,7 +61,7 @@ describe("Onboarding & Clinic API Integration Tests", () => {
     const body = JSON.parse(response.body);
     expect(body.success).toBe(true);
     expect(body.data.name).toBe("Surat Clinic Branch A");
-    clinicId = body.data.id;
+    locationId = body.data.id;
   });
 
   it("should allow admin to add a doctor", async () => {
@@ -102,7 +103,7 @@ describe("Onboarding & Clinic API Integration Tests", () => {
         email: "komal@test.com",
         password: "Password123",
         shift: "Morning",
-        clinicId: clinicId,
+        locationId: locationId,
       },
     });
 
@@ -134,7 +135,7 @@ describe("Onboarding & Clinic API Integration Tests", () => {
         name: "Hack Receptionist",
         email: "hack@test.com",
         password: "Password123",
-        clinicId: clinicId,
+        locationId: locationId,
       },
     });
 

@@ -1,3 +1,4 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
@@ -11,12 +12,12 @@ import { runDisruptionTimeoutSweep } from "../jobs/disruptionTimeoutJob.ts";
 import { disruptionService } from "../services/disruptionService.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { createTrackerCapability } from "../utilities/publicTracker.ts";
-import { clinicDateKey } from "../utilities/clinicTime.ts";
+import { locationDateKey } from "../utilities/locationTime.ts";
 
 describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doc1Id: string;
   let doc2Id: string;
   let patient1: any;
@@ -31,7 +32,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(today);
     // 1. Setup Organization & Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -44,18 +45,18 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: { name: "Bangalore Central Clinic", city: "Bangalore" },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Primary Doctor (Doc 1)
     const doc1Res = await app.inject({
@@ -79,7 +80,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         doctorId: doc1Id,
-        clinicId,
+        locationId,
         fees: 600,
         appointmentDuration: 15,
         bookingMode: "sequential_queue",
@@ -109,7 +110,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         doctorId: doc2Id,
-        clinicId,
+        locationId,
         fees: 600,
         appointmentDuration: 15,
         bookingMode: "sequential_queue",
@@ -162,7 +163,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
     // Create 4 appointments for Doc 1 today
     apptInConsultation = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId: doc1Id,
       patientId: patient1._id,
       appointmentTime: today,
@@ -173,7 +174,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
 
     apptCheckedIn = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId: doc1Id,
       patientId: patient2._id,
       appointmentTime: today,
@@ -184,7 +185,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
 
     apptConfirmed = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId: doc1Id,
       patientId: patient3._id,
       appointmentTime: today,
@@ -195,7 +196,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
 
     apptPending = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId: doc1Id,
       patientId: patient4._id,
       appointmentTime: today,
@@ -210,7 +211,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
       url: "/api/doctor-overrides",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         doctorId: doc1Id,
         date: todayStr,
         status: "unavailable",
@@ -247,12 +248,12 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
   it("claims each disruption appointment once when duplicate processors run concurrently", async () => {
     const appointmentTime = new Date();
     appointmentTime.setHours(11, 0, 0, 0);
-    const override = await DoctorDayOverride.findOne({ clinicId, doctorId: doc1Id, date: todayStr });
+    const override = await DoctorDayOverride.findOne({ locationId, doctorId: doc1Id, date: todayStr });
     expect(override).toBeDefined();
     const [checkedInAppointment, confirmedAppointment] = await Appointment.create([
       {
         organizationId: orgId,
-        clinicId,
+        locationId,
         doctorId: doc1Id,
         patientId: patient1._id,
         appointmentTime,
@@ -262,7 +263,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
       },
       {
         organizationId: orgId,
-        clinicId,
+        locationId,
         doctorId: doc1Id,
         patientId: patient2._id,
         appointmentTime,
@@ -275,7 +276,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
 
     try {
       const params = {
-        clinicId,
+        locationId,
         doctorId: doc1Id,
         date: todayStr,
         status: "unavailable" as const,
@@ -306,7 +307,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
   it("Scenario D: Fetches eligible replacement doctors at the same clinic", async () => {
     const res = await app.inject({
       method: "GET",
-      url: `/api/doctor-overrides/eligible-replacements?clinicId=${clinicId}&doctorId=${doc1Id}&date=${todayStr}`,
+      url: `/api/doctor-overrides/eligible-replacements?locationId=${locationId}&doctorId=${doc1Id}&date=${todayStr}`,
       headers: { cookie: adminCookies.join("; ") },
     });
 
@@ -325,7 +326,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
     // 1. Create a pre-existing waiting appointment for Doctor 2 (Doc 2)
     const existingDoc2Appt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId: doc2Id,
       patientId: patient4._id,
       appointmentTime: new Date(),
@@ -384,7 +385,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
       method: "POST",
       url: "/api/queue/call-next",
       headers: { cookie: adminCookies.join("; ") },
-      payload: { clinicId, doctorId: doc2Id },
+      payload: { locationId, doctorId: doc2Id },
     });
     expect(callNextRes.statusCode).toBe(200);
     const callBody = JSON.parse(callNextRes.body);
@@ -398,7 +399,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
 
     const invoice = await Invoice.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId: doc1Id,
       patientId: patient3._id,
       appointmentId: apptConfirmed._id,
@@ -458,7 +459,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
   });
 
   it("Scenario G: Priority reschedules disrupted appointment, carrying over payments and persisting AuditLog", async () => {
-    const targetDate = clinicDateKey(new Date(Date.now() + 7 * 86400000), "Asia/Kolkata");
+    const targetDate = locationDateKey(new Date(Date.now() + 7 * 86400000), "Asia/Kolkata");
     const rescheduleRes = await app.inject({
       method: "POST",
       url: "/api/doctor-overrides/triage/reschedule",
@@ -499,7 +500,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
     // Create an un-actioned remote appointment with an expired deadline
     const expiredAppt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId: doc1Id,
       patientId: patient4._id,
       appointmentTime: new Date(),
@@ -521,7 +522,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
   it("claims an expired disruption appointment once when timeout workers overlap", async () => {
     const expiredAppt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId: doc1Id,
       patientId: patient4._id,
       appointmentTime: new Date(),
@@ -548,7 +549,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
     // Create an appointment currently in disruption triage
     const triageAppt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId: doc1Id,
       patientId: patient1._id,
       appointmentTime: new Date(),
@@ -568,7 +569,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
       payload: {
         appointmentId: triageAppt._id.toString(),
         action: "reschedule",
-        targetDate: clinicDateKey(new Date(Date.now() + 10 * 86400000), "Asia/Kolkata"),
+        targetDate: locationDateKey(new Date(Date.now() + 10 * 86400000), "Asia/Kolkata"),
         reason: "Patient clicked reschedule on live tracker",
       },
     });

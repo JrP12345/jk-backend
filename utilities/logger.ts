@@ -12,7 +12,7 @@ export interface LogContext {
 export class Logger {
   private serviceName: string;
 
-  constructor(serviceName = "ananta-backend") {
+  constructor(serviceName = "ekavyu-backend") {
     this.serviceName = serviceName;
   }
 

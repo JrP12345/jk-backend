@@ -2,7 +2,7 @@ import { WorkerLoop } from "../utilities/workerLoop.ts";
 import crypto from "node:crypto";
 import type { FastifyRequest } from "fastify";
 import { WhatsAppWebhookInbox } from "../models/WhatsAppWebhookInbox.ts";
-import { encrypt, decrypt } from "../utilities/encryption.ts";
+import { encryptField, decryptField } from "../utilities/cryptoEnvelope.ts";
 import { getPlatformAccount, resolveWebhookOwner } from "./WhatsAppAccountService.ts";
 
 function assertSignature(req: FastifyRequest, secret: string | undefined, raw: Buffer | null) {
@@ -35,7 +35,7 @@ export async function enqueueWhatsAppWebhook(req: FastifyRequest) {
         const dedupeKey = crypto.createHash("sha256").update(JSON.stringify([entry.id, change.field, eventId])).digest("hex");
         const payload = { object: body.object, entry: [{ id: entry.id, owner: { scope: owner.scope, organizationId: owner.organizationId }, changes: [event] }] };
         try {
-          await WhatsAppWebhookInbox.updateOne({ dedupeKey }, { $setOnInsert: { dedupeKey, scope: owner.scope, payloadCiphertext: encrypt(JSON.stringify(payload)), status: "pending", nextAttemptAt: new Date() } }, { upsert: true });
+          await WhatsAppWebhookInbox.updateOne({ dedupeKey }, { $setOnInsert: { dedupeKey, scope: owner.scope, payloadCiphertext: encryptField(JSON.stringify(payload)), status: "pending", nextAttemptAt: new Date() } }, { upsert: true });
         } catch (error: any) { if (error.code !== 11000) throw error; }
       }
     }
@@ -64,7 +64,7 @@ export class WhatsAppWebhookWorker {
         heartbeat.unref?.();
         let inboundCommand = false;
         try {
-          const body = JSON.parse(decrypt(row.payloadCiphertext));
+          const body = JSON.parse(decryptField(row.payloadCiphertext));
           inboundCommand = !!body.entry?.[0]?.changes?.[0]?.value?.messages?.length;
           // A crashed clinical bot command can have committed a booking/queue change.
           if (row.status === "processing" && body.entry?.[0]?.changes?.[0]?.value?.messages?.length) throw new Error("AMBIGUOUS_INBOUND_COMMAND");

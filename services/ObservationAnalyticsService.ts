@@ -11,7 +11,7 @@ export class ObservationAnalyticsService {
    */
   static async evaluateEncounterScore(
     organizationId: string,
-    clinicId: string,
+    locationId: string,
     encounterId: string,
     patientId: string,
     algorithmId = "NEWS2",
@@ -31,7 +31,7 @@ export class ObservationAnalyticsService {
     // Persist immutable snapshot document
     const scoreDoc = await ObservationScore.create({
       organizationId,
-      clinicId,
+      locationId,
       encounterId,
       patientId,
       algorithmId: result.algorithmId,
@@ -55,7 +55,7 @@ export class ObservationAnalyticsService {
 
       alertDoc = await ObservationAlert.create({
         organizationId,
-        clinicId,
+        locationId,
         encounterId,
         patientId,
         scoreId: scoreDoc._id,

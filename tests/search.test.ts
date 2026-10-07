@@ -1,4 +1,5 @@
-import { reuseOnboardingClinic } from "./helpers/clinicEssentialsSetup.ts";
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { reuseOnboardingLocation } from "./helpers/locationEssentialsSetup.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
@@ -14,14 +15,14 @@ import { LabOrder } from "../models/LabOrder.ts";
 describe("Clinical Search & Longitudinal Analytics Integration Tests", () => {
   let adminCookies: string[] = [];
   let patientId: string;
-  let clinicId: string;
+  let locationId: string;
   let encounterId: string;
   let orgId: string;
   let adminUserId: string;
 
   beforeAll(async () => {
     // 1. Create Org & Admin
-    const orgRes = await app.inject({
+    const orgRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -33,28 +34,28 @@ describe("Clinical Search & Longitudinal Analytics Integration Tests", () => {
       },
     });
     expect(orgRes.statusCode).toBe(201);
-    adminCookies = orgRes.headers["set-cookie"] as string[];
+    adminCookies = (await provisionedAdminCookies(orgRes));
     orgId = JSON.parse(orgRes.body).data.organization.id;
     const adminUser = await User.findOne({ email: "search-admin@test.com" });
     adminUserId = adminUser!._id.toString();
 
-    // 2. Create Clinic
-    const clinicRes = await reuseOnboardingClinic(app, { headers: { cookie: adminCookies.join("; ") }, payload: {
+    // 2. Create Location
+    const locationRes = await reuseOnboardingLocation(app, { headers: { cookie: adminCookies.join("; ") }, payload: {
         name: "Analytics Wing",
         city: "Bengaluru",
         address: "500 Search Way",
         phone: "9100077000",
         email: "search@hospital.com",
       } });
-    expect(clinicRes.statusCode).toBe(200);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(200);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Register Patient
     const patientReg = await app.inject({
       method: "POST",
       url: "/api/auth/register",
       payload: {
-        clinicId,
+        locationId,
         name: "Search Patient Charlie",
         email: "charlie.search@patient.com",
         password: "Password123",
@@ -72,7 +73,7 @@ describe("Clinical Search & Longitudinal Analytics Integration Tests", () => {
       method: "POST",
       url: "/api/encounters",
       headers: { cookie: adminCookies.join("; ") },
-      payload: { clinicId, patientId, encounterType: "ipd" },
+      payload: { locationId, patientId, encounterType: "ipd" },
     });
     expect(encRes.statusCode).toBe(201);
     encounterId = JSON.parse(encRes.body).data.id;
@@ -80,7 +81,7 @@ describe("Clinical Search & Longitudinal Analytics Integration Tests", () => {
     // 5. Seed multi-engine data containing the term "amoxicillin"
     await ClinicalNote.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       encounterId,
       patientId,
       doctorId: adminUserId,
@@ -99,7 +100,7 @@ describe("Clinical Search & Longitudinal Analytics Integration Tests", () => {
 
     await Observation.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       encounterId,
       patientId,
       recordedBy: adminUserId,
@@ -112,7 +113,7 @@ describe("Clinical Search & Longitudinal Analytics Integration Tests", () => {
 
     await ObservationScore.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       encounterId,
       patientId,
       algorithmId: "NEWS2",
@@ -125,7 +126,7 @@ describe("Clinical Search & Longitudinal Analytics Integration Tests", () => {
 
     const rx = await Prescription.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       encounterId,
       patientId,
       doctorId: adminUserId,
@@ -138,7 +139,7 @@ describe("Clinical Search & Longitudinal Analytics Integration Tests", () => {
     });
 
     const labTest = await LabTest.create({
-      clinicId,
+      locationId,
       name: "Sputum Culture for Amoxicillin sensitivity",
       code: `SPUT-${Date.now()}`,
       department: "Microbiology",
@@ -149,7 +150,7 @@ describe("Clinical Search & Longitudinal Analytics Integration Tests", () => {
 
     await LabOrder.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       encounterId,
       patientId,
       testId: labTest._id,

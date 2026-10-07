@@ -121,7 +121,7 @@ export async function verifyAuditChainIntegrity(
 
     if (checkpoint) {
       if (checkpoint.signature && checkpoint.checkpointHash) {
-        const secretKey = process.env.ENCRYPTION_SECRET || process.env.JWT_SECRET || "ananta-audit-anchor-secret";
+        const secretKey = process.env.ENCRYPTION_SECRET || process.env.JWT_SECRET || "ekavyu-audit-anchor-secret";
         const expectedSig = crypto.createHmac("sha256", secretKey).update(checkpoint.checkpointHash).digest("hex");
         if (expectedSig !== checkpoint.signature) {
           await reportCriticalError(

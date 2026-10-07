@@ -211,7 +211,7 @@ export class ClinicalSearchService {
 
     const labSummary = labOrders.map((l) => ({
       testName: l.testId?.name || "Lab Test",
-      value: l.result?.value || l.resultValue,
+      value: l.result?.value,
       isAbnormal: l.result?.isAbnormal || false,
     }));
 

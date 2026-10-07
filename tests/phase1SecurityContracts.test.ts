@@ -5,13 +5,13 @@ import { app } from '../index.ts';
 import { s3Client, getObjectBuffer, storeVerifiedObject, generatePresignedUrl } from '../utilities/r2.ts';
 import { validateUploadBytes, isVerifiedClinicalAttachment } from '../utilities/uploadPolicy.ts';
 import { Organization } from '../models/Organization.ts';
-import { Clinic } from '../models/Clinic.ts';
+import { Location } from '../models/Location.ts';
 import { Patient } from '../models/Patient.ts';
 import { User } from '../models/User.ts';
 import { UploadIntent } from '../models/UploadIntent.ts';
 import { DocumentUpload } from '../models/DocumentUpload.ts';
-import { createAuthSession } from '../utilities/helpers.ts';
-import { handleClinicalWebSocket, sendToClinicClinicalLocally, resolveWebSocketAuth } from '../notifications/websocket.ts';
+import { createAuthSession, generateAccessToken } from '../utilities/helpers.ts';
+import { handleClinicalWebSocket, sendToLocationClinicalLocally, resolveWebSocketAuth, observeSyntheticClinicalBroadcast, CANARY_LOCATION_ID } from '../notifications/websocket.ts';
 import { revokeUserSessions } from '../utilities/sessionResolver.ts';
 import { escapeCsv } from '../services/ReportExportService.ts';
 import mongoose from 'mongoose';
@@ -26,6 +26,42 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
 describe('Phase 1 file and clinical authority', () => {
+  it('rejects sessionless private websocket tokens in the test environment too', async () => {
+    const user = await User.create({ name: 'Sessionless fixture', role: 'root', email: 'sessionless-socket@example.test' });
+    const token = generateAccessToken({ id: user.id, role: 'root', email: user.email! });
+    expect(await resolveWebSocketAuth({ headers: { authorization: `Bearer ${token}` }, cookies: {}, query: {} } as any)).toBeNull();
+  });
+
+  it('isolates diagnostic observers from real clinical events and removes them after use', () => {
+    const listener = vi.fn();
+    const stop = observeSyntheticClinicalBroadcast(listener);
+    const payload = { type: 'CLINICAL_PANIC_ALERT' as const, data: { isCanary: true, canaryToken: 'diagnostic' } };
+    sendToLocationClinicalLocally('111111111111111111111111', payload);
+    expect(listener).not.toHaveBeenCalled();
+    sendToLocationClinicalLocally(CANARY_LOCATION_ID, payload);
+    expect(listener).toHaveBeenCalledExactlyOnceWith(payload);
+    stop();
+    sendToLocationClinicalLocally(CANARY_LOCATION_ID, payload);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses one base64 upload representation and rejects removed aliases', async () => {
+    const org = await Organization.create({ name: 'Canonical upload fixture', city: 'Pune' });
+    const user = await User.create({ name: 'Canonical upload operator', role: 'root', email: 'canonical-upload@example.test' });
+    const auth = await createAuthSession({ id: user.id, role: 'root', email: user.email!, organization_id: org.id });
+    vi.spyOn(s3Client, 'send').mockResolvedValue({} as never);
+    const request = { method: 'POST' as const, cookies: { access_token: auth.accessToken }, payload: {
+      originalFilename: 'fixture.png', contentType: 'image/png', contentClass: 'avatar', base64Data: png.toString('base64'),
+    } };
+    const response = await app.inject({ ...request, url: '/api/uploads/base64' });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(Object.keys(response.json().data).sort()).toEqual(['intentId', 'objectKey']);
+    expect(response.json().data.objectKey).toContain('/verified/');
+    expect((await app.inject({ ...request, url: '/api/upload-base64' })).statusCode).toBe(404);
+    expect((await app.inject({ ...request, url: '/api/get-upload-url' })).statusCode).toBe(404);
+    const invalid = await app.inject({ ...request, url: '/api/uploads/base64', payload: { fileName: 'fixture.png', contentType: 'image/png', base64: png.toString('base64') } });
+    expect(invalid.statusCode).toBe(400);
+  });
   it('accepts only a verified attachment matching the lab patient and organization', async () => {
     const org = new mongoose.Types.ObjectId(), patient = new mongoose.Types.ObjectId(), user = new mongoose.Types.ObjectId();
     const key = `tenants/${org}/verified/lab-fixture.pdf`;
@@ -61,10 +97,10 @@ describe('Phase 1 file and clinical authority', () => {
 
   it('preserves quality counters while excluding foreign organization history', async () => {
     const org = new mongoose.Types.ObjectId(), foreign = new mongoose.Types.ObjectId(), id = new mongoose.Types.ObjectId();
-    await LabOrder.create([{ organizationId: org, clinicId: id, patientId: id, testId: id, status: 'result-uploaded', result: { isAbnormal: true } },
-      { organizationId: org, clinicId: id, patientId: id, testId: id, status: 'ordered' },
-      { organizationId: foreign, clinicId: id, patientId: id, testId: id, status: 'result-uploaded', result: { isAbnormal: true } }]);
-    const score = { clinicId: id, patientId: id, encounterId: id, algorithmId: 'NEWS2', algorithmVersion: '1', isComplete: true };
+    await LabOrder.create([{ organizationId: org, locationId: id, patientId: id, testId: id, status: 'result-uploaded', result: { isAbnormal: true } },
+      { organizationId: org, locationId: id, patientId: id, testId: id, status: 'ordered' },
+      { organizationId: foreign, locationId: id, patientId: id, testId: id, status: 'result-uploaded', result: { isAbnormal: true } }]);
+    const score = { locationId: id, patientId: id, encounterId: id, algorithmId: 'NEWS2', algorithmVersion: '1', isComplete: true };
     await ObservationScore.create([{ ...score, organizationId: org, totalScore: 2, riskCategory: 'Low' },
       { ...score, organizationId: org, totalScore: 8, riskCategory: 'High' },
       { ...score, organizationId: foreign, totalScore: 20, riskCategory: 'High' }]);
@@ -95,7 +131,7 @@ describe('Phase 1 file and clinical authority', () => {
     const foreign = await Organization.create({ name: 'Search foreign', city: 'Pune' });
     const operator = await User.create({ name: 'Search doctor', role: 'doctor', email: 'search-doctor@example.test' });
     const identity = await User.create({ name: 'Needle linked', role: 'patient', email: 'linked-needle@example.test' });
-    await Patient.create([{ name: 'Legacy patient', userId: identity._id, organizationId: org._id },
+    await Patient.create([{ name: 'Existing tenant patient', userId: identity._id, organizationId: org._id },
       { name: 'Needle unlinked', organizationId: org._id }, { name: 'Needle foreign', organizationId: foreign._id }]);
     const auth = await createAuthSession({ id: operator.id, role: 'doctor', email: operator.email!, organization_id: org.id });
     const request = (search: string) => app.inject({ method: 'GET', url: '/api/patients?search=' + encodeURIComponent(search), cookies: { access_token: auth.accessToken } });
@@ -151,19 +187,19 @@ describe('Phase 1 file and clinical authority', () => {
 
   it('closes revoked clinical sockets and rejects a foreign browser origin', async () => {
     const org = await Organization.create({ name: 'Socket fixture', city: 'Pune' });
-    const clinic = await Clinic.create({ name: 'Socket clinic', organizationId: org._id, city: 'Pune' });
+    const location = await Location.create({ name: 'Socket clinic', organizationId: org._id, city: 'Pune' });
     const user = await User.create({ name: 'Socket doctor', role: 'doctor', email: 'socket-fixture@example.test' });
     const auth = await createAuthSession({ id: user.id, role: 'doctor', email: user.email!, organization_id: org.id });
-    const req = { cookies: { access_token: auth.accessToken }, headers: {}, query: { clinicId: clinic.id } } as any;
+    const req = { cookies: { access_token: auth.accessToken }, headers: {}, query: { locationId: location.id } } as any;
     expect(await resolveWebSocketAuth({ ...req, headers: { origin: 'https://foreign.example.test' } })).toBeNull();
     const socket = Object.assign(new EventEmitter(), { readyState: 1, send: vi.fn(), ping: vi.fn(), close: vi.fn() });
     socket.close.mockImplementation(() => { socket.readyState = 3; socket.emit('close'); });
     try {
       await handleClinicalWebSocket(socket as any, req);
-      sendToClinicClinicalLocally(clinic.id, { type: 'LAB_RESULTS_READY', data: { fixture: true } });
+      sendToLocationClinicalLocally(location.id, { type: 'LAB_RESULTS_READY', data: { fixture: true } });
       await vi.waitFor(() => expect(socket.send).toHaveBeenCalledTimes(2));
       await revokeUserSessions(user.id);
-      sendToClinicClinicalLocally(clinic.id, { type: 'LAB_RESULTS_READY', data: { forbidden: true } });
+      sendToLocationClinicalLocally(location.id, { type: 'LAB_RESULTS_READY', data: { forbidden: true } });
       expect(socket.close).toHaveBeenCalled();
       expect(socket.send).toHaveBeenCalledTimes(2);
     } finally { socket.close(); }

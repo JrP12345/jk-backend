@@ -3,7 +3,7 @@ import mongoose, { Schema } from "mongoose";
 const ReceptionistSchema = new Schema({
   userId: { type: Schema.Types.ObjectId, ref: "User", required: true, unique: true, index: true },
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
-  clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", index: true },
+  locationId: { type: Schema.Types.ObjectId, ref: "Location", index: true },
   shift: { type: String }
 });
 

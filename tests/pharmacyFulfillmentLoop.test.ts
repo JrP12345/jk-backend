@@ -1,7 +1,9 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { trackerFixtureHeaders } from "./helpers/trackerFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
@@ -12,7 +14,7 @@ import { Invoice } from "../models/Invoice.ts";
 describe("In-House Pharmacy Dispensing & Prescription Fulfillment Loop Test Suite", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let doctorUserId: string;
   let patient: any;
@@ -22,7 +24,7 @@ describe("In-House Pharmacy Dispensing & Prescription Fulfillment Loop Test Suit
 
   beforeAll(async () => {
     // 1. Setup Organization & Super Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -35,13 +37,13 @@ describe("In-House Pharmacy Dispensing & Prescription Fulfillment Loop Test Suit
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Fortis Memorial Research Institute",
@@ -50,8 +52,8 @@ describe("In-House Pharmacy Dispensing & Prescription Fulfillment Loop Test Suit
         merchantName: "Fortis Pharmacy Dispensary Ltd",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Doctor
     const docRes = await app.inject({
@@ -74,11 +76,11 @@ describe("In-House Pharmacy Dispensing & Prescription Fulfillment Loop Test Suit
     doctorId = docData.id;
     doctorUserId = docData.userId || docData.id;
 
-    // Assign doctor to clinic
+    // Assign doctor to location
     await DoctorAssignment.create({
       organizationId: orgId,
       doctorId,
-      clinicId,
+      locationId,
       fees: 700,
       workingHours: "[]",
       isActive: true,
@@ -94,7 +96,7 @@ describe("In-House Pharmacy Dispensing & Prescription Fulfillment Loop Test Suit
         password: "Password123",
         phone: "+919876543210",
         role: "patient",
-        clinicId,
+        locationId,
       },
     });
     expect(patUserRes.statusCode).toBe(201);
@@ -111,13 +113,13 @@ describe("In-House Pharmacy Dispensing & Prescription Fulfillment Loop Test Suit
     }
     expect(patient).toBeDefined();
 
-    // 5. Create In-Stock Medicine in Clinic Inventory
+    // 5. Create In-Stock Medicine in Location Inventory
     const medRes = await app.inject({
       method: "POST",
       url: "/api/medicines",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         name: "Augmentin 625mg",
         genericName: "Amoxicillin and Potassium Clavulanate",
         stockQuantity: 100,
@@ -133,7 +135,7 @@ describe("In-House Pharmacy Dispensing & Prescription Fulfillment Loop Test Suit
     // 6. Create active Appointment for Consultation
     const appt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient._id,
       appointmentTime: new Date().toISOString(),
@@ -176,7 +178,7 @@ describe("In-House Pharmacy Dispensing & Prescription Fulfillment Loop Test Suit
 
     // Verify Prescription created in DB with status: 'active'
     const rxDoc = await Prescription.findOne({
-      clinicId,
+      locationId,
       patientId: patient._id,
       medicineName: "Augmentin 625mg",
     });
@@ -192,6 +194,7 @@ describe("In-House Pharmacy Dispensing & Prescription Fulfillment Loop Test Suit
     const trackRes = await app.inject({
       method: "GET",
       url: `/api/public/track/${appointmentId}`,
+      headers: await trackerFixtureHeaders(appointmentId),
     });
 
     expect(trackRes.statusCode).toBe(200);
@@ -212,7 +215,7 @@ describe("In-House Pharmacy Dispensing & Prescription Fulfillment Loop Test Suit
   it("3. Pharmacy Desk retrieves pending prescription group for dispensing", async () => {
     const pendingRes = await app.inject({
       method: "GET",
-      url: `/api/pharmacy/pending-prescriptions?clinicId=${clinicId}`,
+      url: `/api/pharmacy/pending-prescriptions?locationId=${locationId}`,
       headers: { cookie: adminCookies.join("; ") },
     });
 
@@ -235,7 +238,7 @@ describe("In-House Pharmacy Dispensing & Prescription Fulfillment Loop Test Suit
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         patientId: patient._id.toString(),
-        clinicId,
+        locationId,
         doctorId: doctorUserId,
         appointmentId,
         prescriptionIds: [prescriptionId],
@@ -260,6 +263,7 @@ describe("In-House Pharmacy Dispensing & Prescription Fulfillment Loop Test Suit
     const trackRes = await app.inject({
       method: "GET",
       url: `/api/public/track/${appointmentId}`,
+      headers: await trackerFixtureHeaders(appointmentId),
     });
 
     expect(trackRes.statusCode).toBe(200);

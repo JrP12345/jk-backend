@@ -5,8 +5,8 @@ Scope: doctor-disruption cancellations with an existing paid invoice. This uses 
 ## Billing workflow
 
 1. Open the existing billing invoice list. A cancelled visit awaiting a refund has a **Check refund status** action for users with effective `MANAGE_BILLING` authority, on desktop and mobile.
-2. The action calls `POST /api/appointment-payments/reconcile-refund` with `{ "appointmentId": "..." }`. Authentication, billing module access, effective billing permission and operational clinic/organization access are required.
-3. The backend finds one full captured Razorpay payment or one compatible legacy online invoice receipt. Cash, mixed receipts, unsupported currency and missing/ambiguous references remain for billing review without a provider request.
+2. The action calls `POST /api/appointment-payments/reconcile-refund` with `{ "appointmentId": "..." }`. Authentication, billing module access, effective billing permission and operational location/organization access are required.
+3. The backend finds one full captured Razorpay payment or one current online invoice receipt. Cash, mixed receipts, unsupported currency and missing/ambiguous references remain for billing review without a provider request.
 4. Read the result:
 
 | Result | Meaning / next action |

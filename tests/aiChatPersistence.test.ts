@@ -15,12 +15,12 @@ describe("Milestone 5: Enterprise DB-Backed AI Chat Persistence Tests", () => {
 
   beforeAll(async () => {
     // 1. Create Test Organization & User
-    const email = `dr_enterprise_chat_${Date.now()}@ananta.internal`;
+    const email = `dr_enterprise_chat_${Date.now()}@ekavyu.internal`;
     const password = "Password123!";
 
     const org = await (Organization as any).create({
       name: "Enterprise Chat Test Hospital",
-      email: `chat_test_hospital_${Date.now()}@ananta.internal`,
+      email: `chat_test_hospital_${Date.now()}@ekavyu.internal`,
       phone: "+1999888777",
       address: "100 Innovation Way",
       city: "San Francisco",

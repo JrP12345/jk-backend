@@ -6,7 +6,7 @@ import { getPaginationParams, setPaginationHeaders } from "../utilities/helpers.
 export async function getScheduleH1Entries(request: FastifyRequest, reply: FastifyReply) {
   const { organization_id } = request.user as { organization_id?: string };
   const query = request.query as {
-    clinicId?: string;
+    locationId?: string;
     scheduleType?: string;
     startDate?: string;
     endDate?: string;
@@ -19,8 +19,8 @@ export async function getScheduleH1Entries(request: FastifyRequest, reply: Fasti
   if (organization_id) {
     filter.organizationId = organization_id;
   }
-  if (query.clinicId) {
-    filter.clinicId = query.clinicId;
+  if (query.locationId) {
+    filter.locationId = query.locationId;
   }
   if (query.scheduleType) {
     filter.scheduleType = query.scheduleType;
@@ -66,7 +66,7 @@ export async function getScheduleH1Entries(request: FastifyRequest, reply: Fasti
 export async function exportScheduleH1Register(request: FastifyRequest, reply: FastifyReply) {
   const { organization_id } = request.user as { organization_id?: string };
   const query = request.query as {
-    clinicId?: string;
+    locationId?: string;
     scheduleType?: string;
     startDate?: string;
     endDate?: string;
@@ -76,8 +76,8 @@ export async function exportScheduleH1Register(request: FastifyRequest, reply: F
   if (organization_id) {
     filter.organizationId = organization_id;
   }
-  if (query.clinicId) {
-    filter.clinicId = query.clinicId;
+  if (query.locationId) {
+    filter.locationId = query.locationId;
   }
   if (query.scheduleType) {
     filter.scheduleType = query.scheduleType;

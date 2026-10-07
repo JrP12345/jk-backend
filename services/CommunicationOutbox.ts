@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import type mongoose from "mongoose";
-import { decrypt, encrypt } from "../utilities/encryption.ts";
+import { decryptField, encryptField } from "../utilities/cryptoEnvelope.ts";
 import { OutboundMessage } from "../models/OutboundMessage.ts";
 import type { SendMessageOptions } from "./SmsWhatsAppService.ts";
 import type { EmailOptions, SmtpConfig } from "../notifications/providers/emailProvider.ts";
@@ -73,7 +73,7 @@ export async function enqueueCommunicationTemplate(options: SendMessageOptions) 
             appointmentId: normalized.appointmentId || null,
             organizationId: normalized.organizationId || null,
           },
-          sensitivePayloadCiphertext: encrypt(JSON.stringify(normalized)),
+          sensitivePayloadCiphertext: encryptField(JSON.stringify(normalized)),
           status: "pending",
           attempts: 0,
           maxAttempts: 5,
@@ -106,7 +106,7 @@ async function enqueueEncryptedOutbound(
           kind,
           idempotencyKey,
           payload: safeMetadata,
-          sensitivePayloadCiphertext: encrypt(JSON.stringify(payload)),
+          sensitivePayloadCiphertext: encryptField(JSON.stringify(payload)),
           status: "pending",
           attempts: 0,
           maxAttempts: 5,
@@ -176,7 +176,7 @@ export function readEncryptedOutboundPayload<T>(message: { sensitivePayloadCiphe
   if (!message.sensitivePayloadCiphertext) {
     throw new Error("Outbound message payload is missing or was not selected");
   }
-  return JSON.parse(decrypt(message.sensitivePayloadCiphertext)) as T;
+  return JSON.parse(decryptField(message.sensitivePayloadCiphertext)) as T;
 }
 
 export function readCommunicationTemplate(message: { sensitivePayloadCiphertext?: string }): SendMessageOptions {

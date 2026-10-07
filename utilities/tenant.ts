@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import type { FastifyRequest } from "fastify";
 
@@ -26,7 +26,7 @@ export function isRootRequest(req: FastifyRequest): boolean {
  * Resolves the target organization ID for an operation.
  * 1. If req.user.organization_id is present, returns it.
  * 2. If caller is Root Super-Admin, it may explicitly choose an organization
- *    through a validated query/body value or a clinic in the query/body.
+ *    through a validated query/body value or a location in the query/body.
  *
  * HTTP tenant headers are deliberately never used as authority. They are
  * browser-controlled and must not decide which tenant a request operates on.
@@ -36,15 +36,15 @@ export async function resolveTargetOrganizationId(req: FastifyRequest): Promise<
   if (scope.allowed && scope.organizationId) return scope.organizationId;
 
   if (isRootRequest(req)) {
-    const clinicId =
-      (req.query as { clinicId?: string; clinic_id?: string })?.clinicId ||
-      (req.query as { clinicId?: string; clinic_id?: string })?.clinic_id ||
-      (req.body as { clinicId?: string; clinic_id?: string })?.clinicId ||
-      (req.body as { clinicId?: string; clinic_id?: string })?.clinic_id;
+    const locationId =
+      (req.query as { locationId?: string; location_id?: string })?.locationId ||
+      (req.query as { locationId?: string; location_id?: string })?.location_id ||
+      (req.body as { locationId?: string; location_id?: string })?.locationId ||
+      (req.body as { locationId?: string; location_id?: string })?.location_id;
 
-    if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
-      const clinic = await Clinic.findById(clinicId).select("organizationId").lean();
-      if (clinic?.organizationId) return clinic.organizationId.toString();
+    if (locationId && mongoose.Types.ObjectId.isValid(locationId)) {
+      const location = await Location.findById(locationId).select("organizationId").lean();
+      if (location?.organizationId) return location.organizationId.toString();
     }
   }
 
@@ -87,68 +87,68 @@ export function resolveAuthorizedOrganizationScope(req: FastifyRequest): TenantC
 }
 
 /**
- * Verify that a clinic belongs to the caller's active organization.
+ * Verify that a location belongs to the caller's active organization.
  * Root retains the existing system-wide behavior, but the ID must still be
  * syntactically valid so malformed references do not reach Mongoose.
  */
-export async function checkClinicAccess(
+export async function checkLocationAccess(
   req: FastifyRequest,
-  clinicId: unknown,
+  locationId: unknown,
 ): Promise<TenantCheck> {
-  const normalizedClinicId =
-    typeof clinicId === "string"
-      ? clinicId
-      : clinicId instanceof mongoose.Types.ObjectId
-        ? clinicId.toString()
-        : typeof clinicId === "object" && clinicId !== null && "_id" in clinicId
-          ? String((clinicId as { _id: unknown })._id)
+  const normalizedLocationId =
+    typeof locationId === "string"
+      ? locationId
+      : locationId instanceof mongoose.Types.ObjectId
+        ? locationId.toString()
+        : typeof locationId === "object" && locationId !== null && "_id" in locationId
+          ? String((locationId as { _id: unknown })._id)
           : "";
 
-  if (!mongoose.Types.ObjectId.isValid(normalizedClinicId)) {
-    return { allowed: false, statusCode: 400, message: "Invalid clinic ID" };
+  if (!mongoose.Types.ObjectId.isValid(normalizedLocationId)) {
+    return { allowed: false, statusCode: 400, message: "Invalid location ID" };
   }
 
   const organizationId = getRequestOrganizationId(req);
-  const clinic = await Clinic.findOne({
-    _id: normalizedClinicId,
+  const location = await Location.findOne({
+    _id: normalizedLocationId,
     isActive: { $ne: false },
   }).select("organizationId").lean();
 
-  if (!clinic) {
-    return { allowed: false, statusCode: 404, message: "Clinic not found" };
+  if (!location) {
+    return { allowed: false, statusCode: 404, message: "Location not found" };
   }
 
   if (isRootRequest(req)) {
-    return { allowed: true, organizationId: clinic.organizationId.toString() };
+    return { allowed: true, organizationId: location.organizationId.toString() };
   }
 
-  // Patients & family members are consumers and can view or book across any clinic
+  // Patients & family members are consumers and can view or book across any location
   if (req.user?.role === "patient" || req.user?.role === "family_member" || req.user?.role === "guest") {
-    return { allowed: true, organizationId: clinic.organizationId.toString() };
+    return { allowed: true, organizationId: location.organizationId.toString() };
   }
 
   if (!organizationId) {
     return { allowed: false, statusCode: 403, message: "Organization context is required" };
   }
 
-  if (clinic.organizationId.toString() !== organizationId) {
-    return { allowed: false, statusCode: 404, message: "Clinic not found" };
+  if (location.organizationId.toString() !== organizationId) {
+    return { allowed: false, statusCode: 404, message: "Location not found" };
   }
 
   return { allowed: true, organizationId };
 }
 
-/** Return only clinics visible to the authenticated organization. */
-export async function getRequestClinicIds(req: FastifyRequest) {
+/** Return only locations visible to the authenticated organization. */
+export async function getRequestLocationIds(req: FastifyRequest) {
   if (isRootRequest(req)) return undefined;
 
   const organizationId = getRequestOrganizationId(req);
   if (!organizationId) return [];
 
-  const clinics = await Clinic.find({ organizationId, isActive: { $ne: false } })
+  const locations = await Location.find({ organizationId, isActive: { $ne: false } })
     .select("_id")
     .lean();
-  return clinics.map((clinic) => clinic._id);
+  return locations.map((location) => location._id);
 }
 
 /** Verify a patient belongs to the caller's organization. */
@@ -199,19 +199,19 @@ export async function checkPatientAccess(
   return { allowed: true, organizationId };
 }
 
-/** Verify both the record's clinic and its explicit organization field. */
+/** Verify both the record's location and its explicit organization field. */
 export async function checkOperationalRecordAccess(
   req: FastifyRequest,
-  record: { clinicId?: unknown; organizationId?: unknown },
+  record: { locationId?: unknown; organizationId?: unknown },
 ): Promise<TenantCheck> {
-  const clinicCheck = await checkClinicAccess(req, record.clinicId);
-  if (!clinicCheck.allowed) return clinicCheck;
+  const locationCheck = await checkLocationAccess(req, record.locationId);
+  if (!locationCheck.allowed) return locationCheck;
 
-  if (!isRootRequest(req) && record.organizationId && clinicCheck.organizationId) {
-    if (String(record.organizationId) !== clinicCheck.organizationId) {
+  if (!isRootRequest(req) && record.organizationId && locationCheck.organizationId) {
+    if (String(record.organizationId) !== locationCheck.organizationId) {
       return { allowed: false, statusCode: 404, message: "Record not found" };
     }
   }
 
-  return clinicCheck;
+  return locationCheck;
 }

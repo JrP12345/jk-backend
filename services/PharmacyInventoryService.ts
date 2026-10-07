@@ -22,7 +22,7 @@ export interface DispenseAuditContext {
 
 export interface BatchAddInput {
   medicineId: string;
-  clinicId: string;
+  locationId: string;
   batchNumber: string;
   expiryDate: string | Date;
   quantity: number;
@@ -51,12 +51,12 @@ export async function addBatchToMedicine(input: BatchAddInput): Promise<any> {
     if (!medicine) {
       throw new Error("Medicine record not found");
     }
-    if (medicine.clinicId.toString() !== input.clinicId) {
-      throw new Error("Medicine is not assigned to the selected clinic");
+    if (medicine.locationId.toString() !== input.locationId) {
+      throw new Error("Medicine is not assigned to the selected location");
     }
 
     const duplicateBatch = await MedicineBatch.findOne(
-      { medicineId: input.medicineId, clinicId: input.clinicId, batchNumber },
+      { medicineId: input.medicineId, locationId: input.locationId, batchNumber },
       null,
       queryOptions
     );
@@ -66,7 +66,7 @@ export async function addBatchToMedicine(input: BatchAddInput): Promise<any> {
       MedicineBatch,
       {
         medicineId: input.medicineId,
-        clinicId: input.clinicId,
+        locationId: input.locationId,
         batchNumber,
         expiryDate: expDate,
         quantity: input.quantity,
@@ -81,7 +81,7 @@ export async function addBatchToMedicine(input: BatchAddInput): Promise<any> {
     );
 
     await Medicine.findOneAndUpdate(
-      { _id: input.medicineId, clinicId: input.clinicId },
+      { _id: input.medicineId, locationId: input.locationId },
       { $inc: { stockQuantity: input.quantity } },
       { returnDocument: "after", ...queryOptions }
     );
@@ -96,7 +96,7 @@ export async function addBatchToMedicine(input: BatchAddInput): Promise<any> {
  */
 export async function dispenseMedicineFEFO(
   medicineId: string,
-  clinicId: string,
+  locationId: string,
   dispenseQuantity: number,
   existingSession?: mongoose.ClientSession | null,
   auditContext?: DispenseAuditContext
@@ -111,8 +111,8 @@ export async function dispenseMedicineFEFO(
     if (!medicine) {
       throw new Error("Medicine record not found");
     }
-    if (medicine.clinicId.toString() !== clinicId) {
-      throw new Error("Medicine is not assigned to the selected clinic");
+    if (medicine.locationId.toString() !== locationId) {
+      throw new Error("Medicine is not assigned to the selected location");
     }
     if (medicine.stockQuantity < dispenseQuantity) {
       throw new Error(`Insufficient stock. Required: ${dispenseQuantity}, Available: ${medicine.stockQuantity}`);
@@ -121,7 +121,7 @@ export async function dispenseMedicineFEFO(
     const now = new Date();
     const batches = await MedicineBatch.find({
       medicineId,
-      clinicId,
+      locationId,
       status: "active",
       expiryDate: { $gt: now },
       quantity: { $gt: 0 },
@@ -142,7 +142,7 @@ export async function dispenseMedicineFEFO(
           throw new Error(`Cannot dispense expired medicine ${medicine.name}`);
         }
         const updated = await Medicine.findOneAndUpdate(
-          { _id: medicineId, clinicId, stockQuantity: { $gte: dispenseQuantity } },
+          { _id: medicineId, locationId, stockQuantity: { $gte: dispenseQuantity } },
           { $inc: { stockQuantity: -dispenseQuantity } },
           { returnDocument: "after", ...queryOptions }
         );
@@ -158,7 +158,7 @@ export async function dispenseMedicineFEFO(
             ScheduleH1Register,
             {
               organizationId: orgId,
-              clinicId: medicine.clinicId,
+              locationId: medicine.locationId,
               medicineId: medicine._id,
               medicineName: medicine.name,
               genericName: medicine.genericName,
@@ -216,7 +216,7 @@ export async function dispenseMedicineFEFO(
       }
 
       const updated = await Medicine.findOneAndUpdate(
-        { _id: medicineId, clinicId, stockQuantity: { $gte: dispenseQuantity } },
+        { _id: medicineId, locationId, stockQuantity: { $gte: dispenseQuantity } },
         { $inc: { stockQuantity: -dispenseQuantity } },
         { returnDocument: "after", ...queryOptions }
       );
@@ -234,7 +234,7 @@ export async function dispenseMedicineFEFO(
             ScheduleH1Register,
             {
               organizationId: orgId,
-              clinicId: medicine.clinicId,
+              locationId: medicine.locationId,
               medicineId: medicine._id,
               medicineName: medicine.name,
               genericName: medicine.genericName,
@@ -282,12 +282,12 @@ export async function dispenseMedicineFEFO(
 /**
  * Get expiring medicine batches within N days.
  */
-export async function getExpiringBatches(clinicId: string, daysThreshold: number = 30): Promise<any[]> {
+export async function getExpiringBatches(locationId: string, daysThreshold: number = 30): Promise<any[]> {
   const targetDate = new Date();
   targetDate.setDate(targetDate.getDate() + daysThreshold);
 
   return await MedicineBatch.find({
-    clinicId,
+    locationId,
     status: { $in: ["active", "expired"] },
     expiryDate: { $lte: targetDate },
   })

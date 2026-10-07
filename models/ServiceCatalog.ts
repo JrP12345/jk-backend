@@ -3,7 +3,7 @@ import { auditPlugin } from "../utilities/auditPlugin.ts";
 
 export interface IServiceCatalog extends Document {
   organizationId: mongoose.Types.ObjectId;
-  clinicId?: mongoose.Types.ObjectId;
+  locationId?: mongoose.Types.ObjectId;
   code: string;
   name: string;
   department: string;
@@ -27,9 +27,9 @@ const serviceCatalogSchema = new Schema<IServiceCatalog>(
       required: true,
       index: true,
     },
-    clinicId: {
+    locationId: {
       type: Schema.Types.ObjectId,
-      ref: "Clinic",
+      ref: "Location",
       required: false,
       index: true,
     },

@@ -4,18 +4,17 @@ import { errorResponse } from "../utilities/helpers.ts";
 import {
   getRequestOrganizationId,
   isRootRequest,
-  checkClinicAccess,
+  checkLocationAccess,
 } from "../utilities/tenant.ts";
 import { MAX_REPORT_RANGE_DAYS } from "../utilities/scalability.ts";
 import { requestHasAnyPermission } from '../utilities/permissions.ts';
 
 export async function exportReport(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { reportType, clinicId, organizationId: queryOrgId, version, startDate, endDate } = req.query as {
+    const { reportType, locationId, organizationId: queryOrgId, startDate, endDate } = req.query as {
       reportType: "billing" | "clinical" | "pharmacy";
-      clinicId?: string;
+      locationId?: string;
       organizationId?: string;
-      version?: "v1" | "v2";
       startDate?: string;
       endDate?: string;
     };
@@ -49,17 +48,16 @@ export async function exportReport(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(403).send(errorResponse("Organization context is required for report export"));
     }
 
-    // If clinicId is provided, verify it belongs to caller's organization
-    if (clinicId) {
-      const accessCheck = await checkClinicAccess(req, clinicId);
+    // If locationId is provided, verify it belongs to caller's organization
+    if (locationId) {
+      const accessCheck = await checkLocationAccess(req, locationId);
       if (!accessCheck.allowed) {
         return reply.code(accessCheck.statusCode).send(errorResponse(accessCheck.message));
       }
     }
 
     const type = reportType || "billing";
-    const reportVersion = version === "v2" ? "v2" : "v1";
-    const csvContent = await generateCsvReport(type, targetOrgId, clinicId, reportVersion, startDate, endDate);
+    const csvContent = await generateCsvReport(type, targetOrgId, locationId, startDate, endDate);
 
     const filename = `ekavyu_${type}_report_${new Date().toISOString().split("T")[0]}.csv`;
 

@@ -3,7 +3,7 @@ import mongoose, { Schema } from "mongoose";
 const DoctorDayOverrideSchema = new Schema(
   {
     doctorId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
-    clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", required: true, index: true },
+    locationId: { type: Schema.Types.ObjectId, ref: "Location", required: true, index: true },
     organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
     date: { type: String, required: true, index: true }, // Format: "YYYY-MM-DD"
     status: {
@@ -20,8 +20,8 @@ const DoctorDayOverrideSchema = new Schema(
   { timestamps: true }
 );
 
-// One active override per doctor per clinic per day
-DoctorDayOverrideSchema.index({ clinicId: 1, doctorId: 1, date: 1 }, { unique: true });
+// One active override per doctor per location per day
+DoctorDayOverrideSchema.index({ locationId: 1, doctorId: 1, date: 1 }, { unique: true });
 
 DoctorDayOverrideSchema.virtual("id").get(function () {
   return this._id.toHexString();

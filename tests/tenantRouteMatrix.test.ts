@@ -1,3 +1,4 @@
+import { fixtureAccessToken } from "./helpers/sessionFixture.ts";
 import { beforeAll, describe, expect, it } from "vitest";
 import mongoose from "mongoose";
 import { app } from "../index.ts";
@@ -6,7 +7,6 @@ import { Organization } from "../models/Organization.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { ServiceCatalog } from "../models/ServiceCatalog.ts";
 import { InsuranceTariff } from "../models/InsuranceTariff.ts";
-import { generateAccessToken } from "../utilities/helpers.ts";
 
 describe("Tenant Authorization Route Matrix", () => {
   let orgA: any;
@@ -60,23 +60,23 @@ describe("Tenant Authorization Route Matrix", () => {
       role: "root",
     });
 
-    cookieA = `access_token=${generateAccessToken({
+    cookieA = `access_token=${(await fixtureAccessToken({
       id: adminA._id.toString(),
       email: adminA.email!,
       role: "admin",
       organization_id: orgA._id.toString(),
-    })}`;
-    cookieB = `access_token=${generateAccessToken({
+    }))}`;
+    cookieB = `access_token=${(await fixtureAccessToken({
       id: adminB._id.toString(),
       email: adminB.email!,
       role: "admin",
       organization_id: orgB._id.toString(),
-    })}`;
-    rootCookie = `access_token=${generateAccessToken({
+    }))}`;
+    rootCookie = `access_token=${(await fixtureAccessToken({
       id: rootAdmin._id.toString(),
       email: rootAdmin.email!,
       role: "root",
-    })}`;
+    }))}`;
   });
 
   describe("Service Catalog Tenant Boundary", () => {

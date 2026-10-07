@@ -1,6 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Organization } from "../models/Organization.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { Medicine } from "../models/Medicine.ts";
@@ -21,30 +21,30 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
     const scope = resolveAuthorizedOrganizationScope(req);
     if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
     const orgId = scope.organizationId;
-    const { startDate, endDate, clinicId } = req.query as { startDate?: string; endDate?: string; clinicId?: string };
+    const { startDate, endDate, locationId } = req.query as { startDate?: string; endDate?: string; locationId?: string };
 
-    // 1. Resolve Clinics under organization scope
-    let clinics = orgId ? await Clinic.find({ organizationId: orgId, isActive: true }) : [];
+    // 1. Resolve Locations under organization scope
+    let locations = orgId ? await Location.find({ organizationId: orgId, isActive: true }) : [];
     if (!orgId && req.user?.role === "root") {
       const activeOrgs = await Organization.find().select("_id").lean();
       const activeOrgIds = activeOrgs.map((o: any) => o._id);
-      clinics = await Clinic.find({ organizationId: { $in: activeOrgIds }, isActive: true });
+      locations = await Location.find({ organizationId: { $in: activeOrgIds }, isActive: true });
     }
-    const clinicIds = clinics.map((c) => c._id);
+    const locationIds = locations.map((c) => c._id);
 
-    if (clinicId) {
-      if (!mongoose.Types.ObjectId.isValid(clinicId)) return reply.code(400).send(errorResponse("Invalid clinic ID"));
-      if (!clinicIds.some((id) => id.toString() === clinicId)) return reply.code(404).send(errorResponse("Clinic not found"));
+    if (locationId) {
+      if (!mongoose.Types.ObjectId.isValid(locationId)) return reply.code(400).send(errorResponse("Invalid location ID"));
+      if (!locationIds.some((id) => id.toString() === locationId)) return reply.code(404).send(errorResponse("Location not found"));
     }
     if ((startDate && !Number.isFinite(Date.parse(startDate))) || (endDate && !Number.isFinite(Date.parse(endDate)))) {
       return reply.code(400).send(errorResponse("Invalid analytics date range"));
     }
 
-    if (clinicIds.length === 0) {
+    if (locationIds.length === 0) {
       return reply.code(200).send(
         successResponse({
           overall: { totalRevenue: 0, outstandingBilling: 0, bedOccupancyRate: 0, lowStockWarnings: 0 },
-          clinicsPerformance: [],
+          locationsPerformance: [],
           doctorSpecializations: [],
           appointmentStats: { total: 0, completed: 0, pending: 0, cancelled: 0, noShow: 0, completionRate: 0 },
           referralStats: { totalReferrals: 0, completedReferrals: 0, completionRate: 0 },
@@ -54,15 +54,15 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
 
     // Filter match object for date range
     // Aggregation bypasses Mongoose query tenant hooks. Keep the explicit
-    // organization condition even when a caller selects an authorized clinic.
+    // organization condition even when a caller selects an authorized location.
     const organizationMatch = orgId ? { organizationId: new mongoose.Types.ObjectId(orgId) } : {};
-    const invoiceMatch: any = { ...organizationMatch, clinicId: { $in: clinicIds } };
-    const apptMatch: any = { ...organizationMatch, clinicId: { $in: clinicIds } };
+    const invoiceMatch: any = { ...organizationMatch, locationId: { $in: locationIds } };
+    const apptMatch: any = { ...organizationMatch, locationId: { $in: locationIds } };
 
-    if (clinicId && mongoose.Types.ObjectId.isValid(clinicId)) {
-      const targetObjId = new mongoose.Types.ObjectId(clinicId);
-      invoiceMatch.clinicId = targetObjId;
-      apptMatch.clinicId = targetObjId;
+    if (locationId && mongoose.Types.ObjectId.isValid(locationId)) {
+      const targetObjId = new mongoose.Types.ObjectId(locationId);
+      invoiceMatch.locationId = targetObjId;
+      apptMatch.locationId = targetObjId;
     }
 
     if (startDate || endDate) {
@@ -95,10 +95,10 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
               },
             },
           ],
-          clinicBreakdown: [
+          locationBreakdown: [
             {
               $group: {
-                _id: { clinicId: "$clinicId", status: "$status" },
+                _id: { locationId: "$locationId", status: "$status" },
                 totalAmount: { $sum: "$totalAmount" },
                 count: { $sum: 1 },
               },
@@ -119,7 +119,7 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
     // 4. Low Stock Medicines Aggregation
     const lowStockMedicines = await Medicine.countDocuments({
       ...organizationMatch,
-      clinicId: { $in: clinicIds },
+      locationId: { $in: locationIds },
       stockQuantity: { $lt: 10 },
     });
 
@@ -136,10 +136,10 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
               },
             },
           ],
-          clinicApptCounts: [
+          locationApptCounts: [
             {
               $group: {
-                _id: "$clinicId",
+                _id: "$locationId",
                 count: { $sum: 1 },
               },
             },
@@ -160,7 +160,7 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
     ]);
 
     const statusCounts = apptAgg[0]?.statusCounts || [];
-    const clinicApptCounts = apptAgg[0]?.clinicApptCounts || [];
+    const locationApptCounts = apptAgg[0]?.locationApptCounts || [];
     const referralCounts = apptAgg[0]?.referralCounts || [];
 
     const getStatusCount = (s: string) => statusCounts.find((c: any) => c._id === s)?.count || 0;
@@ -172,15 +172,15 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
     const completedReferrals = referralCounts.find((r: any) => r._id === "completed")?.count || 0;
     const referralCompletionRate = totalReferrals > 0 ? Math.round((completedReferrals / totalReferrals) * 100) : 0;
 
-    // Build Clinics Performance Breakdown map
-    const clinicBreakdownList = invoiceAgg[0]?.clinicBreakdown || [];
+    // Build Locations Performance Breakdown map
+    const locationBreakdownList = invoiceAgg[0]?.locationBreakdown || [];
 
-    const clinicsPerformance = clinics.map((c) => {
+    const locationsPerformance = locations.map((c) => {
       const cIdStr = c.id;
 
-      const cPaid = clinicBreakdownList.find((cb: any) => cb._id.clinicId?.toString() === cIdStr && cb._id.status === "paid");
-      const cUnpaid = clinicBreakdownList.find((cb: any) => cb._id.clinicId?.toString() === cIdStr && cb._id.status === "unpaid");
-      const cAppt = clinicApptCounts.find((ca: any) => ca._id?.toString() === cIdStr);
+      const cPaid = locationBreakdownList.find((cb: any) => cb._id.locationId?.toString() === cIdStr && cb._id.status === "paid");
+      const cUnpaid = locationBreakdownList.find((cb: any) => cb._id.locationId?.toString() === cIdStr && cb._id.status === "unpaid");
+      const cAppt = locationApptCounts.find((ca: any) => ca._id?.toString() === cIdStr);
 
       return {
         id: c.id,
@@ -223,7 +223,7 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
           noShow: getStatusCount("no-show"),
           completionRate: apptCompletionRate,
         },
-        clinicsPerformance,
+        locationsPerformance,
         doctorSpecializations,
         referralStats: {
           totalReferrals,
@@ -248,16 +248,16 @@ export async function getNabhKpis(req: FastifyRequest, reply: FastifyReply) {
     if (!scope.allowed && req.user?.role !== "root") return reply.code(scope.statusCode).send(errorResponse(scope.message));
     const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
 
-    let clinics = orgId ? await Clinic.find({ organizationId: orgId, isActive: true }) : [];
-    if (clinics.length === 0 && req.user?.role === "root") {
+    let locations = orgId ? await Location.find({ organizationId: orgId, isActive: true }) : [];
+    if (locations.length === 0 && req.user?.role === "root") {
       const rootOrgs = await Organization.find().select("_id").lean();
       const rootOrgIds = rootOrgs.map((o: any) => o._id);
-      clinics = await Clinic.find({ organizationId: { $in: rootOrgIds }, isActive: true });
+      locations = await Location.find({ organizationId: { $in: rootOrgIds }, isActive: true });
     }
-    const clinicIds = clinics.map((c) => c._id);
-    const clinicFilter = { clinicId: { $in: clinicIds } };
+    const locationIds = locations.map((c) => c._id);
+    const locationFilter = { locationId: { $in: locationIds } };
 
-    const feedback = await PatientFeedback.find(clinicFilter).select("rating").lean();
+    const feedback = await PatientFeedback.find(locationFilter).select("rating").lean();
     const patientSatisfactionScore = feedback.length > 0
       ? Number(((feedback.reduce((sum, item) => sum + item.rating, 0) / feedback.length / 5) * 100).toFixed(1))
       : null;
@@ -292,20 +292,20 @@ export async function getClinicalSummaryAnalyticsController(req: FastifyRequest,
     const scope = resolveAuthorizedOrganizationScope(req);
     if (!scope.allowed && req.user?.role !== "root") return reply.code(scope.statusCode).send(errorResponse(scope.message));
     const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
-    let clinics = orgId ? await Clinic.find({ organizationId: orgId, isActive: true }) : [];
-    if (clinics.length === 0 && req.user?.role === "root") {
+    let locations = orgId ? await Location.find({ organizationId: orgId, isActive: true }) : [];
+    if (locations.length === 0 && req.user?.role === "root") {
       const rootOrgs = await Organization.find().select("_id").lean();
       const rootOrgIds = rootOrgs.map((o: any) => o._id);
-      clinics = await Clinic.find({ organizationId: { $in: rootOrgIds }, isActive: true });
+      locations = await Location.find({ organizationId: { $in: rootOrgIds }, isActive: true });
     }
-    const clinicIds = clinics.map((c) => c._id);
+    const locationIds = locations.map((c) => c._id);
 
-    const encounterFilter = { clinicId: { $in: clinicIds } };
+    const encounterFilter = { locationId: { $in: locationIds } };
     const totalEncounters = await Encounter.countDocuments(encounterFilter);
     const completedEncounters = await Encounter.countDocuments({ ...encounterFilter, status: "completed" });
     const activeEncounters = await Encounter.countDocuments({ ...encounterFilter, status: "in_progress" });
-    const totalClaims = await Claim.countDocuments({ clinicId: { $in: clinicIds }, deletedAt: null });
-    const approvedClaims = await Claim.countDocuments({ clinicId: { $in: clinicIds }, deletedAt: null, status: { $in: ["approved", "settled"] } });
+    const totalClaims = await Claim.countDocuments({ locationId: { $in: locationIds }, deletedAt: null });
+    const approvedClaims = await Claim.countDocuments({ locationId: { $in: locationIds }, deletedAt: null, status: { $in: ["approved", "settled"] } });
 
     return reply.code(200).send(
       successResponse({
@@ -338,16 +338,16 @@ export async function exportAnalyticsReportController(req: FastifyRequest, reply
       const rootOrgs = await Organization.find().select("_id").lean();
       rootOrgIds = rootOrgs.map((o: any) => o._id);
     }
-    const clinics = orgId
-      ? await Clinic.find({ organizationId: orgId, isActive: true }).select("_id")
-      : (req.user?.role === "root" ? await Clinic.find({ organizationId: { $in: rootOrgIds }, isActive: true }).select("_id") : []);
-    const clinicIds = clinics.map((clinic) => clinic._id);
-    const clinicFilter = { clinicId: { $in: clinicIds } };
+    const locations = orgId
+      ? await Location.find({ organizationId: orgId, isActive: true }).select("_id")
+      : (req.user?.role === "root" ? await Location.find({ organizationId: { $in: rootOrgIds }, isActive: true }).select("_id") : []);
+    const locationIds = locations.map((location) => location._id);
+    const locationFilter = { locationId: { $in: locationIds } };
     const [invoiceCount, appointmentCount, encounterCount, claimCount] = await Promise.all([
-      Invoice.countDocuments(clinicFilter),
-      Appointment.countDocuments(clinicFilter),
-      Encounter.countDocuments(clinicFilter),
-      Claim.countDocuments({ ...clinicFilter, deletedAt: null }),
+      Invoice.countDocuments(locationFilter),
+      Appointment.countDocuments(locationFilter),
+      Encounter.countDocuments(locationFilter),
+      Claim.countDocuments({ ...locationFilter, deletedAt: null }),
     ]);
 
     const reportData = {

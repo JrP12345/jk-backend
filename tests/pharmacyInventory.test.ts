@@ -6,9 +6,9 @@ import { addBatchToMedicine, dispenseMedicineFEFO } from "../services/PharmacyIn
 
 describe("Pharmacy batch inventory integrity", () => {
   it("adds stock atomically and dispenses structured batches in FEFO order", async () => {
-    const clinicId = new mongoose.Types.ObjectId();
+    const locationId = new mongoose.Types.ObjectId();
     const medicine = await Medicine.create({
-      clinicId,
+      locationId,
       name: "FEFO Test Medicine",
       genericName: "FEFO Test Generic",
       stockQuantity: 0,
@@ -18,7 +18,7 @@ describe("Pharmacy batch inventory integrity", () => {
 
     await addBatchToMedicine({
       medicineId: medicine._id.toString(),
-      clinicId: clinicId.toString(),
+      locationId: locationId.toString(),
       batchNumber: "EARLIEST",
       expiryDate: new Date(Date.now() + 2 * 86400000),
       quantity: 10,
@@ -27,7 +27,7 @@ describe("Pharmacy batch inventory integrity", () => {
     });
     await addBatchToMedicine({
       medicineId: medicine._id.toString(),
-      clinicId: clinicId.toString(),
+      locationId: locationId.toString(),
       batchNumber: "LATER",
       expiryDate: new Date(Date.now() + 10 * 86400000),
       quantity: 10,
@@ -35,7 +35,7 @@ describe("Pharmacy batch inventory integrity", () => {
       sellingPrice: 11,
     });
 
-    const result = await dispenseMedicineFEFO(medicine._id.toString(), clinicId.toString(), 12);
+    const result = await dispenseMedicineFEFO(medicine._id.toString(), locationId.toString(), 12);
 
     expect(result.dispensedBatches.map((batch) => batch.batchNumber)).toEqual(["EARLIEST", "LATER"]);
     expect(result.dispensedBatches.map((batch) => batch.quantity)).toEqual([10, 2]);
@@ -46,9 +46,9 @@ describe("Pharmacy batch inventory integrity", () => {
   });
 
   it("rejects a duplicate batch and leaves aggregate stock unchanged", async () => {
-    const clinicId = new mongoose.Types.ObjectId();
+    const locationId = new mongoose.Types.ObjectId();
     const medicine = await Medicine.create({
-      clinicId,
+      locationId,
       name: "Duplicate Batch Medicine",
       genericName: "Duplicate Batch Generic",
       stockQuantity: 0,
@@ -57,7 +57,7 @@ describe("Pharmacy batch inventory integrity", () => {
     });
     const input = {
       medicineId: medicine._id.toString(),
-      clinicId: clinicId.toString(),
+      locationId: locationId.toString(),
       batchNumber: "DUPLICATE",
       expiryDate: new Date(Date.now() + 5 * 86400000),
       quantity: 4,

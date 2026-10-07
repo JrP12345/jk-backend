@@ -9,16 +9,13 @@ import crypto from "node:crypto";
  */
 
 function resolveEncryptionSecret(): string {
-  const secret =
-    process.env.DATA_ENCRYPTION_KEY ||
-    process.env.ENCRYPTION_KEY ||
-    process.env.APP_ENCRYPTION_KEY;
+  const secret = process.env.DATA_ENCRYPTION_KEY;
 
   if (!secret) {
     if (process.env.NODE_ENV === "production") {
-      throw new Error("DATA_ENCRYPTION_KEY (or ENCRYPTION_KEY) is strictly required in production mode");
+      throw new Error("DATA_ENCRYPTION_KEY is strictly required in production mode");
     }
-    console.warn("⚠️ [FLE Warning] No DATA_ENCRYPTION_KEY or ENCRYPTION_KEY configured. Using local dev fallback key.");
+    console.warn("⚠️ [FLE Warning] No DATA_ENCRYPTION_KEY configured. Using local dev fallback key.");
     return "dev-local-data-encryption-key-32b-secure";
   }
   return secret;
@@ -31,11 +28,7 @@ const MASTER_KEY = crypto.scryptSync(ENCRYPTION_SECRET, "healthos-fle-salt-2026"
 const BLIND_INDEX_KEY = crypto.scryptSync(ENCRYPTION_SECRET, "healthos-blind-index-salt-2026", 32);
 
 export function isEncrypted(val: any): boolean {
-  return typeof val === "string" && (val.startsWith("enc:v1:") || isLegacyEnvelope(val));
-}
-
-function isLegacyEnvelope(value: string): boolean {
-  return /^[0-9a-f]{24}:[0-9a-f]{32}:(?:[0-9a-f]{2})+$/i.test(value);
+  return typeof val === "string" && val.startsWith("enc:v1:");
 }
 
 /**
@@ -66,23 +59,6 @@ export function decryptField(ciphertext: string | null | undefined): string {
   if (ciphertext === null || ciphertext === undefined) return ciphertext as any;
   const str = String(ciphertext);
   if (!isEncrypted(str)) return str;
-  // Before SEC-003, encryption.ts used ENCRYPTION_KEY directly (hex), or
-  // SHA-256 for passphrases. New envelopes still use the current scrypt key.
-  if (isLegacyEnvelope(str)) {
-    try {
-      const raw = process.env.ENCRYPTION_KEY;
-      if (!raw) throw new Error("Legacy encryption key is required");
-      const key = /^[0-9a-f]{64}$/i.test(raw)
-        ? Buffer.from(raw, "hex") : crypto.createHash("sha256").update(raw).digest();
-      const [iv, tag, data] = str.split(":");
-      const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(iv, "hex"));
-      decipher.setAuthTag(Buffer.from(tag, "hex"));
-      return decipher.update(data, "hex", "utf8") + decipher.final("utf8");
-    } catch {
-      console.error("[FLE] Legacy decryption or authentication tag verification failed");
-      return "[DECRYPTION_FAILED]";
-    }
-  }
   const parts = str.split(":");
   if (parts.length === 5) {
     try {
@@ -106,6 +82,3 @@ export function computeBlindIndex(value: string | null | undefined): string {
   const normalized = String(value).trim().toLowerCase();
   return crypto.createHmac("sha256", BLIND_INDEX_KEY).update(normalized).digest("hex");
 }
-
-export const encrypt = encryptField;
-export const decrypt = decryptField;

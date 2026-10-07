@@ -8,10 +8,10 @@ import { MedicineBatch } from "../models/MedicineBatch.ts";
 import { Prescription } from "../models/Prescription.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
-import { checkClinicAccess, checkOperationalRecordAccess, getRequestClinicIds } from "../utilities/tenant.ts";
+import { checkLocationAccess, checkOperationalRecordAccess, getRequestLocationIds } from "../utilities/tenant.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
 import { dispenseMedicineFEFO } from "../services/PharmacyInventoryService.ts";
-import { generateClinicInvoiceNumber } from "../utilities/invoiceNumber.ts";
+import { generateLocationInvoiceNumber } from "../utilities/invoiceNumber.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));
@@ -22,19 +22,19 @@ function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCod
 export async function createMedicine(req: FastifyRequest, reply: FastifyReply) {
   try {
     const {
-      clinicId, name, genericName, stockQuantity, price, costPrice,
+      locationId, name, genericName, stockQuantity, price, costPrice,
       expiryDate, batchNumber, manufacturer, category, scheduleType
     } = req.body as any;
 
-    if (!clinicId || !name || !genericName || stockQuantity === undefined || price === undefined || costPrice === undefined || !expiryDate || !batchNumber) {
-      return reply.code(400).send(errorResponse("All fields (clinicId, name, genericName, stockQuantity, price, costPrice, expiryDate, batchNumber) are required"));
+    if (!locationId || !name || !genericName || stockQuantity === undefined || price === undefined || costPrice === undefined || !expiryDate || !batchNumber) {
+      return reply.code(400).send(errorResponse("All fields (locationId, name, genericName, stockQuantity, price, costPrice, expiryDate, batchNumber) are required"));
     }
 
-    if (!mongoose.Types.ObjectId.isValid(clinicId)) {
-      return reply.code(400).send(errorResponse("Invalid clinic ID"));
+    if (!mongoose.Types.ObjectId.isValid(locationId)) {
+      return reply.code(400).send(errorResponse("Invalid location ID"));
     }
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
     if (!Number.isInteger(stockQuantity) || stockQuantity < 0 || !Number.isFinite(price) || price < 0 || !Number.isFinite(costPrice) || costPrice < 0) {
       return reply.code(400).send(errorResponse("Stock and prices must be non-negative numbers; stock must be an integer"));
     }
@@ -44,7 +44,7 @@ export async function createMedicine(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const medicine = await Medicine.create({
-      clinicId,
+      locationId,
       name,
       genericName,
       stockQuantity,
@@ -66,19 +66,19 @@ export async function createMedicine(req: FastifyRequest, reply: FastifyReply) {
 
 export async function getMedicines(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, search, page, limit } = req.query as { clinicId?: string; search?: string; page?: string | number; limit?: string | number };
+    const { locationId, search, page, limit } = req.query as { locationId?: string; search?: string; page?: string | number; limit?: string | number };
 
     const query: any = { deletedAt: null };
-    if (clinicId) {
-      if (!mongoose.Types.ObjectId.isValid(clinicId)) {
-        return reply.code(400).send(errorResponse("Invalid clinic ID"));
+    if (locationId) {
+      if (!mongoose.Types.ObjectId.isValid(locationId)) {
+        return reply.code(400).send(errorResponse("Invalid location ID"));
       }
-      const clinicAccess = await checkClinicAccess(req, clinicId);
-      if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
-      query.clinicId = clinicId;
+      const locationAccess = await checkLocationAccess(req, locationId);
+      if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
+      query.locationId = locationId;
     } else {
-      const clinicIds = await getRequestClinicIds(req);
-      if (clinicIds) query.clinicId = { $in: clinicIds };
+      const locationIds = await getRequestLocationIds(req);
+      if (locationIds) query.locationId = { $in: locationIds };
     }
 
     if (search) {
@@ -169,17 +169,17 @@ export async function deleteMedicine(req: FastifyRequest, reply: FastifyReply) {
 
 export async function getPendingPrescriptionsController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId } = req.query as { clinicId?: string };
+    const { locationId } = req.query as { locationId?: string };
 
-    if (!clinicId || !mongoose.Types.ObjectId.isValid(clinicId)) {
-      return reply.code(400).send(errorResponse("Valid clinicId is required"));
+    if (!locationId || !mongoose.Types.ObjectId.isValid(locationId)) {
+      return reply.code(400).send(errorResponse("Valid locationId is required"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
 
     const prescriptions = await Prescription.find({
-      clinicId,
+      locationId,
       status: "active",
       deletedAt: null,
     })
@@ -288,9 +288,9 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
   try {
     const userId = req.user!.id;
 
-    const { patientId, clinicId, doctorId, items, prescriptionIds, encounterId, appointmentId } = req.body as {
+    const { patientId, locationId, doctorId, items, prescriptionIds, encounterId, appointmentId } = req.body as {
       patientId: string;
-      clinicId: string;
+      locationId: string;
       doctorId?: string;
       items: Array<{ medicineId: string; quantity: number }>;
       prescriptionIds?: string[];
@@ -298,27 +298,27 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
       appointmentId?: string;
     };
 
-    if (!patientId || !clinicId || !items || !Array.isArray(items) || items.length === 0) {
-      return reply.code(400).send(errorResponse("Missing fields: patientId, clinicId, and items are required"));
+    if (!patientId || !locationId || !items || !Array.isArray(items) || items.length === 0) {
+      return reply.code(400).send(errorResponse("Missing fields: patientId, locationId, and items are required"));
     }
 
-    if (!mongoose.Types.ObjectId.isValid(patientId) || !mongoose.Types.ObjectId.isValid(clinicId)) {
-      return reply.code(400).send(errorResponse("Invalid patientId or clinicId"));
+    if (!mongoose.Types.ObjectId.isValid(patientId) || !mongoose.Types.ObjectId.isValid(locationId)) {
+      return reply.code(400).send(errorResponse("Invalid patientId or locationId"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
 
     // Verify Patient
     const patient = await Patient.findById(patientId);
     if (!patient) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
     }
-    if (patient.organizationId && clinicAccess.organizationId && patient.organizationId.toString() !== clinicAccess.organizationId) {
+    if (patient.organizationId && locationAccess.organizationId && patient.organizationId.toString() !== locationAccess.organizationId) {
       return reply.code(404).send(errorResponse("Patient profile not found"));
     }
-    if (!patient.organizationId && clinicAccess.organizationId) {
-      patient.organizationId = new mongoose.Types.ObjectId(clinicAccess.organizationId);
+    if (!patient.organizationId && locationAccess.organizationId) {
+      patient.organizationId = new mongoose.Types.ObjectId(locationAccess.organizationId);
       await patient.save();
     }
 
@@ -358,8 +358,8 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
       if (!medicine) {
         return reply.code(404).send(errorResponse(`Medicine ID ${item.medicineId} not found`));
       }
-      if (medicine.clinicId.toString() !== clinicId) {
-        return reply.code(404).send(errorResponse(`Medicine ID ${item.medicineId} not found in selected clinic`));
+      if (medicine.locationId.toString() !== locationId) {
+        return reply.code(404).send(errorResponse(`Medicine ID ${item.medicineId} not found in selected location`));
       }
 
       if (medicine.stockQuantity < item.quantity) {
@@ -378,7 +378,7 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
       const dispensedResults: Array<{ medicine: any; item: { quantity: number }; result: any }> = [];
       try {
         for (const m of medsToUpdate) {
-          const result = await dispenseMedicineFEFO(m.medicine._id.toString(), clinicId, m.deductAmount, session);
+          const result = await dispenseMedicineFEFO(m.medicine._id.toString(), locationId, m.deductAmount, session);
           dispensedResults.push({ medicine: m.medicine, item: { quantity: m.deductAmount }, result });
           updatedMedicines.push(m);
         }
@@ -408,7 +408,7 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
         let existingInvoice = null;
         if (resolvedAppointmentId || resolvedEncounterId) {
           existingInvoice = await Invoice.findOne({
-            clinicId,
+            locationId,
             patientId,
             status: "unpaid",
             deletedAt: null,
@@ -432,12 +432,12 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
           await existingInvoice.save(session ? { session } : undefined);
           createdInvoice = existingInvoice;
         } else {
-          const invoiceNumber = await generateClinicInvoiceNumber(clinicId);
+          const invoiceNumber = await generateLocationInvoiceNumber(locationId);
           createdInvoice = await createWithSession(Invoice, {
             invoiceNumber,
             patientId,
-            clinicId,
-            organizationId: clinicAccess.organizationId || undefined,
+            locationId,
+            organizationId: locationAccess.organizationId || undefined,
             doctorId: invoiceDoctorId,
             appointmentId: resolvedAppointmentId || undefined,
             encounterId: resolvedEncounterId || undefined,
@@ -455,7 +455,7 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
           action: "PRESCRIPTION_DISPENSE",
           targetId: createdInvoice._id,
           targetModel: "Invoice",
-          organizationId: clinicAccess.organizationId || undefined,
+          organizationId: locationAccess.organizationId || undefined,
           details: { invoiceNumber: createdInvoice.invoiceNumber, totalAmount: subtotal, itemCount: items.length }
         }, session);
 
@@ -465,7 +465,7 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
             await Prescription.updateMany(
               {
                 _id: { $in: validIds },
-                clinicId,
+                locationId,
                 patientId,
                 status: "active",
                 deletedAt: null,
@@ -503,13 +503,13 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
     // Real-time broadcast that medications have been dispensed
     try {
       const { broadcastQueueUpdate } = await import("../notifications/websocket.ts");
-      broadcastQueueUpdate(clinicId, {
+      broadcastQueueUpdate(locationId, {
         type: "PRESCRIPTION_DISPENSED",
         data: {
           appointmentId: invoice?.appointmentId?.toString() || appointmentId,
           encounterId: invoice?.encounterId?.toString() || encounterId,
           patientId,
-          clinicId,
+          locationId,
           invoiceId: invoice?._id?.toString(),
           invoiceNumber: invoice?.invoiceNumber,
           totalAmount: invoice?.totalAmount,
@@ -538,22 +538,22 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
 
 export async function createMedicineBatch(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { medicineId, clinicId, batchNumber, expiryDate, quantity, purchaseCost, sellingPrice, mrp, hsnCode, gstRate } = req.body as any;
+    const { medicineId, locationId, batchNumber, expiryDate, quantity, purchaseCost, sellingPrice, mrp, hsnCode, gstRate } = req.body as any;
 
-    if (!medicineId || !clinicId || !batchNumber || !expiryDate || quantity === undefined || purchaseCost === undefined || sellingPrice === undefined) {
-      return reply.code(400).send(errorResponse("medicineId, clinicId, batchNumber, expiryDate, quantity, purchaseCost, and sellingPrice are required"));
+    if (!medicineId || !locationId || !batchNumber || !expiryDate || quantity === undefined || purchaseCost === undefined || sellingPrice === undefined) {
+      return reply.code(400).send(errorResponse("medicineId, locationId, batchNumber, expiryDate, quantity, purchaseCost, and sellingPrice are required"));
     }
 
-    if (!mongoose.Types.ObjectId.isValid(medicineId) || !mongoose.Types.ObjectId.isValid(clinicId)) {
-      return reply.code(400).send(errorResponse("Invalid medicine or clinic ID"));
+    if (!mongoose.Types.ObjectId.isValid(medicineId) || !mongoose.Types.ObjectId.isValid(locationId)) {
+      return reply.code(400).send(errorResponse("Invalid medicine or location ID"));
     }
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
     const medicine = await Medicine.findById(medicineId);
     if (!medicine) return reply.code(404).send(errorResponse("Medicine record not found"));
     const medicineAccess = await checkOperationalRecordAccess(req, medicine);
     if (!medicineAccess.allowed) return sendTenantError(reply, medicineAccess);
-    if (medicine.clinicId.toString() !== clinicId) return reply.code(404).send(errorResponse("Medicine not found in selected clinic"));
+    if (medicine.locationId.toString() !== locationId) return reply.code(404).send(errorResponse("Medicine not found in selected location"));
     if (!Number.isInteger(quantity) || quantity <= 0 || !Number.isFinite(purchaseCost) || purchaseCost < 0 || !Number.isFinite(sellingPrice) || sellingPrice < 0) {
       return reply.code(400).send(errorResponse("Quantity must be a positive integer and prices must be non-negative numbers"));
     }
@@ -561,7 +561,7 @@ export async function createMedicineBatch(req: FastifyRequest, reply: FastifyRep
     const { addBatchToMedicine } = await import("../services/PharmacyInventoryService.ts");
     const batch = await addBatchToMedicine({
       medicineId,
-      clinicId,
+      locationId,
       batchNumber,
       expiryDate,
       quantity,
@@ -602,21 +602,21 @@ export async function getMedicineBatches(req: FastifyRequest, reply: FastifyRepl
 
 export async function getExpiringMedicinesController(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, days } = req.query as { clinicId?: string; days?: string | number };
-    const targetClinicId = clinicId || (req as any).user?.clinicId;
-    if (!targetClinicId || !mongoose.Types.ObjectId.isValid(targetClinicId)) {
+    const { locationId, days } = req.query as { locationId?: string; days?: string | number };
+    const targetLocationId = locationId || (req as any).user?.locationId;
+    if (!targetLocationId || !mongoose.Types.ObjectId.isValid(targetLocationId)) {
       return reply.code(200).send(successResponse([]));
     }
 
-    const clinicAccess = await checkClinicAccess(req, targetClinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, targetLocationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
 
     const daysThreshold = days ? parseInt(String(days), 10) : 30;
     if (!Number.isInteger(daysThreshold) || daysThreshold < 0) {
       return reply.code(400).send(errorResponse("days must be a non-negative integer"));
     }
     const { getExpiringBatches } = await import("../services/PharmacyInventoryService.ts");
-    const expiring = await getExpiringBatches(targetClinicId, daysThreshold);
+    const expiring = await getExpiringBatches(targetLocationId, daysThreshold);
 
     return reply.code(200).send(successResponse(expiring));
   } catch (err) {

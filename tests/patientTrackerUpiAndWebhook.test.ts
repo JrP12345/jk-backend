@@ -1,8 +1,10 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { trackerFixtureHeaders } from "./helpers/trackerFixture.ts";
 import crypto from "node:crypto";
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
@@ -13,7 +15,7 @@ import { sendPaymentReceiptNotification } from "../utilities/notifications.ts";
 describe("Patient Mobile Tracker 1-Tap UPI, Inbound Webhook & Digital Receipts Test Suite", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let patient: any;
 
@@ -22,7 +24,7 @@ describe("Patient Mobile Tracker 1-Tap UPI, Inbound Webhook & Digital Receipts T
   beforeAll(async () => {
     vi.stubEnv("UPI_WEBHOOK_SECRET", webhookSecret);
     // 1. Setup Organization & Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -35,13 +37,13 @@ describe("Patient Mobile Tracker 1-Tap UPI, Inbound Webhook & Digital Receipts T
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
-    // 2. Setup Clinic with custom Multi-Tenant UPI VPA
-    const clinicRes = await app.inject({
+    // 2. Setup Location with custom Multi-Tenant UPI VPA
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Max Saket Super Specialty",
@@ -50,8 +52,8 @@ describe("Patient Mobile Tracker 1-Tap UPI, Inbound Webhook & Digital Receipts T
         merchantName: "Max Saket Healthcare Ltd",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Doctor
     const docRes = await app.inject({
@@ -73,7 +75,7 @@ describe("Patient Mobile Tracker 1-Tap UPI, Inbound Webhook & Digital Receipts T
     await DoctorAssignment.create({
       organizationId: orgId,
       doctorId,
-      clinicId,
+      locationId,
       fees: 700,
       workingHours: "[]",
       isActive: true,
@@ -109,7 +111,7 @@ describe("Patient Mobile Tracker 1-Tap UPI, Inbound Webhook & Digital Receipts T
   it("Pillar 1: Public live tracker returns clinic's custom upiVpa and merchantName", async () => {
     const appt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient._id,
       appointmentTime: new Date().toISOString(),
@@ -124,20 +126,21 @@ describe("Patient Mobile Tracker 1-Tap UPI, Inbound Webhook & Digital Receipts T
     const trackerRes = await app.inject({
       method: "GET",
       url: `/api/public/track/${appt._id}`,
+      headers: await trackerFixtureHeaders(appt._id),
     });
 
     expect(trackerRes.statusCode).toBe(200);
     const body = JSON.parse(trackerRes.body);
     expect(body.success).toBe(true);
-    expect(body.data.clinic).toBeDefined();
-    expect(body.data.clinic.upiVpa).toBe("max.saket@icici");
-    expect(body.data.clinic.merchantName).toBe("Max Saket Healthcare Ltd");
+    expect(body.data.location).toBeDefined();
+    expect(body.data.location.upiVpa).toBe("max.saket@icici");
+    expect(body.data.location.merchantName).toBe("Max Saket Healthcare Ltd");
   });
 
   it("Pillar 3: Autonomous inbound UPI bank webhook (/api/webhooks/upi) processes zero-touch settlement", async () => {
     const apptWeb = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient._id,
       appointmentTime: new Date().toISOString(),
@@ -150,7 +153,7 @@ describe("Patient Mobile Tracker 1-Tap UPI, Inbound Webhook & Digital Receipts T
     });
 
     const invoice = await Invoice.create({
-      organizationId: orgId, clinicId, doctorId, patientId: patient._id,
+      organizationId: orgId, locationId, doctorId, patientId: patient._id,
       appointmentId: apptWeb._id, invoiceNumber: `INV-UPI-${apptWeb._id}`,
       items: [{ description: "Consultation", amount: 600, quantity: 1, totalItemAmount: 600 }],
       subtotal: 600, totalAmount: 600, amountPaid: 0, balanceDue: 600, status: "unpaid"
@@ -191,7 +194,7 @@ describe("Patient Mobile Tracker 1-Tap UPI, Inbound Webhook & Digital Receipts T
   });
 
   it("Pillar 4: Digital Receipt dispatch helper executes cleanly", async () => {
-    const appt = await Appointment.findOne({ clinicId });
+    const appt = await Appointment.findOne({ locationId });
     expect(appt).toBeDefined();
 
     // Verify calling sendPaymentReceiptNotification directly doesn't throw
@@ -205,9 +208,9 @@ describe("Patient Mobile Tracker 1-Tap UPI, Inbound Webhook & Digital Receipts T
   });
 
   it("rejects a signed late capture after disruption cancellation", async () => {
-    const appointment = await Appointment.create({ organizationId: orgId, clinicId, doctorId, patientId: patient._id,
+    const appointment = await Appointment.create({ organizationId: orgId, locationId, doctorId, patientId: patient._id,
       appointmentTime: new Date(), appointmentType: "online", status: "cancelled", paymentStatus: "refund_pending", tokenNumber: 54 });
-    const invoice = await Invoice.create({ organizationId: orgId, clinicId, doctorId, patientId: patient._id,
+    const invoice = await Invoice.create({ organizationId: orgId, locationId, doctorId, patientId: patient._id,
       appointmentId: appointment._id, invoiceNumber: `INV-LATE-${appointment.id}`, items: [{ description: "Consultation", amount: 600, quantity: 1 }], subtotal: 600, totalAmount: 600, amountPaid: 0, balanceDue: 600, status: "unpaid" });
     const orderId = `order_late_${appointment.id}`;
     const payment = await AppointmentPayment.create({ appointmentId: appointment._id, invoiceId: invoice._id, patientId: patient._id,

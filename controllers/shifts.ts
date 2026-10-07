@@ -3,13 +3,13 @@ import mongoose from "mongoose";
 import { ShiftRoster } from "../models/ShiftRoster.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { checkClinicAccess, checkOperationalRecordAccess, getRequestOrganizationId } from "../utilities/tenant.ts";
+import { checkLocationAccess, checkOperationalRecordAccess, getRequestOrganizationId } from "../utilities/tenant.ts";
 
 export async function getShifts(req: FastifyRequest, reply: FastifyReply) {
   try {
     const user = (req as any).user;
-    const { clinicId, date, ward, staffRole, status } = req.query as {
-      clinicId?: string;
+    const { locationId, date, ward, staffRole, status } = req.query as {
+      locationId?: string;
       date?: string;
       ward?: string;
       staffRole?: string;
@@ -20,10 +20,10 @@ export async function getShifts(req: FastifyRequest, reply: FastifyReply) {
       deletedAt: null,
     };
 
-    if (clinicId) {
-      const scope = await checkClinicAccess(req, clinicId);
+    if (locationId) {
+      const scope = await checkLocationAccess(req, locationId);
       if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
-      query.clinicId = new mongoose.Types.ObjectId(clinicId);
+      query.locationId = new mongoose.Types.ObjectId(locationId);
     } else if (user?.role !== "root") {
       const orgId = getRequestOrganizationId(req);
       if (!orgId) return reply.code(403).send(errorResponse("Organization context is required"));
@@ -56,7 +56,7 @@ export async function getShifts(req: FastifyRequest, reply: FastifyReply) {
     const morningShifts = shifts.filter((s) => s.shiftType === "morning").length;
     const eveningShifts = shifts.filter((s) => s.shiftType === "evening").length;
     const nightShifts = shifts.filter((s) => s.shiftType === "night").length;
-    
+
     const totalPatientsAssigned = shifts.reduce((acc, s) => acc + (s.assignedPatientsCount || 0), 0);
     const nurseCount = shifts.filter((s) => s.staffRole === "Nurse").length;
     const nurseToPatientRatio = nurseCount > 0 ? (totalPatientsAssigned / nurseCount).toFixed(1) : "0.0";
@@ -86,7 +86,7 @@ export async function createShift(req: FastifyRequest, reply: FastifyReply) {
   try {
     const user = (req as any).user;
     const {
-      clinicId,
+      locationId,
       departmentId,
       staffId,
       staffName,
@@ -99,12 +99,12 @@ export async function createShift(req: FastifyRequest, reply: FastifyReply) {
       assignedPatientsCount,
     } = req.body as any;
 
-    if (!clinicId || !mongoose.Types.ObjectId.isValid(clinicId)) {
-      return reply.code(400).send(errorResponse("clinicId is required"));
+    if (!locationId || !mongoose.Types.ObjectId.isValid(locationId)) {
+      return reply.code(400).send(errorResponse("locationId is required"));
     }
-    const scope = await checkClinicAccess(req, clinicId);
+    const scope = await checkLocationAccess(req, locationId);
     if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
-    const targetClinicId = clinicId;
+    const targetLocationId = locationId;
 
     if (!staffName || !shiftDate || !shiftType) {
       return reply.code(400).send(errorResponse("Missing required fields: staffName, shiftDate, shiftType"));
@@ -114,7 +114,7 @@ export async function createShift(req: FastifyRequest, reply: FastifyReply) {
 
     const shift = await ShiftRoster.create({
       organizationId: scope.organizationId || undefined,
-      clinicId: new mongoose.Types.ObjectId(targetClinicId),
+      locationId: new mongoose.Types.ObjectId(targetLocationId),
       departmentId: departmentId && mongoose.Types.ObjectId.isValid(departmentId) ? new mongoose.Types.ObjectId(departmentId) : undefined,
       staffId: assignedStaffId,
       staffName,

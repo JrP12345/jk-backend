@@ -38,7 +38,7 @@ export class ConsultationProvider implements TimelineProvider {
     const notes = await noteFind
       .populate("encounterId", "appointmentId")
       .populate("doctorId", "name email")
-      .populate("clinicId", "name city")
+      .populate("locationId", "name city")
       .populate("objective.observationIds")
       .populate("plan.prescriptionIds")
       .lean();
@@ -67,14 +67,14 @@ export class ConsultationProvider implements TimelineProvider {
         duration: p.duration || "",
       }));
 
-      const clinicName = (note.clinicId as any)?.name ? ` (${(note.clinicId as any).name})` : "";
+      const locationName = (note.locationId as any)?.name ? ` (${(note.locationId as any).name})` : "";
       events.push({
         id: note._id.toString(),
         type: "consultation",
         occurredAt: note.signature?.signedAt || note.createdAt,
         patientId: query.patientId,
         organizationId: note.organizationId?.toString() || query.organizationId,
-        title: diagnoses.length > 0 ? `SOAP Note: ${diagnoses[0]}${clinicName}` : `Clinical Note (v${note.version})${clinicName}`,
+        title: diagnoses.length > 0 ? `SOAP Note: ${diagnoses[0]}${locationName}` : `Clinical Note (v${note.version})${locationName}`,
         summary: note.subjective?.chiefComplaint ? `Chief Complaint: ${note.subjective.chiefComplaint}` : "Signed SOAP consultation document",
         actor: {
           id: doctorId,

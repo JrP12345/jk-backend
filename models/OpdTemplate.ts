@@ -19,7 +19,7 @@ export interface IOpdTemplate extends Document {
   followUpTimeline?: string;
   followUpNotes?: string;
   doctorId?: mongoose.Types.ObjectId;
-  clinicId?: mongoose.Types.ObjectId;
+  locationId?: mongoose.Types.ObjectId;
   organizationId?: mongoose.Types.ObjectId;
   isPublic: boolean;
   createdAt: Date;
@@ -57,7 +57,7 @@ const opdTemplateSchema = new Schema<IOpdTemplate>(
     followUpTimeline: { type: String, default: "" },
     followUpNotes: { type: String, default: "" },
     doctorId: { type: Schema.Types.ObjectId, ref: "User", index: true },
-    clinicId: { type: Schema.Types.ObjectId, ref: "Clinic", index: true },
+    locationId: { type: Schema.Types.ObjectId, ref: "Location", index: true },
     organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
     isPublic: { type: Boolean, default: false },
   },

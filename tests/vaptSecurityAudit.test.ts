@@ -1,9 +1,10 @@
+import { fixtureAccessToken } from "./helpers/sessionFixture.ts";
 import crypto from "node:crypto";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { Role } from "../models/Role.ts";
 import { RefreshToken } from "../models/RefreshToken.ts";
@@ -13,8 +14,8 @@ import { resolveWebSocketAuth } from "../notifications/websocket.ts";
 describe("VAPT Security & Penetration Testing Audit Suite", () => {
   let orgA: any;
   let orgB: any;
-  let clinicA: any;
-  let clinicB: any;
+  let locationA: any;
+  let locationB: any;
   let userA: any;
   let userB: any;
   let tokenA: string;
@@ -24,7 +25,7 @@ describe("VAPT Security & Penetration Testing Audit Suite", () => {
     // Seed default role if needed
     await Role.findOneAndUpdate(
       { name: "admin" },
-      { name: "admin", permissions: ["VIEW_CLINICS", "MANAGE_CLINICS", "VIEW_PATIENTS", "MANAGE_ORGANIZATION"] },
+      { name: "admin", permissions: ["VIEW_LOCATIONS", "MANAGE_LOCATIONS", "VIEW_PATIENTS", "MANAGE_ORGANIZATION"] },
       { upsert: true }
     );
     await Role.findOneAndUpdate(
@@ -41,7 +42,7 @@ describe("VAPT Security & Penetration Testing Audit Suite", () => {
       status: "active",
     });
 
-    clinicA = await Clinic.create({
+    locationA = await Location.create({
       name: "Alpha Downtown Clinic",
       organizationId: orgA._id,
       city: "New York",
@@ -61,12 +62,12 @@ describe("VAPT Security & Penetration Testing Audit Suite", () => {
       role: "admin",
     });
 
-    tokenA = generateAccessToken({
+    tokenA = (await fixtureAccessToken({
       id: userA._id.toString(),
       email: userA.email,
       role: userA.role,
       organization_id: orgA._id.toString(),
-    });
+    }));
 
     // Setup Tenant B
     orgB = await Organization.create({
@@ -76,7 +77,7 @@ describe("VAPT Security & Penetration Testing Audit Suite", () => {
       status: "active",
     });
 
-    clinicB = await Clinic.create({
+    locationB = await Location.create({
       name: "Beta Metro Clinic",
       organizationId: orgB._id,
       city: "Boston",
@@ -96,12 +97,12 @@ describe("VAPT Security & Penetration Testing Audit Suite", () => {
       role: "admin",
     });
 
-    tokenB = generateAccessToken({
+    tokenB = (await fixtureAccessToken({
       id: userB._id.toString(),
       email: userB.email,
       role: userB.role,
       organization_id: orgB._id.toString(),
-    });
+    }));
   });
 
   // ─── 1. VAPT Enterprise Security Headers ───────────────────────────
@@ -143,7 +144,7 @@ describe("VAPT Security & Penetration Testing Audit Suite", () => {
     it("should sanitize query parameters containing mongo operator keys", async () => {
       const res = await app.inject({
         method: "GET",
-        url: "/api/onboarding/clinics",
+        url: "/api/onboarding/locations",
         headers: {
           authorization: `Bearer ${tokenA}`,
         },
@@ -162,7 +163,7 @@ describe("VAPT Security & Penetration Testing Audit Suite", () => {
     it("should block User A from modifying or accessing Clinic B from Tenant B", async () => {
       const res = await app.inject({
         method: "PUT",
-        url: `/api/onboarding/clinics/${clinicB._id}`,
+        url: `/api/onboarding/locations/${locationB._id}`,
         headers: {
           authorization: `Bearer ${tokenA}`,
           "x-organization-id": orgA._id.toString(),
@@ -174,8 +175,8 @@ describe("VAPT Security & Penetration Testing Audit Suite", () => {
       });
 
       expect([403, 404]).toContain(res.statusCode);
-      const updatedClinic = await Clinic.findById(clinicB._id);
-      expect(updatedClinic?.name).toBe("Beta Metro Clinic"); // Remains unaltered
+      const updatedLocation = await Location.findById(locationB._id);
+      expect(updatedLocation?.name).toBe("Beta Metro Clinic"); // Remains unaltered
     });
 
     it("should prevent cross-tenant OPD queue access", async () => {
@@ -186,7 +187,7 @@ describe("VAPT Security & Penetration Testing Audit Suite", () => {
           authorization: `Bearer ${tokenA}`,
         },
         query: {
-          clinicId: clinicB._id.toString(),
+          locationId: locationB._id.toString(),
           doctorId: userB._id.toString(),
         },
       });
@@ -200,7 +201,7 @@ describe("VAPT Security & Penetration Testing Audit Suite", () => {
     it("should block cookie-authenticated state mutations from unauthorized origins", async () => {
       const res = await app.inject({
         method: "POST",
-        url: "/api/onboarding/clinics",
+        url: "/api/onboarding/locations",
         cookies: {
           access_token: tokenA,
         },
@@ -222,6 +223,7 @@ describe("VAPT Security & Penetration Testing Audit Suite", () => {
   // ─── 5. Refresh Token Reuse & Breach Invalidation ───────────────────
   describe("5. Refresh Token Security & Rotation Audit", () => {
     it("allows concurrent refresh within grace and rejects replay outside grace", async () => {
+      const preservedHashes = (await RefreshToken.find({ userId: userA._id, revoked: false })).map(session => session.tokenHash);
       const rawToken1 = await createRefreshToken(userA._id.toString());
       const rawToken2 = await createRefreshToken(userA._id.toString());
 
@@ -258,7 +260,7 @@ describe("VAPT Security & Penetration Testing Audit Suite", () => {
         revoked: false,
       });
       const unrelatedHash = crypto.createHash("sha256").update(rawToken2).digest("hex");
-      expect(activeSessions.map(s => s.tokenHash)).toEqual([unrelatedHash]);
+      expect(activeSessions.map(s => s.tokenHash).sort()).toEqual([...preservedHashes, unrelatedHash].sort());
     });
   });
 

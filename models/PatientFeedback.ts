@@ -5,7 +5,7 @@ export interface IPatientFeedback extends Document {
   appointmentId: mongoose.Types.ObjectId;
   patientId: mongoose.Types.ObjectId;
   doctorId: mongoose.Types.ObjectId;
-  clinicId: mongoose.Types.ObjectId;
+  locationId: mongoose.Types.ObjectId;
   rating: number; // 1-5 stars
   npsScore: number; // 0-10 NPS
   comments?: string;
@@ -39,9 +39,9 @@ const patientFeedbackSchema = new Schema<IPatientFeedback>(
       required: true,
       index: true,
     },
-    clinicId: {
+    locationId: {
       type: Schema.Types.ObjectId,
-      ref: "Clinic",
+      ref: "Location",
       required: true,
       index: true,
     },

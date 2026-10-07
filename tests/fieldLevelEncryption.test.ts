@@ -80,7 +80,7 @@ describe("Field-Level Envelope Encryption (FLE) Suite — DPDP & HIPAA Complianc
     it("encrypts clinical note history and treatment plan at rest", async () => {
       testNote = await ClinicalNote.create({
         organizationId: new mongoose.Types.ObjectId(),
-        clinicId: new mongoose.Types.ObjectId(),
+        locationId: new mongoose.Types.ObjectId(),
         encounterId: new mongoose.Types.ObjectId(),
         patientId: testPatient._id,
         doctorId: new mongoose.Types.ObjectId(),

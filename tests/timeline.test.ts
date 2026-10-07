@@ -1,3 +1,4 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { User } from "../models/User.ts";
@@ -13,13 +14,13 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
   let adminCookies: string[] = [];
   let doctorCookies: string[] = [];
   let patientId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorUserId: string;
   let orgId: string;
 
   beforeAll(async () => {
     // 1. Create Organization & Admin
-    const orgRes = await app.inject({
+    const orgRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -32,7 +33,7 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
       },
     });
     expect(orgRes.statusCode).toBe(201);
-    adminCookies = (orgRes.headers["set-cookie"] as string[]).map((cookie) => cookie.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(orgRes));
     orgId = JSON.parse(orgRes.body).data.organization.id;
 
     // Enable all modules for the test organization so Lab & Admission timeline providers run
@@ -42,12 +43,12 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
       { upsert: true }
     );
 
-    for (const moduleKey of ["clinics", "consultations"]) await ModuleRegistry.findOneAndUpdate({ organizationId: orgId, moduleKey }, { $set: { enabled: true } }, { upsert: true });
+    for (const moduleKey of ["locations", "consultations"]) await ModuleRegistry.findOneAndUpdate({ organizationId: orgId, moduleKey }, { $set: { enabled: true } }, { upsert: true });
 
-    // 2. Create Clinic
-    const clinicRes = await app.inject({
+    // 2. Create Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "EHR Main Branch",
@@ -57,8 +58,8 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
         email: "ehr@hospital.com",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Create Doctor
     const doctorRes = await app.inject({
@@ -112,7 +113,7 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
     // 5. Seed OPD Appointment with Diagnosis & Prescriptions
     await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId: doctorUserId,
       patientId,
       appointmentTime: new Date("2026-07-20T10:00:00Z"),
@@ -127,7 +128,7 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
     // 6. Seed Lab Test & Lab Order
     const labTest = await LabTest.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       name: "ECG Standard 12-Lead",
       code: "ECG12-TEST",
       department: "Cardiology",
@@ -138,21 +139,20 @@ describe("Longitudinal EHR Domain Subsystem Integration Tests", () => {
 
     await LabOrder.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       patientId,
       doctorId: doctorUserId,
       testId: labTest._id,
       orderDate: new Date("2026-07-20T11:00:00Z"),
       status: "result-uploaded",
-      resultValue: "Sinus Rhythm with Non-Specific ST Changes",
-      resultNotes: "Follow up in 2 weeks",
+      result: { value: "Sinus Rhythm with Non-Specific ST Changes", notes: "Follow up in 2 weeks" }
     });
 
     // 7. Seed Invoice
     await Invoice.create({
       organizationId: orgId,
       invoiceNumber: "INV-EHR-001",
-      clinicId,
+      locationId,
       patientId,
       doctorId: doctorUserId,
       items: [{ description: "OPD Consultation", amount: 800 }],

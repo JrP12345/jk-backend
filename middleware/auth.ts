@@ -36,8 +36,8 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
     // Verify signature in-memory using service public key
     const decoded = verifyAccessToken(token);
     // Existing fixture-only JWTs remain available in tests; deployed callers
-    // must refresh legacy tokens into a revocable session before proceeding.
-    if (!decoded.sessionId && process.env.NODE_ENV !== "test") {
+    // must present a current revocable session before proceeding.
+    if (!decoded.sessionId) {
       return reply.code(401).send({ error: "Session refresh required" });
     }
 

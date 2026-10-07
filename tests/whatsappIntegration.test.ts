@@ -1,3 +1,4 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll, vi } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
@@ -19,8 +20,10 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
   const testAppointmentId = `apt_test_${Date.now()}`;
 
   beforeAll(async () => {
+    process.env.META_WHATSAPP_WABA_ID = "109283746592019";
+    process.env.META_WHATSAPP_PHONE_NUMBER_ID = "104928374650192";
     // 1. Bootstrap Organization & Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -29,11 +32,11 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
         admin_name: "Operations Admin",
         admin_email: `wa_admin_${Date.now()}@health.com`,
         admin_password: "Password123",
-        plan: "pro",
+        plan: "professional",
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
     // Create a test patient
@@ -333,7 +336,6 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
 
   it("6. should verify Meta Webhook GET challenge", async () => {
     process.env.META_WHATSAPP_VERIFY_TOKEN = "test_meta_webhook_token_123";
-    process.env.WHATSAPP_VERIFY_TOKEN = "test_meta_webhook_token_123";
 
     const challenge = "9988776655";
     const res = await app.inject({

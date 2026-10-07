@@ -8,7 +8,7 @@ export function appointmentReviewState(
   if (["completed", "cancelled", "no-show"].includes(appointment.status)) return null;
   const at = new Date(appointment.appointmentTime).getTime();
   if (!Number.isFinite(at) || at > now.getTime()) return null;
-  // A full elapsed day is unambiguous across supported clinic time zones.
+  // A full elapsed day is unambiguous across supported location time zones.
   if (now.getTime() - at >= 24 * 60 * 60 * 1000) return "unresolved";
   if (appointment.bookingMode === "time_slot" && ["pending_payment", "pending", "confirmed"].includes(appointment.status)) return "overdue";
   return null;

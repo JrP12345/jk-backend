@@ -152,9 +152,9 @@ describe("Commercial SaaS Billing & Subscription Engine", () => {
     expect((await SubscriptionPayment.findOne({ razorpayOrderId: order.orderId }))?.status).toBe("captured");
   });
 
-  it("shows and closes a legacy failed order so the organization can choose another plan", async () => {
-    const org = await Organization.create({ name: "Legacy Failed Clinic", city: "Pune" });
-    const plan = await SaaSPlan.create({ name: "Legacy Pro", slug: "legacy_pro", description: "Paid plan", monthlyPrice: 499, annualPrice: 4999 });
+  it("shows and closes an unresolved failed provider order so the organization can choose another plan", async () => {
+    const org = await Organization.create({ name: "Failed checkout tenant", city: "Pune" });
+    const plan = await SaaSPlan.create({ name: "Paid plan", slug: "paid_plan", description: "Paid plan", monthlyPrice: 499, annualPrice: 4999 });
     const order = await subscriptionService.createCheckoutOrder(org.id, plan.id, "monthly");
     await SubscriptionPayment.updateOne({ razorpayOrderId: order.orderId }, { $set: { status: "failed" } });
     const fetch = vi.spyOn(razorpayService, "fetchCapturedPaymentForOrder").mockResolvedValue(null);
@@ -245,7 +245,7 @@ describe("Commercial SaaS Billing & Subscription Engine", () => {
       description: "Pro plan test",
       monthlyPrice: 4999,
       annualPrice: 49990,
-      limits: { maxClinics: 5, maxDoctors: 15, maxStaff: 25 },
+      limits: { maxLocations: 5, maxDoctors: 15, maxStaff: 25 },
     });
 
     const checkout = await subscriptionService.createCheckoutOrder(
@@ -282,7 +282,7 @@ describe("Commercial SaaS Billing & Subscription Engine", () => {
       description: "Enterprise plan test",
       monthlyPrice: 14999,
       annualPrice: 149990,
-      limits: { maxClinics: 99, maxDoctors: 999, maxStaff: 999 },
+      limits: { maxLocations: 99, maxDoctors: 999, maxStaff: 999 },
     });
 
     await Organization.findByIdAndUpdate(org._id, { $set: { "billingDetails.gstin": "22AAAAA0000A1Z5",
@@ -320,7 +320,7 @@ describe("Commercial SaaS Billing & Subscription Engine", () => {
     // Check organization limits updated
     const updatedOrg = await Organization.findById(org._id);
     expect(updatedOrg?.plan).toBe("ent_test");
-    expect(updatedOrg?.maxClinics).toBe(99);
+    expect(updatedOrg?.maxLocations).toBe(99);
 
     const repeated = await subscriptionService.verifyAndActivateSubscription(
       org._id.toString(), checkout.orderId, paymentId, signature

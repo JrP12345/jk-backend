@@ -13,7 +13,7 @@ import { EVENT_TYPES } from "../events/types.ts";
 export async function onlineRefundSource(appointment: any, invoice: any) {
   if (!invoice || invoice.status !== "paid" || invoice.currency !== "INR"
     || String(invoice.patientId) !== String(appointment.patientId?._id || appointment.patientId)
-    || String(invoice.clinicId) !== String(appointment.clinicId?._id || appointment.clinicId)) return null;
+    || String(invoice.locationId) !== String(appointment.locationId?._id || appointment.locationId)) return null;
   const receipt = invoice.payments?.length === 1 ? invoice.payments[0] : null;
   const captures = await AppointmentPayment.find({ status: "captured", paymentMethod: "razorpay",
     $or: [{ appointmentId: appointment._id }, { invoiceId: invoice._id }],

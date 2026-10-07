@@ -33,7 +33,6 @@ import {
   callNextPatient,
   checkInAppointment,
   bumpQueuePatient,
-  triggerAutoNoShowDetection,
   parkQueuePatient,
   resumeQueuePatient,
   getQueueDelayStatus,
@@ -54,7 +53,7 @@ import { handleQueueWebSocket, handleClinicalWebSocket } from "../notifications/
 export default async function appointmentRoutes(app: FastifyInstance) {
   const denyConsumerQueueAccess = async (req: FastifyRequest, reply: FastifyReply) => {
     if (["patient", "family_member", "guest"].includes(req.user?.role || "")) {
-      return reply.code(403).send({ success: false, message: "Full queue access is restricted to clinic staff" });
+      return reply.code(403).send({ success: false, message: "Full queue access is restricted to location staff" });
     }
   };
   const viewAppointments = {
@@ -125,11 +124,9 @@ export default async function appointmentRoutes(app: FastifyInstance) {
   app.get("/api/queue/status", viewQueue, getQueueStatus);
   app.put("/api/queue/reorder", manageQueue, reorderQueue);
   app.post("/api/queue/call-next", manageQueue, callNextPatient);
-  app.post("/api/queue/auto-no-show", manageQueue, triggerAutoNoShowDetection);
   app.post("/api/queue/:id/bump-back", manageQueue, bumpQueuePatient);
   app.post("/api/queue/:id/park", manageQueue, parkQueuePatient);
   app.post("/api/queue/:id/resume", manageQueue, resumeQueuePatient);
-  app.post("/api/queue/:id/send-investigation", manageQueue, sendPatientForInvestigation);
   app.post("/api/queue/:id/order-investigations", manageQueue, sendPatientForInvestigation);
   app.post("/api/queue/:id/resume-review", manageQueue, resumeForReportReview);
   app.post("/api/queue/session/start", manageQueue, startOpdSession);
@@ -144,26 +141,13 @@ export default async function appointmentRoutes(app: FastifyInstance) {
   app.get("/api/audit-logs", viewAudit, getAuditLogs);
   app.get("/api/audit-logs/verify-integrity", viewAudit, verifyAuditLogsIntegrity);
 
-  // Real-time Queue WebSocket for Clinic TV / Lobby Displays (Public & Sanitized)
+  // Real-time Queue WebSocket for Location TV / Lobby Displays (Public & Sanitized)
   app.get("/api/queue/ws", { websocket: true }, (socket, req) => {
-    void handleQueueWebSocket(socket as any, req);
-  });
-  app.get("/ws/public/queue/:clinicId", { websocket: true }, (socket, req) => {
     void handleQueueWebSocket(socket as any, req);
   });
 
   // Real-time Clinical WebSocket for Authenticated Clinical Staff (Doctor/Nurse/Admin)
   app.get("/api/clinical/ws", { websocket: true }, (socket, req) => {
-    void handleClinicalWebSocket(socket as any, req).catch(() => {
-      (socket as any).close(1011, "Clinical channel initialization failed");
-    });
-  });
-  app.get("/ws/clinical", { websocket: true }, (socket, req) => {
-    void handleClinicalWebSocket(socket as any, req).catch(() => {
-      (socket as any).close(1011, "Clinical channel initialization failed");
-    });
-  });
-  app.get("/ws/clinical/:clinicId", { websocket: true }, (socket, req) => {
     void handleClinicalWebSocket(socket as any, req).catch(() => {
       (socket as any).close(1011, "Clinical channel initialization failed");
     });

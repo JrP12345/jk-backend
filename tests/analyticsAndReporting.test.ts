@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 import app from "../index.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { Claim } from "../models/Claim.ts";
@@ -13,7 +13,7 @@ import bcrypt from "bcryptjs";
 describe("Milestone 8: Analytics & Reporting Platform Integration Tests", () => {
   it("should fetch executive dashboard analytics", async () => {
     const org = await Organization.create({ name: "Analytics Health Org", city: "Hyderabad" });
-    const clinic = await Clinic.create({
+    const location = await Location.create({
       organizationId: org._id,
       name: "Analytics Main Clinic",
       city: "Hyderabad",
@@ -22,7 +22,7 @@ describe("Milestone 8: Analytics & Reporting Platform Integration Tests", () => 
 
     const adminUser = await User.create({
       name: "Analytics Admin",
-      email: "analytics_admin@ananta.internal",
+      email: "analytics_admin@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "admin",
     });
@@ -37,7 +37,7 @@ describe("Milestone 8: Analytics & Reporting Platform Integration Tests", () => 
       method: "POST",
       url: "/api/auth/login",
       remoteAddress: "10.9.0.1",
-      payload: { email: "analytics_admin@ananta.internal", password: "Password123!" },
+      payload: { email: "analytics_admin@ekavyu.internal", password: "Password123!" },
     });
     const accessToken = loginRes.cookies.find((c) => c.name === "access_token")?.value || "";
 
@@ -51,12 +51,12 @@ describe("Milestone 8: Analytics & Reporting Platform Integration Tests", () => 
     expect(execRes.statusCode).toBe(200);
     const data = JSON.parse(execRes.body).data;
     expect(data.overall).toBeDefined();
-    expect(data.clinicsPerformance).toBeDefined();
+    expect(data.locationsPerformance).toBeDefined();
   });
 
   it("should fetch clinical summary analytics", async () => {
     const org = await Organization.create({ name: "Clinical Analytics Org", city: "Kolkata" });
-    const clinic = await Clinic.create({
+    const location = await Location.create({
       organizationId: org._id,
       name: "Clinical Analytics Ward",
       city: "Kolkata",
@@ -65,7 +65,7 @@ describe("Milestone 8: Analytics & Reporting Platform Integration Tests", () => 
 
     const docUser = await User.create({
       name: "Dr. Clinical Analytics",
-      email: "dr_analytics@ananta.internal",
+      email: "dr_analytics@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "doctor",
     });
@@ -74,7 +74,7 @@ describe("Milestone 8: Analytics & Reporting Platform Integration Tests", () => 
 
     const patientUser = await User.create({
       name: "Analytics Patient",
-      email: "analytics_patient@ananta.internal",
+      email: "analytics_patient@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "patient",
     });
@@ -86,7 +86,7 @@ describe("Milestone 8: Analytics & Reporting Platform Integration Tests", () => 
 
     await Encounter.create({
       organizationId: org._id,
-      clinicId: clinic._id,
+      locationId: location._id,
       patientId: patient._id,
       doctorId: docUser._id,
       encounterType: "opd",
@@ -97,7 +97,7 @@ describe("Milestone 8: Analytics & Reporting Platform Integration Tests", () => 
       method: "POST",
       url: "/api/auth/login",
       remoteAddress: "10.9.0.2",
-      payload: { email: "dr_analytics@ananta.internal", password: "Password123!" },
+      payload: { email: "dr_analytics@ekavyu.internal", password: "Password123!" },
     });
     const accessToken = loginRes.cookies.find((c) => c.name === "access_token")?.value || "";
 
@@ -117,7 +117,7 @@ describe("Milestone 8: Analytics & Reporting Platform Integration Tests", () => 
   it("should export analytics report in JSON and CSV formats", async () => {
     const adminUser = await User.create({
       name: "Export Admin",
-      email: "export_admin@ananta.internal",
+      email: "export_admin@ekavyu.internal",
       password: await bcrypt.hash("Password123!", 10),
       role: "admin",
     });
@@ -129,7 +129,7 @@ describe("Milestone 8: Analytics & Reporting Platform Integration Tests", () => 
       method: "POST",
       url: "/api/auth/login",
       remoteAddress: "10.9.0.3",
-      payload: { email: "export_admin@ananta.internal", password: "Password123!" },
+      payload: { email: "export_admin@ekavyu.internal", password: "Password123!" },
     });
     const accessToken = loginRes.cookies.find((c) => c.name === "access_token")?.value || "";
 

@@ -1,3 +1,5 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { providerFixtureSlug } from "./helpers/providerFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
@@ -5,7 +7,7 @@ import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
 describe("Doctor Holiday & Leave Override Workflow Suite", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let patientId: string;
   let holidayDateStr: string;
@@ -13,7 +15,7 @@ describe("Doctor Holiday & Leave Override Workflow Suite", () => {
 
   beforeAll(async () => {
     // 1. Setup Organization & Super Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -26,13 +28,13 @@ describe("Doctor Holiday & Leave Override Workflow Suite", () => {
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Holiday Care Central",
@@ -42,8 +44,8 @@ describe("Doctor Holiday & Leave Override Workflow Suite", () => {
         email: "deccan@holidaycare.com",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Doctor with normal working hours (Monday-Saturday 09:00 - 17:00)
     const docRes = await app.inject({
@@ -58,7 +60,7 @@ describe("Doctor Holiday & Leave Override Workflow Suite", () => {
         specialization: "Internal Medicine",
         qualification: "MBBS, MD",
         experience_years: 12,
-        clinicId,
+        locationId,
         fees: 600,
         feeType: "fixed",
       },
@@ -68,7 +70,7 @@ describe("Doctor Holiday & Leave Override Workflow Suite", () => {
 
     const { DoctorAssignment } = await import("../models/DoctorAssignment.ts");
     await DoctorAssignment.findOneAndUpdate(
-      { doctorId, clinicId },
+      { doctorId, locationId },
       {
         organizationId: orgId,
         fees: 600,
@@ -113,13 +115,13 @@ describe("Doctor Holiday & Leave Override Workflow Suite", () => {
     holidayDateStr = targetDate.toISOString().slice(0, 10);
   });
 
-  it("1. Should successfully declare a holiday/leave override for doctor across clinics", async () => {
+  it("1. Should successfully declare a holiday/leave override for doctor across locations", async () => {
     const overrideRes = await app.inject({
       method: "POST",
       url: "/api/doctor-overrides",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId: "all",
+        locationId: "all",
         doctorId,
         date: holidayDateStr,
         status: "unavailable",
@@ -136,14 +138,14 @@ describe("Doctor Holiday & Leave Override Workflow Suite", () => {
   });
 
   it("2. Public clinic details API should reflect doctor's upcoming holidays", async () => {
-    const clinicRes = await app.inject({
+    const locationRes = await app.inject({
       method: "GET",
-      url: `/api/public/clinics/${clinicId}`,
+      url: `/api/public/locations/${await providerFixtureSlug("location", locationId)}`,
     });
 
-    expect(clinicRes.statusCode).toBe(200);
-    const body = JSON.parse(clinicRes.body);
-    const doc = body.data.doctors.find((d: any) => d.doctorId === doctorId);
+    expect(locationRes.statusCode).toBe(200);
+    const body = JSON.parse(locationRes.body);
+    const doc = body.data.doctors.find((d: any) => d.id === doctorId);
     expect(doc).toBeDefined();
     expect(doc.upcomingHolidays).toBeDefined();
     expect(Array.isArray(doc.upcomingHolidays)).toBe(true);
@@ -155,7 +157,7 @@ describe("Doctor Holiday & Leave Override Workflow Suite", () => {
   it("3. Doctor slots API should report isHoliday: true and isWorkingDay: false on holiday date", async () => {
     const slotsRes = await app.inject({
       method: "GET",
-      url: `/api/doctors/${doctorId}/slots?clinicId=${clinicId}&date=${holidayDateStr}`,
+      url: `/api/doctors/${doctorId}/slots?locationId=${locationId}&date=${holidayDateStr}`,
       headers: { cookie: adminCookies.join("; ") },
     });
 
@@ -173,7 +175,7 @@ describe("Doctor Holiday & Leave Override Workflow Suite", () => {
       url: "/api/appointments",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         doctorId,
         patientId,
         appointmentTime: `${holidayDateStr}T10:00:00.000Z`,
@@ -200,8 +202,8 @@ describe("Doctor Holiday & Leave Override Workflow Suite", () => {
     const found = body.data.find((o: any) => o.date === holidayDateStr);
     expect(found).toBeDefined();
     expect(found.reason).toBe("Diwali Festival Holiday");
-    expect(found.clinicId).toBeDefined();
-    expect(found.clinicId.name).toBe("Holiday Care Central");
+    expect(found.locationId).toBeDefined();
+    expect(found.locationId.name).toBe("Holiday Care Central");
   });
 
   it("6. Cancelling the holiday override should restore availability and permit booking", async () => {
@@ -215,7 +217,7 @@ describe("Doctor Holiday & Leave Override Workflow Suite", () => {
     // Verify slots are restored
     const slotsRes = await app.inject({
       method: "GET",
-      url: `/api/doctors/${doctorId}/slots?clinicId=${clinicId}&date=${holidayDateStr}`,
+      url: `/api/doctors/${doctorId}/slots?locationId=${locationId}&date=${holidayDateStr}`,
       headers: { cookie: adminCookies.join("; ") },
     });
     expect(slotsRes.statusCode).toBe(200);
@@ -230,7 +232,7 @@ describe("Doctor Holiday & Leave Override Workflow Suite", () => {
       url: "/api/appointments",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         doctorId,
         patientId,
         appointmentTime: `${holidayDateStr}T10:00:00.000Z`,

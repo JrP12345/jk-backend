@@ -13,7 +13,7 @@ import {
 /**
  * LabProvider — surfaces LabOrder events into the longitudinal EHR timeline.
  *
- * v1.6.0 enrichment:
+ * enrichment:
  *   - Structured result value, unit, reference range
  *   - Interpretation flag (Normal / Abnormal / Critical)
  *   - Priority surfacing (urgent/stat get amber badge)
@@ -32,7 +32,7 @@ export class LabProvider implements TimelineProvider {
     const orders = await (await timelineWindow(LabOrder, {
       patientId: query.patientId,
       ...(query.organizationId && !query.isCrossOrgAllowed ? { organizationId: query.organizationId } : {}),
-    }, query, ["resultedAt", "completedDate", "orderDate"], "")).query
+    }, query, ["resultedAt", "orderDate"], "")).query
       .populate("testId", "name code department sampleType normalRange")
       .populate("orderedBy", "name")
       .populate("doctorId", "name")
@@ -51,14 +51,13 @@ export class LabProvider implements TimelineProvider {
       const doctorId   = actorDoc?._id?.toString() || actorDoc?.toString() || "unknown";
 
       // ─── Structured result or flat string representation ─────────
-      const hasStructuredResult = order.result?.value && order.result.value.length > 0;
-      const resultValue     = hasStructuredResult ? order.result.value     : (order.resultValue || "");
-      const resultUnit      = hasStructuredResult ? order.result.unit      : "";
-      const referenceRange  = hasStructuredResult ? order.result.referenceRange : (order.testId?.normalRange || "");
-      const interpretation  = hasStructuredResult ? order.result.interpretation : "";
-      const isAbnormal      = hasStructuredResult ? order.result.isAbnormal     : false;
-      const resultNotes     = hasStructuredResult ? order.result.notes     : (order.resultNotes || "");
-      const attachmentUrl   = hasStructuredResult ? order.result.attachmentUrl : (order.attachmentUrl || "");
+      const resultValue     = order.result?.value || "";
+      const resultUnit      = order.result?.unit || "";
+      const referenceRange  = order.result?.referenceRange || order.testId?.normalRange || "";
+      const interpretation  = order.result?.interpretation || "";
+      const isAbnormal      = order.result?.isAbnormal || false;
+      const resultNotes     = order.result?.notes || "";
+      const attachmentUrl   = order.result?.attachmentUrl || "";
 
       // ─── Display label for result ─────────────────────────────────
       const resultDisplay = resultValue
@@ -83,7 +82,7 @@ export class LabProvider implements TimelineProvider {
       events.push({
         id: order._id.toString(),
         type: "lab_result",
-        occurredAt: order.resultedAt || order.completedDate || order.orderDate || order.createdAt,
+        occurredAt: order.resultedAt || order.orderDate || order.createdAt,
         patientId: query.patientId,
         organizationId: order.organizationId?.toString() || query.organizationId,
         title: `Lab: ${testName} (${dept})${order.priority !== "routine" ? " [" + order.priority!.toUpperCase() + "]" : ""}`,

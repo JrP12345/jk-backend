@@ -1,7 +1,8 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Appointment } from "../models/Appointment.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Patient } from "../models/Patient.ts";
@@ -33,7 +34,7 @@ describe("Pre-Production Launch Hardening Integration Tests", () => {
 
   it("should prevent double-booking for the same doctor in time_slot mode", async () => {
     // 1. Create org + admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -45,19 +46,19 @@ describe("Pre-Production Launch Hardening Integration Tests", () => {
         plan: "enterprise",
       },
     });
-    const adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map(c => c.split(";")[0]);
+    const adminCookies = (await provisionedAdminCookies(bootstrapRes));
 
-    // 2. Create clinic
-    const clinicRes = await app.inject({
+    // 2. Create location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Timeslot Branch",
         city: "Mumbai",
       },
     });
-    const clinicId = JSON.parse(clinicRes.body).data.id;
+    const locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Add Doctor
     const docRes = await app.inject({
@@ -80,7 +81,7 @@ describe("Pre-Production Launch Hardening Integration Tests", () => {
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         doctorId: doctorUserId,
-        clinicId: clinicId,
+        locationId: locationId,
         fees: 500,
         appointmentDuration: 15,
         bookingMode: "time_slot",
@@ -123,7 +124,7 @@ describe("Pre-Production Launch Hardening Integration Tests", () => {
       url: "/api/appointments",
       headers: { cookie: p1Cookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         doctorId: doctorUserId,
         appointmentTime: slotTime.toISOString(),
         appointmentType: "online",
@@ -139,7 +140,7 @@ describe("Pre-Production Launch Hardening Integration Tests", () => {
       url: "/api/appointments",
       headers: { cookie: p2Cookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         doctorId: doctorUserId,
         appointmentTime: slotTime.toISOString(),
         appointmentType: "online",

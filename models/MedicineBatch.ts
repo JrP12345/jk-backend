@@ -4,7 +4,7 @@ import { auditPlugin } from "../utilities/auditPlugin.ts";
 export interface IMedicineBatch extends Document {
   organizationId?: mongoose.Types.ObjectId;
   medicineId: mongoose.Types.ObjectId;
-  clinicId: mongoose.Types.ObjectId;
+  locationId: mongoose.Types.ObjectId;
   batchNumber: string;
   expiryDate: Date;
   quantity: number;
@@ -31,9 +31,9 @@ const medicineBatchSchema = new Schema<IMedicineBatch>(
       required: true,
       index: true,
     },
-    clinicId: {
+    locationId: {
       type: Schema.Types.ObjectId,
-      ref: "Clinic",
+      ref: "Location",
       required: true,
       index: true,
     },
@@ -85,8 +85,8 @@ const medicineBatchSchema = new Schema<IMedicineBatch>(
 );
 
 medicineBatchSchema.index({ medicineId: 1, expiryDate: 1, status: 1 });
-medicineBatchSchema.index({ medicineId: 1, clinicId: 1, batchNumber: 1 }, { unique: true });
-medicineBatchSchema.index({ organizationId: 1, clinicId: 1, medicineId: 1 });
+medicineBatchSchema.index({ medicineId: 1, locationId: 1, batchNumber: 1 }, { unique: true });
+medicineBatchSchema.index({ organizationId: 1, locationId: 1, medicineId: 1 });
 
 medicineBatchSchema.plugin(auditPlugin);
 

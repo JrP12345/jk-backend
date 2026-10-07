@@ -30,3 +30,4 @@ backups/
 *.dump
 /.dev-server*.lock
 /release_manifest.json
+/release_history.json

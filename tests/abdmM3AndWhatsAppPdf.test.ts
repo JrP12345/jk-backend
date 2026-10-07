@@ -1,7 +1,8 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Doctor } from "../models/Doctor.ts";
@@ -15,7 +16,7 @@ import { evaluatePanicCriticalValue } from "../controllers/laboratory.ts";
 describe("ABDM Milestone 3 (M3) FHIR Engine, WhatsApp PDF Dispatch & Lab Panic Recall Suite", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorUserId: string;
   let doctorId: string;
   let patientDoc: any;
@@ -24,7 +25,7 @@ describe("ABDM Milestone 3 (M3) FHIR Engine, WhatsApp PDF Dispatch & Lab Panic R
 
   beforeAll(async () => {
     // 1. Setup Organization & Super Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -37,13 +38,13 @@ describe("ABDM Milestone 3 (M3) FHIR Engine, WhatsApp PDF Dispatch & Lab Panic R
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Max Super Specialty Polyclinic",
@@ -52,8 +53,8 @@ describe("ABDM Milestone 3 (M3) FHIR Engine, WhatsApp PDF Dispatch & Lab Panic R
         phone: "+911188990011",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Doctor with Cabin 101 & NMC Number
     const docRes = await app.inject({
@@ -68,7 +69,7 @@ describe("ABDM Milestone 3 (M3) FHIR Engine, WhatsApp PDF Dispatch & Lab Panic R
         registrationNumber: "NMC-DL-2024-99881",
         consultationFee: 700,
         cabinNumber: "Cabin 101",
-        clinicIds: [clinicId],
+        locationIds: [locationId],
       },
     });
     expect(docRes.statusCode).toBe(201);
@@ -77,10 +78,10 @@ describe("ABDM Milestone 3 (M3) FHIR Engine, WhatsApp PDF Dispatch & Lab Panic R
     const docProfile = await Doctor.findOne({ userId: doctorUserId });
     doctorId = docProfile ? docProfile.id : doctorUserId;
 
-    // 4. Assign Doctor to Clinic
+    // 4. Assign Doctor to Location
     await DoctorAssignment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId: doctorUserId,
       fees: 700,
       workingHours: JSON.stringify({ all: [{ start: "00:00", end: "23:59" }] }),
@@ -104,7 +105,7 @@ describe("ABDM Milestone 3 (M3) FHIR Engine, WhatsApp PDF Dispatch & Lab Panic R
     // 6. Book OPD Consultation Appointment
     appointmentDoc = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId: doctorUserId,
       patientId: patientDoc._id,
       appointmentTime: new Date(),
@@ -133,7 +134,7 @@ describe("ABDM Milestone 3 (M3) FHIR Engine, WhatsApp PDF Dispatch & Lab Panic R
       payload: {
         patientId: patientDoc._id.toString(),
         appointmentId: appointmentDoc._id.toString(),
-        clinicId,
+        locationId,
       },
     });
 
@@ -143,7 +144,7 @@ describe("ABDM Milestone 3 (M3) FHIR Engine, WhatsApp PDF Dispatch & Lab Panic R
     expect(body.data.status).toBe("SUCCESS");
     expect(body.data.patient.careContexts).toHaveLength(1);
     expect(body.data.patient.careContexts[0].referenceNumber).toBe(`OPD-ENC-${appointmentDoc._id}`);
-    expect(body.data.hipId).toBe(`IN_HIP_${clinicId.slice(-8).toUpperCase()}`);
+    expect(body.data.hipId).toBe(`IN_HIP_${locationId.slice(-8).toUpperCase()}`);
 
     // Verify patient database record
     const updatedPatient: any = await Patient.findById(patientDoc._id).lean();
@@ -159,7 +160,7 @@ describe("ABDM Milestone 3 (M3) FHIR Engine, WhatsApp PDF Dispatch & Lab Panic R
       payload: {
         patientId: patientDoc._id.toString(),
         appointmentId: appointmentDoc._id.toString(),
-        clinicId,
+        locationId,
       },
     });
 
@@ -216,7 +217,7 @@ describe("ABDM Milestone 3 (M3) FHIR Engine, WhatsApp PDF Dispatch & Lab Panic R
     // Organization (HIP)
     const org = bundle.entry.find((e: any) => e.resource.resourceType === "Organization")?.resource;
     expect(org).toBeDefined();
-    expect(org.identifier[0].value).toBe(`IN_HIP_${clinicId.slice(-8).toUpperCase()}`);
+    expect(org.identifier[0].value).toBe(`IN_HIP_${locationId.slice(-8).toUpperCase()}`);
 
     // Patient
     const pat = bundle.entry.find((e: any) => e.resource.resourceType === "Patient")?.resource;
@@ -357,7 +358,7 @@ describe("ABDM Milestone 3 (M3) FHIR Engine, WhatsApp PDF Dispatch & Lab Panic R
   it("should flag panic alert on appointment when critical lab result is uploaded", async () => {
     const labTest = await LabTest.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       name: "Serum Potassium (K+)",
       code: `K_TEST_${Date.now()}`,
       department: "Biochemistry",
@@ -368,7 +369,7 @@ describe("ABDM Milestone 3 (M3) FHIR Engine, WhatsApp PDF Dispatch & Lab Panic R
 
     const labOrder = await LabOrder.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       appointmentId: appointmentDoc._id,
       patientId: patientDoc._id,
       testId: labTest._id,
@@ -381,7 +382,7 @@ describe("ABDM Milestone 3 (M3) FHIR Engine, WhatsApp PDF Dispatch & Lab Panic R
       url: `/api/lab-orders/${labOrder._id}/result`,
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        resultValue: "6.9",
+        value: "6.9",
         notes: "Confirmed on repeated aspiration",
       },
     });

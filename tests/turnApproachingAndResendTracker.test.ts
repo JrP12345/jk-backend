@@ -1,7 +1,8 @@
+import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
@@ -12,7 +13,7 @@ import { triggerTurnApproachingPacing } from "../controllers/queue.ts";
 describe("P2 Turn Approaching Notification Loop & P3 Resend Tracker Suite", () => {
   let adminCookies: string[] = [];
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorId: string;
   let doctorUserId: string;
   let patient1: any;
@@ -21,7 +22,7 @@ describe("P2 Turn Approaching Notification Loop & P3 Resend Tracker Suite", () =
 
   beforeAll(async () => {
     // 1. Setup Organization & Super Admin
-    const bootstrapRes = await app.inject({
+    const bootstrapRes = await app.inject({ headers: await provisioningFixtureHeaders(),
       method: "POST",
       url: "/api/onboarding/organization",
       payload: {
@@ -34,7 +35,7 @@ describe("P2 Turn Approaching Notification Loop & P3 Resend Tracker Suite", () =
       },
     });
     expect(bootstrapRes.statusCode).toBe(201);
-    adminCookies = (bootstrapRes.headers["set-cookie"] as string[]).map((c) => c.split(";")[0]);
+    adminCookies = (await provisionedAdminCookies(bootstrapRes));
     orgId = JSON.parse(bootstrapRes.body).data.organization.id;
 
     // Enable WhatsApp in test org
@@ -55,20 +56,20 @@ describe("P2 Turn Approaching Notification Loop & P3 Resend Tracker Suite", () =
       }
     );
 
-    // 2. Setup Clinic
-    const clinicRes = await app.inject({
+    // 2. Setup Location
+    const locationRes = await app.inject({
       method: "POST",
-      url: "/api/onboarding/clinics",
+      url: "/api/onboarding/locations",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
         name: "Apollo Bandra OPD Center",
         city: "Mumbai",
         upiVpa: "apollobandra@okhdfcbank",
-        merchantName: "Apollo Clinics",
+        merchantName: "Apollo Locations",
       },
     });
-    expect(clinicRes.statusCode).toBe(201);
-    clinicId = JSON.parse(clinicRes.body).data.id;
+    expect(locationRes.statusCode).toBe(201);
+    locationId = JSON.parse(locationRes.body).data.id;
 
     // 3. Setup Doctor
     const docRes = await app.inject({
@@ -81,7 +82,7 @@ describe("P2 Turn Approaching Notification Loop & P3 Resend Tracker Suite", () =
         password: "Password123",
         specialization: "General Physician",
         consultationFee: 700,
-        clinicIds: [clinicId],
+        locationIds: [locationId],
       },
     });
     expect(docRes.statusCode).toBe(201);
@@ -92,7 +93,7 @@ describe("P2 Turn Approaching Notification Loop & P3 Resend Tracker Suite", () =
     await DoctorAssignment.create({
       organizationId: orgId,
       doctorId,
-      clinicId,
+      locationId,
       fees: 700,
       workingHours: "[]",
       isActive: true,
@@ -157,7 +158,7 @@ describe("P2 Turn Approaching Notification Loop & P3 Resend Tracker Suite", () =
     // Create 3 active checked-in appointments for today
     const appt1 = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient1._id,
       appointmentTime: today,
@@ -170,7 +171,7 @@ describe("P2 Turn Approaching Notification Loop & P3 Resend Tracker Suite", () =
 
     const appt2 = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient2._id,
       appointmentTime: today,
@@ -183,7 +184,7 @@ describe("P2 Turn Approaching Notification Loop & P3 Resend Tracker Suite", () =
 
     const appt3 = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient3._id,
       appointmentTime: today,
@@ -204,7 +205,7 @@ describe("P2 Turn Approaching Notification Loop & P3 Resend Tracker Suite", () =
       url: "/api/queue/call-next",
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        clinicId,
+        locationId,
         doctorId,
       },
     });
@@ -215,7 +216,7 @@ describe("P2 Turn Approaching Notification Loop & P3 Resend Tracker Suite", () =
     expect(calledData.status).toBe("in-consultation");
 
     // Manually trigger or allow background pacing helper to execute
-    await triggerTurnApproachingPacing(clinicId, doctorId);
+    await triggerTurnApproachingPacing(locationId, doctorId);
 
     // Verify Appt 2 (now 1st waiting patient) received turn approaching notification timestamp
     const refreshedAppt2 = await Appointment.findById(appt2._id);
@@ -229,7 +230,7 @@ describe("P2 Turn Approaching Notification Loop & P3 Resend Tracker Suite", () =
 
     // Verify Idempotency: Re-invoking pacing does not modify the existing notification timestamp
     const originalNotifiedAt2 = refreshedAppt2?.turnApproachingNotifiedAt?.getTime();
-    await triggerTurnApproachingPacing(clinicId, doctorId);
+    await triggerTurnApproachingPacing(locationId, doctorId);
     const reCheckedAppt2 = await Appointment.findById(appt2._id);
     expect(reCheckedAppt2?.turnApproachingNotifiedAt?.getTime()).toBe(originalNotifiedAt2);
   });
@@ -238,7 +239,7 @@ describe("P2 Turn Approaching Notification Loop & P3 Resend Tracker Suite", () =
     const today = new Date();
     const appt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient1._id,
       appointmentTime: today,
@@ -280,7 +281,7 @@ describe("P2 Turn Approaching Notification Loop & P3 Resend Tracker Suite", () =
     const customPhone = "+919988776655";
     const appt = await Appointment.create({
       organizationId: orgId,
-      clinicId,
+      locationId,
       doctorId,
       patientId: patient2._id,
       appointmentTime: today,

@@ -6,14 +6,14 @@ import { AuditLog } from "../models/AuditLog.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { checkClinicAccess } from "../utilities/tenant.ts";
+import { checkLocationAccess } from "../utilities/tenant.ts";
 
 export async function processSelfCheckInQr(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { appointmentId, tokenNumber, clinicId } = req.body as {
+    const { appointmentId, tokenNumber, locationId } = req.body as {
       appointmentId?: string;
       tokenNumber?: number;
-      clinicId?: string;
+      locationId?: string;
     };
 
     if (
@@ -22,15 +22,15 @@ export async function processSelfCheckInQr(req: FastifyRequest, reply: FastifyRe
       tokenNumber === undefined ||
       !Number.isInteger(Number(tokenNumber)) ||
       Number(tokenNumber) < 1 ||
-      !clinicId ||
-      !mongoose.Types.ObjectId.isValid(clinicId)
+      !locationId ||
+      !mongoose.Types.ObjectId.isValid(locationId)
     ) {
-      return reply.code(400).send(errorResponse("appointmentId, clinicId, and a valid tokenNumber are required"));
+      return reply.code(400).send(errorResponse("appointmentId, locationId, and a valid tokenNumber are required"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) {
-      return reply.code(403).send(errorResponse("Unauthorized clinic access"));
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) {
+      return reply.code(403).send(errorResponse("Unauthorized location access"));
     }
 
     const startOfDay = new Date();
@@ -40,11 +40,11 @@ export async function processSelfCheckInQr(req: FastifyRequest, reply: FastifyRe
 
     const appointment: any = await Appointment.findOne({
       _id: appointmentId,
-      clinicId,
+      locationId,
       tokenNumber: Number(tokenNumber),
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
     })
-      .populate("clinicId", "name city")
+      .populate("locationId", "name city")
       .populate("doctorId", "name specialization")
       .populate({ path: "patientId", populate: { path: "userId", select: "name" } });
 
@@ -55,7 +55,7 @@ export async function processSelfCheckInQr(req: FastifyRequest, reply: FastifyRe
     const checkInData = (alreadyCheckedIn: boolean) => ({
       appointmentId: appointment._id.toString(), tokenNumber: appointment.tokenNumber,
       patientName: appointment.patientId?.userId?.name || appointment.patientId?.name || "Patient",
-      doctorName: appointment.doctorId?.name || "Doctor", clinicName: appointment.clinicId?.name || "Clinic",
+      doctorName: appointment.doctorId?.name || "Doctor", locationName: appointment.locationId?.name || "Location",
       status: alreadyCheckedIn ? appointment.status : "checked-in", alreadyCheckedIn,
     });
     if (["checked-in", "in-consultation"].includes(appointment.status)) {
@@ -68,10 +68,10 @@ export async function processSelfCheckInQr(req: FastifyRequest, reply: FastifyRe
       const changed = await Appointment.updateOne({ _id: appointment._id, status: { $in: ["pending", "confirmed"] } }, { $set: { status: "checked-in" } });
       if (!changed.modifiedCount) throw Object.assign(new Error("Appointment changed. Refresh and try again."), { statusCode: 409 });
       await AuditLog.create({ userId: req.user!.id, action: "SELF_CHECKIN_QR", targetId: appointment._id,
-        targetModel: "Appointment", details: { tokenNumber: appointment.tokenNumber, clinicId } });
+        targetModel: "Appointment", details: { tokenNumber: appointment.tokenNumber, locationId } });
     });
     const { broadcastQueueUpdate } = await import("../notifications/websocket.ts");
-    broadcastQueueUpdate(clinicId, { type: "QUEUE_UPDATED", data: { appointmentId, clinicId, status: "checked-in" }, timestamp: new Date().toISOString() });
+    broadcastQueueUpdate(locationId, { type: "QUEUE_UPDATED", data: { appointmentId, locationId, status: "checked-in" }, timestamp: new Date().toISOString() });
 
     // Publish event for real-time queue update
     await eventBus.publishDurable({

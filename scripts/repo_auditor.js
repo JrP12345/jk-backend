@@ -8,7 +8,7 @@ const BACKEND_DIR = path.resolve(import.meta.dirname, "..");
 const MANIFEST_PATH = path.join(BACKEND_DIR, "release_manifest.json");
 
 console.log("\n==================================================================");
-console.log(" 🛡️  Ekavyu AUTOMATED ENGINEERING PLATFORM & REPO AUDITOR (v2.0)");
+console.log(" 🛡️  Ekavyu AUTOMATED ENGINEERING PLATFORM & REPO AUDITOR");
 console.log("==================================================================\n");
 
 let passedChecks = 0;
@@ -86,7 +86,7 @@ check("Fitness Function 1: Zero hardcoded secrets in source files", () => {
     path.join(BACKEND_DIR, "utilities", "helpers.ts"),
   ];
   const forbiddenPatterns = [/JWT_SECRET\s*=\s*['"][^'"]+['"]/i, /SECRET_KEY\s*=\s*['"][^'"]+['"]/i];
-  
+
   for (const file of filesToScan) {
     if (fs.existsSync(file)) {
       const content = fs.readFileSync(file, "utf8");

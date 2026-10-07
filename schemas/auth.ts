@@ -7,7 +7,7 @@ export const registerPatientSchema = {
       email: { type: "string", pattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$" },
       password: { type: "string", minLength: 6 },
       phone: { type: "string" },
-      clinicId: { type: "string", minLength: 1 }
+      locationId: { type: "string", minLength: 1 }
     },
     additionalProperties: false
   }

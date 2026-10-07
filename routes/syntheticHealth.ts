@@ -1,11 +1,10 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { redisClient } from "../utilities/redis.ts";
-import { broadcastClinicalRealtime, registerClinicClinicalWebSocket } from "../notifications/websocket.ts";
+import { broadcastClinicalRealtime, observeSyntheticClinicalBroadcast, CANARY_LOCATION_ID } from "../notifications/websocket.ts";
 import { reportCriticalError } from "../utilities/telemetry.ts";
 import crypto from "node:crypto";
 
-const CANARY_CLINIC_ID = "00000000000000000000canary";
 
 // ─── Deterministic Diagnostic Panic Evaluation Rule Test ──────────────────
 function evaluatePanicThresholds(analyte: string, value: number | string): "critical" | "normal" {
@@ -86,9 +85,11 @@ export default async function syntheticHealthRoutes(app: FastifyInstance) {
       const pubSubStart = Date.now();
       const testToken = `canary_tok_${Date.now()}`;
 
-      // Register an ephemeral in-memory test socket on the isolated canary clinic
+      // Observe the reserved synthetic channel without registering a private socket.
       await new Promise<void>((resolve, reject) => {
+        let stopObserving: (() => void) | undefined;
         const timeout = setTimeout(() => {
+          stopObserving?.();
           // If Redis is not configured, local delivery still resolves immediately
           if (!redisClient && process.env.ALLOW_SINGLE_NODE_IN_PRODUCTION === "true") {
             resolve();
@@ -99,27 +100,17 @@ export default async function syntheticHealthRoutes(app: FastifyInstance) {
           }
         }, 500);
 
-        const mockCanarySocket: any = {
-          readyState: 1,
-          send: (rawMsg: string) => {
-            try {
-              const parsed = JSON.parse(rawMsg);
-              if (parsed.data?.canaryToken === testToken) {
-                clearTimeout(timeout);
-                pubSubDelivered = true;
-                resolve();
-              }
-            } catch {
-              // Safe ignore
-            }
-          },
-          on: () => {},
-        };
+        stopObserving = observeSyntheticClinicalBroadcast((payload) => {
+          if (payload.data?.canaryToken === testToken) {
+            clearTimeout(timeout);
+            stopObserving?.();
+            pubSubDelivered = true;
+            resolve();
+          }
+        });
 
-        registerClinicClinicalWebSocket(CANARY_CLINIC_ID, mockCanarySocket);
-
-        // Dispatch synthetic alert through the authenticated clinical pipeline.
-        broadcastClinicalRealtime(CANARY_CLINIC_ID, {
+        // Dispatch a synthetic alert through the clinical fan-out pipeline.
+        broadcastClinicalRealtime(CANARY_LOCATION_ID, {
           type: "CLINICAL_PANIC_ALERT",
           message: "[SYNTHETIC CANARY] Test alert — please ignore",
           data: { isCanary: true, canaryToken: testToken },
@@ -131,7 +122,7 @@ export default async function syntheticHealthRoutes(app: FastifyInstance) {
 
       // Clean up canary alert buffer entry from Redis
       if (redisClient) {
-        redisClient.del(`healthos:alert_buffer:clinic_clinical:${CANARY_CLINIC_ID}`).catch(() => {});
+        redisClient.del(`ekavyu:alert_buffer:location_clinical:${CANARY_LOCATION_ID}`).catch(() => {});
       }
     } catch (err: any) {
       failures.push(`PubSub Fan-Out Failed: ${err?.message || err}`);

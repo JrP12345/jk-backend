@@ -36,10 +36,10 @@ describe("Root Superadmin Impersonation Engine Tests", () => {
     // 2. Create Tenant Org & Doctor User
     const org = await (Organization as any).create({
       name: "Impersonation Test Clinic",
-      email: `clinic_${Date.now()}@platform.internal`,
+      email: `location_${Date.now()}@platform.internal`,
       phone: "+919876543210",
       city: "Ahmedabad",
-      plan: "pro",
+      plan: "professional",
     });
     testOrgId = (org as any)._id.toString();
 

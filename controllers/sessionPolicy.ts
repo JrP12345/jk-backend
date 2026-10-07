@@ -24,7 +24,7 @@ export async function updateOwnerSessionPolicy(req: FastifyRequest, reply: Fasti
   if (!mongoose.Types.ObjectId.isValid(userId) || (limit !== null && (!Number.isInteger(limit) || limit < 1 || limit > 1000))) {
     return reply.code(400).send(errorResponse("Use a limit between 1 and 1000, or null for unlimited sessions"));
   }
-  const owner = await User.findOneAndUpdate({ _id: userId, role: "admin" }, { $set: { adminSessionLimit: limit } }, { new: true });
+  const owner = await User.findOneAndUpdate({ _id: userId, role: "admin" }, { $set: { adminSessionLimit: limit } }, { returnDocument: "after" });
   if (!owner) return reply.code(404).send(errorResponse("Organization owner not found"));
   if (limit !== null) {
     const sessions = await RefreshToken.find({ userId, revoked: false, expiresAt: { $gt: new Date() } }).sort({ createdAt: -1 }).select("_id").lean();

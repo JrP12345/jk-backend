@@ -2,7 +2,7 @@ import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
 import { checkSlotLock } from "./SlotLockService.ts";
-import { clinicClockMinutes, clinicDateKey, clinicDayRange, clinicLocalTimeToDate, getClinicTimezone } from "../utilities/clinicTime.ts";
+import { locationClockMinutes, locationDateKey, locationDayRange, locationLocalTimeToDate, getLocationTimezone } from "../utilities/locationTime.ts";
 
 export interface TimeSlot {
   time: string; // e.g. "09:00", "09:15"
@@ -47,22 +47,22 @@ export interface EffectiveSchedule extends ParsedDaySchedule {
 
 export async function getEffectiveDoctorSchedule(
   doctorId: string,
-  clinicId: string,
+  locationId: string,
   targetDate: Date | string,
   assignmentWorkingHours?: any,
-  clinicTimezone?: string
+  locationTimezone?: string
 ): Promise<EffectiveSchedule> {
-  const timezone = clinicTimezone || await getClinicTimezone(clinicId);
+  const timezone = locationTimezone || await getLocationTimezone(locationId);
   const dateStr = typeof targetDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(targetDate)
     ? targetDate
-    : clinicDateKey(typeof targetDate === "string" ? new Date(targetDate) : targetDate, timezone);
+    : locationDateKey(typeof targetDate === "string" ? new Date(targetDate) : targetDate, timezone);
   const d = new Date(`${dateStr}T12:00:00Z`);
 
   const daysOfWeek = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
   const dayName = daysOfWeek[d.getUTCDay()];
 
   // 1. Check for day override
-  const override = await DoctorDayOverride.findOne({ clinicId, doctorId, date: dateStr });
+  const override = await DoctorDayOverride.findOne({ locationId, doctorId, date: dateStr });
 
   if (override) {
     if (override.status === "unavailable") {
@@ -83,7 +83,7 @@ export async function getEffectiveDoctorSchedule(
       if (assignmentWorkingHours !== undefined) {
         baseSchedule = parseDoctorWorkingHours(assignmentWorkingHours, dayName);
       } else {
-        const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
+        const assignment = await DoctorAssignment.findOne({ doctorId, locationId, isActive: true });
         baseSchedule = parseDoctorWorkingHours(assignment?.workingHours, dayName);
       }
 
@@ -108,7 +108,7 @@ export async function getEffectiveDoctorSchedule(
   if (assignmentWorkingHours !== undefined) {
     baseSchedule = parseDoctorWorkingHours(assignmentWorkingHours, dayName);
   } else {
-    const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
+    const assignment = await DoctorAssignment.findOne({ doctorId, locationId, isActive: true });
     baseSchedule = parseDoctorWorkingHours(assignment?.workingHours, dayName);
   }
 
@@ -224,7 +224,7 @@ export function parseDoctorWorkingHours(workingHoursRaw: any, dayName: string): 
 
 export async function getDoctorAvailableSlots(
   doctorId: string,
-  clinicId: string,
+  locationId: string,
   dateStr: string,
   requestingUserId?: string
 ): Promise<GetDoctorSlotsResult> {
@@ -234,18 +234,18 @@ export async function getDoctorAvailableSlots(
   }
 
   // Find assignment
-  const assignment = await DoctorAssignment.findOne({ doctorId, clinicId, isActive: true });
+  const assignment = await DoctorAssignment.findOne({ doctorId, locationId, isActive: true });
   const duration = assignment?.appointmentDuration || 15;
   const bookingMode = (assignment as any)?.bookingMode || "sequential_queue";
   const maxDailyTokens = (assignment as any)?.maxDailyTokens || null;
 
-  const timezone = await getClinicTimezone(clinicId);
-  const { start: startOfDay, end: endOfDay } = clinicDayRange(dateStr, timezone);
+  const timezone = await getLocationTimezone(locationId);
+  const { start: startOfDay, end: endOfDay } = locationDayRange(dateStr, timezone);
 
   // Fetch existing non-cancelled appointments count for this day
   const existingAppts = await Appointment.find({
     doctorId,
-    clinicId,
+    locationId,
     appointmentTime: { $gte: startOfDay, $lte: endOfDay },
     status: { $nin: ["cancelled", "no-show"] }
   }).select("appointmentTime status tokenNumber");
@@ -253,7 +253,7 @@ export async function getDoctorAvailableSlots(
   const tokensToday = existingAppts.length;
   const nextToken = tokensToday + 1;
 
-  const daySchedule = await getEffectiveDoctorSchedule(doctorId, clinicId, dateStr, assignment?.workingHours, timezone);
+  const daySchedule = await getEffectiveDoctorSchedule(doctorId, locationId, dateStr, assignment?.workingHours, timezone);
   const isHoliday = daySchedule.overrideActive && daySchedule.overrideStatus === "unavailable";
   const holidayReason = isHoliday ? (daySchedule.overrideReason || "Doctor Holiday / Leave") : null;
 
@@ -302,7 +302,7 @@ export async function getDoctorAvailableSlots(
   const bookedTimes = new Set(
     existingAppts.map(a => {
       const d = new Date(a.appointmentTime);
-      const clockMinutes = clinicClockMinutes(d, timezone);
+      const clockMinutes = locationClockMinutes(d, timezone);
       const hours = Math.floor(clockMinutes / 60).toString().padStart(2, "0");
       const minutes = (clockMinutes % 60).toString().padStart(2, "0");
       return `${hours}:${minutes}`;
@@ -329,7 +329,7 @@ export async function getDoctorAvailableSlots(
       // Check lock status for this slot
       let slotISOTime: string;
       try {
-        slotISOTime = clinicLocalTimeToDate(dateStr, timeFormatted, timezone).toISOString();
+        slotISOTime = locationLocalTimeToDate(dateStr, timeFormatted, timezone).toISOString();
       } catch {
         currentMinutes += duration;
         continue;
@@ -338,7 +338,7 @@ export async function getDoctorAvailableSlots(
       let lockedByOther = false;
 
       try {
-        const lockInfo = await checkSlotLock(clinicId, doctorId, slotISOTime);
+        const lockInfo = await checkSlotLock(locationId, doctorId, slotISOTime);
         if (lockInfo.isLocked) {
           isLocked = true;
           lockedByOther = requestingUserId ? lockInfo.heldByUserId !== requestingUserId : true;

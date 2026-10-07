@@ -119,7 +119,7 @@ export class OtpService {
               <p style="color: #475569; font-size: 14px; margin: 0;">Security Verification Code</p>
             </div>
             <p style="color: #334155; font-size: 14px; line-height: 1.5; margin-bottom: 16px;">
-              ${purpose === "record_access" ? "Share this code only if you approve the requesting clinic viewing your full history from all organizations for 10 minutes:" : "Use the one-time verification code below to sign in to your patient portal:"}
+              ${purpose === "record_access" ? "Share this code only if you approve the requesting organization viewing your full history from all organizations for 10 minutes:" : "Use the one-time verification code below to sign in to your patient portal:"}
             </p>
             <div style="background-color: #f0fdfa; border: 1.5px dashed #0d9488; border-radius: 12px; padding: 16px; text-align: center; margin-bottom: 20px;">
               <span style="font-size: 32px; font-weight: 800; letter-spacing: 6px; color: #0f766e; font-family: monospace;">${otpCode}</span>

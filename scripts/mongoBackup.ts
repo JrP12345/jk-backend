@@ -23,27 +23,10 @@ import mongoose from "mongoose";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 // ─── Key Management ────────────────────────────────────────────────────────
-function getBackupKey(): { key: Buffer; isDedicated: boolean } {
-  const rawBackupKey = process.env.BACKUP_ENCRYPTION_KEY;
-  const rawAppKey = process.env.ENCRYPTION_KEY;
-
-  if (rawBackupKey) {
-    if (/^[0-9a-fA-F]{64}$/.test(rawBackupKey)) {
-      return { key: Buffer.from(rawBackupKey, "hex"), isDedicated: true };
-    }
-    return { key: crypto.createHash("sha256").update(rawBackupKey).digest(), isDedicated: true };
-  }
-
-  if (rawAppKey) {
-    console.warn("⚠️ [Security Warning] BACKUP_ENCRYPTION_KEY is not set. Falling back to ENCRYPTION_KEY.");
-    console.warn("⚠️ Rotating ENCRYPTION_KEY in the future will invalidate these backups unless a dedicated BACKUP_ENCRYPTION_KEY is configured.");
-    if (/^[0-9a-fA-F]{64}$/.test(rawAppKey)) {
-      return { key: Buffer.from(rawAppKey, "hex"), isDedicated: false };
-    }
-    return { key: crypto.createHash("sha256").update(rawAppKey).digest(), isDedicated: false };
-  }
-
-  throw new Error("Fatal: Either BACKUP_ENCRYPTION_KEY or ENCRYPTION_KEY must be provided in environment.");
+function getBackupKey(): Buffer {
+  const key = process.env.BACKUP_ENCRYPTION_KEY;
+  if (!key) throw new Error("BACKUP_ENCRYPTION_KEY is required for backups");
+  return /^[0-9a-fA-F]{64}$/.test(key) ? Buffer.from(key, "hex") : crypto.createHash("sha256").update(key).digest();
 }
 
 // ─── Dead-Man's Switch Notification ────────────────────────────────────────
@@ -57,7 +40,7 @@ async function pingHeartbeat(status: "success" | "failed", errorMessage?: string
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        source: "healthos-backup-daemon",
+        source: "ekavyu-backup-daemon",
         timestamp: new Date().toISOString(),
         status,
         error: errorMessage || null,
@@ -105,7 +88,7 @@ async function uploadToRemoteStorage(filePath: string, fileName: string): Promis
     Metadata: {
       "backup-version": "v1",
       "created-at": new Date().toISOString(),
-      "system": "healthos",
+      "system": "ekavyu",
     },
   });
 
@@ -199,7 +182,7 @@ async function runBackup() {
 
   // 3. Encrypt archive with AES-256-GCM
   console.log("🔐 Encrypting backup with AES-256-GCM authenticated cipher...");
-  const { key, isDedicated } = getBackupKey();
+  const key = getBackupKey();
   const iv = crypto.randomBytes(12); // 96-bit IV
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
 
@@ -219,7 +202,7 @@ async function runBackup() {
   }
 
   const dateStr = new Date().toISOString().replace(/[:.]/g, "-");
-  const fileName = `healthos-backup-${dateStr}.enc.gz`;
+  const fileName = `ekavyu-backup-${dateStr}.enc.gz`;
   const targetFilePath = path.join(outDir, fileName);
 
   fs.writeFileSync(targetFilePath, finalFileBuffer);
@@ -258,7 +241,7 @@ async function runBackup() {
     sha256: fileHash,
     collectionsCount: collectionNames.length,
     totalDocuments: totalDocs,
-    isDedicatedKey: isDedicated,
+    isDedicatedKey: true,
     remoteDestination,
   };
 

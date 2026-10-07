@@ -104,7 +104,7 @@ export async function createCheckoutOrderController(req: FastifyRequest, reply: 
         violations: err.violations,
         currentUsage: err.currentUsage,
         targetPlan: err.targetPlan,
-        activeClinics: err.activeClinics,
+        activeLocations: err.activeLocations,
       }));
     }
     return reply.code(400).send(errorResponse(err.message || "Failed to create checkout order"));
@@ -157,7 +157,7 @@ export async function directSwitchPlanController(req: FastifyRequest, reply: Fas
         violations: err.violations,
         currentUsage: err.currentUsage,
         targetPlan: err.targetPlan,
-        activeClinics: err.activeClinics,
+        activeLocations: err.activeLocations,
       }));
     }
     return reply.code(400).send(errorResponse(err.message || "Failed to switch plan"));
@@ -507,7 +507,7 @@ export async function adminActivateSubscription(req: FastifyRequest, reply: Fast
       await target.save({ session });
       const organization = await Organization.findByIdAndUpdate(target.organizationId, {
         plan: plan.slug,
-        maxClinics: plan.limits?.maxClinics ?? 1,
+        maxLocations: plan.limits?.maxLocations ?? 1,
         maxDoctors: plan.limits?.maxDoctors ?? 2,
         maxStaff: plan.limits?.maxStaff ?? 5,
       }, { session });

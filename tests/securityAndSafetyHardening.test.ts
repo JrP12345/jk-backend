@@ -1,10 +1,11 @@
+import { fixtureAccessToken } from "./helpers/sessionFixture.ts";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import crypto from "node:crypto";
 import mongoose from "mongoose";
 import app from "../index.ts";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
-import { Clinic } from "../models/Clinic.ts";
+import { Location } from "../models/Location.ts";
 import { Organization } from "../models/Organization.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Invoice } from "../models/Invoice.ts";
@@ -17,14 +18,14 @@ import { createTrackerCapability } from "../utilities/publicTracker.ts";
 
 describe("Security & Safety Hardening Verification Suite", () => {
   let orgId: string;
-  let clinicId: string;
+  let locationId: string;
   let doctorUser: any;
   let doctorCookie: string;
   let testPatientUser: any;
   let testPatient: any;
 
   beforeAll(async () => {
-    // Setup Organization & Clinic
+    // Setup Organization & Location
     const org = await Organization.create({
       name: "Security Hardening Health",
       city: "Bangalore",
@@ -33,12 +34,12 @@ describe("Security & Safety Hardening Verification Suite", () => {
     });
     orgId = org._id.toString();
 
-    const clinic = await Clinic.create({
+    const location = await Location.create({
       organizationId: orgId,
       name: "Security Hardening OPD",
       city: "Bangalore",
     });
-    clinicId = clinic._id.toString();
+    locationId = location._id.toString();
 
     // Doctor Setup
     doctorUser = await User.create({
@@ -48,12 +49,12 @@ describe("Security & Safety Hardening Verification Suite", () => {
       role: "doctor",
     });
 
-    const docToken = generateAccessToken({
+    const docToken = (await fixtureAccessToken({
       id: doctorUser._id.toString(),
       email: doctorUser.email,
       role: "doctor",
       organization_id: orgId,
-    });
+    }));
     const docRefresh = await createRefreshToken(doctorUser._id.toString(), { organizationId: orgId });
     doctorCookie = `access_token=${docToken}; refresh_token=${docRefresh}`;
 
@@ -201,17 +202,17 @@ describe("Security & Safety Hardening Verification Suite", () => {
         email: `unrelated-${Date.now()}@patient.test`,
         role: "patient",
       });
-      const accessToken = generateAccessToken({
+      const accessToken = (await fixtureAccessToken({
         id: unrelatedPatient._id.toString(),
         email: unrelatedPatient.email!,
         role: "patient",
-      });
+      }));
       const refreshToken = await createRefreshToken(unrelatedPatient._id.toString());
       unrelatedPatientCookie = `access_token=${accessToken}; refresh_token=${refreshToken}`;
 
       appointment = await Appointment.create({
         organizationId: orgId,
-        clinicId,
+        locationId,
         doctorId: doctorUser._id,
         patientId: testPatient._id,
         bookedByUserId: testPatientUser._id,
@@ -255,7 +256,7 @@ describe("Security & Safety Hardening Verification Suite", () => {
 
       const queueRes = await app.inject({
         method: "GET",
-        url: `/api/queue?clinicId=${clinicId}&doctorId=${doctorUser._id}`,
+        url: `/api/queue?locationId=${locationId}&doctorId=${doctorUser._id}`,
         headers: { cookie: unrelatedPatientCookie },
       });
       expect(queueRes.statusCode).toBe(403);
@@ -291,13 +292,11 @@ describe("Security & Safety Hardening Verification Suite", () => {
     });
 
     it("requires a tracker-bound, short-lived single-use capability for public check-in", async () => {
-      const originalEnforcement = process.env.ENFORCE_TRACKER_CAPABILITIES;
-      process.env.ENFORCE_TRACKER_CAPABILITIES = "true";
-      try {
+      {
         const tracker = createTrackerCapability();
         const publicAppointment = await Appointment.create({
           organizationId: orgId,
-          clinicId,
+          locationId,
           doctorId: doctorUser._id,
           patientId: testPatient._id,
           bookedByUserId: testPatientUser._id,
@@ -341,9 +340,6 @@ describe("Security & Safety Hardening Verification Suite", () => {
         });
         expect(replayRes.statusCode).toBe(401);
         expect((await Appointment.findById(publicAppointment._id))?.status).toBe("checked-in");
-      } finally {
-        if (originalEnforcement === undefined) delete process.env.ENFORCE_TRACKER_CAPABILITIES;
-        else process.env.ENFORCE_TRACKER_CAPABILITIES = originalEnforcement;
       }
     });
   });
@@ -413,7 +409,7 @@ describe("Security & Safety Hardening Verification Suite", () => {
     it("settles only the exact server-created order once and rejects an amount-tampered callback", async () => {
       const appointment = await Appointment.create({
         organizationId: orgId,
-        clinicId,
+        locationId,
         doctorId: doctorUser._id,
         patientId: testPatient._id,
         bookedByUserId: testPatientUser._id,
@@ -428,7 +424,7 @@ describe("Security & Safety Hardening Verification Suite", () => {
         organizationId: orgId,
         patientId: testPatient._id,
         appointmentId: appointment._id,
-        clinicId,
+        locationId,
         doctorId: doctorUser._id,
         items: [{ description: "Consultation Fee", quantity: 1, amount: 500, totalItemAmount: 500 }],
         subtotal: 500,
@@ -551,7 +547,7 @@ describe("Security & Safety Hardening Verification Suite", () => {
       // Create an appointment for Alice (who is allergic to Penicillin) with Dr. Security
       appointment = await Appointment.create({
         organizationId: orgId,
-        clinicId,
+        locationId,
         doctorId: doctorUser._id,
         patientId: testPatient._id,
         appointmentTime: new Date(),

@@ -4,7 +4,7 @@ import { Invoice } from "../models/Invoice.ts";
 import { CashierShift } from "../models/CashierShift.ts";
 import { User } from "../models/User.ts";
 import { AuditLog } from "../models/AuditLog.ts";
-import { checkClinicAccess } from "../utilities/tenant.ts";
+import { checkLocationAccess } from "../utilities/tenant.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
@@ -13,25 +13,25 @@ function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCod
 
 /**
  * GET /api/billing/till/summary
- * Calculates live system collection totals for a clinic's cashier desk on a given date.
+ * Calculates live system collection totals for a location's cashier desk on a given date.
  */
 export async function getTillSummary(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, date } = req.query as { clinicId?: string; date?: string };
+    const { locationId, date } = req.query as { locationId?: string; date?: string };
 
-    if (!clinicId || !mongoose.Types.ObjectId.isValid(clinicId)) {
-      return reply.code(400).send(errorResponse("Valid clinicId is required"));
+    if (!locationId || !mongoose.Types.ObjectId.isValid(locationId)) {
+      return reply.code(400).send(errorResponse("Valid locationId is required"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
 
     const dateStr = date || new Date().toISOString().slice(0, 10);
     const startOfDay = new Date(`${dateStr}T00:00:00.000Z`);
     const endOfDay = new Date(`${dateStr}T23:59:59.999Z`);
 
     const invoices = await Invoice.find({
-      clinicId,
+      locationId,
       status: "paid",
       deletedAt: null,
       $or: [
@@ -66,7 +66,7 @@ export async function getTillSummary(req: FastifyRequest, reply: FastifyReply) {
 
     // Check if a till shift was already closed for today
     const latestShift = await CashierShift.findOne({
-      clinicId,
+      locationId,
       shiftDate: dateStr,
     })
       .sort({ createdAt: -1 })
@@ -75,7 +75,7 @@ export async function getTillSummary(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(200).send(
       successResponse({
         date: dateStr,
-        clinicId,
+        locationId,
         systemTotals: {
           cash: Math.round(cash * 100) / 100,
           upi: Math.round(upi * 100) / 100,
@@ -99,30 +99,30 @@ export async function getTillSummary(req: FastifyRequest, reply: FastifyReply) {
  */
 export async function closeTill(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, actualCashCounted, handoverNotes, varianceReason } = req.body as {
-      clinicId: string;
+    const { locationId, actualCashCounted, handoverNotes, varianceReason } = req.body as {
+      locationId: string;
       actualCashCounted: number;
       handoverNotes?: string;
       varianceReason?: string;
     };
 
-    if (!clinicId || !mongoose.Types.ObjectId.isValid(clinicId)) {
-      return reply.code(400).send(errorResponse("Valid clinicId is required"));
+    if (!locationId || !mongoose.Types.ObjectId.isValid(locationId)) {
+      return reply.code(400).send(errorResponse("Valid locationId is required"));
     }
 
     if (actualCashCounted === undefined || actualCashCounted === null || isNaN(Number(actualCashCounted)) || Number(actualCashCounted) < 0) {
       return reply.code(400).send(errorResponse("Counted physical cash must be a non-negative number"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
 
     const dateStr = new Date().toISOString().slice(0, 10);
     const startOfDay = new Date(`${dateStr}T00:00:00.000Z`);
     const endOfDay = new Date(`${dateStr}T23:59:59.999Z`);
 
     const invoices = await Invoice.find({
-      clinicId,
+      locationId,
       status: "paid",
       deletedAt: null,
       $or: [
@@ -161,8 +161,8 @@ export async function closeTill(req: FastifyRequest, reply: FastifyReply) {
     const cashierName = cashierUser?.name || "Cashier Desk";
 
     const shift = await CashierShift.create({
-      organizationId: clinicAccess.organizationId || undefined,
-      clinicId,
+      organizationId: locationAccess.organizationId || undefined,
+      locationId,
       cashierId: req.user!.id,
       cashierName,
       shiftDate: dateStr,
@@ -189,7 +189,7 @@ export async function closeTill(req: FastifyRequest, reply: FastifyReply) {
       targetId: shift._id,
       targetModel: "CashierShift",
       details: {
-        clinicId,
+        locationId,
         shiftDate: dateStr,
         actualCashCounted: countedCash,
         cashVariance,
@@ -215,16 +215,16 @@ export async function closeTill(req: FastifyRequest, reply: FastifyReply) {
  */
 export async function getTillHistory(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { clinicId, limit = "20" } = req.query as { clinicId?: string; limit?: string };
+    const { locationId, limit = "20" } = req.query as { locationId?: string; limit?: string };
 
-    if (!clinicId || !mongoose.Types.ObjectId.isValid(clinicId)) {
-      return reply.code(400).send(errorResponse("Valid clinicId is required"));
+    if (!locationId || !mongoose.Types.ObjectId.isValid(locationId)) {
+      return reply.code(400).send(errorResponse("Valid locationId is required"));
     }
 
-    const clinicAccess = await checkClinicAccess(req, clinicId);
-    if (!clinicAccess.allowed) return sendTenantError(reply, clinicAccess);
+    const locationAccess = await checkLocationAccess(req, locationId);
+    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
 
-    const history = await CashierShift.find({ clinicId })
+    const history = await CashierShift.find({ locationId })
       .sort({ createdAt: -1 })
       .limit(parseInt(limit, 10) || 20)
       .lean();
