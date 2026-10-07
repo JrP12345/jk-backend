@@ -59,6 +59,19 @@ describe("Production Environment Configuration Guards", () => {
     expect(errorSpy.mock.calls.flat().join(" ")).toContain("PRESCRIPTION_SIGNING_KEY must be a persistent secret");
   });
 
+  it("requires DATA_ENCRYPTION_KEY even if ENCRYPTION_KEY is present", () => {
+    process.env.NODE_ENV = "production";
+    delete process.env.DATA_ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = "test-only-encryption-secret-do-not-use";
+
+    verifyEnv();
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const loggedErrors = errorSpy.mock.calls.flat().join(" ");
+    expect(loggedErrors).toContain("DATA_ENCRYPTION_KEY (Required in production");
+    expect(loggedErrors).not.toContain(process.env.ENCRYPTION_KEY);
+  });
+
   it("fails verifyEnv in production if payment webhook secret is missing", () => {
     process.env.NODE_ENV = "production";
     process.env.MONGODB_URI = "mongodb://host1:27017,host2:27017/ekavyu_prod?replicaSet=rs0";

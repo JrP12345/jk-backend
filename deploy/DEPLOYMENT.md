@@ -126,7 +126,7 @@ Edit `.env` and fill in the values:
 | `REDIS_PASSWORD` | Generate via: `openssl rand -hex 24` |
 | `REDIS_URL` | `redis://:${REDIS_PASSWORD}@redis:6379` |
 | `RUN_INLINE_JOBS` | `false` (Ensures jobs are handled by dedicated workers) |
-| `ENCRYPTION_KEY` | Generate via: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
+| `DATA_ENCRYPTION_KEY` | Persistent secret shared by API and workers; preserve the existing value. Generate only for a fresh database via: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
 | `JWT_PRIVATE_KEY_BASE64`| Base64 of RS256 private key (run `npm run generate:keys` in backend) |
 | `JWT_PUBLIC_KEY_BASE64` | Base64 of RS256 public key (run `npm run generate:keys` in backend) |
 | `WEBAUTHN_ORIGIN` | `https://dev.ekavyu.com` |

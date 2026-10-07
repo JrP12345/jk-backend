@@ -1,4 +1,4 @@
-# Provision the existing jk-production environment group before adopting this blueprint.
+# Provision the existing jk-production group with DATA_ENCRYPTION_KEY before adopting this blueprint.
 # Preserve persistent encryption/signing keys. Match existing service names first.
 # https://render.com/docs/blueprint-spec
 services:

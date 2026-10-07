@@ -39,6 +39,35 @@ The API binds to `0.0.0.0` and honors that port. `npm start` runs the built API;
 it does not compile source, run nodemon or start a second listener on restart.
 The Docker liveness check also uses the actual `PORT` instead of assuming 5000.
 
+#### Missing data encryption key on Render
+
+If the build succeeds but startup exits with `DATA_ENCRYPTION_KEY` missing,
+the service has not received the current field-encryption secret. Configuration
+validation stops startup before a port is opened, so Render's port-scan message
+is a consequence of that failure.
+
+In the existing service's **Environment** page, add `DATA_ENCRYPTION_KEY` with
+the exact persistent secret previously configured as `ENCRYPTION_KEY`, if that
+was the name used by this installation. Copy the value unchanged; do not generate
+a replacement for an installation with encrypted records. If neither variable
+is present, recover the original encryption secret from the secret store.
+The application reads only `DATA_ENCRYPTION_KEY`.
+
+The provided Blueprint links the API and all four workers to `jk-production`.
+Configure the key in that existing environment group for all linked services,
+and remove or update any service-level value that overrides it. Every process
+reading the same encrypted records needs the same key. For a manually configured
+web service, set it directly on that service and its workers instead.
+
+Choose **Save and deploy** to apply the environment change to the existing
+successful build. No source rebuild is needed. Updating local `.env` files or
+committing `render.yaml` does not update a manually configured Render service.
+See [Render environment configuration](https://render.com/docs/configure-environment-variables).
+
+Generate a fresh 64-character hex secret only for a new installation with no
+encrypted data, using the command in `.env.example`. Keep the secret private and
+backed up; neither JWT keys nor `BACKUP_ENCRYPTION_KEY` replaces it.
+
 #### Missing prescription signing key on Render
 
 If the build succeeds but `npm start` exits with `PRESCRIPTION_SIGNING_KEY
