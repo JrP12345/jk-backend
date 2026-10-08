@@ -24,3 +24,5 @@ environment. Production Compose requires both; development Compose keeps its
 explicit development defaults. Edge access logs omit URIs and request/response
 headers so tracker proofs, auth callbacks, cookies and clinical searches are not
 retained in those fields.
+
+For the prepared dev.ekavyu.com staging stack, isolated storage, secret templates, first-account setup and later ekavyu.com cutover, use [the staging runbook](STAGING.md). No deployment is automatic.

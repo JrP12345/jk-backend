@@ -1,6 +1,9 @@
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
+import { Location } from "../models/Location.ts";
+import { isActiveBookingDoctor } from "../utilities/doctorBookingEligibility.ts";
+
 import { checkSlotLock } from "./SlotLockService.ts";
 import { locationClockMinutes, locationDateKey, locationDayRange, locationLocalTimeToDate, getLocationTimezone } from "../utilities/locationTime.ts";
 
@@ -10,6 +13,13 @@ export interface TimeSlot {
   reason?: string;
   isLocked?: boolean;
   lockedByOther?: boolean;
+}
+
+export class DoctorBookingUnavailableError extends Error {
+  constructor() {
+    super("Doctor is unavailable for new appointments at this location");
+    this.name = "DoctorBookingUnavailableError";
+  }
 }
 
 export interface GetDoctorSlotsResult {
@@ -235,6 +245,10 @@ export async function getDoctorAvailableSlots(
 
   // Find assignment
   const assignment = await DoctorAssignment.findOne({ doctorId, locationId, isActive: true });
+  if (!assignment || !(await Location.exists({ _id: locationId, organizationId: assignment.organizationId, isActive: true })) || !(await isActiveBookingDoctor(doctorId))) {
+    throw new DoctorBookingUnavailableError();
+  }
+
   const duration = assignment?.appointmentDuration || 15;
   const bookingMode = (assignment as any)?.bookingMode || "sequential_queue";
   const maxDailyTokens = (assignment as any)?.maxDailyTokens || null;

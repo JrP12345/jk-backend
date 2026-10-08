@@ -69,3 +69,15 @@ export function toPublicOrganizationDetail(
     locations,
   };
 }
+
+/** Public facility fields are opt-in; operational/payment settings stay private. */
+export function toPublicLocation(raw: any) {
+  const location = typeof raw.toJSON === "function" ? raw.toJSON() : raw;
+  return {
+    id: location.id || String(location._id), name: location.name, city: location.city,
+    address: location.address || "", phone: location.phone || "", email: location.email || "",
+    description: location.description || "", brandColor: location.brandColor,
+    latitude: location.latitude, longitude: location.longitude,
+    timings: location.timings, amenities: location.amenities || [],
+  };
+}

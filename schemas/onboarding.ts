@@ -182,6 +182,7 @@ export const createLocationSchema = {
     type: "object",
     required: ["name", "city"],
     properties: {
+      isPublished: { type: "boolean" },
       organizationId: { type: "string" },
       facilityType: { type: "string", enum: [...FACILITY_TYPES] },
       name: { type: "string", minLength: 1 },
@@ -219,6 +220,7 @@ export const updateLocationSchema = {
     required: ["name", "city"],
     properties: {
       name: { type: "string", minLength: 1 },
+      isPublished: { type: "boolean" },
       facilityType: { type: "string", enum: [...FACILITY_TYPES] },
       city: { type: "string", minLength: 1 },
       address: { type: "string" },

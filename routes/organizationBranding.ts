@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import mongoose from "mongoose";
-import { authenticate, checkPermission } from "../middleware/auth.ts";
+import { authenticate, checkAnyPermission } from "../middleware/auth.ts";
 import { Organization } from "../models/Organization.ts";
+import { Location } from "../models/Location.ts";
 import { OrganizationBrandingAsset } from "../models/OrganizationBrandingAsset.ts";
 import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { detectMagicBytes, scanForActiveMaliciousContent } from "../utilities/fileSecurity.ts";
@@ -14,7 +15,7 @@ const allowedTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
 export default async function organizationBrandingRoutes(app: FastifyInstance) {
   app.post("/api/organizations/branding/uploads", {
     bodyLimit: 8 * 1024 * 1024,
-    preHandler: [authenticate, checkPermission("MANAGE_ORGANIZATION")],
+    preHandler: [authenticate, checkAnyPermission("MANAGE_ORGANIZATION", "MANAGE_LOCATIONS")],
   }, async (req, reply) => {
     const scope = resolveAuthorizedOrganizationScope(req);
     if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
@@ -39,7 +40,7 @@ export default async function organizationBrandingRoutes(app: FastifyInstance) {
     }
   });
 
-  app.delete("/api/organizations/branding/uploads/:id", { preHandler: [authenticate, checkPermission("MANAGE_ORGANIZATION")] }, async (req, reply) => {
+  app.delete("/api/organizations/branding/uploads/:id", { preHandler: [authenticate, checkAnyPermission("MANAGE_ORGANIZATION", "MANAGE_LOCATIONS")] }, async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!mongoose.isValidObjectId(id)) return reply.code(400).send(errorResponse("Invalid upload"));
     const asset = await OrganizationBrandingAsset.findOneAndUpdate({ _id: id, ownerId: req.user!.id, state: "staged" }, { $set: { state: "deleting" } });
@@ -57,8 +58,11 @@ export default async function organizationBrandingRoutes(app: FastifyInstance) {
     const asset = await OrganizationBrandingAsset.findOne({ _id: id, state: "attached" }).lean();
     if (!asset) return reply.code(404).send();
     const ref = brandingReference(id);
-    const org = await Organization.exists({ _id: asset.organizationId, $or: [{ logo_url: ref }, { image_url: ref }, { images: ref }] });
-    if (!org) return reply.code(404).send();
+    const active = await Organization.exists({ _id: asset.organizationId, isActive: true, status: { $ne: "inactive" } });
+    if (!active) return reply.code(404).send();
+    const linked = await Organization.exists({ _id: asset.organizationId, $or: [{ logo_url: ref }, { image_url: ref }, { images: ref }] }) ||
+      await Location.exists({ organizationId: asset.organizationId, isActive: true, isPublished: { $ne: false }, $or: [{ logo: ref }, { images: ref }] });
+    if (!linked) return reply.code(404).send();
     try {
       const buffer = await getObjectBuffer(asset.objectKey);
       return reply.header("Cache-Control", "public, max-age=300").header("X-Content-Type-Options", "nosniff").type(asset.contentType).send(buffer);

@@ -5,9 +5,10 @@ import { subscriptionService } from "./SubscriptionService.ts";
 import mongoose from "mongoose";
 
 /** Existing care remains available; only creation of new location business is gated. */
-export async function canCreateLocationBooking(locationId: string): Promise<boolean> {
+export async function canCreateLocationBooking(locationId: string, requirePublished = false): Promise<boolean> {
   if (!mongoose.Types.ObjectId.isValid(locationId)) return false;
-  const location = await Location.findById(locationId).select("organizationId isActive").lean();
+  const location = await Location.findById(locationId).select("organizationId isActive isPublished").lean();
+  if (requirePublished && location?.isPublished === false) return false;
   if (!location || location.isActive === false || !location.organizationId) return false;
   return canCreateOrganizationBooking(location.organizationId.toString());
 }

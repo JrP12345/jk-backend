@@ -1,0 +1,43 @@
+{
+    email {$ACME_EMAIL}
+    admin off
+}
+
+{$CADDY_SITE_ADDRESS} {
+    # Let crawlers read staging noindex; this is not access control.
+    header >X-Robots-Tag "noindex, nofollow, noarchive"
+    encode gzip zstd
+
+    log {
+        output stdout
+        # Tracker/identity proofs and clinical searches must not reach edge logs.
+        format filter {
+            wrap json
+            fields {
+                request>uri delete
+                request>headers delete
+                resp_headers delete
+            }
+        }
+    }
+
+    # API endpoints, WebSocket feeds, and Swagger/OpenAPI documentation
+    @backend_routes {
+        path /api /api/* /ws /ws/* /api/*/ws /documentation /documentation*
+    }
+
+    reverse_proxy @backend_routes backend:5000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # Next.js Frontend for all web application routes & static assets
+    reverse_proxy frontend:3000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}

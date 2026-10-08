@@ -31,3 +31,10 @@ backups/
 /.dev-server*.lock
 /release_manifest.json
 /release_history.json
+
+# Deployment secrets (templates remain tracked)
+.env.*
+!.env.example
+!deploy/.env.example
+!deploy/.env.staging.example
+!deploy/.env.bootstrap.example

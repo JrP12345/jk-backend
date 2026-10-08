@@ -7,14 +7,16 @@ import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { isIanaTimezone } from "../utilities/countrySettings.ts";
 import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { isFacilityType } from "../utilities/facility.ts";
+import { attachBranding, locationBranding, validateBrandingReferences, BrandingValidationError, retireUnusedBranding, organizationImageReference } from "../services/OrganizationBranding.ts";
 
 export async function createLocation(req: FastifyRequest, reply: FastifyReply) {
   try {
     const {
-      name, facilityType, logo, description, brandColor, phone, email, address, city, timezone, latitude, longitude, timings, amenities, upiVpa, merchantName
+      name, facilityType, logo, image_url, description, brandColor, phone, email, address, city, timezone, latitude, longitude, timings, amenities, upiVpa, merchantName, isPublished
     } = (req.body || {}) as {
-      organizationId?: string; name: string; city: string; logo?: string; description?: string;
+      organizationId?: string; name: string; city: string; logo?: string; image_url?: string; description?: string;
       facilityType?: string;
+      isPublished?: boolean;
       brandColor?: "#0F6F66" | "#1D4ED8" | "#6D28D9" | "#9A3412";
       phone?: string; email?: string; address?: string; timezone?: string; latitude?: number;
       longitude?: number; timings?: string; amenities?: string[]; upiVpa?: string; merchantName?: string;
@@ -43,11 +45,15 @@ export async function createLocation(req: FastifyRequest, reply: FastifyReply) {
     }
     if (timezone && !isIanaTimezone(timezone)) return reply.code(400).send(errorResponse("A valid IANA timezone is required"));
 
+    const branding = { _id: orgId, logo_url: logo || image_url || null };
+    await validateBrandingReferences(req, branding, { _id: orgId });
+    await attachBranding(branding);
     const location = await Location.create({
       organizationId: orgId,
+      ...(isPublished !== undefined && { isPublished }),
       name,
       facilityType: facilityType || null,
-      logo: logo || null,
+      logo: branding.logo_url,
       description: description || null,
       brandColor: brandColor || "#0F6F66",
       phone: phone || null,
@@ -65,6 +71,7 @@ export async function createLocation(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(201).send(successResponse(location, "Location created successfully"));
   } catch (err) {
+    if (err instanceof BrandingValidationError) return reply.code(400).send(errorResponse(err.message));
     console.error("createLocation error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
@@ -78,6 +85,7 @@ export async function getLocations(req: FastifyRequest, reply: FastifyReply) {
       const timezones = new Map(organizations.map(org => [org._id.toString(), org.timezone]));
       return Promise.all(locations.map(async location => ({
         ...location.toJSON(),
+        image_url: organizationImageReference(locationBranding(location), "logo_url"),
         slug: await publicSlug("location", location.id, location.name),
         effectiveTimezone: location.timezone || timezones.get(location.organizationId?.toString()) || "Asia/Kolkata",
       })));
@@ -116,6 +124,18 @@ export async function getLocations(req: FastifyRequest, reply: FastifyReply) {
   }
 }
 
+/** Owners must be able to remove public information even after a plan expires. */
+export async function setLocationPublication(req: FastifyRequest, reply: FastifyReply) {
+  const { id } = req.params as { id: string };
+  const { isPublished } = req.body as { isPublished: boolean };
+  const scope = resolveAuthorizedOrganizationScope(req);
+  if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+  if (!scope.organizationId) return reply.code(400).send(errorResponse("Select an organization before changing publication"));
+  const location = await Location.findOneAndUpdate({ _id: id, isActive: true, organizationId: scope.organizationId }, { $set: { isPublished } }, { returnDocument: "after", runValidators: true });
+  if (!location) return reply.code(404).send(errorResponse("Location not found in your organization"));
+  return reply.send(successResponse({ id: location.id, isPublished: location.isPublished }));
+}
+
 export async function updateLocation(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id } = req.params as { id: string };
@@ -125,10 +145,11 @@ export async function updateLocation(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const {
-      name, facilityType, logo, image_url, description, brandColor, phone, email, address, city, timezone, latitude, longitude, timings, amenities, upiVpa, merchantName
+      name, facilityType, logo, image_url, description, brandColor, phone, email, address, city, timezone, latitude, longitude, timings, amenities, upiVpa, merchantName, isPublished
     } = req.body as {
       name: string; city: string; logo?: string; image_url?: string; description?: string; brandColor?: string;
       facilityType?: string;
+      isPublished?: boolean;
       phone?: string; email?: string; address?: string; timezone?: string; latitude?: number; longitude?: number;
       timings?: string; amenities?: string[]; upiVpa?: string; merchantName?: string;
     };
@@ -149,10 +170,14 @@ export async function updateLocation(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(404).send(errorResponse("Location not found in your organization"));
     }
 
+    const branding = locationBranding({ organizationId: location.organizationId, logo: logo || image_url || null });
+    await validateBrandingReferences(req, branding, locationBranding(location));
+    await attachBranding(branding);
     const updated = await Location.findOneAndUpdate(
       filter,
       {
         name,
+        ...(isPublished !== undefined && { isPublished }),
         ...(facilityType !== undefined && { facilityType }),
         logo: logo || image_url || null,
         description: description || null,
@@ -172,8 +197,10 @@ export async function updateLocation(req: FastifyRequest, reply: FastifyReply) {
       { returnDocument: "after", runValidators: true }
     );
 
+    await retireUnusedBranding(locationBranding(location), locationBranding(updated));
     return reply.code(200).send(successResponse(updated, "Location updated successfully"));
   } catch (err) {
+    if (err instanceof BrandingValidationError) return reply.code(400).send(errorResponse(err.message));
     console.error("updateLocation error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }

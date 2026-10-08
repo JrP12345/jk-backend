@@ -17,9 +17,11 @@ import {
 
 import { getDoctorSlots } from "../controllers/appointment.ts";
 import { createPublicBookingSession } from "../controllers/auth.ts";
+import { getPublicDiscovery } from "../controllers/publicDiscovery.ts";
 
 export default async function publicRoutes(app: FastifyInstance) {
   const isTest = process.env.NODE_ENV === "test";
+  app.get("/api/public/discovery", getPublicDiscovery);
   // GET /api/public/organizations — List all hospitals/locations
   app.get("/api/public/organizations", getOrganizations);
 

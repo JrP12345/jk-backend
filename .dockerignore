@@ -11,3 +11,10 @@ backups/
 *.enc
 *.dump
 
+
+# Nested deployment environment files must never enter build layers.
+**/.env
+**/.env.*
+**/keys/
+**/*.pem
+**/*.key

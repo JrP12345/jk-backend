@@ -26,7 +26,9 @@ import {
 } from "../services/SlotLockService.ts";
 import { checkLocationAccess, getRequestLocationIds } from "../utilities/tenant.ts";
 import { getNextAtomicSequence } from "../models/Counter.ts";
+import { requestContextStore } from "../utilities/context.ts";
 import { locationDateKey, getLocationTimezone } from "../utilities/locationTime.ts";
+import { DoctorBookingUnavailableError } from "../services/SlotService.ts";
 
 import { appointmentService, AppointmentDomainError, validateAppointmentAvailability, type BookAppointmentInput } from "../services/AppointmentService.ts";
 
@@ -132,13 +134,17 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
     if (!locationAccess.allowed) {
       return reply.code(locationAccess.statusCode).send(errorResponse(locationAccess.message));
     }
-    if (!orgId && locationAccess.organizationId) orgId = locationAccess.organizationId;
+    if (locationAccess.organizationId && (!orgId || ["patient", "family_member", "guest"].includes(userRole))) orgId = locationAccess.organizationId;
 
-    const appointment = await appointmentService.book(
+    const book = () => appointmentService.book(
       { id: userId, role: userRole, organizationId: orgId, bookingPatientId: req.user?.bookingPatientId },
       body,
       orgId
     );
+    // Scope only this authorized booking to its branch; keep the signed session unchanged.
+    const appointment = ["patient", "family_member", "guest"].includes(userRole)
+      ? await requestContextStore.run({ ...requestContextStore.getStore(), organizationId: orgId }, book)
+      : await book();
 
     return reply.code(201).send(
       successResponse(
@@ -1032,10 +1038,11 @@ export async function getDoctorSlots(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse("doctorId, locationId, and date (YYYY-MM-DD) are required"));
     }
 
+    if (!mongoose.Types.ObjectId.isValid(doctorId) || !mongoose.Types.ObjectId.isValid(locationId)) return reply.code(400).send(errorResponse("Invalid doctor or location ID"));
     if (req.user && !(await ensureAppointmentLocationAccess(req, reply, locationId))) return;
     if (!req.user || ["patient", "family_member", "guest"].includes(req.user.role)) {
       const { canCreateLocationBooking } = await import("../services/billing/SubscriptionAccess.ts");
-      if (!(await canCreateLocationBooking(locationId))) {
+      if (!(await canCreateLocationBooking(locationId, true))) {
         return reply.code(409).send(errorResponse("Online booking is temporarily unavailable. Please contact reception directly."));
       }
     }
@@ -1045,6 +1052,7 @@ export async function getDoctorSlots(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(result));
   } catch (err: any) {
+    if (err instanceof DoctorBookingUnavailableError) return reply.code(409).send(errorResponse(err.message));
     console.error("getDoctorSlots error:", err);
     if (err instanceof RangeError && err.message.startsWith("Invalid date format")) {
       return reply.code(400).send(errorResponse(err.message));

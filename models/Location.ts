@@ -23,6 +23,8 @@ const LocationSchema = new Schema({
   upiVpa: { type: String, trim: true, default: "" }, // Direct NPCI/BharatPe UPI VPA for countertop QR
   merchantName: { type: String, trim: true, default: "" }, // Official registered merchant business name
   isActive: { type: Boolean, default: true },
+  // Publishing is independent of operational activation and subscription access.
+  isPublished: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now }
 });
 

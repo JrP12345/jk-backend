@@ -4,6 +4,7 @@ import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { Location } from "../models/Location.ts";
+import { Doctor } from "../models/Doctor.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Patient } from "../models/Patient.ts";
 import { FamilyRelationship } from "../models/FamilyRelationship.ts";
@@ -65,6 +66,46 @@ describe("Browse booking, owner session controls and patient approval", () => {
     expect(detail.statusCode).toBe(403);
     const enrollment = await app.inject({ method: "POST", url: "/api/auth/passkeys/register/options", headers: { cookie } });
     expect(enrollment.statusCode).toBe(403);
+  });
+
+  it("blocks new guest bookings on an unpublished location while retaining staff booking", async () => {
+    await Location.updateOne({ _id: locationB._id }, { isPublished: false });
+    try {
+      const guest = await app.inject({ method: "POST", url: "/api/public/booking-session", payload: { name: "Unpublished Guest", phone: "9876512200" } });
+      expect(guest.statusCode, guest.body).toBe(200);
+      const payload = { locationId: locationB.id, doctorId: doctor.id, appointmentTime: new Date(Date.now() + 120000).toISOString(), appointmentType: "online" };
+      const denied = await app.inject({ method: "POST", url: "/api/appointments", headers: { cookie: cookies(guest) }, payload });
+      expect(denied.statusCode, denied.body).toBe(409);
+      const staff = await app.inject({ method: "POST", url: "/api/appointments", headers: { cookie: ownerBCookie }, payload: { ...payload, appointmentType: "walk-in", patientDetails: { name: "Staff walk-in", phone: "9876512201", dob: "1990-01-01", gender: "other" } } });
+      expect(staff.statusCode, staff.body).toBe(201);
+    } finally { await Location.updateOne({ _id: locationB._id }, { isPublished: true }); }
+  });
+
+
+  it("rejects new bookings for inactive assignments and disabled practitioner accounts", async () => {
+    const guest = await app.inject({ method: "POST", url: "/api/public/booking-session", payload: { name: "Eligibility Guest", phone: "9876512210" } });
+    expect(guest.statusCode, guest.body).toBe(200);
+    const headers = { cookie: cookies(guest) };
+    const payload = { locationId: locationB.id, doctorId: doctor.id, appointmentTime: new Date(Date.now() + 180000).toISOString(), appointmentType: "online" };
+    const count = await Appointment.countDocuments({ locationId: locationB._id });
+    await User.updateOne({ _id: doctor._id }, { isActive: false });
+    try { expect((await app.inject({ method: "POST", url: "/api/appointments", headers, payload })).statusCode).toBe(409); }
+    finally { await User.updateOne({ _id: doctor._id }, { isActive: true }); }
+    const profile = await Doctor.create({ userId: doctor._id, organizationId: orgB._id, isActive: false });
+    try { expect((await app.inject({ method: "POST", url: "/api/appointments", headers, payload })).statusCode).toBe(409); }
+    finally { await Doctor.deleteOne({ _id: profile._id }); }
+    await DoctorAssignment.updateOne({ doctorId: doctor._id, locationId: locationB._id }, { isActive: false });
+    try { expect((await app.inject({ method: "POST", url: "/api/appointments", headers, payload })).statusCode).toBe(409); }
+    finally { await DoctorAssignment.updateOne({ doctorId: doctor._id, locationId: locationB._id }, { isActive: true }); }
+    expect(await Appointment.countDocuments({ locationId: locationB._id })).toBe(count);
+  });
+
+  it("records consumer bookings under the chosen branch rather than the session's other organization", async () => {
+    const consumer = await User.create({ name: "Cross-organization patient", role: "patient", phone: "9876512211" });
+    const cookie = await session(consumer, orgA.id);
+    const booked = await app.inject({ method: "POST", url: "/api/appointments", headers: { cookie }, payload: { locationId: locationB.id, doctorId: doctor.id, appointmentTime: new Date(Date.now() + 240000).toISOString(), appointmentType: "online" } });
+    expect(booked.statusCode, booked.body).toBe(201);
+    expect((await Appointment.findById(booked.json().data.id))?.organizationId?.toString()).toBe(orgB.id);
   });
 
   it("keeps duplicate refreshes on the live guest session and cannot revive a terminated session", async () => {

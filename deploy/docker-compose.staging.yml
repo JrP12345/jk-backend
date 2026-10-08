@@ -1,0 +1,42 @@
+# Use after docker-compose.production.yml; never run this file alone.
+name: ekavyu-staging
+x-staging-logging: &staging-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+services:
+  caddy:
+    volumes:
+      - ./Caddyfile.staging:/etc/caddy/Caddyfile:ro
+    logging: *staging-logging
+  redis:
+    logging: *staging-logging
+  backend:
+    image: ${STAGING_BACKEND_IMAGE:?Set a unique staging backend release image tag}
+    logging: *staging-logging
+  notification-worker:
+    image: ${STAGING_BACKEND_IMAGE:?Set a unique staging backend release image tag}
+    logging: *staging-logging
+  outbound-message-worker:
+    image: ${STAGING_BACKEND_IMAGE:?Set a unique staging backend release image tag}
+    logging: *staging-logging
+  disruption-timeout-worker:
+    image: ${STAGING_BACKEND_IMAGE:?Set a unique staging backend release image tag}
+    logging: *staging-logging
+  domain-event-worker:
+    image: ${STAGING_BACKEND_IMAGE:?Set a unique staging backend release image tag}
+    logging: *staging-logging
+  frontend:
+    image: ${STAGING_FRONTEND_IMAGE:?Set a unique staging frontend release image tag}
+    logging: *staging-logging
+networks:
+  ekavyu-net:
+    name: ekavyu-staging-net
+volumes:
+  redis-data:
+    name: ekavyu-staging-redis-data
+  caddy-data:
+    name: ekavyu-staging-caddy-data
+  caddy-config:
+    name: ekavyu-staging-caddy-config

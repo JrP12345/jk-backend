@@ -15,6 +15,8 @@ import { withTransaction, createWithSession } from "../utilities/transaction.ts"
 import { validateSlotLockForBooking, forceReleaseSlotLock } from "./SlotLockService.ts";
 import { generateLocationInvoiceNumber } from "../utilities/invoiceNumber.ts";
 import { canCreateLocationBooking } from "./billing/SubscriptionAccess.ts";
+import { isActiveBookingDoctor } from "../utilities/doctorBookingEligibility.ts";
+
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { broadcastQueueUpdate } from "../notifications/websocket.ts";
@@ -192,7 +194,6 @@ export async function validateAppointmentAvailability(
       }
     }
 
-
   return { isSequentialQueue, requestedDate, slotDuration, timezone };
 }
 
@@ -232,7 +233,7 @@ export class AppointmentService {
     if (actor.role !== "root" && !orgId) {
       throw new AppointmentDomainError("Organization context is required to book an appointment", 403);
     }
-    if (!(await canCreateLocationBooking(locationId))) {
+    if (!(await canCreateLocationBooking(locationId, ["patient", "family_member", "guest"].includes(actor.role)))) {
       throw new AppointmentDomainError("Online booking is temporarily unavailable. Please contact reception directly.", 409);
     }
 
@@ -264,6 +265,9 @@ export class AppointmentService {
       throw new AppointmentDomainError("Doctor is not assigned to the selected location", 400);
     }
     doctorId = assignment.doctorId.toString();
+    if (assignment.isActive === false || (orgId && assignment.organizationId.toString() !== orgId.toString()) || !(await isActiveBookingDoctor(doctorId))) {
+      throw new AppointmentDomainError("Doctor is unavailable for new appointments at this location", 409);
+    }
 
     if ((assignment as any).paymentRequired) {
       const organization = await Organization.findById(assignment.organizationId || orgId).select("countryCode currency").lean();

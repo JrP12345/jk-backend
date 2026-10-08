@@ -87,6 +87,32 @@ describe("organization branding persistence", () => {
     expect(await OrganizationBrandingAsset.countDocuments()).toBe(count);
   });
 
+  it("reuses the branding lifecycle for locations, rejects foreign and private images, and retains archived images", async () => {
+    const uploaded = await upload(root, orgA.id);
+    expect(uploaded.statusCode, uploaded.body).toBe(201);
+    const reference = uploaded.json().data.reference;
+    const create = await app.inject({ method: "POST", url: `/api/onboarding/locations?organizationId=${orgA.id}`, cookies: await cookie(root), payload: { name: "Branded Branch", city: "Mumbai", image_url: reference } });
+    expect(create.statusCode, create.body).toBe(201);
+    const location = create.json().data;
+    expect(location.logo).toBe(reference);
+    expect((await app.inject({ method: "GET", url: reference })).statusCode).toBe(200);
+    const foreign = await upload(root, orgB.id);
+    const denied = await app.inject({ method: "PUT", url: `/api/onboarding/locations/${location.id}?organizationId=${orgA.id}`, cookies: await cookie(root), payload: { name: location.name, city: "Mumbai", logo: foreign.json().data.reference } });
+    expect(denied.statusCode, denied.body).toBe(400);
+    const privateImage = await app.inject({ method: "PUT", url: `/api/onboarding/locations/${location.id}?organizationId=${orgA.id}`, cookies: await cookie(root), payload: { name: location.name, city: "Mumbai", logo: "tenants/private/patient-avatar.png" } });
+    expect(privateImage.statusCode).toBe(400);
+    await Location.updateOne({ _id: location.id }, { isPublished: false });
+    expect((await app.inject({ method: "GET", url: reference })).statusCode).toBe(404);
+    await cleanupBrandingAssets(new Date(Date.now() + 25 * 60 * 60_000));
+    expect(await OrganizationBrandingAsset.findById(uploaded.json().data.id)).toBeTruthy();
+    await Location.updateOne({ _id: location.id }, { isPublished: true });
+    expect((await app.inject({ method: "GET", url: reference })).statusCode).toBe(200);
+    const clear = await app.inject({ method: "PUT", url: `/api/onboarding/locations/${location.id}?organizationId=${orgA.id}`, cookies: await cookie(root), payload: { name: location.name, city: "Mumbai", logo: "" } });
+    expect(clear.statusCode, clear.body).toBe(200);
+    await cleanupBrandingAssets();
+    expect(await OrganizationBrandingAsset.findById(uploaded.json().data.id)).toBeNull();
+  });
+
   it("rejects another tenant's asset and private-vault references; sweeps abandoned uploads", async () => {
     expect((await upload(admin, orgB.id)).statusCode).toBe(403);
     const own = await upload(admin, orgA.id);

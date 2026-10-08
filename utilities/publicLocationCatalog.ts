@@ -7,7 +7,7 @@ import { PatientFeedback } from "../models/PatientFeedback.ts";
 
 export function publicDoctorAssignments(): NonNullable<mongoose.PipelineStage.Lookup["$lookup"]["pipeline"]> {
   return [
-    { $match: { isActive: true } },
+    { $match: { isActive: true, $expr: { $eq: ["$organizationId", "$$organizationId"] } } },
     { $lookup: { from: User.collection.name, localField: "doctorId", foreignField: "_id", as: "user" } },
     { $unwind: "$user" },
     { $match: { "user.isActive": true } },
@@ -28,7 +28,7 @@ export async function getPublicLocationFacets(visibility: Record<string, unknown
         { $sort: { _id: 1 } },
       ],
       specialties: [
-        { $lookup: { from: DoctorAssignment.collection.name, localField: "_id", foreignField: "locationId", pipeline: publicDoctorAssignments(), as: "assignments" } },
+        { $lookup: { from: DoctorAssignment.collection.name, localField: "_id", foreignField: "locationId", let: { organizationId: "$organizationId" }, pipeline: publicDoctorAssignments(), as: "assignments" } },
         { $unwind: "$assignments" },
         { $project: { specialty: { $trim: { input: { $ifNull: ["$assignments.profile.specialization", ""] } } } } },
         { $match: { specialty: { $ne: "" } } },
@@ -67,7 +67,7 @@ export async function getSortedPublicLocationPage(
 ) {
   if (sort === "nearby" && !origin) throw new Error("Nearby sort needs coordinates");
   const metricStages: mongoose.PipelineStage[] = sort === "fee_low" ? [
-    { $lookup: { from: DoctorAssignment.collection.name, localField: "_id", foreignField: "locationId", pipeline: [...publicDoctorAssignments(), { $match: { $or: [{ feeType: "free" }, { fees: { $gt: 0 } }] } }, { $group: { _id: null, value: { $min: "$fees" } } }], as: "metric" } },
+    { $lookup: { from: DoctorAssignment.collection.name, localField: "_id", foreignField: "locationId", let: { organizationId: "$organizationId" }, pipeline: [...publicDoctorAssignments(), { $match: { $or: [{ feeType: "free" }, { fees: { $gt: 0 } }] } }, { $group: { _id: null, value: { $min: "$fees" } } }], as: "metric" } },
   ] : [
     { $lookup: { from: PatientFeedback.collection.name, localField: "_id", foreignField: "locationId", pipeline: [{ $match: { rating: { $gte: 1, $lte: 5 } } }, { $group: { _id: null, value: { $avg: "$rating" } } }], as: "metric" } },
   ];

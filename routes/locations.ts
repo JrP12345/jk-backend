@@ -9,6 +9,7 @@ import {
   updateLocation,
   deleteLocation,
   reactivateLocation,
+  setLocationPublication,
 } from "../controllers/location.ts";
 import {
   assignDoctor,
@@ -29,6 +30,10 @@ export default async function locationRoutes(app: FastifyInstance) {
   app.post("/api/onboarding/locations", { ...manageLocations, schema: createLocationSchema }, createLocation);
   app.get("/api/onboarding/locations", viewLocations, getLocations);
   app.put("/api/onboarding/locations/:id", { ...manageLocations, schema: updateLocationSchema }, updateLocation);
+  app.put("/api/onboarding/locations/:id/publication", {
+    preHandler: [authenticate, checkPermission("MANAGE_LOCATIONS")],
+    schema: { params: updateLocationSchema.params, body: { type: "object", required: ["isPublished"], properties: { isPublished: { type: "boolean" } }, additionalProperties: false } },
+  }, setLocationPublication);
   app.delete("/api/onboarding/locations/:id", manageLocations, deleteLocation);
   app.post("/api/onboarding/locations/:id/reactivate", manageLocations, reactivateLocation);
   app.put("/api/onboarding/locations/:id/reactivate", manageLocations, reactivateLocation);

@@ -1,6 +1,7 @@
 import type { FastifyRequest } from "fastify";
 import type { ClientSession } from "mongoose";
 import { Organization } from "../models/Organization.ts";
+import { Location } from "../models/Location.ts";
 import { OrganizationBrandingAsset } from "../models/OrganizationBrandingAsset.ts";
 import { deleteObjectFromStorage } from "../utilities/r2.ts";
 
@@ -8,6 +9,9 @@ const referencePattern = /^\/api\/public\/organization-branding\/([a-f\d]{24})$/
 export const brandingReference = (id: string) => `/api/public/organization-branding/${id}`;
 export const brandingAssetId = (value: unknown) => typeof value === "string" ? referencePattern.exec(value)?.[1] : undefined;
 const references = (org: any): string[] => [org?.logo_url, org?.image_url, ...(org?.images || [])].filter((v): v is string => typeof v === "string" && !!v);
+
+/** Location images use the organization's existing ownership registry and lifecycle. */
+export const locationBranding = (location: any) => ({ _id: location.organizationId, logo_url: location.logo, images: location.images || [] });
 
 export class BrandingValidationError extends Error {}
 
@@ -18,7 +22,8 @@ export async function validateBrandingReferences(req: FastifyRequest, next: any,
     const id = brandingAssetId(ref);
     if (!id) {
       // Preserve public external image URLs; reject arbitrary private vault keys.
-      if (/^https?:\/\//i.test(ref)) continue;
+      // Retain an unchanged legacy key on unrelated edits; public DTOs still hide it.
+      if (/^https?:\/\//i.test(ref) || previous.has(ref)) continue;
       throw new BrandingValidationError("Upload organization images through the branding uploader");
     }
     if (previous.has(ref)) continue;
@@ -58,7 +63,8 @@ export async function cleanupBrandingAssets(now = new Date()) {
   }).sort({ lastCheckedAt: 1 }).limit(200).lean();
   for (const asset of candidates) {
     const reference = brandingReference(asset._id.toString());
-    const linked = await Organization.exists({ $or: [{ logo_url: reference }, { image_url: reference }, { images: reference }] });
+    const linked = await Organization.exists({ $or: [{ logo_url: reference }, { image_url: reference }, { images: reference }] }) ||
+      await Location.exists({ $or: [{ logo: reference }, { images: reference }] });
     if (linked) {
       await OrganizationBrandingAsset.updateOne({ _id: asset._id }, { $set: { lastCheckedAt: now, expiresAt: new Date(now.getTime() + 24 * 60 * 60_000) } });
       continue;
@@ -80,4 +86,8 @@ export function organizationImageReference(org: any, slot: "logo_url" | "image_u
   if (!value) return null;
   if (/^https?:\/\//i.test(value) || brandingAssetId(value)) return value;
   return null;
+}
+
+export function publicBrandingImages(images?: string[]) {
+  return (images || []).map((_, index) => organizationImageReference({ images }, index)).filter((value): value is string => value !== null);
 }

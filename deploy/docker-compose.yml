@@ -231,12 +231,16 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://dev.ekavyu.com/api}
+        # Development stays noindex unless an operator explicitly opts in.
+        APP_URL: ${DISCOVERY_APP_URL:-}
     image: ekavyu-frontend:dev
     restart: unless-stopped
     stop_grace_period: 60s
     environment:
       NODE_ENV: production
       PORT: 3000
+      APP_URL: ${DISCOVERY_APP_URL:-}
+      BACKEND_INTERNAL_URL: http://backend:5000
     networks:
       - ekavyu-net
     depends_on:
