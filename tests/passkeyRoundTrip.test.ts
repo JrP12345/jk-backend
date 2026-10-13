@@ -5,6 +5,8 @@ import { isoCBOR } from "@simplewebauthn/server/helpers";
 import app from "../index.ts";
 import { User } from "../models/User.ts";
 import { Passkey } from "../models/Passkey.ts";
+import { Organization } from "../models/Organization.ts";
+import { OrgMember } from "../models/OrgMember.ts";
 import { createRefreshTokenDetails, generateAccessToken } from "../utilities/helpers.ts";
 
 vi.mock("../utilities/types.ts", async (importOriginal) => {
@@ -66,5 +68,19 @@ describe("Passkey cryptographic round trip", () => {
     expect(secondFactor.statusCode, secondFactor.body).toBe(200);
     expect(secondFactor.json().data.twoFactorRequired).toBe(true);
     expect(secondFactor.cookies.some((cookie) => cookie.name === "access_token" && cookie.value)).toBe(false);
+    await User.updateOne({ _id: user._id }, { role: "doctor", twoFactorEnabled: false });
+    const a = await Organization.create({ name: "Passkey clinic A", city: "Pune" });
+    const b = await Organization.create({ name: "Passkey clinic B", city: "Pune" });
+    await OrgMember.create([{ userId: user._id, organizationId: a._id, role: "doctor" },
+      { userId: user._id, organizationId: b._id, role: "receptionist" }]);
+    const workspace = await signIn(3);
+    expect(workspace.statusCode, workspace.body).toBe(200);
+    expect(workspace.json().data.workspaceRequired).toBe(true);
+    expect(workspace.cookies.some(cookie => cookie.name === "access_token" && cookie.value)).toBe(false);
+    const selected = await app.inject({ method: "POST", url: "/api/auth/login/workspace", payload: {
+      workspaceToken: workspace.json().data.workspaceToken, organizationId: b.id,
+    } });
+    expect(selected.statusCode, selected.body).toBe(200);
+    expect(selected.json().data.user).toMatchObject({ role: "receptionist", organization_id: b.id });
   });
 });

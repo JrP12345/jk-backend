@@ -107,6 +107,7 @@ describe("Patient Experience (PEC) & NPS Feedback Integration Tests", () => {
     });
     expect(apptRes.statusCode).toBe(201);
     appointmentId = JSON.parse(apptRes.body).data.id || JSON.parse(apptRes.body).data._id;
+    await Appointment.updateOne({ _id: appointmentId }, { status: 'completed' });
   });
 
   it("should submit a patient experience feedback survey via POST /api/feedback", async () => {

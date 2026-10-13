@@ -144,6 +144,7 @@ export const labOrdersQuerySchema = {
   querystring: {
     type: "object",
     properties: {
+      orderId: { type: "string", pattern: objectIdPattern },
       locationId: { type: "string", pattern: objectIdPattern },
       patientId: { type: "string", pattern: objectIdPattern },
       status: {

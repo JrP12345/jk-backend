@@ -8,10 +8,13 @@ import { AuditLog } from "../models/AuditLog.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { OrdersService } from "../services/OrdersService.ts";
+import { CommandError } from '../services/CommandReceiptService.ts';
 import { checkLocationAccess, checkOperationalRecordAccess, checkPatientAccess, getRequestLocationIds, getRequestOrganizationId, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
 import { requestHasAnyPermission } from "../utilities/permissions.ts";
 import { isVerifiedClinicalAttachment } from '../utilities/uploadPolicy.ts';
+import { syncDiagnosticHandoff } from '../services/DiagnosticHandoffService.ts';
+import { withClinicalTransaction } from '../utilities/transaction.ts';
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));
@@ -358,6 +361,7 @@ export async function createLabOrder(req: FastifyRequest, reply: FastifyReply) {
           details: { testCode: test.code, testName: test.name, invoiceNumber: invoice.invoiceNumber }
         }, session);
 
+        await syncDiagnosticHandoff(createdOrder.id, userId);
         return createdOrder;
       } catch (error) {
         // The transaction handles rollback on replica-set deployments. Keep
@@ -381,7 +385,8 @@ export async function getLabOrders(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
     const userId = req.user!.id;
-    const { locationId, patientId, status, page, limit } = req.query as {
+    const { locationId, patientId, status, page, limit, orderId } = req.query as {
+      orderId?: string;
       locationId?: string;
       patientId?: string;
       status?: string;
@@ -390,6 +395,10 @@ export async function getLabOrders(req: FastifyRequest, reply: FastifyReply) {
     };
 
     const query: any = {};
+    if (orderId) {
+      if (!mongoose.isValidObjectId(orderId)) return reply.code(400).send(errorResponse('Invalid diagnostic order reference'));
+      query._id = orderId;
+    }
 
     if (userRole === "patient") {
       const patient = await Patient.findOne({ userId });
@@ -471,22 +480,13 @@ export async function collectSample(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse(`Cannot collect sample for order currently in ${order.status} state`));
     }
 
-    order.status = "sample-collected";
-    order.collectedBy = new mongoose.Types.ObjectId(userId);
-    order.sampleCollectedAt = new Date();
-    await order.save();
-
-    // Create Audit Log
-    await AuditLog.create({
-      userId,
-      organizationId: order.organizationId || (order.locationId as any)?.organizationId || (req as any).user?.organizationId,
-      action: "LAB_SAMPLE_COLLECT",
-      targetId: order._id,
-      targetModel: "LabOrder",
-      details: { testName: (order.testId as any).name, testCode: (order.testId as any).code }
+    const updated = await withClinicalTransaction(async () => {
+      const current = await OrdersService.collectSample(id, userId);
+      await AuditLog.create({ userId, organizationId: current.organizationId || orderAccess.organizationId, action: 'LAB_SAMPLE_COLLECT', targetId: current._id, targetModel: 'LabOrder', details: { sampleRecorded: true } });
+      return current;
     });
 
-    return reply.code(200).send(successResponse(order, "Sample collection recorded successfully"));
+    return reply.code(200).send(successResponse(updated, "Sample collection recorded successfully"));
   } catch (err) {
     console.error("collectSample error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -531,28 +531,17 @@ export async function uploadLabResult(req: FastifyRequest, reply: FastifyReply) 
       return reply.code(400).send(errorResponse(`Cannot upload result for order in ${order.status} state.`));
     }
 
-    order.status = "result-uploaded";
-    order.resultedBy = new mongoose.Types.ObjectId(userId);
-    if (!order.sampleCollectedAt) order.sampleCollectedAt = new Date();
-    if (!order.processingStartedAt) order.processingStartedAt = new Date();
-    order.resultedAt = new Date();
-    order.result = { value, notes: notes || "", attachmentUrl: attachmentUrl || "" };
-
-    await order.save();
-
-    await syncLabOrderToAppointment(order, value, notes);
-
-    // Create Audit Log
-    await AuditLog.create({
-      userId,
-      organizationId: order.organizationId || (order.locationId as any)?.organizationId || (req as any).user?.organizationId,
-      action: "LAB_RESULT_UPLOAD",
-      targetId: order._id,
-      targetModel: "LabOrder",
-      details: { testName: (order.testId as any).name, testCode: (order.testId as any).code, resultRecorded: true }
+    const effects: (() => Promise<void>)[] = [];
+    const updated = await withClinicalTransaction(async () => {
+      const result = await OrdersService.recordResult(id, { resultedBy: userId, value, notes, attachmentUrl });
+      const current = await LabOrder.findById(result.order.id).populate('testId', 'name code normalRange');
+      await syncLabOrderToAppointment(current, value, notes, effect => effects.push(effect));
+      await AuditLog.create({ userId, organizationId: result.order.organizationId || orderAccess.organizationId, action: 'LAB_RESULT_UPLOAD', targetId: result.order._id, targetModel: 'LabOrder', details: { resultRecorded: true } });
+      return result.order;
     });
+    for (const effect of effects) await effect();
 
-    return reply.code(200).send(successResponse(order, "Lab test results successfully saved and finalized"));
+    return reply.code(200).send(successResponse(updated, "Lab test results successfully saved and finalized"));
   } catch (err) {
     console.error("uploadLabResult error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -591,11 +580,11 @@ export function evaluatePanicCriticalValue(testName: string, val: string): { isP
   return { isPanic: false, reason: "" };
 }
 
-async function syncLabOrderToAppointment(order: any, resultVal?: string, notes?: string) {
+async function syncLabOrderToAppointment(order: any, resultVal?: string, notes?: string, defer?: (effect: () => Promise<void>) => void) {
   try {
     if (!order.appointmentId) return;
     const { Appointment } = await import("../models/Appointment.ts");
-    const appt = await Appointment.findById(order.appointmentId);
+    const appt = await Appointment.findOne({ _id: order.appointmentId, organizationId: order.organizationId, locationId: order.locationId, patientId: order.patientId });
     if (!appt) return;
 
     const testDoc = order.testId as any;
@@ -647,6 +636,7 @@ async function syncLabOrderToAppointment(order: any, resultVal?: string, notes?:
     }
     await appt.save();
 
+    const broadcast = async () => {
     const { broadcastClinicalRealtime, broadcastRealtimeNotification, broadcastQueueUpdate } = await import("../notifications/websocket.ts");
 
     if (panicCheck.isPanic) {
@@ -708,8 +698,10 @@ async function syncLabOrderToAppointment(order: any, resultVal?: string, notes?:
       message: `Status updated for Token #${appt.tokenNumber}`,
       timestamp: new Date().toISOString(),
     });
+    };
+    if (defer) defer(broadcast); else await broadcast();
   } catch (err) {
-    console.error("syncLabOrderToAppointment notice:", err);
+    throw err;
   }
 }
 
@@ -759,23 +751,33 @@ export async function updateLabOrderStatus(req: FastifyRequest, reply: FastifyRe
       if (!cancellationReason?.trim()) return reply.code(400).send(errorResponse("cancellationReason is required"));
       order.cancellationReason = cancellationReason.trim();
     }
-    order.status = status as any;
-    await order.save();
+    if (status === 'result-uploaded' && !order.result?.value?.trim()) return reply.code(400).send(errorResponse('Record an actual result before finalizing this order'));
+    const effects: (() => Promise<void>)[] = [];
+    const expectedStatus = order.status;
+    const updated = await withClinicalTransaction(async () => {
+      effects.length = 0;
+      const current = await LabOrder.findOneAndUpdate({ _id: order.id, locationId: order.locationId, status: expectedStatus }, { $set: { status, collectedBy: order.collectedBy, sampleCollectedAt: order.sampleCollectedAt, processingStartedAt: order.processingStartedAt, resultedBy: order.resultedBy, resultedAt: order.resultedAt, cancellationReason: order.cancellationReason } }, { returnDocument: 'after', runValidators: true }).populate('testId', 'name code');
+      if (!current) throw new CommandError(409, 'Diagnostic order changed; refresh before continuing');
+      await syncDiagnosticHandoff(order.id, req.user!.id);
 
-    if (status === "result-uploaded") {
-      await syncLabOrderToAppointment(order);
-    }
+      if (status === "result-uploaded") {
+        await syncLabOrderToAppointment(current, undefined, undefined, effect => effects.push(effect));
+      }
 
-    await AuditLog.create({
-      userId: req.user!.id,
-      organizationId: order.organizationId || (orderAccess as any).organizationId,
-      action: "LAB_ORDER_STATUS_UPDATE",
-      targetId: order._id,
-      targetModel: "LabOrder",
-      details: { status, cancellationReason: status === "cancelled" ? order.cancellationReason : undefined },
+      await AuditLog.create({
+        userId: req.user!.id,
+        organizationId: order.organizationId || (orderAccess as any).organizationId,
+        action: "LAB_ORDER_STATUS_UPDATE",
+        targetId: order._id,
+        targetModel: "LabOrder",
+        details: { status, cancellationReason: status === "cancelled" ? order.cancellationReason : undefined },
+      });
+      return current;
     });
-    return reply.code(200).send(successResponse(order, "Laboratory order status updated"));
+    for (const effect of effects) await effect();
+    return reply.code(200).send(successResponse(updated, "Laboratory order status updated"));
   } catch (err) {
+    if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
     console.error("updateLabOrderStatus error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
@@ -824,7 +826,8 @@ export async function placeOrderController(req: FastifyRequest, reply: FastifyRe
       return sendTenantError(reply, patientAccess);
     }
 
-    const { order, test } = await OrdersService.placeOrder({
+    const order = await withClinicalTransaction(async () => {
+      const { order, test } = await OrdersService.placeOrder({
       organizationId: (locationAccess.organizationId || orgId || "") as string,
       locationId,
       encounterId,
@@ -842,6 +845,9 @@ export async function placeOrderController(req: FastifyRequest, reply: FastifyRe
       targetId: order._id,
       targetModel: "LabOrder",
       details: { testCode: test.code, testName: test.name, encounterId, priority: order.priority },
+    });
+
+      return order;
     });
 
     return reply.code(201).send(successResponse(order, "Diagnostic order placed"));
@@ -958,6 +964,8 @@ export async function recordResultController(req: FastifyRequest, reply: Fastify
       return reply.code(400).send(errorResponse('Attachment must be a verified upload for this patient'));
     }
 
+    const effects: (() => Promise<void>)[] = [];
+    const { order, abnormalSignal } = await withClinicalTransaction(async () => {
     const { order, abnormalSignal } = await OrdersService.recordResult(orderId, {
       resultedBy: userId, value, unit, referenceRange,
       interpretation, isAbnormal, notes, attachmentUrl,
@@ -973,6 +981,11 @@ export async function recordResultController(req: FastifyRequest, reply: Fastify
         details: { orderId, value, interpretation: "critical" }
       });
     }
+
+      await syncLabOrderToAppointment(order, value, notes, effect => effects.push(effect));
+      return { order, abnormalSignal };
+    });
+    for (const effect of effects) await effect();
 
     return reply.code(200).send(
       successResponse(

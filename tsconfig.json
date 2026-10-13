@@ -5,6 +5,7 @@
     "moduleResolution": "nodenext",
     "esModuleInterop": true,
     "strict": true,
+    "erasableSyntaxOnly": true,
     "skipLibCheck": true,
     "allowJs": true,
     "checkJs": false,

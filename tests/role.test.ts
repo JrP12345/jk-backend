@@ -137,7 +137,13 @@ describe("Role & Permission Governance API Integration Tests", () => {
     expect(body.message).toContain("System role 'admin' cannot be deleted");
   });
 
-  it("should delete custom role via DELETE /api/roles/:name", async () => {
+  it("requires reassignment before deleting a custom role", async () => {
+    const assigned = await app.inject({ method: "DELETE", url: `/api/roles/${customRoleName}`,
+      headers: { cookie: adminCookies.join("; ") } });
+    expect(assigned.statusCode).toBe(409);
+    const reassign = await app.inject({ method: "PUT", url: `/api/users/${staffUserId}/role`,
+      headers: { cookie: adminCookies.join("; ") }, payload: { role: "nurse" } });
+    expect(reassign.statusCode, reassign.body).toBe(200);
     const res = await app.inject({
       method: "DELETE",
       url: `/api/roles/${customRoleName}`,

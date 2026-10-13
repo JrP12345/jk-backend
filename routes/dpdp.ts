@@ -1,10 +1,14 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate, checkAnyPermissionOrRoles } from "../middleware/auth.ts";
+import { authenticate, checkAnyPermission } from "../middleware/auth.ts";
+import { consentCommandSchema, privacyRequestSchema, privacyReviewSchema } from "../schemas/privacy.ts";
 import {
   exportPatientData,
   requestPatientErasure,
   getPatientConsents,
   updatePatientConsents,
+  getPatientPrivacyRequest,
+  reviewPatientPrivacyRequest,
+  listPrivacyOrganizations,
   recordBreachIncident,
   getBreachIncidents,
   generateIncidentDPBIReport,
@@ -15,7 +19,6 @@ export default async function dpdpRoutes(app: FastifyInstance) {
   const patientDataRights = {
     preHandler: [
       authenticate,
-      checkAnyPermissionOrRoles(["patient", "family_member", "admin", "doctor", "root"], "VIEW_PATIENTS", "MANAGE_PATIENTS"),
     ],
   };
 
@@ -23,7 +26,7 @@ export default async function dpdpRoutes(app: FastifyInstance) {
   const complianceAdmin = {
     preHandler: [
       authenticate,
-      checkAnyPermissionOrRoles(["admin", "root", "compliance_officer"], "MANAGE_LOCATION"),
+      checkAnyPermission("ADMINISTRATIVE_GOVERNANCE"),
     ],
   };
 
@@ -31,11 +34,14 @@ export default async function dpdpRoutes(app: FastifyInstance) {
   app.get("/api/dpdp/export", patientDataRights, exportPatientData);
 
   // 2. Right to Erasure with NMC 3-Year Carve-Out (Section 12 & 17)
-  app.post("/api/dpdp/erasure", patientDataRights, requestPatientErasure);
+  app.post("/api/dpdp/erasure", { ...patientDataRights, schema: privacyRequestSchema, config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, requestPatientErasure);
+  app.get("/api/dpdp/privacy-request", patientDataRights, getPatientPrivacyRequest);
+  app.put("/api/dpdp/privacy-request/review", { ...patientDataRights, schema: privacyReviewSchema }, reviewPatientPrivacyRequest);
 
   // 3. Purpose Consent Ledger & Withdrawal (Section 6)
   app.get("/api/dpdp/consents", patientDataRights, getPatientConsents);
-  app.put("/api/dpdp/consents", patientDataRights, updatePatientConsents);
+  app.get("/api/dpdp/organizations", patientDataRights, listPrivacyOrganizations);
+  app.put("/api/dpdp/consents", { ...patientDataRights, schema: consentCommandSchema, config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, updatePatientConsents);
 
   // 4. Data Breach Incident Governance (Section 8(6))
   app.post("/api/dpdp/breaches", complianceAdmin, recordBreachIncident);

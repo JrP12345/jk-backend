@@ -1,4 +1,5 @@
 import { withClinicalTransaction } from "../utilities/transaction.ts";
+import { publishAppointmentCommunication } from '../services/AppointmentCommunicationEvents.ts';
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { Encounter } from "../models/Encounter.ts";
@@ -387,15 +388,11 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
         { returnDocument: "after" }
       );
       if (!completed) throw Object.assign(new Error("The linked visit is no longer an active consultation. Refresh before signing."), { statusCode: 409 });
+      await publishAppointmentCommunication(completed, { action: 'prescription', actorId: userId });
     }
     await AuditLog.create({ userId, action: "CLINICAL_NOTE_SIGNED", targetId: note._id, targetModel: "ClinicalNote", details: { encounterId: note.encounterId } });
     });
     if (updatedEncounter?.appointmentId) {
-      const { sendConsultationCompletedNotification } = await import("../utilities/notifications.ts");
-      sendConsultationCompletedNotification(updatedEncounter.appointmentId).catch((err) =>
-        console.error("sendConsultationCompletedNotification on note sign failed:", err)
-      );
-
       const locationIdStr = note.locationId?.toString();
       if (locationIdStr) {
         const { broadcastQueueUpdate } = await import("../notifications/websocket.ts");

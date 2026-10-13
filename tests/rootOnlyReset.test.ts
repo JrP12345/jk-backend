@@ -11,6 +11,9 @@ describe("Root-only development installation reset", () => {
   const options = (apply: boolean) => ({ database: mongoose.connection.db!.databaseName, apply });
 
   beforeEach(async () => {
+    // Finish model collection/index creation before exercising deliberate drops.
+    // Otherwise a background init can recreate an unrelated empty collection.
+    await Promise.all(Object.values(mongoose.models).map(model => model.init()));
     const db = mongoose.connection.db!;
     for (const entry of await db.listCollections({}, { nameOnly: true }).toArray()) {
       await db.collection(entry.name).deleteMany({});

@@ -8,6 +8,7 @@
     "check:fast": "node node_modules/typescript/bin/tsc --noEmit",
     "check:build-install": "node scripts/check-build-install.mjs",
     "check:startup": "node scripts/check-startup.mjs",
+    "check:startup:source": "node scripts/check-startup.mjs --source",
     "check:tenants": "node --experimental-strip-types scripts/check-tenant-scoping.ts",
     "audit:release": "node scripts/repo_auditor.js",
     "seed": "node --env-file=.env --experimental-strip-types scripts/seedDatabase.ts",

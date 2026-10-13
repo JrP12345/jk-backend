@@ -6,6 +6,8 @@ import { WorkflowEngine } from "../platform/workflow/WorkflowEngine.ts";
 import type { WorkflowDefinition } from "../platform/workflow/types.ts";
 import { domainEventBus } from "../platform/events/DomainEventBus.ts";
 import { EventTypes, type OrderPlacedPayload, type ResultUploadedPayload } from "../platform/events/types.ts";
+import { withClinicalTransaction } from '../utilities/transaction.ts';
+import { syncDiagnosticHandoff } from './DiagnosticHandoffService.ts';
 
 /**
  * Declarative workflow definition for Diagnostic Orders lifecycle.
@@ -64,6 +66,7 @@ export class OrdersService {
    * Place a new diagnostic order anchored to an Encounter.
    */
   static async placeOrder(payload: PlaceOrderPayload) {
+    const result = await withClinicalTransaction(async () => {
     let test: any = null;
     if (mongoose.Types.ObjectId.isValid(payload.testId)) {
       test = await LabTest.findById(payload.testId).lean();
@@ -79,7 +82,7 @@ export class OrdersService {
 
     if (payload.encounterId) {
       const encounter = await Encounter.findById(payload.encounterId).lean();
-      if (!encounter) throw new Error("Encounter not found");
+      if (!encounter || String(encounter.organizationId) !== payload.organizationId || String(encounter.locationId) !== payload.locationId || String(encounter.patientId) !== payload.patientId) throw new Error("Encounter not found in the selected patient and branch");
     }
 
     const order = await LabOrder.create({
@@ -104,15 +107,18 @@ export class OrdersService {
       priority:    order.priority,
       orderedBy:   payload.orderedBy,
     };
-    await domainEventBus.publishEvent(EventTypes.ORDER_PLACED, eventPayload);
-
-    return { order, test };
+    await syncDiagnosticHandoff(order.id, payload.orderedBy);
+    return { order, test, eventPayload };
+    });
+    await domainEventBus.publishEvent(EventTypes.ORDER_PLACED, result.eventPayload);
+    return { order: result.order, test: result.test };
   }
 
   /**
    * Record sample collection. Transitions: ordered → sample-collected.
    */
   static async collectSample(orderId: string, collectedBy: string) {
+    return withClinicalTransaction(async () => {
     const order = await LabOrder.findById(orderId);
     if (!order) throw new Error("Lab order not found");
 
@@ -122,13 +128,16 @@ export class OrdersService {
     order.collectedBy = collectedBy as any;
     order.sampleCollectedAt = new Date();
     await order.save();
+    await syncDiagnosticHandoff(order.id, collectedBy);
     return order;
+    });
   }
 
   /**
    * Mark order as processing. Transitions: sample-collected → processing.
    */
   static async markProcessing(orderId: string) {
+    return withClinicalTransaction(async () => {
     const order = await LabOrder.findById(orderId);
     if (!order) throw new Error("Lab order not found");
 
@@ -137,7 +146,9 @@ export class OrdersService {
     order.status = "processing";
     order.processingStartedAt = new Date();
     await order.save();
+    await syncDiagnosticHandoff(order.id);
     return order;
+    });
   }
 
   /**
@@ -149,6 +160,7 @@ export class OrdersService {
     orderId: string,
     payload: RecordResultPayload
   ): Promise<{ order: any; abnormalSignal: AbnormalResultSignal | null }> {
+    const result = await withClinicalTransaction(async () => {
     if (!payload.value || payload.value.trim().length === 0) {
       throw new Error("Result value is required");
     }
@@ -210,9 +222,11 @@ export class OrdersService {
       isAbnormal,
       resultedBy:     payload.resultedBy,
     };
-    await domainEventBus.publishEvent(EventTypes.RESULT_UPLOADED, eventPayload);
-
-    return { order, abnormalSignal };
+    await syncDiagnosticHandoff(order.id, payload.resultedBy);
+    return { order, abnormalSignal, eventPayload };
+    });
+    await domainEventBus.publishEvent(EventTypes.RESULT_UPLOADED, result.eventPayload);
+    return { order: result.order, abnormalSignal: result.abnormalSignal };
   }
 
   /**
@@ -220,6 +234,7 @@ export class OrdersService {
    * cancellationReason is mandatory.
    */
   static async cancelOrder(orderId: string, reason: string) {
+    return withClinicalTransaction(async () => {
     if (!reason || reason.trim().length === 0) {
       throw new Error("cancellationReason is required when cancelling an order");
     }
@@ -232,7 +247,9 @@ export class OrdersService {
     order.status = "cancelled";
     order.cancellationReason = reason;
     await order.save();
+    await syncDiagnosticHandoff(order.id);
     return order;
+    });
   }
 
   /**

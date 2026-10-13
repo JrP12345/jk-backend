@@ -8,7 +8,7 @@ export interface IOutboundMessage extends mongoose.Document {
   // Delivery data includes phone numbers, names, tracker capabilities and
   // sometimes clinical context. Keep it encrypted and unselected by default.
   sensitivePayloadCiphertext?: string;
-  status: "pending" | "processing" | "retrying" | "sent" | "failed";
+  status: "pending" | "processing" | "retrying" | "accepted" | "sent" | "delivered" | "read" | "suppressed" | "failed";
   attempts: number;
   maxAttempts: number;
   nextAttemptAt?: Date;
@@ -17,6 +17,10 @@ export interface IOutboundMessage extends mongoose.Document {
   lockedBy?: string;
   error?: string;
   sentAt?: Date;
+  acceptedAt?: Date;
+  deliveredAt?: Date;
+  readAt?: Date;
+  emailAttemptedAt?: Date;
   replayCount: number;
   lastReplayedAt?: Date;
   lastReplayedBy?: mongoose.Types.ObjectId;
@@ -35,7 +39,7 @@ const OutboundMessageSchema = new Schema<IOutboundMessage>(
     sensitivePayloadCiphertext: { type: String, select: false },
     status: {
       type: String,
-      enum: ["pending", "processing", "retrying", "sent", "failed"],
+      enum: ["pending", "processing", "retrying", "accepted", "sent", "delivered", "read", "suppressed", "failed"],
       default: "pending",
       index: true,
     },
@@ -47,6 +51,10 @@ const OutboundMessageSchema = new Schema<IOutboundMessage>(
     lockedBy: { type: String, index: true },
     error: { type: String },
     sentAt: { type: Date },
+    acceptedAt: { type: Date },
+    deliveredAt: { type: Date },
+    readAt: { type: Date },
+    emailAttemptedAt: { type: Date },
     replayCount: { type: Number, default: 0 },
     lastReplayedAt: { type: Date },
     lastReplayedBy: { type: Schema.Types.ObjectId, ref: "User" },
@@ -55,6 +63,7 @@ const OutboundMessageSchema = new Schema<IOutboundMessage>(
 );
 
 OutboundMessageSchema.index({ status: 1, nextAttemptAt: 1, lockedUntil: 1 });
+OutboundMessageSchema.index({ 'payload.organizationId': 1, 'payload.locationId': 1, 'payload.patientId': 1, _id: -1 });
 
 export const OutboundMessage = mongoose.models.OutboundMessage || mongoose.model<IOutboundMessage>(
   "OutboundMessage",

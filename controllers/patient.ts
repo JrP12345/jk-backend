@@ -1,5 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
+import crypto from "node:crypto";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
@@ -10,116 +11,57 @@ import { AuditLog } from "../models/AuditLog.ts";
 import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+import { patientAdministrativeDTO } from "../services/PatientAdministrativeDTO.ts";
+import { requestHasAnyPermission } from "../utilities/permissions.ts";
+import { CommandError } from "../services/CommandReceiptService.ts";
 
 export async function searchPatients(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const userRole = req.user?.role;
-    const { search, gender, page, limit } = req.query as {
-      search?: string;
-      gender?: string;
-      page?: string | number;
-      limit?: string | number;
-    };
-
-    // Patient directory search is a staff workflow — block portal users from listing records.
-    if (userRole === "patient" || userRole === "family_member") {
-      return reply.code(403).send(errorResponse("Forbidden: staff access required"));
-    }
-
+    if (["patient", "family_member", "guest"].includes(req.user?.role || "")) return reply.code(403).send(errorResponse("Staff access required"));
     const scope = resolveAuthorizedOrganizationScope(req);
-    if (!scope.allowed) {
-      return reply.code(scope.statusCode).send(errorResponse(scope.message));
-    }
-    const orgId = scope.organizationId;
-
-    const patientFilter: Record<string, unknown> = {};
-    const andConditions: Record<string, unknown>[] = [];
-
-    if (userRole !== "root") {
-      if (!orgId) {
-        return reply.code(403).send(errorResponse("Organization context is required"));
-      }
-      andConditions.push({
-        $or: [
-          { organizationId: new mongoose.Types.ObjectId(orgId) },
-          { createdBy: new mongoose.Types.ObjectId(req.user!.id), organizationId: { $exists: false } },
-        ],
-      });
-    }
-
-    if (gender && gender.toLowerCase() !== "all") {
-      patientFilter.gender = gender.toLowerCase();
-    }
-
-    if (search && search.trim()) {
-      const safeSearch = escapeRegex(search.trim().slice(0, 200));
-
-      // Compose search criteria without replacing the tenant scope filter above.
-      andConditions.push({
-        $or: [
-          { name: { $regex: safeSearch, $options: "i" } },
-          { phone: { $regex: safeSearch, $options: "i" } },
-          { email: { $regex: safeSearch, $options: "i" } },
-          { $and: [{ 'searchUser.role': 'patient' }, { 'searchUser.isActive': true }, { $or: [
-            { 'searchUser.name': { $regex: safeSearch, $options: 'i' } },
-            { 'searchUser.email': { $regex: safeSearch, $options: 'i' } },
-            { 'searchUser.phone': { $regex: safeSearch, $options: 'i' } },
-          ] }] },
-          { mrn: { $regex: safeSearch, $options: "i" } },
-          { abdmHealthId: { $regex: safeSearch, $options: "i" } },
-          { allergies: { $regex: safeSearch, $options: "i" } },
-          { conditions: { $regex: safeSearch, $options: "i" } },
-        ],
-      });
-    }
-
-    if (andConditions.length > 0) {
-      patientFilter.$and = andConditions;
-    }
-
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    if (!scope.organizationId) return reply.code(403).send(errorResponse("Select an organization workspace"));
+    const { search, gender, page, limit } = req.query as { search?: string; gender?: string; page?: string; limit?: string };
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
-
-    let totalCount: number;
-    let rawPatients: any[];
-    if (search?.trim()) {
-      // Restrict the patient set before joining identities. No global User regex scan
-      // or unbounded list of matching IDs is transferred into the API process.
-      const searchCondition = andConditions.pop()!;
-      const scopedFilter: Record<string, unknown> = { ...patientFilter, $and: andConditions };
-      if (!andConditions.length) delete scopedFilter.$and;
-      const [result] = await Patient.aggregate([
-        { $match: scopedFilter },
-        { $lookup: { from: User.collection.name, localField: 'userId', foreignField: '_id',
-          pipeline: [{ $project: { name: 1, email: 1, phone: 1, role: 1, isActive: 1 } }], as: 'searchUser' } },
-        { $match: searchCondition },
-        { $facet: {
-          count: [{ $count: 'total' }],
-          items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: skip }, { $limit: pageSize },
-            { $set: { userId: { $ifNull: [{ $arrayElemAt: ['$searchUser', 0] }, null] } } },
-            { $project: { searchUser: 0, 'userId.role': 0, 'userId.isActive': 0 } }],
-        } },
-      ]).option({ maxTimeMS: 5_000 });
-      totalCount = result?.count[0]?.total || 0;
-      rawPatients = result?.items || [];
-    } else {
-      [totalCount, rawPatients] = await Promise.all([
-        Patient.countDocuments(patientFilter).maxTimeMS(5_000),
-        Patient.find(patientFilter).populate('userId', 'name email phone')
-          .sort({ createdAt: -1, _id: -1 }).skip(skip).limit(pageSize).maxTimeMS(5_000).lean(),
-      ]);
+    const { organizationPatientPipeline } = await import("../services/PatientMatchingService.ts");
+    const { PatientRelationship } = await import("../models/PatientRelationship.ts");
+    const { resolveStaffLocationGrant } = await import("../services/LocationAccessService.ts");
+    const { getRequestLocationIds } = await import("../utilities/tenant.ts");
+    const pipeline: any[] = organizationPatientPipeline(scope.organizationId);
+    const org = new mongoose.Types.ObjectId(scope.organizationId);
+    pipeline.push({ $lookup: { from: User.collection.name, localField: "userId", foreignField: "_id",
+      pipeline: [{ $match: { isActive: true } }, { $project: { name: 1, phone: 1, email: 1 } }], as: "linkedUser" } },
+      { $set: { userId: { $arrayElemAt: ["$linkedUser", 0] } } });
+    pipeline.push({ $lookup: { from: PatientRelationship.collection.name, localField: "_id", foreignField: "patientId",
+      pipeline: [{ $match: { organizationId: org, status: "active" } }, { $limit: 1 }, { $project: { contact: 1, locationId: 1 } }], as: "organizationRelationship" } });
+    const grant = req.user!.role === "root" ? undefined : await resolveStaffLocationGrant(req.user!.id, scope.organizationId, req.user!.role);
+    if (grant !== undefined) {
+      const locationIds = await getRequestLocationIds(req);
+      pipeline.push({ $lookup: { from: Appointment.collection.name, localField: "_id", foreignField: "patientId", pipeline: [
+        { $match: { organizationId: org, locationId: { $in: locationIds || [] } } }, { $limit: 1 }, { $project: { _id: 1 } },
+      ], as: "branchVisit" } }, { $match: { $or: [{ "organizationRelationship.locationId": { $in: locationIds || [] } }, { "branchVisit.0": { $exists: true } }] } });
     }
-
-    const totalPages = Math.ceil(totalCount / pageSize);
-    const patients = rawPatients.map((p: any) => ({ ...p, id: p._id.toString() }));
-
-    setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
-    return reply.code(200).send(successResponse(patients));
+    if (gender && gender !== "all") pipeline.push({ $match: { gender: gender.toLowerCase() } });
+    if (search?.trim()) {
+      const pattern = { $regex: escapeRegex(search.trim().slice(0, 120)), $options: "i" };
+      pipeline.push({ $match: { $or: ["name", "phone", "email", "mrn", "userId.name", "userId.phone", "userId.email", "organizationRelationship.contact.phone", "organizationRelationship.contact.email"].map(key => ({ [key]: pattern })) } });
+    }
+    const [result] = await Patient.aggregate([...pipeline, { $facet: {
+      count: [{ $count: "total" }], items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: skip }, { $limit: pageSize },
+        { $project: { name: 1, phone: 1, email: 1, dob: 1, gender: 1, mrn: 1, accountType: 1, createdAt: 1, userId: 1, organizationRelationship: 1 } }],
+    } }]).option({ maxTimeMS: 5000 });
+    const totalCount = result?.count[0]?.total || 0;
+    const patients = (result?.items || []).map((patient: any) => patientAdministrativeDTO({ ...patient,
+      phone: patient.organizationRelationship?.[0]?.contact?.phone ?? patient.phone,
+      email: patient.organizationRelationship?.[0]?.contact?.email ?? patient.email,
+    }));
+    setPaginationHeaders(reply, { totalCount, totalPages: Math.ceil(totalCount / pageSize), currentPage, pageSize });
+    return reply.send(successResponse(patients));
   } catch (err) {
-    console.error("searchPatients error:", err);
-    return reply.code(500).send(errorResponse("Internal server error"));
+    req.log.error({ err }, "Patient directory failed");
+    return reply.code(503).send(errorResponse("Patient search could not be completed. Retry before creating a new record."));
   }
 }
-
 export async function getPatientDetails(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id } = req.params as { id: string };
@@ -156,6 +98,17 @@ export async function getPatientDetails(req: FastifyRequest, reply: FastifyReply
     if (!isSelfAccess && requesterOrgId) {
       if (!await getOrganizationPatient(id, requesterOrgId)) return reply.code(404).send(errorResponse("Patient not found"));
     }
+    if (!["patient", "family_member"].includes(requesterRole || "") && !await requestHasAnyPermission(req, "VIEW_EHR")) {
+      const { crmPatientAuthority } = await import("../services/CrmAuthorityService.ts");
+      const authority = await crmPatientAuthority(req, id);
+      const { PatientRelationship } = await import("../models/PatientRelationship.ts");
+      const relationship = await PatientRelationship.findOne({ patientId: id, organizationId: authority.organizationId }).lean() as any;
+      const visits = await Appointment.find({ patientId: id, organizationId: authority.organizationId,
+        ...(authority.locationIds ? { locationId: { $in: authority.locationIds } } : {}) }).select("_id appointmentTime appointmentType status doctorId locationId")
+        .populate("doctorId", "name").populate("locationId", "name city").sort({ appointmentTime: -1, _id: -1 }).limit(50).lean();
+      return reply.send(successResponse({ patient: { ...patientAdministrativeDTO({ ...patient.toObject(), phone: relationship?.contact?.phone ?? patient.phone,
+        email: relationship?.contact?.email ?? patient.email }), clinicalProfileRestricted: true }, appointments: visits }));
+    }
     const allRecordsRequested = (req.query as any)?.scope === "all";
     const recordAccessToken = req.headers["x-patient-record-access"] as string | undefined;
     const approved = allRecordsRequested && await hasPatientRecordAccess(recordAccessToken, id, requesterUserId, requesterOrgId || "", req.user?.sessionId);
@@ -174,9 +127,9 @@ export async function getPatientDetails(req: FastifyRequest, reply: FastifyReply
       .sort({ appointmentTime: -1 })
       .limit(50);
 
-    const patientResponse: any = patient.toJSON();
+    let patientResponse: any = patient.toJSON();
     if (!isSelfAccess && !approved && requesterOrgId && patient.organizationId && patient.organizationId.toString() !== requesterOrgId) {
-      for (const field of ["allergies", "conditions", "medicalNotes", "insurancePolicies", "careContexts"]) delete patientResponse[field];
+      patientResponse = patientAdministrativeDTO(patient.toObject());
       patientResponse.clinicalProfileRestricted = true;
     }
     return reply.code(200).send(successResponse({
@@ -185,6 +138,7 @@ export async function getPatientDetails(req: FastifyRequest, reply: FastifyReply
     }));
   } catch (err) {
     console.error("getPatientDetails error:", err);
+    if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -350,6 +304,10 @@ export async function updatePatientProfile(req: FastifyRequest, reply: FastifyRe
       return reply.code(404).send(errorResponse("Patient not found"));
     }
 
+    const clinicalFields = ["bloodGroup", "allergies", "conditions", "medicalNotes", "insurancePolicies", "abdmHealthId"];
+    if (!["patient", "family_member"].includes(requesterRole || "") && clinicalFields.some(field => Object.prototype.hasOwnProperty.call(req.body, field)) &&
+      !await requestHasAnyPermission(req, "MANAGE_EHR", "MANAGE_CLINICAL_NOTES")) return reply.code(403).send(errorResponse("Clinical profile changes require clinical permission"));
+
     // Tenant Boundary & Access Check
     const patientUserIdStr = (patient.userId as any)?._id?.toString() || (patient.userId as any)?.id?.toString() || patient.userId?.toString() || "";
     const isSelfAccess = Boolean(patientUserIdStr && patientUserIdStr === requesterUserId);
@@ -416,11 +374,21 @@ export async function updatePatientProfile(req: FastifyRequest, reply: FastifyRe
       patient.dob = undefined;
     }
 
-    if (name || phone) {
+    // Organization staff correct their contact through PatientRelationship. This
+    // endpoint must not silently change a global login account or another tenant.
+    if (phone !== undefined && String(phone).trim() !== String(patient.phone || "").trim()) {
+      return reply.code(400).send(errorResponse("Use organization contact correction for contact changes. Login contacts require account verification."));
+    }
+    if (name && !isSelfAccess && patient.userId) {
+      const currentIdentity = await User.findById(patient.userId).select("name");
+      if (name.trim() !== (patient.name || currentIdentity?.name || "").trim()) return reply.code(409).send(errorResponse("A linked patient name change requires identity review"));
+    }
+    if (name && !patient.userId) patient.name = name.trim();
+    if (name && isSelfAccess) {
       const user = await User.findById(patient.userId);
       if (user) {
-        if (name) user.name = name;
-        if (phone) user.phone = phone;
+        user.name = name.trim();
+        patient.name = name.trim();
         await user.save();
       }
     }
@@ -442,6 +410,7 @@ export async function updatePatientProfile(req: FastifyRequest, reply: FastifyRe
     await patient.save();
 
     const updatedPatient = await Patient.findById(id).populate("userId", "name email phone");
+    if (!["patient", "family_member"].includes(requesterRole || "") && !await requestHasAnyPermission(req, "VIEW_EHR")) return reply.send(successResponse(patientAdministrativeDTO(updatedPatient?.toObject()), "Patient demographics saved"));
     return reply.code(200).send(successResponse(updatedPatient, "Patient profile updated successfully"));
   } catch (err) {
     console.error("updatePatientProfile error:", err);
@@ -451,70 +420,27 @@ export async function updatePatientProfile(req: FastifyRequest, reply: FastifyRe
 
 export async function createPatient(req: FastifyRequest, reply: FastifyReply) {
   try {
+    if (["patient", "family_member", "guest"].includes(req.user?.role || "")) return reply.code(403).send(errorResponse("Staff registration permission required"));
     const scope = resolveAuthorizedOrganizationScope(req);
     if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
-    const orgId = scope.organizationId;
-    const userId = req.user!.id;
-    if (!orgId) return reply.code(400).send(errorResponse("Organization context required"));
-
-    const {
-      name, email, phone, dob, gender, bloodGroup,
-      address, city, state, pincode, nationality,
-      allergies, conditions, medicalNotes, emergencyContacts, ignoreDuplicate
-    } = req.body as any;
-
-    if (!name || (!phone && !email)) {
-      return reply.code(400).send(errorResponse("Patient name and either phone or email are required"));
+    if (!scope.organizationId) return reply.code(400).send(errorResponse("Organization context required"));
+    const { registerOrganizationPatient } = await import("../services/PatientRegistrationService.ts");
+    const { checkLocationAccess } = await import("../utilities/tenant.ts");
+    const input = { ...(req.body as any) };
+    if (input.locationId) {
+      const branch = await checkLocationAccess(req, input.locationId, { requireExplicitScope: true });
+      if (!branch.allowed) return reply.code(branch.statusCode).send(errorResponse(branch.message));
     }
-
-    // Check for duplicate patient matches before creating
-    if (!ignoreDuplicate) {
-      const { patientMatchingService } = await import("../services/PatientMatchingService.ts");
-      const matches = await patientMatchingService.findMatchingPatients({
-        name,
-        phone,
-        email,
-        dob,
-        organizationId: orgId,
-      });
-
-      if (matches.highConfidence.length > 0 || matches.mediumConfidence.length > 0) {
-        return reply.code(409).send(
-          errorResponse("Possible existing matching patient record found.", {
-            highConfidenceMatches: matches.highConfidence,
-            mediumConfidenceMatches: matches.mediumConfidence,
-          })
-        );
-      }
-    }
-
-    // Create Walk-in Patient record without fake User account
-    const patientProfile = await Patient.create({
-      name: name.trim(),
-      phone: phone?.trim() || null,
-      email: email?.trim().toLowerCase() || null,
-      accountType: "walkin",
-      createdBy: userId,
-      organizationId: orgId,
-      personalVaultId: `pvt_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`,
-      dob: dob ? new Date(dob) : undefined,
-      gender,
-      bloodGroup,
-      address: address || null,
-      city: city || null,
-      state: state || null,
-      pincode: pincode || null,
-      nationality: nationality || "Indian",
-      allergies: allergies || [],
-      conditions: conditions || [],
-      medicalNotes: medicalNotes || null,
-      emergencyContacts: emergencyContacts || [],
-    });
-
-    const fullPatient = await Patient.findById(patientProfile._id).populate("userId", "name email phone");
-    return reply.code(201).send(successResponse(fullPatient, "Patient registered successfully"));
+    // Older clients remain accepted; current clients retain this identifier across
+    // timeouts. Matching still requires review on a repeated legacy submission.
+    const requestId = String(req.headers["idempotency-key"] || input?.clientRequestId || crypto.randomUUID());
+    const result = await registerOrganizationPatient(scope.organizationId, req.user!.id, input, requestId);
+    return reply.code(result.replayed ? 200 : 201).send(successResponse(result.patient, result.replayed ? "Existing registration restored" : "Patient registered successfully"));
   } catch (err: any) {
-    console.error("createPatient error:", err);
-    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+    const { CommandError } = await import("../services/CommandReceiptService.ts");
+    if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message, err.details));
+    if (err?.name === "ValidationError") return reply.code(400).send(errorResponse("Invalid patient registration details"));
+    req.log.error({ err }, "Patient registration failed");
+    return reply.code(503).send(errorResponse("Registration could not be confirmed. Retry with the same request identifier."));
   }
 }

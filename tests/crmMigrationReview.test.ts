@@ -1,0 +1,38 @@
+import mongoose from 'mongoose';
+import { expect, it } from 'vitest';
+import { Organization } from '../models/Organization.ts';
+import { Location } from '../models/Location.ts';
+import { Patient } from '../models/Patient.ts';
+import { Appointment } from '../models/Appointment.ts';
+import { OrgMember } from '../models/OrgMember.ts';
+import { User } from '../models/User.ts';
+import { TaskModel } from '../models/Task.ts';
+import { reviewCrmMigrationPage } from '../services/CrmMigrationReviewService.ts';
+it('produces bounded scoped legacy review pages without changing a patient, appointment or task', async () => {
+  const org = await Organization.create({ name: 'Reviewed organization', city: 'Pune' });
+  const branch = await Location.create({ organizationId: org.id, name: 'Reviewed branch', city: 'Pune' });
+  const patient = await Patient.create({ organizationId: org.id, name: 'Private patient name', phone: '9876543201', medicalNotes: 'Private clinical note' });
+  const doctor = await User.create({ name: 'Clinician', role: 'doctor' });
+  await OrgMember.create({ organizationId: org.id, userId: doctor.id, role: 'doctor' });
+  const base = { organizationId: org.id, patientId: patient.id, locationId: branch.id, doctorId: doctor.id, appointmentTime: new Date(), appointmentType: 'reception' as const, status: 'completed' as const };
+  const first = await Appointment.create({ ...base, tokenNumber: 1, followUpAppointmentId: new mongoose.Types.ObjectId(), followUpRecommended: true, diagnosis: 'Private diagnosis' });
+  const second = await Appointment.create({ ...base, tokenNumber: 2, patientId: new mongoose.Types.ObjectId(), locationId: new mongoose.Types.ObjectId(), paymentStatus: 'paid', invoiceId: new mongoose.Types.ObjectId(), status: 'disruption_triage' });
+  const before = JSON.stringify(await Appointment.find({ organizationId: org.id }).sort({ _id: 1 }).lean());
+  const page = await reviewCrmMigrationPage({ organizationId: org.id, limit: 1 });
+  expect(page).toMatchObject({ readOnly: true, scanned: 1, complete: false, countsScope: 'this_page', unreviewedBranchMembers: 1 });
+  expect(page.pageCounts).toMatchObject({ legacy_followup_review: 1, recommendation_review: 1, relationship_missing: 1 });
+  expect(page.nextCursor).toBe(first.id);
+  const next = await reviewCrmMigrationPage({ organizationId: org.id, cursor: page.nextCursor!, limit: 1 });
+  expect(next.reviews[0].appointmentId).toBe(second.id); expect(next.complete).toBe(true);
+  expect(next.pageCounts).toMatchObject({ patient_reference: 1, branch_reference: 1, financial_reference: 1, disruption_review: 1 });
+  expect(JSON.stringify({ page, next })).not.toContain('Private'); expect(JSON.stringify({ page, next })).not.toContain('9876543201');
+  expect(JSON.stringify(await Appointment.find({ organizationId: org.id }).sort({ _id: 1 }).lean())).toBe(before);
+  expect(await TaskModel.countDocuments()).toBe(0);
+  const other = await Organization.create({ name: 'Other organization', city: 'Pune' });
+  expect((await reviewCrmMigrationPage({ organizationId: other.id })).scanned).toBe(0);
+});
+it('rejects missing scope, malformed cursors and unbounded page requests', async () => {
+  await expect(reviewCrmMigrationPage({ organizationId: '' })).rejects.toThrow('Valid organization');
+  await expect(reviewCrmMigrationPage({ organizationId: new mongoose.Types.ObjectId().toString(), limit: 201 })).rejects.toThrow('page size');
+  await expect(reviewCrmMigrationPage({ organizationId: new mongoose.Types.ObjectId().toString(), cursor: 'invalid' })).rejects.toThrow('Valid organization');
+});

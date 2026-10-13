@@ -151,7 +151,7 @@ describe("Comprehensive Gap Audit & Security Test Suite", () => {
     expect(mismatchRes.statusCode).toBe(400);
   });
 
-  it("should prevent claiming an unlinked walk-in record with phone mismatch without OTP", async () => {
+  it("keeps an unlinked walk-in claim pending without granting access based on a contact", async () => {
     const walkinPatient = await Patient.create({
       name: "Walkin Charlie",
       phone: "9111122222",
@@ -166,9 +166,10 @@ describe("Comprehensive Gap Audit & Security Test Suite", () => {
       payload: { patientId: walkinPatient.id },
     });
 
-    expect(claimRes.statusCode).toBe(403);
+    expect(claimRes.statusCode).toBe(202);
     const body = JSON.parse(claimRes.body);
-    expect(body.message).toContain("Phone verification required");
+    expect(body.data.status).toBe("pending");
+    expect((await Patient.findById(walkinPatient.id))!.userId).toBeUndefined();
   });
 
   it("should reject Razorpay payment verification with invalid signature", async () => {

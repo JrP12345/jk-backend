@@ -2,6 +2,9 @@ import crypto from "node:crypto";
 import { WorkerLoop } from "../../utilities/workerLoop.ts";
 import { NotificationDelivery } from "../../models/NotificationDelivery.ts";
 import { emailProvider } from "../providers/emailProvider.ts";
+import { Notification } from '../../models/Notification.ts';
+import { patientNotificationAudience } from '../../services/PatientNotificationAuthority.ts';
+import { escapeHtml } from '../../utilities/manualNotificationContent.ts';
 
 const LOCK_DURATION_MS = 60_000;
 
@@ -62,10 +65,16 @@ export class NotificationDeliveryWorker {
     heartbeat.unref?.();
 
     try {
+      const notification = await Notification.findById(job.notificationId).lean();
+      const audience = notification ? await patientNotificationAudience({ eventType: notification.type, category: notification.category, organizationId: notification.organizationId?.toString(), targetUserId: notification.targetUser.toString(), metadata: notification.metadata }) : { protected: true, allowed: false };
+      if (audience.protected || !audience.allowed) {
+        await NotificationDelivery.updateOne({ _id: job._id, status: 'processing', lockedBy }, { $set: { status: 'suppressed', error: 'PATIENT_EXTERNAL_REQUIRES_COMMUNICATION_DISPATCH' }, $unset: { lockedAt: 1, lockedUntil: 1, lockedBy: 1, nextAttemptAt: 1 } });
+        return true;
+      }
       const sent = await emailProvider.sendEmail({
         to: job.recipient,
         subject: job.title || "Notification Alert",
-        html: `<p>${job.message || ""}</p>`,
+        html: `<p>${escapeHtml(job.message || "")}</p>`,
         text: job.message || "",
       });
       if (!sent) throw new Error("Email provider declined delivery");

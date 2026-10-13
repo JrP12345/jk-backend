@@ -277,6 +277,7 @@ describe("OPD Session Lifecycle, Standby Return, Lab Diagnostic Loop & Queue TV 
 
     // Put appt1 back into standby to test reconciliation
     await Appointment.findByIdAndUpdate(appt1._id, { status: "standby", parkedReason: "Left premises" });
+    for (const active of await Appointment.find({ doctorId, status: "in-consultation", _id: { $ne: appt2._id } })) await Appointment.findByIdAndUpdate(active._id, { status: "standby" });
     await Appointment.findByIdAndUpdate(appt2._id, { status: "in-consultation" });
 
     // Closing the shift records unresolved work without asserting clinical events.

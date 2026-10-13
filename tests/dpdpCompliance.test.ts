@@ -1,4 +1,10 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import crypto from "node:crypto";
+import { PatientRelationship } from "../models/PatientRelationship.ts";
+import { CrmActivity } from "../models/CrmActivity.ts";
+import { TaskModel } from "../models/Task.ts";
+import { reviewPrivacyRequest } from "../services/PatientPrivacyService.ts";
+import { CONSENT_NOTICE_VERSION } from "../services/PatientConsentService.ts";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import mongoose from "mongoose";
 import { Patient } from "../models/Patient.ts";
 import { User } from "../models/User.ts";
@@ -117,112 +123,96 @@ describe("DPDP 2023 Compliance & Data Breach Governance Suite", () => {
     });
   });
 
-  it("1. should export complete patient history in machine-readable JSON (Section 11 Data Portability)", async () => {
-    const exportResult = await DPDPService.exportPatientData(testPatient._id.toString(), orgId.toString());
-
-    expect(exportResult).toBeDefined();
-    expect(exportResult.metadata.format).toBe("EKAVYU_DPDP_EXPORT");
-    expect(exportResult.patientProfile.name).toBe("Rahul Sharma");
-    expect(exportResult.patientProfile.phone).toBe("9123456780");
-    expect(exportResult.patientProfile.allergies).toContain("Penicillin");
-
-    // Verify clinical records are bundled
-    expect(exportResult.clinicalRecords.appointments.length).toBe(1);
-    expect(exportResult.clinicalRecords.prescriptions.length).toBe(1);
-    expect(exportResult.clinicalRecords.prescriptions[0].medicineName).toBe("Amlodipine 5mg");
-
-    // Verify audit log
-    const audit = await AuditLog.findOne({
-      targetId: testPatient._id,
-      action: "DPDP_DATA_EXPORTED",
-    });
-    expect(audit).toBeDefined();
-    expect(audit?.category).toBe("COMPLIANCE_DPDP");
+  it("exports only the selected organization's records, with correct fields and actual actor audit", async () => {
+    const foreign = await Organization.create({ name: "Other clinic", city: "Pune" });
+    await Appointment.create({ patientId: testPatient.id, organizationId: foreign.id, locationId: testLocation.id,
+      doctorId: testStaffUser.id, appointmentTime: new Date(), appointmentType: "walk-in", tokenNumber: 1, status: "completed", notes: "Foreign secret" });
+    const result = await DPDPService.exportPatientData(testPatient.id, orgId.toString(), { actorId: testStaffUser.id, includeClinical: true });
+    expect(result.metadata.format).toBe("EKAVYU_DPDP_EXPORT");
+    expect(result.clinicalRecords.appointments).toHaveLength(1);
+    expect(result.clinicalRecords.prescriptions[0].medicineName).toBe("Amlodipine 5mg");
+    expect(result.patientProfile).not.toHaveProperty("allergies");
+    expect(JSON.stringify(result)).not.toContain("Foreign secret");
+    expect((await AuditLog.findOne({ targetId: testPatient.id, action: "DPDP_DATA_EXPORTED" }))?.userId.toString()).toBe(testStaffUser.id);
+    await expect(DPDPService.exportPatientData(testPatient.id, foreign.id, { actorId: testStaffUser.id, includeClinical: true })).resolves.toMatchObject({ metadata: { organizationId: foreign.id } });
+    const unrelated = await Organization.create({ name: "Unassociated", city: "Pune" });
+    await expect(DPDPService.exportPatientData(testPatient.id, unrelated.id, { actorId: testStaffUser.id, includeClinical: true })).rejects.toMatchObject({ statusCode: 404 });
   });
-
-  it("2. should anonymize patient PII immediately while maintaining 3-year NMC legal hold (Section 12 & 17)", async () => {
-    const erasureResult = await DPDPService.executePatientErasure(
-      testPatient._id.toString(),
-      testStaffUser._id.toString(),
-      "Patient requested erasure under DPDP Section 12",
-      orgId.toString()
-    );
-
-    expect(erasureResult.success).toBe(true);
-    expect(erasureResult.status).toBe("ANONYMIZED");
-    expect(erasureResult.piiRedacted).toBe(true);
-    expect(erasureResult.legalRetentionHoldUntil).toBeDefined();
-
-    // Verify hold date is approximately 3 years from today
-    const holdDate = new Date(erasureResult.legalRetentionHoldUntil as any);
-    const todayPlus2Years = new Date();
-    todayPlus2Years.setFullYear(todayPlus2Years.getFullYear() + 2);
-    expect(holdDate.getTime()).toBeGreaterThan(todayPlus2Years.getTime());
-
-    // Verify Patient document in DB has scrubbed PII
-    const scrubbedPatient = await Patient.findById(testPatient._id);
-    expect(scrubbedPatient?.name).toBe("[Anonymized Patient]");
-    expect(scrubbedPatient?.phone).toBe("0000000000");
-    expect(scrubbedPatient?.email).toContain("@deleted.local");
-    expect(scrubbedPatient?.address).toBe("[Redacted under DPDP Section 12]");
-    expect(scrubbedPatient?.emergencyContacts.length).toBe(0);
-    expect(scrubbedPatient?.abhaNumber).toBeUndefined();
-    expect(scrubbedPatient?.dpdpStatus).toBe("ANONYMIZED");
-    expect(scrubbedPatient?.anonymizedAt).toBeDefined();
-
-    // Verify linked User account was deactivated
-    const deactivatedUser = await User.findById(testPatientUser._id);
-    expect(deactivatedUser?.isActive).toBe(false);
-    expect(deactivatedUser?.phone).toBe("0000000000");
-
-    // Verify audit log was recorded
-    const audit = await AuditLog.findOne({
-      targetId: testPatient._id,
-      action: "DPDP_PII_ANONYMIZED",
-    });
-    expect(audit).toBeDefined();
-    expect(audit?.category).toBe("COMPLIANCE_DPDP");
-
-    // Idempotency: repeating erasure should succeed gracefully
-    const repeated = await DPDPService.executePatientErasure(
-      testPatient._id.toString(),
-      testStaffUser._id.toString(),
-      "Repeated",
-      orgId.toString()
-    );
-    expect(repeated.alreadyAnonymized).toBe(true);
+  it("bounds export pages, respects branch restrictions, and omits clinical resources for administrative exports", async () => {
+    await Appointment.insertMany(Array.from({ length: 101 }, () => ({ patientId: testPatient.id, organizationId: orgId, locationId: testLocation.id,
+      doctorId: testStaffUser.id, appointmentTime: new Date(), appointmentType: "walk-in", tokenNumber: 1, status: "completed" })));
+    const context = { actorId: testStaffUser.id, includeClinical: false };
+    const first = await DPDPService.exportPatientData(testPatient.id, orgId.toString(), context);
+    expect(first.metadata.truncated).toBe(true);
+    expect(first.clinicalRecords.appointments).toHaveLength(100);
+    expect(first.clinicalRecords).not.toHaveProperty("prescriptions");
+    const second = await DPDPService.exportPatientData(testPatient.id, orgId.toString(), { ...context, cursors: { appointments: first.metadata.nextCursors.appointments! } });
+    expect(second.clinicalRecords.appointments).toHaveLength(2);
+    const deniedBranch = await DPDPService.exportPatientData(testPatient.id, orgId.toString(), { ...context, locationIds: [new mongoose.Types.ObjectId()] });
+    expect(deniedBranch.clinicalRecords.appointments).toHaveLength(0);
   });
-
-  it("3. should manage purpose consents and synchronize WhatsApp opt-out flag (Section 6 & 7)", async () => {
-    // Fetch initial consents
-    const consents = await DPDPService.getPatientConsents(testPatient._id.toString(), orgId.toString());
-    expect(consents.purposes.length).toBe(4);
-    const whatsappPurpose = consents.purposes.find((p) => p.purpose === "COMMUNICATION_WHATSAPP");
-    expect(whatsappPurpose?.status).toBe("GRANTED");
-
-    // Withdraw WhatsApp communication consent
-    await DPDPService.updatePatientConsents(
-      testPatient._id.toString(),
-      orgId.toString(),
-      [{ purpose: "COMMUNICATION_WHATSAPP", status: "WITHDRAWN" }],
-      { ipAddress: "127.0.0.1", userAgent: "Vitest-Agent" }
-    );
-
-    // Verify Patient.optOutWhatsApp synchronized to true
-    const updatedPatient = await Patient.findById(testPatient._id);
-    expect(updatedPatient?.optOutWhatsApp).toBe(true);
-
-    // Re-grant WhatsApp consent
-    await DPDPService.updatePatientConsents(
-      testPatient._id.toString(),
-      orgId.toString(),
-      [{ purpose: "COMMUNICATION_WHATSAPP", status: "GRANTED" }]
-    );
-
-    const reGrantedPatient = await Patient.findById(testPatient._id);
-    expect(reGrantedPatient?.optOutWhatsApp).toBe(false);
+  it("records a retryable privacy request without changing global identity, account or clinical retention", async () => {
+    const input = { clientRequestId: crypto.randomUUID(), reason: "Please review CRM data erasure" };
+    const request = () => DPDPService.executePatientErasure(testPatient.id, testPatientUser.id, orgId.toString(), input);
+    const first = await request();
+    expect(first.request.status).toBe("requested");
+    expect((await request()).revision).toBe(first.revision);
+    expect(await TaskModel.countDocuments({ organizationId: orgId, kind: "privacy_review" })).toBe(1);
+    const unchanged = await Patient.findById(testPatient.id);
+    expect(unchanged?.name).toBe("Rahul Sharma");
+    expect(unchanged?.legalRetentionHoldUntil).toBeUndefined();
+    expect((await User.findById(testPatientUser.id))?.isActive).toBe(true);
+    const otherOrg = await Organization.create({ name: "Another relationship", city: "Pune" });
+    await PatientRelationship.create({ organizationId: otherOrg.id, patientId: testPatient.id, contact: { phone: "9876543210" } });
+    await CrmActivity.create({ organizationId: orgId, patientId: testPatient.id, kind: "administrative_note", note: "Delete my CRM note" });
+    const reviewed = await reviewPrivacyRequest(testPatient.id, testStaffUser.id, orgId.toString(), { expectedRevision: first.revision, clientRequestId: crypto.randomUUID(),
+      decision: "fulfilled", reason: "Reviewed eligible CRM data", retentionBasis: "Clinical and billing records retained for separate record-specific review", scopeConfirmed: true });
+    expect(reviewed.request.status).toBe("fulfilled");
+    expect((await PatientRelationship.findOne({ organizationId: otherOrg.id }))?.contact?.phone).toBe("9876543210");
+    expect((await PatientRelationship.findOne({ organizationId: orgId }))?.preferences?.doNotContact).toBe(true);
+    expect((await CrmActivity.findOne({ organizationId: orgId, kind: "administrative_note" }).select("+note"))?.note).toBeUndefined();
+    expect(await Prescription.countDocuments({ patientId: testPatient.id })).toBe(1);
   });
-
+  it("consent reads are pure, with unknown defaults and legacy grants requiring review", async () => {
+    const initial = await DPDPService.getPatientConsents(testPatient.id, orgId.toString());
+    expect(initial.purposes).toHaveLength(6);
+    expect(initial.purposes.every(row => row.status === "UNKNOWN")).toBe(true);
+    expect(await DPDPConsent.countDocuments({ organizationId: orgId })).toBe(0);
+    await DPDPConsent.create({ patientId: testPatient.id, organizationId: orgId, purposes: [{ purpose: "COMMUNICATION_WHATSAPP", status: "GRANTED" }] });
+    const legacy = await DPDPService.getPatientConsents(testPatient.id, orgId.toString());
+    expect(legacy.purposes.find(row => row.purpose === "COMMUNICATION_WHATSAPP")).toMatchObject({ status: "UNKNOWN", reviewRequired: true });
+    expect(await CrmActivity.countDocuments({ organizationId: orgId })).toBe(0);
+  });
+  it("records evidence, revisions and retries without changing other organizations or global opt-out", async () => {
+    const command = { actorId: testStaffUser.id, clientRequestId: crypto.randomUUID(), expectedRevision: 0, method: "written_consent" as const,
+      noticeVersion: CONSENT_NOTICE_VERSION, acknowledged: true, note: "Patient signed the stated WhatsApp communication choice" };
+    const updates = [{ purpose: "COMMUNICATION_WHATSAPP" as const, status: "GRANTED" as const }];
+    const grant = () => DPDPService.updatePatientConsents(testPatient.id, orgId.toString(), updates, command);
+    const first = await grant();
+    expect(first.revision).toBe(1);
+    expect((await grant()).revision).toBe(1);
+    expect(first.purposes.find(row => row.purpose === "COMMUNICATION_WHATSAPP")?.status).toBe("GRANTED");
+    await expect(DPDPService.updatePatientConsents(testPatient.id, orgId.toString(), updates, { ...command, clientRequestId: crypto.randomUUID() })).rejects.toMatchObject({ statusCode: 409 });
+    const withdrawn = await DPDPService.updatePatientConsents(testPatient.id, orgId.toString(), [{ purpose: "COMMUNICATION_WHATSAPP", status: "WITHDRAWN" }],
+      { ...command, clientRequestId: crypto.randomUUID(), expectedRevision: 1, acknowledged: false });
+    expect(withdrawn.purposes.find(row => row.purpose === "COMMUNICATION_WHATSAPP")?.status).toBe("WITHDRAWN");
+    expect((await Patient.findById(testPatient.id))?.optOutWhatsApp).toBe(false);
+    expect(await CrmActivity.countDocuments({ organizationId: orgId, visibility: "consent" })).toBe(2);
+    expect((await AuditLog.findOne({ organizationId: orgId, action: "DPDP_CONSENT_UPDATED" }))?.userId.toString()).toBe(testStaffUser.id);
+  });
+  it("invalidates evidence when the organization recipient changes and rolls back failures", async () => {
+    const command = { actorId: testStaffUser.id, clientRequestId: crypto.randomUUID(), expectedRevision: 0, method: "written_consent" as const,
+      noticeVersion: CONSENT_NOTICE_VERSION, acknowledged: true, note: "Signed consent" };
+    const updates = [{ purpose: "COMMUNICATION_WHATSAPP" as const, status: "GRANTED" as const }];
+    const spy = vi.spyOn(AuditLog, "create").mockRejectedValueOnce(new Error("Audit unavailable"));
+    try { await expect(DPDPService.updatePatientConsents(testPatient.id, orgId.toString(), updates, command)).rejects.toThrow("Audit unavailable"); }
+    finally { spy.mockRestore(); }
+    expect(await DPDPConsent.countDocuments({ organizationId: orgId })).toBe(0);
+    expect(await CrmActivity.countDocuments({ organizationId: orgId })).toBe(0);
+    await DPDPService.updatePatientConsents(testPatient.id, orgId.toString(), updates, command);
+    await PatientRelationship.create({ organizationId: orgId, patientId: testPatient.id, contact: { phone: "9999999999" } });
+    expect((await DPDPService.getPatientConsents(testPatient.id, orgId.toString())).purposes.find(row => row.purpose === "COMMUNICATION_WHATSAPP")?.status).toBe("UNKNOWN");
+  });
   it("4. should record breach incident and generate DPBI statutory notification dossier (Section 8(6))", async () => {
     const incident = await DPDPService.recordBreachIncident(
       {
@@ -252,7 +242,7 @@ describe("DPDP 2023 Compliance & Data Breach Governance Suite", () => {
     expect(audit?.category).toBe("COMPLIANCE_DPDP");
 
     // Generate DPBI Statutory Report
-    const dossier = await DPDPService.generateDPBIReport(incident.incidentId);
+    const dossier = await DPDPService.generateDPBIReport(incident.incidentId, orgId.toString());
     expect(dossier.header.recipient).toBe("Data Protection Board of India (DPBI)");
     expect(dossier.header.governingSection).toContain("Section 8(6)");
     expect(dossier.incidentDetails.incidentTrackingNumber).toBe(incident.incidentId);

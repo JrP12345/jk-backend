@@ -34,7 +34,7 @@ describe("Existing clinic workflow with opt-in experience preferences", () => {
     doctor = await User.create({ name: "Workflow doctor", email: "workflow-doctor@test.com", role: "doctor" });
     otherDoctor = await User.create({ name: "Second doctor", email: "workflow-doctor-two@test.com", role: "doctor" });
     const receptionist = await User.create({ name: "Workflow receptionist", email: "workflow-desk@test.com", role: "receptionist" });
-    await OrgMember.create([admin, doctor, otherDoctor, receptionist].map(user => ({ userId: user.id, organizationId: org.id, role: user.role })));
+    await OrgMember.create([admin, doctor, otherDoctor, receptionist].map(user => ({ userId: user.id, organizationId: org.id, role: user.role, locationAccess: { mode: "all" as const } })));
     await DoctorAssignment.create([doctor, otherDoctor].map(user => ({ doctorId: user.id, locationId: location.id, organizationId: org.id, isActive: user.id === doctor.id, fees: 350, workingHours: JSON.stringify({ all: { start: "00:00", end: "23:59" } }), bookingMode: "sequential_queue" as const })));
     adminHeaders = await session(admin, org.id); doctorHeaders = await session(doctor, org.id); receptionHeaders = await session(receptionist, org.id);
     await Appointment.init();

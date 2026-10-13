@@ -214,7 +214,8 @@ describe("Doctor Availability Overrides & Smart Booking Tests", () => {
     const overrideBody = JSON.parse(overrideRes.body);
     expect(overrideBody.success).toBe(true);
     expect(overrideBody.data.override.status).toBe("unavailable");
-    expect(overrideBody.data.affectedSummary.remoteNotifiedCount).toBeGreaterThanOrEqual(1);
+    expect(overrideBody.data.affectedSummary.remoteNotifiedCount).toBe(0);
+    expect(overrideBody.data.affectedSummary.triagedAppointmentsCount).toBeGreaterThanOrEqual(1);
 
     // Verify slot service reflects unavailable override
     const slotsRes = await app.inject({

@@ -10,12 +10,13 @@ import { Invoice } from "../models/Invoice.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { Organization } from "../models/Organization.ts";
 import { getNextAtomicSequence } from "../models/Counter.ts";
-import { sendBookingNotification } from "../utilities/notifications.ts";
+import { publishAppointmentCommunication } from './AppointmentCommunicationEvents.ts';
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
 import { validateSlotLockForBooking, forceReleaseSlotLock } from "./SlotLockService.ts";
 import { generateLocationInvoiceNumber } from "../utilities/invoiceNumber.ts";
 import { canCreateLocationBooking } from "./billing/SubscriptionAccess.ts";
 import { isActiveBookingDoctor } from "../utilities/doctorBookingEligibility.ts";
+import { resolveStaffLocationGrant } from "./LocationAccessService.ts";
 
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
@@ -60,7 +61,7 @@ export interface BookAppointmentInput {
 }
 
 export interface BookingActor {
-  id: string;
+  id?: string;
   role: string;
   organizationId?: string;
   bookingPatientId?: string;
@@ -209,7 +210,10 @@ export class AppointmentService {
    * 7. Auto invoice creation for consultation fees
    * 8. Audit logging & async notification dispatch
    */
-  async book(actor: BookingActor, input: BookAppointmentInput, effectiveOrgId?: string) {
+  async book(actor: BookingActor, input: BookAppointmentInput, effectiveOrgId?: string,
+    options: { deferAfterCommit?: (effect: () => Promise<void>) => void; anonymousWalkIn?: boolean } = {}) {
+    if (!actor.id && !(options.anonymousWalkIn && actor.role === 'guest' && actor.bookingPatientId && input.appointmentType === 'walk-in' && !input.patientDetails && !input.followUpForAppointmentId)) throw new AppointmentDomainError('A valid booking actor is required', 403);
+    if (options.anonymousWalkIn && (actor.id || actor.role !== 'guest' || !actor.bookingPatientId || input.appointmentType !== 'walk-in')) throw new AppointmentDomainError('Invalid anonymous walk-in command', 403);
     let { doctorId } = input;
     const {
       locationId,
@@ -265,7 +269,7 @@ export class AppointmentService {
       throw new AppointmentDomainError("Doctor is not assigned to the selected location", 400);
     }
     doctorId = assignment.doctorId.toString();
-    if (assignment.isActive === false || (orgId && assignment.organizationId.toString() !== orgId.toString()) || !(await isActiveBookingDoctor(doctorId))) {
+    if (assignment.isActive === false || (orgId && (!assignment.organizationId || assignment.organizationId.toString() !== orgId.toString())) || !(await isActiveBookingDoctor(doctorId))) {
       throw new AppointmentDomainError("Doctor is unavailable for new appointments at this location", 409);
     }
 
@@ -281,6 +285,7 @@ export class AppointmentService {
     // 2. Validate Slot Lock (for time_slot mode)
     let lockValidation: { valid: boolean; message?: string; lockKey?: string } = { valid: true };
     if (!isSequentialQueue) {
+      if (!actor.id) throw new AppointmentDomainError('This clinician requires a scheduled booking; contact reception', 409);
       lockValidation = await validateSlotLockForBooking(
         locationId,
         doctorId,
@@ -372,7 +377,8 @@ export class AppointmentService {
           const patient = await Patient.findById(patientId, null, option).setOptions({ bypassTenantFilter: true });
           if (!patient) throw new AppointmentDomainError("Patient profile not found", 404);
           if (patient.organizationId && orgId && patient.organizationId.toString() !== orgId.toString()) {
-            throw new AppointmentDomainError("Patient profile not found", 404);
+            const { getOrganizationPatient } = await import("./PatientRecordAccessService.ts");
+            if (!await getOrganizationPatient(patient.id, orgId)) throw new AppointmentDomainError("Patient profile not found", 404);
           }
           if (!patient.organizationId && orgId) {
             patient.organizationId = orgId as any;
@@ -453,7 +459,7 @@ export class AppointmentService {
       }
 
       const queuePosition = tokenNumber;
-      const initialStatus = actor.role === "patient" ? "pending" : "confirmed";
+      const initialStatus = options.anonymousWalkIn ? 'checked-in' : actor.role === "patient" ? "pending" : "confirmed";
       const slotDuration = duration || (assignment as any)?.appointmentDuration || 15;
       const visitReason = reasonForVisit || (followUpForAppointmentId ? "follow_up" : "new_consultation");
 
@@ -480,6 +486,7 @@ export class AppointmentService {
         patientId: finalPatientId,
         bookedByUserId: actor.id,
         trackerTokenHash: trackerCapability.hash,
+        trackerTokenCiphertext: trackerCapability.token,
         trackerTokenExpiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
         appointmentTime: requestedDate,
         appointmentType,
@@ -503,12 +510,22 @@ export class AppointmentService {
         }
         const parentAppt = await Appointment.findOne({
           _id: followUpForAppointmentId,
-          patientId: finalPatientId
+          patientId: finalPatientId, organizationId: orgId,
         }, null, option);
-        if (parentAppt && parentAppt.status !== "completed") {
-          parentAppt.status = "completed";
-          await parentAppt.save(option);
+        if (!parentAppt || parentAppt.status !== "completed") throw new AppointmentDomainError("Choose a completed source visit in this organization; booking cannot complete a clinical visit", 409);
+        if (!["patient", "family_member", "guest", "root"].includes(actor.role)) {
+          const grants = await resolveStaffLocationGrant(actor.id!, String(orgId), actor.role, true);
+          if (grants && !grants.includes(String(parentAppt.locationId))) throw new AppointmentDomainError("The source visit is outside your authorized branches", 403);
         }
+        const activeFollowUp = await Appointment.exists({ organizationId: orgId, patientId: finalPatientId, followUpForAppointmentId,
+          _id: { $ne: appointment._id }, status: { $nin: ["cancelled", "completed", "no-show"] } });
+        if (activeFollowUp) throw new AppointmentDomainError("A follow-up booking already exists for this recommendation. Review it before creating another.", 409);
+        appointment.followUpForAppointmentId = parentAppt._id;
+        appointment.followUpConfirmationEvidence = "explicit_booking";
+        await appointment.save(option);
+        parentAppt.followUpAppointmentId = appointment._id;
+        parentAppt.followUpWorkflow = "booked";
+        await parentAppt.save(option);
       }
 
       // 8. Auto Invoice for consultation fees (with 7-Day Courtesy Follow-Up Rule)
@@ -573,6 +590,8 @@ export class AppointmentService {
           }, session);
 
           appointment.paymentStatus = "not_required";
+          appointment.paymentAmount = 0;
+          if (appointment.status === "pending_payment") appointment.status = initialStatus;
           await appointment.save(option);
         } else {
           await createWithSession(Invoice, {
@@ -608,6 +627,14 @@ export class AppointmentService {
         details: { tokenNumber, appointmentTime, locationId, doctorId }
       }, session);
 
+      await publishAppointmentCommunication(appointment, { action: 'booked', actorId: ['patient', 'family_member', 'guest'].includes(actor.role) ? undefined : actor.id }, session);
+      if (doctorId !== actor.id) await eventBus.publishDurable({
+        eventId: `booking:doctor:${appointment._id}`, eventType: EVENT_TYPES.PATIENT_APPOINTMENT_BOOKED,
+        category: "clinical", organizationId: orgId, targetUserId: doctorId, title: "New appointment booked",
+        message: "A new appointment was added to your schedule.", severity: "info", actionUrl: "/dashboard/appointments",
+        metadata: { appointmentId: String(appointment._id), locationId },
+      }, session);
+
       return {
         booking: {
           id: appointment.id,
@@ -634,34 +661,13 @@ export class AppointmentService {
       };
     });
 
-    if (lockKey) {
-      forceReleaseSlotLock(lockKey).catch((err) =>
-        console.error("Slot lock release failed (non-critical):", err),
-      );
-    }
-
-    sendBookingNotification(appointmentId, "booked", trackerToken).catch((err) =>
-      console.error("Notification dispatch failed:", err),
-    );
-    try {
-      broadcastQueueUpdate(locationId, { type: "QUEUE_UPDATED", data: { locationId, appointmentId: String(appointmentId) }, timestamp: new Date().toISOString() });
-    } catch (err) {
-      console.warn("Booking queue broadcast skipped:", err);
-    }
-    if (doctorId !== actor.id) {
-      eventBus.publishDurable({
-        eventId: `booking:doctor:${appointmentId}`,
-        eventType: EVENT_TYPES.PATIENT_APPOINTMENT_BOOKED,
-        category: "clinical",
-        organizationId: orgId,
-        targetUserId: doctorId,
-        title: "New appointment booked",
-        message: "A new appointment was added to your schedule.",
-        severity: "info",
-        actionUrl: "/dashboard/appointments",
-        metadata: { appointmentId: String(appointmentId), locationId },
-      }).catch((err) => console.warn("Doctor booking notification skipped:", err));
-    }
+    const afterCommit = async () => {
+      if (lockKey) await forceReleaseSlotLock(lockKey).catch(err => console.warn("Slot lock release failed:", err));
+      try { broadcastQueueUpdate(locationId, { type: "QUEUE_UPDATED", data: { locationId, appointmentId: String(appointmentId) }, timestamp: new Date().toISOString() }); }
+      catch (err) { console.warn("Booking queue broadcast skipped:", err); }
+    };
+    if (options.deferAfterCommit) options.deferAfterCommit(afterCommit);
+    else afterCommit().catch(err => console.warn("Booking follow-up failed:", err));
 
     return booking;
   }

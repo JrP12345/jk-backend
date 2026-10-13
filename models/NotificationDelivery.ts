@@ -4,7 +4,7 @@ export interface INotificationDelivery {
   notificationId: mongoose.Types.ObjectId;
   channel: "inApp" | "email" | "push" | "sms" | "socket";
   recipient: string;
-  status: "pending" | "processing" | "retrying" | "sent" | "delivered" | "failed";
+  status: "pending" | "processing" | "retrying" | "sent" | "delivered" | "failed" | "suppressed";
   sentAt?: Date;
   error?: string;
   metadata?: Record<string, any>;
@@ -33,7 +33,7 @@ const NotificationDeliverySchema = new Schema({
   recipient: { type: String, required: true },
   status: {
     type: String,
-    enum: ["pending", "processing", "retrying", "sent", "delivered", "failed"],
+    enum: ["pending", "processing", "retrying", "sent", "delivered", "failed", "suppressed"],
     default: "pending",
   },
   sentAt: { type: Date },

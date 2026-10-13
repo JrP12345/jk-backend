@@ -15,6 +15,8 @@ const DoctorAssignmentSchema = new Schema({
   onlineBookingSafetyBuffer: { type: Number, default: 30 }, // Minutes before shift end when online same-day booking closes
   cabinNumber: { type: String, default: "Cabin 1" },
   isActive: { type: Boolean, default: true },
+  assignmentRevision: { type: Number, default: 0 },
+  recoveryScanRevision: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now }
 });
 

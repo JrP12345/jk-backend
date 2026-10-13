@@ -21,6 +21,8 @@ import {
   adminRevokeSession,
   adminRevokeUserSessions,
   googleLoginController,
+  selectLoginWorkspace,
+  getUserWorkspaces,
 } from "../controllers/auth.ts";
 import { loginSchema, registerPatientSchema } from "../schemas/auth.ts";
 import { getJwks } from "../utilities/keys.ts";
@@ -83,6 +85,14 @@ export default async function authRoutes(app: FastifyInstance) {
       }
     }
   }, login);
+
+  app.post("/api/auth/login/workspace", {
+    ...passkeyRateLimit,
+    schema: { body: { type: "object", required: ["workspaceToken", "organizationId"], additionalProperties: false,
+      properties: { workspaceToken: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" },
+        organizationId: { type: "string", pattern: objectIdPattern } } } },
+  }, selectLoginWorkspace);
+  app.get("/api/auth/workspaces", { preHandler: [authenticate] }, getUserWorkspaces);
 
   app.post("/api/auth/login/verify-2fa", {
     schema: {
@@ -148,7 +158,7 @@ export default async function authRoutes(app: FastifyInstance) {
   app.post(
     "/api/auth/switch-org",
     {
-      ...platformRoot,
+      preHandler: [authenticate],
       schema: {
         body: {
           type: "object",

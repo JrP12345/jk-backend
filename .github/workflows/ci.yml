@@ -41,6 +41,10 @@ jobs:
         run: npm audit --audit-level=high
       - name: Build API and worker bundles
         run: npm run build
+      - name: Verify native TypeScript startup
+        run: npm run check:startup:source
+      - name: Verify production bundle startup
+        run: npm run check:startup
       - name: Run Architecture & Fitness Function Auditor
         run: node scripts/repo_auditor.js
         env:

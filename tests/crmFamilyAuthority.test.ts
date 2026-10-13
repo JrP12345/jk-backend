@@ -1,0 +1,136 @@
+import crypto from 'node:crypto';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { app } from '../index.ts';
+import { Organization } from '../models/Organization.ts';
+import { Location } from '../models/Location.ts';
+import { User } from '../models/User.ts';
+import { OrgMember } from '../models/OrgMember.ts';
+import { Patient } from '../models/Patient.ts';
+import { PatientRelationship } from '../models/PatientRelationship.ts';
+import { FamilyRelationship } from '../models/FamilyRelationship.ts';
+import { AuditLog } from '../models/AuditLog.ts';
+import { CrmActivity } from '../models/CrmActivity.ts';
+import { OutboundMessage } from '../models/OutboundMessage.ts';
+import { createAuthSession } from '../utilities/helpers.ts';
+import { CONSENT_NOTICE_VERSION, getPatientConsents, updatePatientConsents } from '../services/PatientConsentService.ts';
+import { patientCommunicationPolicy } from '../services/PatientCommunicationPolicy.ts';
+import { enqueueCommunicationTemplate, enqueueWhatsAppDocument } from '../services/CommunicationOutbox.ts';
+import { OutboundMessageDeliveryWorker } from '../services/OutboundMessageDeliveryWorker.ts';
+import { whatsAppCloudApiService } from '../services/WhatsAppCloudApiService.ts';
+
+async function fixture() {
+  const org = await Organization.create({ name: 'Family authority clinic', city: 'Pune', plan: 'enterprise' });
+  const branch = await Location.create({ name: 'Family authority branch', city: 'Pune', organizationId: org.id });
+  const admin = await User.create({ name: 'Independent reviewer', role: 'admin', email: `${crypto.randomUUID()}@example.test` });
+  await OrgMember.create({ organizationId: org.id, userId: admin.id, role: 'admin', locationAccess: { mode: 'all' } });
+  const user = await User.create({ name: 'Family delegate', role: 'family_member', email: `${crypto.randomUUID()}@example.test`, phone: '919999999991' });
+  const patient = await Patient.create({ organizationId: org.id, name: 'Canonical patient', phone: '919999999992' });
+  const relationship = await PatientRelationship.create({ organizationId: org.id, patientId: patient.id, locationId: branch.id });
+  const family = await FamilyRelationship.create({ patientId: patient.id, userId: user.id, relationship: 'guardian', status: 'active', consentAuthority: true, dataRightsAuthority: true });
+  const adminSession = await createAuthSession({ id: admin.id, role: 'admin', email: admin.email!, organization_id: org.id }, { organizationId: org.id, workspaceRole: 'admin' });
+  const familySession = await createAuthSession({ id: user.id, role: 'family_member', email: user.email! });
+  const cookies = { access_token: adminSession.accessToken }, familyCookies = { access_token: familySession.accessToken };
+  const base = `/api/crm/patients/${patient.id}/family-authorizations`;
+  const review = (grants = { communication: true, consent: true, dataRights: true }, expectedRevision = 0, clientRequestId = crypto.randomUUID()) => app.inject({ method: 'PUT', url: `${base}/${family.id}`, cookies, payload: { expectedRevision, clientRequestId, identityVerified: true, reason: 'Independently reviewed documented guardian delegation for this clinic.', grants } });
+  const privacy = (path: string, organizationId = org.id) => app.inject({ method: 'GET', url: `/api/dpdp/${path}?patientId=${patient.id}&organizationId=${organizationId}`, cookies: familyCookies });
+  return { org, branch, admin, user, patient, relationship, family, cookies, familyCookies, review, privacy, base };
+}
+afterEach(() => vi.restoreAllMocks());
+describe('Reviewed organization family authority', () => {
+  it('rejects legacy global flags and isolates independently granted organizations and purposes', async () => {
+    const f = await fixture();
+    expect((await f.privacy('consents')).statusCode).toBe(403);
+    expect((await f.privacy('export')).statusCode).toBe(403);
+    const foreign = await Organization.create({ name: 'Unrelated clinic', city: 'Pune' });
+    await PatientRelationship.create({ organizationId: foreign.id, patientId: f.patient.id });
+    const review = await f.review({ communication: true, consent: true, dataRights: false });
+    expect(review.statusCode, review.body).toBe(200);
+    expect((await f.privacy('consents')).statusCode).toBe(200);
+    expect((await f.privacy('export')).statusCode).toBe(403);
+    expect((await f.privacy('consents', foreign.id)).statusCode).toBe(403);
+    const orgs = await app.inject({ method: 'GET', url: `/api/dpdp/organizations?patientId=${f.patient.id}`, cookies: f.familyCookies });
+    expect(orgs.json().data.items).toEqual([{ id: f.org.id, name: f.org.name, consentAuthority: true, dataRightsAuthority: false }]);
+    expect((await FamilyRelationship.findById(f.family.id))?.status).toBe('active');
+  });
+  it('serializes concurrent reviews and restores exact receipts without duplicate evidence', async () => {
+    const f = await fixture(), key = crypto.randomUUID();
+    const results = await Promise.all([f.review(undefined, 0, key), f.review(undefined, 0, key)]);
+    expect(results.map(r => r.statusCode)).toEqual([200, 200]);
+    expect(await AuditLog.countDocuments({ targetId: f.family.id, action: 'FAMILY_ORGANIZATION_AUTHORITY_REVIEWED' })).toBe(1);
+    const competing = await Promise.all([f.review({ communication: false, consent: false, dataRights: false }, 1), f.review({ communication: true, consent: false, dataRights: false }, 1)]);
+    expect(competing.map(r => r.statusCode).sort()).toEqual([200, 409]);
+    expect((await FamilyRelationship.findById(f.family.id))?.authorityRevision).toBe(2);
+  });
+  it('rolls authority, evidence and receipt back on audit failure', async () => {
+    const f = await fixture(), key = crypto.randomUUID();
+    vi.spyOn(AuditLog, 'create').mockRejectedValueOnce(new Error('synthetic audit failure'));
+    expect((await f.review(undefined, 0, key)).statusCode).toBe(503);
+    expect((await FamilyRelationship.findById(f.family.id))?.organizationAuthorizations).toHaveLength(0);
+    expect(await CrmActivity.countDocuments({ organizationId: f.org.id, kind: 'family_authority_reviewed' })).toBe(0);
+    expect((await f.review(undefined, 0, key)).statusCode).toBe(200);
+  });
+  it('requires independent review permission, reviewed evidence and a current family account', async () => {
+    const f = await fixture();
+    expect((await app.inject({ method: 'GET', url: f.base, cookies: f.familyCookies })).statusCode).toBe(403);
+    await User.updateOne({ _id: f.user.id }, { isActive: false });
+    expect((await f.review()).statusCode).toBe(409);
+    await User.updateOne({ _id: f.user.id }, { isActive: true });
+    const response = await app.inject({ method: 'PUT', url: `${f.base}/${f.family.id}`, cookies: f.cookies, payload: { clientRequestId: crypto.randomUUID(), expectedRevision: 0, identityVerified: false, reason: 'Unknown authority', grants: { communication: true, consent: false, dataRights: false } } });
+    expect(response.statusCode).toBe(400);
+  });
+  it('binds selected family consent and dispatch to the grant and suppresses a revoked queued message', async () => {
+    const f = await fixture();
+    expect((await f.review()).statusCode).toBe(200);
+    const preference = await app.inject({ method: 'PATCH', url: `/api/crm/patients/${f.patient.id}/relationship`, cookies: f.cookies, payload: { clientRequestId: crypto.randomUUID(), expectedRevision: 0, recipientType: 'family', familyRelationshipId: f.family.id, availability: 'reachable', preferences: { language: '', preferredChannel: 'whatsapp', doNotContact: false } } });
+    expect(preference.statusCode, preference.body).toBe(200);
+    const grant = await app.inject({ method: 'PUT', url: '/api/dpdp/consents', cookies: f.familyCookies, payload: { patientId: f.patient.id, organizationId: f.org.id, clientRequestId: crypto.randomUUID(), expectedRevision: 0, method: 'portal_confirmation', noticeVersion: CONSENT_NOTICE_VERSION, acknowledged: true, updates: [{ purpose: 'COMMUNICATION_WHATSAPP', status: 'GRANTED' }] } });
+    expect(grant.statusCode, grant.body).toBe(200);
+    const context = { organizationId: f.org.id, patientId: f.patient.id, locationId: f.branch.id, actorId: f.admin.id };
+    const decision = await patientCommunicationPolicy(context, 'whatsapp');
+    expect(decision.recipient).toBe(f.user.phone);
+    expect(decision.context.familyRelationshipId).toBe(f.family.id);
+    await expect(enqueueWhatsAppDocument({ organizationId: f.org.id, to: decision.recipient, documentUrl: 'https://example.invalid/private.pdf', filename: 'Private.pdf', communicationContext: decision.context, idempotencyKey: crypto.randomUUID() })).rejects.toMatchObject({ reason: 'COMMUNICATION_FAMILY_CLINICAL_REVIEW_REQUIRED' });
+    await expect(enqueueCommunicationTemplate({ organizationId: f.org.id, phone: decision.recipient, templateId: 'BOOKING_CONFIRMATION', variables: { trackingUrl: '/private-tracker' }, communicationContext: decision.context, idempotencyKey: crypto.randomUUID() })).rejects.toMatchObject({ reason: 'COMMUNICATION_FAMILY_CLINICAL_REVIEW_REQUIRED' });
+    await enqueueCommunicationTemplate({ organizationId: f.org.id, phone: decision.recipient, templateId: 'CRM_CONTACT_REQUEST', variables: { clinicName: f.org.name }, idempotencyKey: crypto.randomUUID(), communicationContext: decision.context });
+    expect((await f.review({ communication: false, consent: false, dataRights: false }, 1)).statusCode).toBe(200);
+    const provider = vi.spyOn(whatsAppCloudApiService, 'sendTemplateMessage');
+    await new OutboundMessageDeliveryWorker().processBatch(1);
+    expect(provider).not.toHaveBeenCalled();
+    expect((await OutboundMessage.findOne({ 'payload.patientId': f.patient.id }))?.status).toBe('suppressed');
+    expect((await getPatientConsents(f.patient.id, f.org.id)).purposes.find(row => row.purpose === 'COMMUNICATION_WHATSAPP')?.status).toBe('UNKNOWN');
+    expect((await f.privacy('export')).statusCode).toBe(403);
+  });
+  it('invalidates delegated consent after a grant is revoked and later restored', async () => {
+    const f = await fixture(); await f.review();
+    await updatePatientConsents(f.patient.id, f.org.id, [{ purpose: 'COMMUNICATION_WHATSAPP', status: 'GRANTED' }], { actorId: f.user.id, familyRelationshipId: f.family.id, clientRequestId: crypto.randomUUID(), expectedRevision: 0, method: 'portal_confirmation', noticeVersion: CONSENT_NOTICE_VERSION, acknowledged: true });
+    await f.review({ communication: true, consent: false, dataRights: false }, 1);
+    await f.review(undefined, 2);
+    expect((await getPatientConsents(f.patient.id, f.org.id)).purposes.find(row => row.purpose === 'COMMUNICATION_WHATSAPP')?.status).toBe('UNKNOWN');
+    await FamilyRelationship.updateOne({ _id: f.family.id }, { status: 'revoked' });
+    expect((await f.privacy('consents')).statusCode).toBe(403);
+  });
+  it('rejects unreviewed recipient selection and rechecks organization data rights on each request', async () => {
+    const f = await fixture();
+    const input = { clientRequestId: crypto.randomUUID(), expectedRevision: 0, recipientType: 'family', familyRelationshipId: f.family.id, availability: 'reachable', preferences: { language: '', preferredChannel: 'whatsapp', doNotContact: false } };
+    expect((await app.inject({ method: 'PATCH', url: `/api/crm/patients/${f.patient.id}/relationship`, cookies: f.cookies, payload: input })).statusCode).toBe(403);
+    expect((await PatientRelationship.findById(f.relationship.id))?.contact?.recipientType).toBe('patient');
+    await f.review({ communication: false, consent: false, dataRights: true });
+    expect((await f.privacy('export')).statusCode).toBe(200);
+    const request = await app.inject({ method: 'POST', url: '/api/dpdp/erasure', cookies: f.familyCookies, payload: { patientId: f.patient.id, organizationId: f.org.id, reason: 'Request independent organization retention review.', clientRequestId: crypto.randomUUID() } });
+    expect(request.statusCode, request.body).toBe(202);
+    await f.review({ communication: false, consent: false, dataRights: false }, 1);
+    expect((await f.privacy('export')).statusCode).toBe(403);
+    expect((await f.privacy('privacy-request')).statusCode).toBe(403);
+  });
+  it('keeps booking-only family cards minimal and rejects clinical profile writes', async () => {
+    const f = await fixture();
+    await Patient.updateOne({ _id: f.patient.id }, { medicalNotes: 'Private clinical note', allergies: ['Private allergy'], bloodGroup: 'AB+' });
+    const list = await app.inject({ method: 'GET', url: '/api/family', cookies: f.familyCookies });
+    expect(list.statusCode).toBe(200);
+    expect(JSON.stringify(list.json())).not.toMatch(/Private clinical note|Private allergy|bloodGroup|medicalNotes/);
+    expect(list.json().data[0].organizationPrivacyAvailable).toBe(false);
+    expect((await app.inject({ method: 'PATCH', url: '/api/family/'+f.family.id, cookies: f.familyCookies, payload: { allergies: [], relationship: 'other' } })).statusCode).toBe(403);
+    expect((await FamilyRelationship.findById(f.family.id))?.relationship).toBe('guardian');
+    expect((await Patient.findById(f.patient.id))?.allergies).toEqual(['Private allergy']);
+  });
+});

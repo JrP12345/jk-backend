@@ -29,7 +29,9 @@ process.env.NODE_ENV = "test";
 let mongoServer: MongoMemoryServer | MongoMemoryReplSet;
 
 beforeAll(async () => {
-  mongoServer = (process.env.TEST_MONGO_REPLICA_SET === "true" || expect.getState().testPath?.endsWith("architectureIntegrity.test.ts"))
+  // Exercise production transaction semantics by default, including plain npm test
+  // and CI. An explicit false is reserved for standalone/fail-closed probes.
+  mongoServer = (process.env.TEST_MONGO_REPLICA_SET !== "false" || expect.getState().testPath?.endsWith("architectureIntegrity.test.ts"))
     ? await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: "wiredTiger" } })
     : await MongoMemoryServer.create();
   const uri = mongoServer.getUri();

@@ -3,8 +3,6 @@ import { readdir } from "node:fs/promises";
 
 /** Preview current schema indexes; apply only during an explicit maintenance window. */
 async function prepareDatabaseIndexes() {
-  const uri = process.env.MONGODB_URI;
-  if (!uri) throw new Error("MONGODB_URI is required");
   const args = new Set(process.argv.slice(2));
   if (args.has("--apply") && !args.has("--writes-paused")) throw new Error("Index creation requires --writes-paused");
   const directory = new URL("../models/", import.meta.url);
@@ -16,6 +14,8 @@ async function prepareDatabaseIndexes() {
     console.log("Preview only. No database connection or index changes were made.");
     return;
   }
+  const uri = process.env.MONGODB_URI;
+  if (!uri) throw new Error("MONGODB_URI is required for index application");
   try {
     await mongoose.connect(uri, { autoIndex: false });
     for (const model of Object.values(mongoose.models)) await model.createIndexes();

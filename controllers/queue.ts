@@ -1,3 +1,10 @@
+import crypto from 'node:crypto';
+import { executeRecordedCommand, CommandError } from '../services/CommandReceiptService.ts';
+import { OutboundMessage } from '../models/OutboundMessage.ts';
+import { requestHasAnyPermission } from '../utilities/permissions.ts';
+import { publishAppointmentCommunication } from '../services/AppointmentCommunicationEvents.ts';
+import { CommunicationPolicyError, patientCommunicationPolicy } from '../services/PatientCommunicationPolicy.ts';
+import { syncDiagnosticHandoff } from '../services/DiagnosticHandoffService.ts';
 import { withClinicalTransaction } from "../utilities/transaction.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
@@ -9,7 +16,7 @@ import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
 import { checkLocationAccess, getRequestOrganizationId } from "../utilities/tenant.ts";
-import { broadcastQueueUpdate } from "../notifications/websocket.ts";
+import { broadcastQueueUpdate, broadcastClinicalRealtime } from "../notifications/websocket.ts";
 import { Location } from "../models/Location.ts";
 import { User } from "../models/User.ts";
 import { SmsWhatsAppService } from "../services/SmsWhatsAppService.ts";
@@ -618,7 +625,7 @@ export async function triggerTurnApproachingPacing(locationId: any, doctorId: an
       return (a.tokenNumber || 0) - (b.tokenNumber || 0);
     });
 
-    const { sendTurnApproachingNotification } = await import("../utilities/notifications.ts");
+
 
     for (const [index, appointment] of waitingAppts.slice(0, 2).entries()) {
       await withClinicalTransaction(async () => {
@@ -627,7 +634,7 @@ export async function triggerTurnApproachingPacing(locationId: any, doctorId: an
         const claimed = await Appointment.updateOne({ _id: appointment._id, locationId, doctorId,
           status: { $in: ["checked-in", "confirmed"] }, turnApproachingNotifiedAt: null },
         { $set: { turnApproachingNotifiedAt: new Date() } });
-        if (claimed.modifiedCount) await sendTurnApproachingNotification(appointment._id, index + 1);
+        if (claimed.modifiedCount) await publishAppointmentCommunication(appointment, { action: "turn_approaching" });
       });
     }
   } catch (err) {
@@ -1338,29 +1345,14 @@ export async function triggerQueueDelayAlerts(req: FastifyRequest, reply: Fastif
           const isDebounced = appt.delayNotifiedAt && (now.getTime() - new Date(appt.delayNotifiedAt).getTime()) < debounceMs;
 
           if (phone && !isDebounced) {
-            const revisedArrivalTime = projectedStartTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-            const orgId = location?.organizationId?.toString() || appt.organizationId?.toString() || "";
-
             try {
-              const { url: trackerUrl } = await issueAppointmentTrackerLink(appt as any);
-              await SmsWhatsAppService.sendQueueDelayAlert(
-                appt._id.toString(),
-                orgId,
-                phone,
-                {
-                  patientName,
-                  doctorName: doctor?.name || "Doctor",
-                  locationName: location?.name || "Location",
-                  delayMinutes,
-                  revisedArrivalTime,
-                  trackerUrl,
-                }
-              );
-
-              appt.delayNotifiedAt = now;
-              appt.lastNotifiedDelayMinutes = delayMinutes;
-              await appt.save();
-              notifiedCount++;
+              const prepared = await withClinicalTransaction(async () => {
+                const claimed = await Appointment.findOneAndUpdate({ _id: appt._id, organizationId: appt.organizationId, locationId: appt.locationId, status: { $in: ["pending", "confirmed"] }, $or: [{ delayNotifiedAt: null }, { delayNotifiedAt: { $lte: new Date(now.getTime() - debounceMs) } }] }, { $set: { delayNotifiedAt: now, lastNotifiedDelayMinutes: delayMinutes } }, { returnDocument: 'after' });
+                if (!claimed) return false;
+                await publishAppointmentCommunication(claimed, { action: 'queue_delay', actorId: req.user!.id });
+                return true;
+              });
+              if (prepared) notifiedCount++;
             } catch (notifyErr) {
               console.error(`[QueueDelay] Failed to notify appointment ${appt._id}:`, notifyErr);
             }
@@ -1370,7 +1362,7 @@ export async function triggerQueueDelayAlerts(req: FastifyRequest, reply: Fastif
       }
     }
 
-    return reply.code(200).send(successResponse({ notifiedCount }, `Dispatched delay alerts to ${notifiedCount} patient(s)`));
+    return reply.code(200).send(successResponse({ notifiedCount, queuedCount: notifiedCount }, `Prepared queue updates for ${notifiedCount} patient(s); delivery remains subject to current consent`));
   } catch (err) {
     console.error("triggerQueueDelayAlerts error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -1386,7 +1378,7 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
       return reply.code(400).send(errorResponse("Invalid appointment ID"));
     }
 
-    const appointment = await Appointment.findById(id);
+    let appointment = await Appointment.findById(id);
     if (!appointment) {
       return reply.code(404).send(errorResponse("Appointment not found"));
     }
@@ -1409,6 +1401,9 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
     const { LabOrder } = await import("../models/LabOrder.ts");
     const { LabTest } = await import("../models/LabTest.ts");
 
+    const { resolvedTestDocs, createdOrders } = await withClinicalTransaction(async () => {
+    appointment = await Appointment.findOne({ _id: id, organizationId: orgId, status: { $in: ['in-consultation', 'checked-in'] } });
+    if (!appointment) throw new Error('The visit changed; refresh before ordering diagnostics');
     let encounter = await Encounter.findOne({ appointmentId: appointment._id, status: { $ne: "cancelled" } });
     if (!encounter) {
       encounter = await Encounter.create({
@@ -1429,7 +1424,8 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
       for (const tId of testIds) {
         if (mongoose.Types.ObjectId.isValid(tId)) {
           const tDoc = await LabTest.findById(tId);
-          if (tDoc) resolvedTestDocs.push(tDoc);
+          if (tDoc && String(tDoc.locationId) === String(appointment.locationId)) resolvedTestDocs.push(tDoc);
+          else throw new Error("Diagnostic catalog reference is outside the visit branch");
         }
       }
     }
@@ -1495,6 +1491,7 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
         clinicalReason: notes || `OPD Diagnostic: ${t.name}`,
         status: "ordered",
       });
+      await syncDiagnosticHandoff(order.id, String(orderedByUserId));
       createdOrders.push(order);
     }
 
@@ -1542,6 +1539,9 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
       },
     });
 
+    return { resolvedTestDocs, createdOrders };
+    });
+
     const locationIdStr = appointment.locationId.toString();
     broadcastQueueUpdate(locationIdStr, {
       type: "QUEUE_UPDATED",
@@ -1556,7 +1556,7 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
       timestamp: new Date().toISOString(),
     });
 
-    broadcastQueueUpdate(locationIdStr, {
+    broadcastClinicalRealtime(locationIdStr, {
       type: "LAB_ORDER_PLACED",
       data: {
         locationId: locationIdStr,
@@ -1568,41 +1568,6 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
       message: `${createdOrders.length} diagnostic test order(s) placed for Token #${appointment.tokenNumber}`,
       timestamp: new Date().toISOString(),
     });
-
-    // Proactively notify patient via WhatsApp about ordered lab tests
-    try {
-      let patientPhone = "";
-      if ((appointment.patientId as any)?.phone) {
-        patientPhone = (appointment.patientId as any).phone;
-      } else if ((appointment.patientId as any)?.userId?.phone) {
-        patientPhone = (appointment.patientId as any).userId.phone;
-      } else if (appointment.patientId) {
-        const { Patient } = await import("../models/Patient.ts");
-        const pDoc = await Patient.findById(appointment.patientId).populate("userId", "phone").lean();
-        patientPhone = (pDoc as any)?.phone || (pDoc as any)?.userId?.phone || "";
-      }
-
-      if (patientPhone) {
-        const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
-        const { url: trackingUrl } = await issueAppointmentTrackerLink(appointment as any);
-        await sendSmsWhatsAppNotification({
-          organizationId: orgId?.toString(),
-          appointmentId: appointment._id.toString(),
-          phone: patientPhone,
-          channel: "whatsapp",
-          templateId: "QUEUE_UPDATE",
-          variables: {
-            tokenNumber: String(appointment.tokenNumber),
-            peopleAhead: "0",
-            doctorName: "Laboratory Counter",
-            trackingUrl,
-          },
-          idempotencyKey: `lab_req_${appointment._id}_${Date.now()}`,
-        }).catch((err) => console.warn("Patient lab order WhatsApp notification notice:", err));
-      }
-    } catch (notifErr) {
-      console.warn("Lab order patient notification warning:", notifErr);
-    }
 
     return reply.code(200).send(
       successResponse(appointment, `Patient Token #${appointment.tokenNumber} sent for diagnostic tests (${createdOrders.length} orders created). Room unblocked.`)
@@ -2440,146 +2405,44 @@ export async function triggerStatEmergency(req: FastifyRequest, reply: FastifyRe
 }
 
 /**
- * Front-Desk 1-Click Resend Tracker Link (P3):
- * Dispatches live queue tracking URL (/track/:id) to patient's registered phone
- * or an alternate attendee number provided at the reception counter via WhatsApp or SMS.
+ * Queue a tracker link for the reviewed canonical WhatsApp recipient.
+ * The command receipt restores exact retries and reports the actual queue state.
  */
 export async function resendQueueTrackerNotification(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id } = req.params as { id: string };
-    const { phone: customPhone, channel = "whatsapp" } = (req.body || {}) as {
-      phone?: string;
-      channel?: "whatsapp" | "sms";
-    };
-
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return reply.code(400).send(errorResponse("Invalid appointment ID"));
-    }
-
-    const appointment = await Appointment.findById(id)
-      .populate("locationId", "name phone organizationId")
-      .populate("doctorId", "name")
-      .populate({
-        path: "patientId",
-        populate: { path: "userId", select: "name email phone" },
-      });
-
-    if (!appointment) {
-      return reply.code(404).send(errorResponse("Appointment not found"));
-    }
-
-    const locationIdStr =
-      (appointment.locationId as any)?._id?.toString() ||
-      appointment.locationId?.toString();
-    const locationCheck = await checkLocationAccess(req, locationIdStr);
-    if (!locationCheck.allowed) {
-      return reply.code(locationCheck.statusCode).send(errorResponse(locationCheck.message));
-    }
-
-    const patientDoc = appointment.patientId as any;
-    const targetPhone =
-      (customPhone && customPhone.trim()) ||
-      patientDoc?.phone ||
-      patientDoc?.userId?.phone;
-
-    if (!targetPhone) {
-      return reply.code(400).send(
-        errorResponse("No valid phone number found for this patient. Please provide a phone number.")
-      );
-    }
-
-    const patientName = patientDoc?.name || patientDoc?.userId?.name || "Patient";
-    const doctorName = (appointment.doctorId as any)?.name || "Doctor";
-    const token = appointment.tokenNumber;
-    const { url: trackingUrl } = await issueAppointmentTrackerLink(appointment as any);
-
-    // Calculate live people ahead in today's queue
-    const targetDate = new Date(appointment.appointmentTime || Date.now());
-    const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 0, 0, 0, 0);
-    const endOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59, 999);
-
-    const peopleAhead = await Appointment.countDocuments({
-      locationId: appointment.locationId,
-      doctorId: appointment.doctorId,
-      appointmentTime: { $gte: startOfDay, $lte: endOfDay },
-      status: { $in: ["checked-in", "confirmed"] },
-      queuePosition: { $lt: appointment.queuePosition || 999 },
-      _id: { $ne: appointment._id },
+    const { phone, channel = 'whatsapp', clientRequestId = crypto.randomUUID() } = (req.body || {}) as { phone?: string; channel?: string; clientRequestId?: string };
+    if ((phone !== undefined && (typeof phone !== 'string' || phone.length > 40)) || typeof clientRequestId !== 'string') return reply.code(400).send(errorResponse('Invalid tracker request details'));
+    if (!mongoose.Types.ObjectId.isValid(id)) return reply.code(400).send(errorResponse('Invalid appointment ID'));
+    if (channel !== 'whatsapp') return reply.code(422).send(errorResponse('Tracker messaging currently supports reviewed WhatsApp recipients'));
+    if (!await requestHasAnyPermission(req, 'COMMUNICATE_PATIENTS')) return reply.code(403).send(errorResponse('Patient communication authority is required'));
+    const appointment = await Appointment.findById(id);
+    if (!appointment) return reply.code(404).send(errorResponse('Appointment not found'));
+    const access = await checkLocationAccess(req, appointment.locationId, { requireExplicitScope: true });
+    if (!access.allowed) return reply.code(access.statusCode).send(errorResponse(access.message));
+    if (access.organizationId !== String(appointment.organizationId)) return reply.code(409).send(errorResponse('Canonical visit branch requires review'));
+    const organizationId = String(appointment.organizationId);
+    const result = await executeRecordedCommand('queue-tracker:' + organizationId + ':' + id, clientRequestId, { appointmentId: id, phone: phone?.trim() || null, channel }, async () => {
+      const decision = await patientCommunicationPolicy({ organizationId, appointmentId: id, actorId: req.user!.id, purpose: 'care_operations', communicationAction: 'queue_tracker', automated: false }, 'whatsapp', phone?.trim() || undefined);
+      const current = await Appointment.findOne({ _id: id, organizationId });
+      if (!current) throw new CommandError(409, 'Visit changed; reload before sending');
+      const { url: trackingUrl } = await issueAppointmentTrackerLink(current);
+      const range = locationDayRange(locationDateKey(current.appointmentTime, await getLocationTimezone(String(current.locationId))), await getLocationTimezone(String(current.locationId)));
+      const peopleAhead = await Appointment.countDocuments({ organizationId, locationId: current.locationId, doctorId: current.doctorId, appointmentTime: { $gte: range.start, $lt: range.end }, status: { $in: ['checked-in', 'confirmed'] }, queuePosition: { $lt: current.queuePosition ?? current.tokenNumber }, _id: { $ne: current._id } });
+      const doctor = await User.findById(current.doctorId).select('name');
+      const { sendSmsWhatsAppNotification } = await import('../services/SmsWhatsAppService.ts');
+      const queued = await sendSmsWhatsAppNotification({ organizationId, appointmentId: id, phone: decision.recipient, patientName: decision.patient?.name || 'Patient', channel: 'whatsapp', templateId: 'QUEUE_UPDATE', communicationContext: decision.context,
+        variables: { patientName: decision.patient?.name || 'Patient', tokenNumber: String(current.tokenNumber), peopleAhead: String(peopleAhead), doctorName: doctor?.name || 'Doctor', trackingUrl }, idempotencyKey: 'queue-tracker:' + id + ':' + clientRequestId });
+      await AuditLog.create({ userId: req.user!.id, organizationId, category: 'ADMIN', action: 'QUEUE_TRACKER_RESENT', targetId: current._id, targetModel: 'Appointment', details: { outboxId: String(queued._id), recipientHash: decision.context.recipientHash, channel: 'whatsapp' } });
+      return String(queued._id);
     });
-
-    const organizationId =
-      (appointment.locationId as any)?.organizationId?.toString() ||
-      (appointment as any).organizationId?.toString();
-
-    const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
-    const idempotencyKey = `resend_tracker_${appointment._id}_${Date.now()}`;
-
-    const dispatchResult = await sendSmsWhatsAppNotification({
-      organizationId,
-      appointmentId: appointment._id.toString(),
-      phone: targetPhone,
-      patientName,
-      channel: channel === "sms" ? "sms" : "whatsapp",
-      templateId: "QUEUE_UPDATE",
-      variables: {
-        patientName,
-        tokenNumber: String(token),
-        peopleAhead: String(peopleAhead),
-        doctorName,
-        trackingUrl,
-      },
-      idempotencyKey,
-    });
-
-    // In-app alert dispatch if user exists
-    const targetUserId = patientDoc?.userId?._id?.toString() || patientDoc?.userId?.toString();
-    if (targetUserId) {
-      const { eventBus } = await import("../events/eventBus.ts");
-      const { EVENT_TYPES } = await import("../events/types.ts");
-      await eventBus.publishDurable({
-        eventType: EVENT_TYPES.PATIENT_CALL_NEXT,
-        category: "patient",
-        targetUserId,
-        title: `Live Token Tracking Link (#${token})`,
-        message: `Your live queue tracker for Dr. ${doctorName} is active. Live position: ${peopleAhead} ahead.`,
-        severity: "info",
-        actionUrl: trackingUrl,
-        metadata: { appointmentId: appointment._id, token, peopleAhead, trackingUrl },
-      });
-    }
-
-    await AuditLog.create({
-      userId: req.user!.id,
-      organizationId,
-      action: "QUEUE_TRACKER_RESENT",
-      targetId: appointment._id,
-      targetModel: "Appointment",
-      category: "ADMIN",
-      details: {
-        tokenNumber: token,
-        recipientPhone: targetPhone,
-        channel,
-        peopleAhead,
-        trackingUrl,
-      },
-    });
-
-    return reply.code(200).send(
-      successResponse(
-        {
-          appointmentId: appointment._id,
-          tokenNumber: token,
-          recipientPhone: targetPhone,
-          channel,
-          trackingUrl,
-          peopleAhead,
-          dispatchResult,
-        },
-        `Live queue tracking link sent to ${targetPhone} via ${channel.toUpperCase()}`
-      )
-    );
-  } catch (err) {
-    console.error("resendQueueTrackerNotification error:", err);
-    return reply.code(500).send(errorResponse("Internal server error"));
+    const outbox = await OutboundMessage.findOne({ _id: result.resultId, 'payload.organizationId': organizationId }).select('status');
+    if (!outbox) throw new CommandError(404, 'Recorded message is unavailable');
+    return reply.send(successResponse({ appointmentId: id, tokenNumber: appointment.tokenNumber, channel: 'whatsapp', outboxId: outbox.id, status: outbox.status, replayed: result.replayed }, 'Tracker message ' + outbox.status + '; delivery is reported separately'));
+  } catch (error) {
+    if (error instanceof CommunicationPolicyError) return reply.code(409).send(errorResponse('Message blocked: ' + error.reason + '. Review current consent and recipient.'));
+    if (error instanceof CommandError) return reply.code(error.statusCode).send(errorResponse(error.message));
+    req.log.error({ err: error }, 'Tracker queue preparation failed');
+    return reply.code(503).send(errorResponse('Tracker result could not be confirmed. Retry the same request.'));
   }
 }

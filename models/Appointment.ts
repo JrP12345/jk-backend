@@ -1,13 +1,16 @@
 import mongoose, { Schema } from "mongoose";
 import { getActiveConsultationDoctorDayKey } from "../utilities/consultationLock.ts";
+import { encryptField } from '../utilities/cryptoEnvelope.ts';
 
 const AppointmentSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
+  feedbackRevision: { type: Number, default: 0 },
   locationId: { type: Schema.Types.ObjectId, ref: "Location", required: true, index: true },
   doctorId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
   patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
   bookedByUserId: { type: Schema.Types.ObjectId, ref: "User", index: true },
   trackerTokenHash: { type: String, select: false, index: true },
+  trackerTokenCiphertext: { type: String, select: false, set: encryptField },
   trackerTokenExpiresAt: { type: Date, index: true },
   // A tracker link is a read capability. Self check-in requires this separate,
   // short-lived, single-use capability so an appointment identifier or an old
@@ -69,6 +72,10 @@ const AppointmentSchema = new Schema({
   followUpNotes: { type: String },
   followUpForAppointmentId: { type: Schema.Types.ObjectId, ref: "Appointment", index: true },
   followUpAppointmentId: { type: Schema.Types.ObjectId, ref: "Appointment", index: true },
+  followUpTaskId: { type: Schema.Types.ObjectId, ref: "Task" },
+  followUpDueAt: Date,
+  followUpWorkflow: { type: String, enum: ["recommended", "review_required", "booked", "declined"] },
+  followUpConfirmationEvidence: { type: String, enum: ["explicit_booking", "legacy_reviewed"] },
   symptoms: { type: String },
   diagnosis: { type: String },
   prescriptions: [{
@@ -78,12 +85,16 @@ const AppointmentSchema = new Schema({
   }],
   // Doctor Availability Disruption & Patient Triage fields
   disruptionId: { type: Schema.Types.ObjectId, ref: "DoctorDayOverride", index: true },
+  // Missing on legacy records: attendance must be reviewed, never inferred from notes.
+  disruptionOriginalStatus: { type: String, enum: ["checked-in", "confirmed", "pending", "pending_payment"] },
   originalDoctorId: { type: Schema.Types.ObjectId, ref: "User", index: true },
   originalTokenNumber: { type: Number },
   transferredAt: { type: Date },
   transferredBy: { type: Schema.Types.ObjectId, ref: "User" },
   disruptedAt: { type: Date },
   disruptionNotifiedAt: { type: Date },
+  disruptionReviewDueAt: Date,
+  disruptionReviewRequiredAt: Date,
   disruptionResponseDeadline: { type: Date, index: true },
   // A bounded claim prevents two timeout workers from refunding/cancelling the
   // same disruption appointment if leadership changes during a sweep.
@@ -159,6 +170,8 @@ const AppointmentSchema = new Schema({
   turnApproachingNotifiedAt: { type: Date, default: null },
   // Digital e-Prescription Dispatch Tracking
   rxDispatchedAt: { type: Date, default: null },
+  rxQueuedAt: { type: Date, default: null },
+  communicationRevision: { type: Number, default: 0 },
   rxDispatchPhone: { type: String, default: null },
   // Follow-Up Care-Gap & Patient Recall Tracking
   lastRecallSentAt: { type: Date, default: null },
@@ -248,6 +261,9 @@ AppointmentSchema.set("toJSON", {
     ret.id = ret._id.toString();
     delete ret._id;
     delete ret.__v;
+    delete ret.trackerTokenHash;
+    delete ret.trackerTokenCiphertext;
+    delete ret.checkInTokenHash;
     if (ret.appointmentTime) {
       const d = new Date(ret.appointmentTime);
       ret.appointmentTime = !isNaN(d.getTime()) ? d.toISOString() : null;

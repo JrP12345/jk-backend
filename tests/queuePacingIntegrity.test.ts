@@ -37,33 +37,33 @@ const visit = (tokenNumber: number, appointmentTime = new Date("2026-10-04T20:00
 });
 
 describe("Queue pacing persistence", () => {
-  it("concurrent pacing claims each of the first two patients once and preserves replay timestamps", async () => {
+  it("concurrent pacing prepares each of the first two patient updates once without inferring external consent and preserves replay timestamps", async () => {
     const visits = await Promise.all([visit(1), visit(2), visit(3)]);
     await Promise.all(Array.from({ length: 4 }, () => triggerTurnApproachingPacing(locationId, doctorId)));
     const before = await Appointment.findById(visits[0].id);
     expect(before?.turnApproachingNotifiedAt).toBeInstanceOf(Date);
-    expect(await DomainEventOutbox.countDocuments({})).toBe(2);
-    expect(await OutboundMessage.countDocuments({})).toBe(2);
+    expect(await DomainEventOutbox.countDocuments({ eventType: "crm.appointment.communication" })).toBe(2);
+    expect(await OutboundMessage.countDocuments({})).toBe(0);
     expect((await Appointment.findById(visits[2].id))?.turnApproachingNotifiedAt).toBeFalsy();
     vi.setSystemTime(new Date("2026-10-05T00:31:00Z"));
     await triggerTurnApproachingPacing(locationId, doctorId);
     expect((await Appointment.findById(visits[0].id))?.turnApproachingNotifiedAt?.getTime()).toBe(before!.turnApproachingNotifiedAt!.getTime());
-    expect(await DomainEventOutbox.countDocuments({})).toBe(2);
-    expect(await OutboundMessage.countDocuments({})).toBe(2);
+    expect(await DomainEventOutbox.countDocuments({ eventType: "crm.appointment.communication" })).toBe(2);
+    expect(await OutboundMessage.countDocuments({})).toBe(0);
   });
 
-  it("rolls back the marker and both delivery intents after an enqueue failure, then permits retry", async () => {
+  it("rolls back the marker and durable intents after an enqueue failure, then permits retry", async () => {
     const appointment = await visit(1);
-    const fail = vi.spyOn(OutboundMessage, "findOneAndUpdate").mockImplementationOnce(() => { throw new Error("Injected enqueue failure"); });
+    const fail = vi.spyOn(DomainEventOutbox, "findOneAndUpdate").mockImplementationOnce(() => { throw new Error("Injected enqueue failure"); });
     await triggerTurnApproachingPacing(locationId, doctorId);
     expect((await Appointment.findById(appointment.id))?.turnApproachingNotifiedAt).toBeFalsy();
-    expect(await DomainEventOutbox.countDocuments({})).toBe(0);
+    expect(await DomainEventOutbox.countDocuments({ eventType: "crm.appointment.communication" })).toBe(0);
     expect(await OutboundMessage.countDocuments({})).toBe(0);
     fail.mockRestore();
     await triggerTurnApproachingPacing(locationId, doctorId);
     expect((await Appointment.findById(appointment.id))?.turnApproachingNotifiedAt).toBeInstanceOf(Date);
-    expect(await DomainEventOutbox.countDocuments({})).toBe(1);
-    expect(await OutboundMessage.countDocuments({})).toBe(1);
+    expect(await DomainEventOutbox.countDocuments({ eventType: "crm.appointment.communication" })).toBe(1);
+    expect(await OutboundMessage.countDocuments({})).toBe(0);
   });
 
   it("uses the configured clinic day at a UTC midnight boundary", async () => {
@@ -72,6 +72,6 @@ describe("Queue pacing persistence", () => {
     await triggerTurnApproachingPacing(locationId, doctorId);
     expect((await Appointment.findById(today.id))?.turnApproachingNotifiedAt).toBeInstanceOf(Date);
     expect((await Appointment.findById(tomorrow.id))?.turnApproachingNotifiedAt).toBeFalsy();
-    expect(await DomainEventOutbox.countDocuments({})).toBe(1);
+    expect(await DomainEventOutbox.countDocuments({ eventType: "crm.appointment.communication" })).toBe(1);
   });
 });

@@ -67,12 +67,14 @@ import { outboundMessageDeliveryWorker } from "./services/OutboundMessageDeliver
 import whatsappCreditsRoutes from "./routes/whatsappCredits.ts";
 import { startDisruptionTimeoutJob, stopDisruptionTimeoutJob } from "./jobs/disruptionTimeoutJob.ts";
 import { domainEventDeliveryWorker } from "./services/DomainEventDeliveryWorker.ts";
+import { startCrmReminderJob, stopCrmReminderJob } from './jobs/crmReminderJob.ts';
 import { notificationDeliveryWorker } from "./notifications/workers/NotificationDeliveryWorker.ts";
 import { startBillingReconciliationJob, stopBillingReconciliationJob } from "./jobs/billingReconciliationJob.ts";
 import upiWebhookRoutes from "./routes/upiWebhook.ts";
 import abdmRoutes from "./routes/abdm.ts";
 import syntheticHealthRoutes from "./routes/syntheticHealth.ts";
 import dpdpRoutes from "./routes/dpdp.ts";
+import crmRoutes from "./routes/crm.ts";
 import scheduleH1Routes from "./routes/scheduleH1.ts";
 import outboxOperationsRoutes from "./routes/outboxOperations.ts";
 import { seedDefaultRoles } from "./controllers/onboarding.ts";
@@ -352,6 +354,7 @@ app.register(upiWebhookRoutes);
 app.register(abdmRoutes);
 app.register(syntheticHealthRoutes);
 app.register(dpdpRoutes);
+app.register(crmRoutes);
 app.register(scheduleH1Routes);
 app.register(outboxOperationsRoutes);
 
@@ -417,6 +420,7 @@ async function startServer(port = getServerPort()) {
     // 3. Start durable consumers when using inline jobs.
     if (process.env.NODE_ENV !== "test" && (process.env.RUN_INLINE_JOBS === "true" || process.env.NODE_ENV !== "production")) {
       domainEventDeliveryWorker.start();
+      startCrmReminderJob();
       notificationDeliveryWorker.start();
       startDisruptionTimeoutJob();
       startBillingReconciliationJob();
@@ -456,7 +460,7 @@ const gracefulShutdown = async (signal: string, exitCode = 0) => {
       app.log.info(`Draining inbound traffic for ${drainMs}ms before closing listeners...`);
     }
     await Promise.all([
-      stopDisruptionTimeoutJob(), domainEventDeliveryWorker.stop(), notificationDeliveryWorker.stop(),
+      stopDisruptionTimeoutJob(), stopCrmReminderJob(), domainEventDeliveryWorker.stop(), notificationDeliveryWorker.stop(),
       stopBillingReconciliationJob(), stopOrganizationBrandingJob(), whatsAppWebhookWorker.stop(), outboundMessageDeliveryWorker.stop(),
       drainMs > 0 ? new Promise(resolve => setTimeout(resolve, drainMs)) : Promise.resolve(),
     ]);

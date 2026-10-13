@@ -10,6 +10,8 @@ import { notificationQueue } from "./NotificationQueue.ts";
 import { notificationRuleEngine } from "./NotificationRuleEngine.ts";
 import type { DomainEventPayload } from "../../events/types.ts";
 import { eventBus } from "../../events/eventBus.ts";
+import { canDeliverCrmTaskNotification, isCrmTaskNotification } from '../../services/CrmNotificationAuthority.ts';
+import { patientNotificationAudience } from '../../services/PatientNotificationAuthority.ts';
 
 export class NotificationService {
   constructor() {
@@ -80,6 +82,11 @@ export class NotificationService {
    * Main domain event handler triggered by EventBus
    */
   public async handleDomainEvent(event: DomainEventPayload) {
+    if (!event.targetUserId) return;
+    const audience = await patientNotificationAudience(event);
+    if (!audience.allowed) return;
+    if (audience.protected) event = { ...event, category: 'patient', title: audience.orderId ? 'Diagnostic order update' : 'Visit update', message: audience.orderId ? 'Open your diagnostic orders to review their current state.' : 'There is an update for your visit. Open your appointments to review its current state.',
+      actionUrl: audience.orderId ? `/dashboard/laboratory?orderId=${audience.orderId}` : `/dashboard/appointments?appointmentId=${audience.appointmentId}`, metadata: { appointmentId: audience.appointmentId, orderId: audience.orderId, patientId: audience.patientId, locationId: audience.locationId, idempotencyKey: event.metadata?.idempotencyKey } };
     const {
       eventId,
       targetUserId,
@@ -97,6 +104,8 @@ export class NotificationService {
     } = event;
 
     if (!targetUserId) return;
+    const crmTaskEvent = isCrmTaskNotification(event);
+    if (crmTaskEvent && !await canDeliverCrmTaskNotification(event)) return;
 
     const idempotencyKey = eventId || metadata?.idempotencyKey;
     const existing = idempotencyKey ? await Notification.findOne({
@@ -117,6 +126,7 @@ export class NotificationService {
 
     // Evaluate Level 4 Rule & Escalation Engine routing
     const effectiveChannels = notificationRuleEngine.evaluateRouting(event, pref.channels);
+    if (crmTaskEvent || audience.protected) effectiveChannels.email = false;
 
     let createdNotification: any = existing;
     let inserted = false;
@@ -180,7 +190,7 @@ export class NotificationService {
 
     // 3. External Channel Deliveries (Email Background Job Enqueue)
     const requested = event.metadata?.requestedChannels;
-    const shouldSendEmail = (requested?.email !== false && effectiveChannels.email) || requested?.email === true;
+    const shouldSendEmail = !crmTaskEvent && !audience.protected && ((requested?.email !== false && effectiveChannels.email) || requested?.email === true);
 
     if (shouldSendEmail && createdNotification) {
       let recipientEmail: string | undefined;

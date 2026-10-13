@@ -1,7 +1,6 @@
 import { WorkerLoop } from "../utilities/workerLoop.ts";
 import crypto from "node:crypto";
 import { OutboundMessage } from "../models/OutboundMessage.ts";
-import { sendPaymentReceiptNotification } from "../utilities/notifications.ts";
 import {
   readCommunicationTemplate,
   readEncryptedOutboundPayload,
@@ -16,6 +15,9 @@ import { emailProvider } from "../notifications/providers/emailProvider.ts";
 import { resolveWhatsAppAccount, recordWhatsAppCredentialError } from "./WhatsAppAccountService.ts";
 import { assertWhatsAppConsent, assertApprovedTemplate, isPermanentWhatsAppFailure } from "./WhatsAppSendPolicy.ts";
 import { claimWhatsAppIntent } from "./WhatsAppLedger.ts";
+import { patientCommunicationPolicy, CommunicationPolicyError } from './PatientCommunicationPolicy.ts';
+import { recordCommunicationRecovery } from './CommunicationRecoveryService.ts';
+import { withTransaction } from '../utilities/transaction.ts';
 
 import {
   OUTBOUND_MESSAGE_WORKER_BATCH_SIZE,
@@ -70,9 +72,11 @@ export class OutboundMessageDeliveryWorker {
 
   private async dispatchDirectWhatsApp(message: any) {
     const payload = readEncryptedOutboundPayload<WhatsAppDocumentMessage & WhatsAppFreeformMessage>(message);
+    if (!payload.communicationContext) throw new CommunicationPolicyError('COMMUNICATION_CONTEXT_REQUIRED');
+    await patientCommunicationPolicy(payload.communicationContext, 'whatsapp', payload.to);
     const key = `outbound:${message.idempotencyKey}`;
     const existing = await NotificationLog.findOne({ idempotencyKey: key });
-    if (existing && ["accepted", "sent", "delivered", "read"].includes(existing.status)) return;
+    if (existing && ["accepted", "sent", "delivered", "read"].includes(existing.status)) return existing.status;
     if (existing?.status === "sending" || existing?.errorReason === "AMBIGUOUS_NETWORK") throw new PermanentDeliveryError("AMBIGUOUS_NETWORK");
     const account = await resolveWhatsAppAccount(payload.organizationId);
     const windowOpen = await assertWhatsAppConsent(account, payload.to);
@@ -84,7 +88,7 @@ export class OutboundMessageDeliveryWorker {
       organizationId: payload.organizationId, recipientPhone: payload.to, channel: "whatsapp", templateId: document ? "DOCUMENT_READY" : "TWO_WAY_ASSISTANT",
       messageContent: document ? "[Document notification]" : payload.text, status: "sending",
     });
-    if (!claim.claimed) return;
+    if (!claim.claimed) return claim.log?.status;
     const intent = claim.log!;
     let result = document
       ? (!windowOpen && !sandbox
@@ -99,6 +103,7 @@ export class OutboundMessageDeliveryWorker {
     await recordWhatsAppCredentialError(account, result.errorCode);
     await NotificationLog.updateOne({ _id: intent._id }, { $set: { status: result.status, providerMessageId: result.providerMessageId, metaMessageId: result.providerMessageId, errorReason: result.errorReason } });
     if (!result.success) throw isPermanentWhatsAppFailure(result.errorReason) ? new PermanentDeliveryError(result.errorReason) : new Error(result.errorReason);
+    return result.status;
   }
 
   private async processOne(): Promise<boolean> {
@@ -127,10 +132,17 @@ export class OutboundMessageDeliveryWorker {
     heartbeat.unref?.();
 
     try {
+      let deliveryStatus = 'accepted';
       if (message.kind === "payment_receipt") {
-        await sendPaymentReceiptNotification(message.payload as any);
+        // Old fan-out rows never pinned consent or recipient evidence. They
+        // cannot be revived by a later grant or described as provider acceptance.
+        throw new CommunicationPolicyError('COMMUNICATION_LEGACY_REVIEW_REQUIRED');
       } else if (message.kind === "communication_template") {
-        const delivery = await dispatchSmsWhatsAppNotification(readCommunicationTemplate(message));
+        const options = readCommunicationTemplate(message);
+        if (options.templateId !== 'OTP_VERIFICATION' && (!options.communicationContext?.recipientHash || !options.communicationContext?.consentEvidenceHash)) throw new CommunicationPolicyError('COMMUNICATION_LEGACY_REVIEW_REQUIRED');
+        const delivery = await dispatchSmsWhatsAppNotification(options);
+        if (!delivery) throw new CommunicationPolicyError('COMMUNICATION_CHANNEL_DISABLED');
+        deliveryStatus = delivery.status;
         // A disabled channel is an intentional suppression, not a retryable
         // provider failure. Failed provider/consent outcomes carry a log reason.
         if (delivery?.status === "failed") {
@@ -141,24 +153,33 @@ export class OutboundMessageDeliveryWorker {
           throw failure;
         }
       } else if (message.kind === "whatsapp_document" || message.kind === "whatsapp_freeform") {
-        await this.dispatchDirectWhatsApp(message);
+        deliveryStatus = await this.dispatchDirectWhatsApp(message) || 'accepted';
       } else if (message.kind === "transactional_email") {
         const email = readEncryptedOutboundPayload<TransactionalEmailMessage>(message);
-        const sent = await emailProvider.sendEmail(email, email.orgSmtp);
-        if (!sent) throw new Error("Transactional email provider rejected delivery");
+        if (email.communicationContext) await patientCommunicationPolicy(email.communicationContext, 'email', email.to);
+        if (email.communicationContext) {
+          if (message.emailAttemptedAt) throw new PermanentDeliveryError('EMAIL_ACCEPTANCE_UNCONFIRMED');
+          const claim = await OutboundMessage.updateOne({ _id: message._id, status: 'processing', lockedBy, emailAttemptedAt: null }, { $set: { emailAttemptedAt: new Date() } });
+          if (!claim.modifiedCount) throw new PermanentDeliveryError('EMAIL_ACCEPTANCE_UNCONFIRMED');
+        }
+        let sent: boolean;
+        try { sent = await emailProvider.sendEmail(email, email.orgSmtp); }
+        catch (error) { if (email.communicationContext) throw new PermanentDeliveryError('EMAIL_ACCEPTANCE_UNCONFIRMED'); throw error; }
+        if (!sent) throw email.communicationContext ? new PermanentDeliveryError('EMAIL_ACCEPTANCE_UNCONFIRMED') : new Error("Transactional email provider rejected delivery");
       } else {
         throw new PermanentDeliveryError(`Unsupported outbound message kind: ${(message as any).kind}`);
       }
 
       await OutboundMessage.updateOne(
         { _id: message._id, status: "processing", lockedBy },
-        { $set: { status: "sent", sentAt: new Date() }, $unset: { lockedAt: 1, lockedUntil: 1, lockedBy: 1, nextAttemptAt: 1 } },
+        { $set: { status: ['accepted', 'sent', 'delivered', 'read'].includes(deliveryStatus) ? deliveryStatus : 'accepted', [`${['sent', 'delivered', 'read'].includes(deliveryStatus) ? deliveryStatus : 'accepted'}At`]: new Date() }, $unset: { lockedAt: 1, lockedUntil: 1, lockedBy: 1, nextAttemptAt: 1 } },
       );
     } catch (error: any) {
-      const retry = !(error instanceof PermanentDeliveryError) && !isPermanentWhatsAppFailure(error.message) && message.attempts < message.maxAttempts;
-      await OutboundMessage.updateOne(
-        { _id: message._id, status: "processing", lockedBy },
-        retry
+      const retry = !(error instanceof CommunicationPolicyError) && !(error instanceof PermanentDeliveryError) && !isPermanentWhatsAppFailure(error.message) && message.attempts < message.maxAttempts;
+      await withTransaction(async () => {
+        const changed = await OutboundMessage.updateOne(
+          { _id: message._id, status: "processing", lockedBy },
+          retry
           ? {
               $set: {
                 status: "retrying",
@@ -168,10 +189,12 @@ export class OutboundMessageDeliveryWorker {
               $unset: { lockedAt: 1, lockedUntil: 1, lockedBy: 1 },
             }
           : {
-              $set: { status: "failed", error: error?.message || "Outbound delivery failed", sentAt: new Date() },
+              $set: { status: error instanceof CommunicationPolicyError ? 'suppressed' : "failed", error: error?.message || "Outbound delivery failed" },
               $unset: { lockedAt: 1, lockedUntil: 1, lockedBy: 1, nextAttemptAt: 1 },
             },
-      );
+        );
+        if (!retry && changed.modifiedCount) await recordCommunicationRecovery(message);
+      });
     } finally { clearInterval(heartbeat); }
     return true;
   }

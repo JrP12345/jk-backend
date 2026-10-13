@@ -4,6 +4,7 @@ const schema = new Schema({
   phoneHash: { type: String, required: true },
   optedOut: { type: Boolean, default: false },
   lastInboundAt: Date,
+  lastPreferenceAt: Date,
 }, { timestamps: true });
 schema.index({ scope: 1, phoneHash: 1 }, { unique: true });
 export const WhatsAppRecipient = mongoose.model("WhatsAppRecipient", schema);

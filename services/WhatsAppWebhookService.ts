@@ -62,17 +62,14 @@ export class WhatsAppWebhookWorker {
         processed++;
         const heartbeat = setInterval(() => { void WhatsAppWebhookInbox.updateOne({ _id: row._id, status: "processing", lockedBy }, { $set: { lockedUntil: new Date(Date.now() + 120_000) } }).catch(() => console.error("[WhatsAppWebhookWorker] Lease renewal failed")); }, 30_000);
         heartbeat.unref?.();
-        let inboundCommand = false;
         try {
           const body = JSON.parse(decryptField(row.payloadCiphertext));
-          inboundCommand = !!body.entry?.[0]?.changes?.[0]?.value?.messages?.length;
-          // A crashed clinical bot command can have committed a booking/queue change.
-          if (row.status === "processing" && body.entry?.[0]?.changes?.[0]?.value?.messages?.length) throw new Error("AMBIGUOUS_INBOUND_COMMAND");
+          // Inbound capture is idempotent and does not execute booking commands.
           const { processWhatsAppWebhookPayload } = await import("../controllers/whatsappWebhook.ts");
           await processWhatsAppWebhookPayload(body);
           await WhatsAppWebhookInbox.updateOne({ _id: row._id, lockedBy }, { $set: { status: "done" }, $unset: { payloadCiphertext: 1, lockedUntil: 1, lockedBy: 1, error: 1 } });
         } catch (error: any) {
-          const retry = !inboundCommand && row.attempts < 9 && error.message !== "AMBIGUOUS_INBOUND_COMMAND";
+          const retry = row.attempts < 9;
           await WhatsAppWebhookInbox.updateOne({ _id: row._id, lockedBy }, { $set: { status: retry ? "pending" : "failed", error: error.message === "ORPHAN_STATUS" ? "ORPHAN_STATUS" : "WEBHOOK_PROCESSING_FAILED", nextAttemptAt: new Date(Date.now() + Math.min(300_000, 1000 * 2 ** row.attempts)) }, $unset: { lockedUntil: 1, lockedBy: 1 } });
         } finally { clearInterval(heartbeat); }
       }

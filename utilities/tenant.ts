@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
 import type { FastifyRequest } from "fastify";
+import { resolveStaffLocationGrant } from "../services/LocationAccessService.ts";
 
 /**
  * Resolve the organization carried by the authenticated JWT.
@@ -94,6 +95,7 @@ export function resolveAuthorizedOrganizationScope(req: FastifyRequest): TenantC
 export async function checkLocationAccess(
   req: FastifyRequest,
   locationId: unknown,
+  options: { requireExplicitScope?: boolean } = {},
 ): Promise<TenantCheck> {
   const normalizedLocationId =
     typeof locationId === "string"
@@ -135,17 +137,24 @@ export async function checkLocationAccess(
     return { allowed: false, statusCode: 404, message: "Location not found" };
   }
 
+  const grant = await resolveStaffLocationGrant(req.user!.id, organizationId, req.user!.role, options.requireExplicitScope);
+  if (grant && !grant.includes(normalizedLocationId)) {
+    return { allowed: false, statusCode: 404, message: "Location not found" };
+  }
+
   return { allowed: true, organizationId };
 }
 
 /** Return only locations visible to the authenticated organization. */
-export async function getRequestLocationIds(req: FastifyRequest) {
+export async function getRequestLocationIds(req: FastifyRequest, options: { requireExplicitScope?: boolean } = {}) {
   if (isRootRequest(req)) return undefined;
 
   const organizationId = getRequestOrganizationId(req);
   if (!organizationId) return [];
 
-  const locations = await Location.find({ organizationId, isActive: { $ne: false } })
+  const grant = await resolveStaffLocationGrant(req.user!.id, organizationId, req.user!.role, options.requireExplicitScope);
+  const locations = await Location.find({ organizationId, isActive: { $ne: false },
+    ...(grant ? { _id: { $in: grant } } : {}) })
     .select("_id")
     .lean();
   return locations.map((location) => location._id);

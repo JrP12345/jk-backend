@@ -8,6 +8,7 @@ import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
+import { WhatsAppInboundMessage } from "../models/WhatsAppInboundMessage.ts";
 import { NotificationLog } from "../models/NotificationLog.ts";
 
 describe("NMC Doctor Credentials & Two-Way Interactive WhatsApp Bot Suite", () => {
@@ -114,7 +115,7 @@ describe("NMC Doctor Credentials & Two-Way Interactive WhatsApp Bot Suite", () =
   });
 
   // ─── Test 1: Inbound Webhook: STATUS / TOKEN Query ────────────────────────
-  it("should respond to inbound WhatsApp 'STATUS' message with live queue token, doctor, and wait details", async () => {
+  it("quarantines inbound STATUS for explicit routing without disclosing a visit", async () => {
     const inboundPayload = {
       object: "whatsapp_business_account",
       entry: [
@@ -159,14 +160,12 @@ describe("NMC Doctor Credentials & Two-Way Interactive WhatsApp Bot Suite", () =
       templateId: "TWO_WAY_ASSISTANT",
     }).sort({ createdAt: -1 });
 
-    expect(assistantLog).toBeDefined();
-    expect(assistantLog?.messageContent).toContain("Live OPD Queue Status");
-    expect(assistantLog?.messageContent).toContain("Token: *#22*");
-    expect(assistantLog?.messageContent).toContain("Suresh Gupta");
+    expect(assistantLog).toBeNull();
+    expect(await WhatsAppInboundMessage.findOne({ wamid: inboundPayload.entry[0].changes[0].value.messages[0].id })).toMatchObject({ pendingReview: true });
   });
 
   // ─── Test 2: Inbound Webhook: DELAY / LATE Postponement ────────────────────
-  it("should respond to inbound WhatsApp 'DELAY' message by bumping queue position by 2", async () => {
+  it("quarantines inbound DELAY without changing the canonical queue", async () => {
     const inboundPayload = {
       object: "whatsapp_business_account",
       entry: [
@@ -177,6 +176,7 @@ describe("NMC Doctor Credentials & Two-Way Interactive WhatsApp Bot Suite", () =
               field: "messages",
               value: {
                 messaging_product: "whatsapp",
+                metadata: { phone_number_id: "PHONE_ID" },
                 messages: [
                   {
                     from: patientPhone,
@@ -203,8 +203,8 @@ describe("NMC Doctor Credentials & Two-Way Interactive WhatsApp Bot Suite", () =
 
     // Verify appointment was bumped back by 2 positions
     const updatedAppt = await Appointment.findById(appointment._id);
-    expect(updatedAppt?.queuePosition).toBe(5); // 3 + 2 = 5
-    expect(updatedAppt?.parkedReason).toContain("WhatsApp self-service");
+    expect(updatedAppt?.queuePosition).toBe(3);
+    expect(updatedAppt?.parkedReason).toBeUndefined();
 
     // Verify confirmation message was logged
     await outboundMessageDeliveryWorker.processBatch(20);
@@ -213,12 +213,12 @@ describe("NMC Doctor Credentials & Two-Way Interactive WhatsApp Bot Suite", () =
       templateId: "TWO_WAY_ASSISTANT",
     }).sort({ createdAt: -1 });
 
-    expect(delayLog).toBeDefined();
-    expect(delayLog?.messageContent).toContain("Position #5");
+    expect(delayLog).toBeNull();
+    expect(await WhatsAppInboundMessage.findOne({ wamid: inboundPayload.entry[0].changes[0].value.messages[0].id })).toMatchObject({ pendingReview: true });
   });
 
   // ─── Test 3: Inbound Webhook: RX Query ────────────────────────────────────
-  it("should respond to inbound WhatsApp 'RX' message with prescribed medicines summary", async () => {
+  it("quarantines inbound RX without returning medication or a medical capability", async () => {
     // Mark appointment completed
     await Appointment.findByIdAndUpdate(appointment._id, {
       status: "completed",
@@ -235,6 +235,7 @@ describe("NMC Doctor Credentials & Two-Way Interactive WhatsApp Bot Suite", () =
               field: "messages",
               value: {
                 messaging_product: "whatsapp",
+                metadata: { phone_number_id: "PHONE_ID" },
                 messages: [
                   {
                     from: patientPhone,
@@ -265,8 +266,7 @@ describe("NMC Doctor Credentials & Two-Way Interactive WhatsApp Bot Suite", () =
       templateId: "TWO_WAY_ASSISTANT",
     }).sort({ createdAt: -1 });
 
-    expect(rxLog).toBeDefined();
-    expect(rxLog?.messageContent).toContain("Salbutamol 4mg");
-    expect(rxLog?.messageContent).toContain("Pantoprazole 40mg");
+    expect(rxLog).toBeNull();
+    expect(await WhatsAppInboundMessage.findOne({ wamid: inboundPayload.entry[0].changes[0].value.messages[0].id })).toMatchObject({ pendingReview: true });
   });
 });

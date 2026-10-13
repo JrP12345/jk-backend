@@ -200,15 +200,16 @@ export const feedbackSubmissionSchema = {
     required: ["appointmentId", "rating", "npsScore"],
     properties: {
       appointmentId: { type: "string", pattern: objectIdPattern },
-      rating: { type: "number", minimum: 1, maximum: 5 },
-      npsScore: { type: "number", minimum: 0, maximum: 10 },
+      clientRequestId: { type: "string", pattern: "^[a-zA-Z0-9_-]{8,100}$" },
+      rating: { type: "integer", minimum: 1, maximum: 5 },
+      npsScore: { type: "integer", minimum: 0, maximum: 10 },
       comments: { type: "string", maxLength: 2000 },
       aspectRatings: {
         type: "object",
         properties: {
-          waitTime: { type: "number", minimum: 1, maximum: 5 },
-          doctorAttitude: { type: "number", minimum: 1, maximum: 5 },
-          cleanliness: { type: "number", minimum: 1, maximum: 5 },
+          waitTime: { type: "integer", minimum: 1, maximum: 5 },
+          doctorAttitude: { type: "integer", minimum: 1, maximum: 5 },
+          cleanliness: { type: "integer", minimum: 1, maximum: 5 },
         },
         additionalProperties: false,
       },
@@ -223,6 +224,8 @@ export const feedbackQuerySchema = {
     properties: {
       locationId: { type: "string", pattern: objectIdPattern },
       doctorId: { type: "string", pattern: objectIdPattern },
+      appointmentId: { type: "string", pattern: objectIdPattern },
+      cursor: { type: "string", pattern: objectIdPattern },
       page: { type: "string", pattern: numericStringPattern },
       limit: { type: "string", pattern: "^[0-9]{1,3}$" },
     },

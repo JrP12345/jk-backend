@@ -1,3 +1,5 @@
+import { User } from '../../models/User.ts';
+import { OrgMember } from '../../models/OrgMember.ts';
 import { provisioningFixtureHeaders, provisionedAdminCookies } from "./provisioningFixture.ts";
 import type { FastifyInstance } from "fastify";
 
@@ -179,4 +181,12 @@ export async function reuseOnboardingLocation(
   });
   if (response.statusCode !== 200) throw new Error(`Clinic fixture update failed: ${response.statusCode} ${response.body}`);
   return response;
+}
+
+/** Synthetic initial branch review, before the staff session is issued. */
+export async function grantFixtureBranch(email: string, locationId: string) {
+  const user = await User.findOne({ email });
+  if (!user) throw new Error('Fixture staff identity missing');
+  const changed = await OrgMember.updateOne({ userId: user.id }, { locationAccess: { mode: 'selected', locationIds: [locationId] } });
+  if (changed.matchedCount !== 1) throw new Error('Fixture membership missing');
 }

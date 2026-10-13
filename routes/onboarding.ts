@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { removeOrganizationMember, updateGlobalUserStatus } from "../controllers/organizationMembers.ts";
+import { removeOrganizationMember, updateGlobalUserStatus, updateMemberLocationAccess } from "../controllers/organizationMembers.ts";
 import { getPlatformDashboard } from "../controllers/platformDashboard.ts";
 import { authenticate, checkPermission, requirePlatformRoot } from "../middleware/auth.ts";
 import {
@@ -60,6 +60,13 @@ export default async function onboardingRoutes(app: FastifyInstance) {
   app.delete("/api/organizations/:id/members/:userId", { preHandler: [authenticate, checkPermission("MANAGE_STAFF")], schema: {
     params: { type: "object", required: ["id", "userId"], properties: { id: { type: "string", pattern: "^[a-fA-F0-9]{24}$" }, userId: { type: "string", pattern: "^[a-fA-F0-9]{24}$" } }, additionalProperties: false },
   } }, removeOrganizationMember);
+  app.patch("/api/organizations/:id/members/:userId/location-access", { ...manageOrg, schema: {
+    params: { type: "object", required: ["id", "userId"], additionalProperties: false,
+      properties: { id: { type: "string", pattern: "^[a-fA-F0-9]{24}$" }, userId: { type: "string", pattern: "^[a-fA-F0-9]{24}$" } } },
+    body: { type: "object", required: ["mode", "locationIds", "expectedRevision"], additionalProperties: false,
+      properties: { mode: { type: "string", enum: ["all", "selected"] }, expectedRevision: { type: "integer", minimum: 0 },
+        locationIds: { type: "array", maxItems: 100, uniqueItems: true, items: { type: "string", pattern: "^[a-fA-F0-9]{24}$" } } } },
+  } }, updateMemberLocationAccess);
   app.get("/api/admin/hierarchy", platformRoot, getPlatformHierarchy);
   app.get("/api/admin/dashboard", { ...platformRoot, schema: {
     querystring: { type: "object", properties: { range: { type: "string", enum: ["7D", "30D", "90D"], default: "30D" } }, additionalProperties: false },

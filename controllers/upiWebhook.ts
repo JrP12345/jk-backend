@@ -7,6 +7,7 @@ import { AppointmentPayment } from "../models/AppointmentPayment.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { broadcastQueueUpdate } from "../notifications/websocket.ts";
 import { enqueuePaymentReceipt } from "../services/PaymentReceiptOutbox.ts";
+import { publishAppointmentCommunication } from '../services/AppointmentCommunicationEvents.ts';
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { withTransaction } from "../utilities/transaction.ts";
 
@@ -206,7 +207,7 @@ export async function handleInboundUpiWebhook(req: FastifyRequest, reply: Fastif
             amount: currentPayment.amount,
             paymentMethod: settlementMethod,
             transactionId,
-          }, session);
+          }, session, true);
           return {
             replayed: true,
             appointment,
@@ -226,7 +227,9 @@ export async function handleInboundUpiWebhook(req: FastifyRequest, reply: Fastif
         throw new PaymentSettlementConflict("Appointment is no longer eligible for payment settlement");
       }
       const currentInvoice = await Invoice.findById(invoice._id).session(session);
-      if (!currentInvoice || !isSameId(currentInvoice.appointmentId, appointment._id)) {
+      if (!currentInvoice || !isSameId(currentInvoice.appointmentId, appointment._id) || !isSameId(currentInvoice.patientId, currentAppointment.patientId)
+        || !isSameId(currentInvoice.locationId, currentAppointment.locationId) || !isSameId(currentInvoice.organizationId, currentAppointment.organizationId)
+        || !isSameId(currentPayment.patientId, currentAppointment.patientId) || (currentInvoice.currency || 'INR') !== currentPayment.currency) {
         throw new PaymentSettlementConflict("Invoice is no longer linked to this appointment");
       }
       const outstandingAmount = amountInMinorUnits(
@@ -262,7 +265,7 @@ export async function handleInboundUpiWebhook(req: FastifyRequest, reply: Fastif
             amount: latestPayment.amount,
             paymentMethod: settlementMethod,
             transactionId,
-          }, session);
+          }, session, true);
           return {
             replayed: true,
             appointment,
@@ -313,6 +316,7 @@ export async function handleInboundUpiWebhook(req: FastifyRequest, reply: Fastif
             paymentStatus: "paid",
             paymentAmount: capturedPayment.amount,
             invoiceId: settledInvoice._id,
+            ...(['pending_payment', 'pending'].includes(currentAppointment.status) ? { status: 'confirmed' } : {}),
           },
         },
         paymentOptions,
@@ -325,6 +329,9 @@ export async function handleInboundUpiWebhook(req: FastifyRequest, reply: Fastif
         paymentMethod: settlementMethod,
         transactionId,
       }, session);
+      const updatedAppointment = await Appointment.findById(appointment._id).session(session);
+      if (!updatedAppointment) throw new PaymentSettlementConflict('Appointment disappeared during settlement');
+      if (updatedAppointment.status === 'confirmed') await publishAppointmentCommunication(updatedAppointment, { action: 'booked' }, session);
 
       return {
         replayed: false,

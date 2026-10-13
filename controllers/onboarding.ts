@@ -6,6 +6,7 @@ import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
 import { User } from "../models/User.ts";
+import { AuditLog } from '../models/AuditLog.ts';
 import { Organization } from "../models/Organization.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { Doctor } from "../models/Doctor.ts";
@@ -39,6 +40,11 @@ import {
 } from "../utilities/helpers.ts";
 import { setAuthCookies } from "../utilities/types.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
+import { unassignRevokedCrmWork } from '../services/CrmRevocationService.ts';
+import { deactivateDoctorAssignments } from '../services/DoctorAssignmentRecoveryEvents.ts';
+import { assertOtherActiveAdministrator } from '../services/OrganizationGovernanceService.ts';
+import { CommandError } from '../services/CommandReceiptService.ts';
+import { pinAssignableRole } from '../services/RoleAssignmentService.ts';
 import { checkLocationAccess, resolveAuthorizedOrganizationScope, resolveTargetOrganizationId, isRootRequest } from "../utilities/tenant.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
@@ -48,8 +54,10 @@ import { subscriptionService } from "../services/billing/SubscriptionService.ts"
 import { summarizeSubscription } from "../services/billing/subscriptionSummary.ts";
 import { getFrontendBaseUrl } from "../utilities/config.ts";
 import { attachBranding, retireUnusedBranding, validateBrandingReferences, BrandingValidationError } from "../services/OrganizationBranding.ts";
+import { WorkspaceError } from "../services/WorkspaceService.ts";
 import {
   ADMIN_PERMISSIONS,
+  BUILTIN_ROLE_PERMISSIONS,
   DOCTOR_PERMISSIONS,
   RECEPTIONIST_PERMISSIONS,
   NURSE_PERMISSIONS,
@@ -154,19 +162,18 @@ export async function seedDefaultRoles(session?: any) {
     const opts: any = { upsert: true, returnDocument: "after" };
     if (session) opts.session = session;
 
-    // Use $addToSet so existing custom roles gain any missing built-in permissions
-    // without losing permissions the admin may have manually added.
-    // $setOnInsert only fires on INSERT — so name/description/isSystemRole are
-    // set on first creation but never overwritten on subsequent runs.
+    // Seed only missing global definitions. Preserve explicitly reviewed grants,
+    // including empty roles and organization-specific overrides.
     await Role.findOneAndUpdate(
-      { name: role.name },
+      { name: role.name, organizationId: null },
       {
         $setOnInsert: {
           name: role.name,
           description: role.description,
           isSystemRole: role.isSystemRole,
+          organizationId: null,
+          permissions: BUILTIN_ROLE_PERMISSIONS[role.name] || role.permissions,
         },
-        $addToSet: { permissions: { $each: role.permissions } },
       },
       opts
     );
@@ -220,8 +227,10 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
     }
 
     await validateBrandingReferences(req, { logo_url, image_url });
-
-    return await withTransaction(async (session) => {
+    if (!admin_password || admin_password.length < 8) return reply.code(400).send(errorResponse("Administrator password must contain at least 8 characters"));
+    const passwordStrength = validatePasswordStrength(admin_password);
+    if (!passwordStrength.valid) return reply.code(400).send(errorResponse(passwordStrength.reason || "Password does not meet complexity requirements"));
+    const created = await withTransaction(async (session) => {
       // Plans and quotas are commercial entitlements. Only a platform root can
       // select a plan, and no caller can set quotas directly through onboarding.
       const selectedPlan = (req.body as any).plan || "starter";
@@ -241,14 +250,7 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
       let emailQuery = User.findOne({ email: admin_email.trim().toLowerCase() });
       if (session) emailQuery = emailQuery.session(session);
       if (await emailQuery) {
-        return reply.code(409).send(errorResponse("Administrator email is already registered; provide a unique administrator email for this organization"));
-      }
-      if (!admin_password) {
-        return reply.code(400).send(errorResponse("admin_password is required for a new organization administrator"));
-      }
-      const strength = validatePasswordStrength(admin_password);
-      if (!strength.valid) {
-        return reply.code(400).send(errorResponse(strength.reason || "Password does not meet complexity requirements"));
+        throw new WorkspaceError(409, "Administrator email is already registered; provide a unique administrator email for this organization");
       }
       const hashedAdminPassword = await bcrypt.hash(admin_password, 10);
 
@@ -282,9 +284,7 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
         role: "admin",
       }, session);
 
-      if (!adminUser) {
-        return reply.code(500).send(errorResponse("Failed to initialize administrator user"));
-      }
+      if (!adminUser) throw new Error("Failed to initialize administrator user");
 
       await createWithSession(OrgMember, {
         userId: adminUser._id,
@@ -340,18 +340,15 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
         });
       }
 
-      return reply.code(201).send(
-        successResponse(
-          {
-            organization: { id: orgIdStr, name: org_name, city },
-            user: { id: adminUser._id.toString(), name: adminUser.name, email: adminUser.email, role: adminUser.role, organization_id: orgIdStr },
-          },
-          "Organization created and admin registered"
-        )
-      );
+      return {
+        organization: { id: orgIdStr, name: org_name, city },
+        user: { id: adminUser._id.toString(), name: adminUser.name, email: adminUser.email, role: adminUser.role, organization_id: orgIdStr },
+      };
     });
+    return reply.code(201).send(successResponse(created, "Organization created and admin registered"));
   } catch (err: any) {
     console.error("createOrganization error:", err);
+    if (err instanceof WorkspaceError) return reply.code(err.statusCode).send(errorResponse(err.message));
     if (err instanceof BrandingValidationError) return reply.code(400).send(errorResponse(err.message));
     return reply.code(500).send(errorResponse(err.message || "Internal server error"));
   }
@@ -552,11 +549,11 @@ export async function addDoctor(req: FastifyRequest, reply: FastifyReply) {
 
     const {
       name, email, password, phone, specialization, qualification, experience_years,
-      fees, timings, working_days, description, image_url
+      fees, feeType, timings, working_days, description, image_url
     } = req.body as {
       name: string; email: string; password: string; phone?: string;
       specialization?: string; qualification?: string; experience_years?: number;
-      fees?: number; timings?: string; working_days?: string; description?: string; image_url?: string;
+      fees?: number; feeType?: "fixed" | "post_consultation" | "free"; timings?: string; working_days?: string; description?: string; image_url?: string;
     };
 
     if (!name || !email || !password) return reply.code(400).send(errorResponse("name, email and password are required"));
@@ -579,7 +576,8 @@ export async function addDoctor(req: FastifyRequest, reply: FastifyReply) {
       }
     }
 
-    return await withTransaction(async (session) => {
+    const created = await withTransaction(async (session) => {
+      await pinAssignableRole('doctor', orgId);
       const hashedPassword = await bcrypt.hash(password, 10);
 
       const newDoctorUser = await createWithSession(User, {
@@ -596,7 +594,8 @@ export async function addDoctor(req: FastifyRequest, reply: FastifyReply) {
         specialization: specialization || null,
         qualification: qualification || null,
         experience_years: experience_years || null,
-        fees: fees || null,
+        fees: feeType === "free" ? 0 : fees ?? 0,
+        feeType: feeType || "fixed",
         timings: timings || null,
         working_days: working_days || null,
         description: description || null,
@@ -620,10 +619,9 @@ export async function addDoctor(req: FastifyRequest, reply: FastifyReply) {
         organizationId: orgId,
       }, session);
 
-      return reply.code(201).send(
-        successResponse({ id: newDoctorUser._id.toString(), name, email, role: "doctor", organization_id: orgId, specialization }, "Doctor registered successfully")
-      );
+      return { id: newDoctorUser._id.toString(), name, email, role: "doctor", organization_id: orgId, specialization };
     });
+    return reply.code(201).send(successResponse(created, "Doctor registered successfully"));
   } catch (err) {
     console.error("addDoctor error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -643,6 +641,8 @@ export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) 
     const { name, email, password, phone, shift, locationId } = req.body as {
       name: string; email: string; password: string; phone?: string; shift?: string; locationId?: string;
     };
+
+    if (locationId && (!mongoose.isValidObjectId(locationId) || !await Location.exists({ _id: locationId, organizationId: orgId, isActive: true }))) return reply.code(400).send(errorResponse('Select an active location in this organization'));
 
     if (!name || !email || !password) return reply.code(400).send(errorResponse("name, email and password are required"));
 
@@ -664,7 +664,7 @@ export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) 
       }
     }
 
-    return await withTransaction(async (session) => {
+    const created = await withTransaction(async (session) => {
       const hashedPassword = await bcrypt.hash(password, 10);
 
       const newRecUser = await createWithSession(User, {
@@ -698,10 +698,9 @@ export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) 
         organizationId: orgId,
       }, session);
 
-      return reply.code(201).send(
-        successResponse({ id: newRecUser._id.toString(), name, email, role: "receptionist", organization_id: orgId, shift, locationId }, "Receptionist registered successfully")
-      );
+      return { id: newRecUser._id.toString(), name, email, role: "receptionist", organization_id: orgId, shift, locationId };
     });
+    return reply.code(201).send(successResponse(created, "Receptionist registered successfully"));
   } catch (err) {
     console.error("addReceptionist error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -748,6 +747,7 @@ export async function getOrgStaff(req: FastifyRequest, reply: FastifyReply) {
         qualification: d.qualification,
         experience_years: d.experience_years,
         fees: d.fees,
+        feeType: d.feeType || "fixed",
         timings: d.timings,
         working_days: d.working_days,
         description: d.description,
@@ -857,9 +857,10 @@ export async function addStaff(req: FastifyRequest, reply: FastifyReply) {
       }
     }
 
-    return await withTransaction(async (session) => {
+    const created = await withTransaction(async (session) => {
       const hashedPassword = await bcrypt.hash(password, 10);
 
+      await pinAssignableRole(role, orgId);
       const newUser = await createWithSession(User, {
         name,
         email: cleanEmail,
@@ -885,11 +886,11 @@ export async function addStaff(req: FastifyRequest, reply: FastifyReply) {
         organizationId: orgId,
       }, session);
 
-      return reply.code(201).send(
-        successResponse({ id: newUser._id.toString(), name, email, role, organization_id: orgId }, `${role.replace("_", " ").toUpperCase()} registered successfully`)
-      );
+      return { id: newUser._id.toString(), name, email, role, organization_id: orgId };
     });
+    return reply.code(201).send(successResponse(created, `${role.replace("_", " ").toUpperCase()} registered successfully`));
   } catch (err) {
+    if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
     console.error("addStaff error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
@@ -978,7 +979,8 @@ export async function acceptInvitation(req: FastifyRequest, reply: FastifyReply)
     const memberCount = await OrgMember.countDocuments({ organizationId: invite.organizationId, role: invite.role === "doctor" ? "doctor" : { $nin: ["doctor", "patient", "root"] } });
     if (quota && memberCount >= quota) return reply.code(403).send(errorResponse("Organization staff quota is reached. Ask the administrator to review the subscription."));
 
-    return await withTransaction(async (session) => {
+    const activated = await withTransaction(async (session) => {
+      await pinAssignableRole(invite.role, String(invite.organizationId));
       const hashedPassword = await bcrypt.hash(password, 10);
 
       const newUser = await createWithSession(User, {
@@ -1014,16 +1016,12 @@ export async function acceptInvitation(req: FastifyRequest, reply: FastifyReply)
 
       const payload = { id: newUser.id, email: newUser.email, role: invite.role, organization_id: invite.organizationId.toString() };
       const { accessToken, refreshToken } = await createAuthSession(payload);
-      setAuthCookies(reply, accessToken, refreshToken);
-
-      return reply.code(201).send(
-        successResponse(
-          { user: { id: newUser.id, name, email: newUser.email, role: invite.role, organization_id: invite.organizationId.toString(), permissions } },
-          "Invitation accepted and account activated successfully"
-        )
-      );
+      return { accessToken, refreshToken, user: { id: newUser.id, name, email: newUser.email, role: invite.role, organization_id: invite.organizationId.toString(), permissions } };
     });
+    setAuthCookies(reply, activated.accessToken, activated.refreshToken);
+    return reply.code(201).send(successResponse({ user: activated.user }, "Invitation accepted and account activated successfully"));
   } catch (err: any) {
+    if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
     console.error("acceptInvitation error:", err);
     return reply.code(500).send(errorResponse("Failed to accept invitation"));
   }
@@ -1040,10 +1038,11 @@ export async function updateDoctor(req: FastifyRequest, reply: FastifyReply) {
     const { id } = req.params as { id: string };
     const {
       name, email, phone, specialization, qualification, experience_years,
-      fees, timings, working_days, description, image_url
+      fees, feeType, timings, working_days, description, image_url
     } = req.body as any;
 
     if (!name) return reply.code(400).send(errorResponse("name is required"));
+    if (feeType !== undefined && !["fixed", "post_consultation", "free"].includes(feeType)) return reply.code(400).send(errorResponse("Invalid consultation fee type"));
 
     const doctor = await Doctor.findOne({ userId: id, organizationId: orgId });
     if (!doctor) return reply.code(404).send(errorResponse("Doctor not found or not in your organization"));
@@ -1066,7 +1065,8 @@ export async function updateDoctor(req: FastifyRequest, reply: FastifyReply) {
         specialization: specialization || null,
         qualification: qualification || null,
         experience_years: experience_years || null,
-        fees: fees || null,
+        fees: (feeType || doctor.feeType) === "free" ? 0 : fees || null,
+        ...(feeType !== undefined ? { feeType } : {}),
         timings: timings || null,
         working_days: working_days || null,
         description: description || null,
@@ -1190,10 +1190,16 @@ export async function enableAdminDoctorProfile(req: FastifyRequest, reply: Fasti
     const orgId = req.user!.organization_id;
     if (!orgId) return reply.code(400).send(errorResponse("You are not linked to any organization"));
 
-    const { specialization, qualification, experience_years, fees, timings, working_days, description, registrationNumber } = req.body as any;
+    const { specialization, qualification, experience_years, fees, feeType, timings, working_days, description, registrationNumber } = req.body as any;
 
     if (!specialization) {
       return reply.code(400).send(errorResponse("Specialization is required (e.g. General Physician, Consultant)"));
+    }
+    if (feeType !== undefined && !["fixed", "post_consultation", "free"].includes(feeType)) {
+      return reply.code(400).send(errorResponse("Invalid consultation fee type"));
+    }
+    if (fees !== undefined && (!Number.isFinite(Number(fees)) || Number(fees) < 0)) {
+      return reply.code(400).send(errorResponse("Consultation fees must be a non-negative number"));
     }
 
     const doctor = await Doctor.findOneAndUpdate(
@@ -1204,14 +1210,15 @@ export async function enableAdminDoctorProfile(req: FastifyRequest, reply: Fasti
         specialization: specialization.trim(),
         qualification: qualification?.trim() || null,
         experience_years: experience_years !== undefined ? Number(experience_years) : null,
-        fees: fees !== undefined ? Number(fees) : 0,
+        fees: feeType === "free" ? 0 : fees !== undefined ? Number(fees) : 0,
+        ...(feeType !== undefined ? { feeType } : {}),
         timings: timings || null,
         working_days: working_days || null,
         description: description || null,
         registrationNumber: registrationNumber?.trim() || null,
         isActive: true,
       },
-      { upsert: true, returnDocument: "after" }
+      { upsert: true, returnDocument: "after", runValidators: true }
     );
 
     return reply.code(200).send(successResponse(doctor, "Clinical Doctor Profile linked to Admin Account successfully!"));
@@ -1239,17 +1246,22 @@ export async function deleteStaff(req: FastifyRequest, reply: FastifyReply) {
     const target = await User.findById(id).select("role");
     if (target?.role === "root") return reply.code(403).send(errorResponse("Root identities cannot be deactivated here"));
     if (await OrgMember.exists({ userId: id, organizationId: { $ne: orgId } })) return reply.code(409).send(errorResponse("Remove organization membership instead of deactivating a shared identity"));
-    if (verify.role === "admin") {
-      const admins = await OrgMember.find({ organizationId: orgId, role: "admin", userId: { $ne: id } }).populate("userId", "isActive").lean();
-      if (!admins.some((m: any) => m.userId && m.userId.isActive !== false)) return reply.code(409).send(errorResponse("Keep at least one active organization administrator"));
-    }
-
-    await User.updateOne({ _id: id }, { isActive: false });
-    await Doctor.updateOne({ userId: id }, { isActive: false });
-    await DoctorAssignment.updateMany({ doctorId: id }, { isActive: false });
+    await withTransaction(async () => {
+      const member = await OrgMember.findOne({ userId: id, organizationId: orgId });
+      if (!member) throw new CommandError(404, 'Staff not found');
+      if (member.role === 'admin') await assertOtherActiveAdministrator(orgId, id);
+      await User.updateOne({ _id: id }, { $set: { isActive: false }, $inc: { authVersion: 1 } });
+      await Doctor.updateOne({ userId: id, organizationId: orgId }, { isActive: false });
+      await deactivateDoctorAssignments(orgId, id, req.user!.id);
+      const crmHandoff = await unassignRevokedCrmWork(orgId, id);
+      await RefreshToken.updateMany({ userId: id, revoked: false }, { $set: { revoked: true, revocationReason: 'terminated' } });
+      await AuditLog.create({ organizationId: orgId, userId: req.user!.id, action: 'STAFF_DEACTIVATED', targetId: id, targetModel: 'User', category: 'ADMIN', details: { crmHandoff } });
+    });
+    await revokeUserSessions(id, 'terminated');
 
     return reply.code(200).send(successResponse(null, "Staff member deactivated successfully"));
   } catch (err) {
+    if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
     console.error("deleteStaff error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
@@ -1640,6 +1652,8 @@ export async function getOrganizationMembers(req: FastifyRequest, reply: Fastify
           email: u.email,
           phone: u.phone || null,
           role: m.role || u.role,
+          locationAccess: m.locationAccess || null,
+          accessRevision: m.accessRevision || 0,
           isActive: u.isActive !== false,
           createdAt: u.createdAt,
           source: "org_member",

@@ -29,13 +29,14 @@ import { RefreshToken } from "../models/RefreshToken.ts";
 import { enqueueTransactionalEmail } from "../services/CommunicationOutbox.ts";
 import { TwoFactorService } from "../services/TwoFactorService.ts";
 import { otpService } from "../services/OtpService.ts";
-import { patientMatchingService } from "../services/PatientMatchingService.ts";
 import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import mongoose from "mongoose";
 import { encryptField, decryptField, isEncrypted } from "../utilities/cryptoEnvelope.ts";
 import { verifyGoogleIdToken, authenticateWithGoogleProfile, exchangeGoogleAuthCode } from "../services/GoogleAuthService.ts";
 import { getFrontendBaseUrl } from "../utilities/config.ts";
 import { getEffectivePermissions } from "../utilities/permissions.ts";
+import { authorizeWorkspace, listUserWorkspaces, createWorkspaceChallenge, readWorkspaceChallenge,
+  consumeWorkspaceChallenge, isConsumerRole, WorkspaceError } from "../services/WorkspaceService.ts";
 
 // ─── Request OTP ────────────────────────────────────────────────
 export async function requestOtpController(req: FastifyRequest, reply: FastifyReply) {
@@ -333,31 +334,15 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
       patient = selfRelationship ? (selfRelationship.patientId as any) : await Patient.findOne({ userId: user._id });
     }
 
-    if (!patient && normEmail) {
-      patient = await Patient.findOne({ email: normEmail });
-      if (patient && !patient.userId) {
-        patient.userId = user._id;
-        await patient.save();
-      }
-    }
-
     // If patient is found and has a generic or empty name, sync with input
     if (patient && nameInput && (patient.name.startsWith("Patient ") || patient.accountType === "self")) {
       patient.name = nameInput;
       await patient.save();
     }
 
-    // Check for high-confidence matching unlinked location records if patient doesn't exist
-    let potentialMatch: any = null;
-    if (!patient) {
-      const matchCriteria: any = { name: nameInput || user.name };
-      if (normPhone) matchCriteria.phone = normPhone;
-      if (normEmail) matchCriteria.email = normEmail;
-      const matches = await patientMatchingService.findMatchingPatients(matchCriteria);
-      if (matches.highConfidence.length > 0) {
-        potentialMatch = matches.highConfidence[0];
-      }
-    }
+    // OTP proves control of a login contact. Existing unlinked healthcare records
+    // require a reviewed identity claim, including when a family shares that contact.
+    const potentialMatch = null;
 
     // Auto-create Patient for this name/phone/email if no patient record exists
     if (!patient && !potentialMatch) {
@@ -472,6 +457,7 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
     return await completeVerifiedLogin(req, reply, user);
   } catch (err) {
     console.error("login error:", err);
+    if (err instanceof WorkspaceError) return reply.code(err.statusCode).send(errorResponse(err.message));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -486,7 +472,7 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
       return reply.code(400).send(errorResponse("Two-factor challenge and a 6-digit code are required"));
     }
 
-    let challenge: { userId: string };
+    let challenge: { userId: string; authVersion: number };
     try {
       challenge = verifyTwoFactorChallenge(twoFactorToken);
     } catch {
@@ -498,7 +484,7 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
     }
 
     const user = await User.findOne({ _id: challenge.userId, isActive: true });
-    if (!user || !user.twoFactorEnabled || !user.twoFactorSecret) {
+    if (!user || !user.twoFactorEnabled || !user.twoFactorSecret || (user.authVersion || 1) !== challenge.authVersion) {
       return reply.code(401).send(errorResponse("Two-factor authentication is not available for this account"));
     }
 
@@ -512,46 +498,10 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
     }
 
     if (process.env.NODE_ENV === "production" && user.email && !user.isEmailVerified) return reply.code(403).send(errorResponse("Please verify your email address before signing in."));
-    const orgMember = await OrgMember.findOne({ userId: user._id });
-    const organization_id = orgMember?.organizationId?.toString();
-    if (organization_id && user.role !== "root") {
-      const organization = await Organization.findById(organization_id).select("status isActive").lean();
-      if (!organization || organization.status === "inactive" || organization.isActive === false) {
-        return reply.code(403).send(errorResponse("Organization workspace is inactive or suspended"));
-      }
-    }
-
-    const permissions = [...await getEffectivePermissions(user.role, organization_id, user.authVersion)];
-    const ipAddress = req.ip || "";
-    const userAgent = (req.headers["user-agent"] as string) || "";
-    const deviceName = userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser";
-    const { rawToken: refreshToken, sessionId } = await createRefreshTokenDetails(user.id, {
-      ipAddress,
-      userAgent,
-      deviceName,
-      organizationId: organization_id,
-      isRoot: user.role === "root",
-    });
-
-    const payload = { id: user.id, email: user.email || "", role: user.role, organization_id, sessionId };
-    const accessToken = generateAccessToken(payload);
-
-    setAuthCookies(reply, accessToken, refreshToken);
-    await eventBus.publishDurable({
-      eventType: EVENT_TYPES.AUTH_LOGIN_NEW_DEVICE,
-      category: "auth",
-      targetUserId: user.id,
-      title: "New Account Login",
-      message: `Successful login to Ekavyu account (${user.email || user.name}).`,
-      severity: "info",
-      organizationId: organization_id,
-    });
-
-    return reply.code(200).send(successResponse({
-      user: { id: user.id, name: user.name, email: user.email, role: user.role, organization_id, permissions },
-    }, "Login successful"));
+    return await completeVerifiedLogin(req, reply, user, {}, true);
   } catch (err) {
     console.error("verifyLoginTwoFactor error:", err);
+    if (err instanceof WorkspaceError) return reply.code(err.statusCode).send(errorResponse(err.message));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -855,8 +805,24 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
       return reply.code(401).send(errorResponse("User not found or deactivated"));
     }
 
-    const orgMember = await OrgMember.findOne({ userId: user._id });
-    const organization_id = currentRecord.organizationId?.toString() || orgMember?.organizationId?.toString();
+    const organization_id = currentRecord.organizationId?.toString();
+    const workspace = organization_id && user.role !== "root" && !isConsumerRole(user.role) && !currentRecord.isGuest
+      ? await authorizeWorkspace(user.id, organization_id) : undefined;
+    if (currentRecord.workspaceRole && currentRecord.workspaceRole !== workspace?.role) {
+      clearAuthCookies(reply);
+      return reply.code(401).send(errorResponse("Workspace membership changed; sign in again"));
+    }
+    if (currentRecord.workspaceAccessRevision !== undefined) {
+      const member = await OrgMember.findOne({ userId: user._id, organizationId: organization_id }).select("accessRevision").lean();
+      if (!member || (member.accessRevision || 0) !== currentRecord.workspaceAccessRevision) {
+        clearAuthCookies(reply);
+        return reply.code(401).send(errorResponse("Workspace access changed; sign in again"));
+      }
+    }
+    if ((currentRecord.authVersion || 1) !== (user.authVersion || 1)) {
+      clearAuthCookies(reply);
+      return reply.code(401).send(errorResponse("Session invalidated; sign in again"));
+    }
     if (organization_id && user.role !== "root") {
       const organization = await Organization.findById(organization_id).select("status isActive").lean();
       if (!organization || organization.status === "inactive" || organization.isActive === false) {
@@ -901,7 +867,7 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
     const userAgent = (req.headers["user-agent"] as string) || currentRecord.userAgent;
     const deviceName = currentRecord.deviceName || (userAgent.includes("Mobile") ? "Mobile App / Browser" : "Desktop Browser");
     const isGuestToken = (currentRecord as any).isGuest === true;
-    const targetRole = isGuestToken ? "guest" : user.role;
+    const targetRole = isGuestToken ? "guest" : workspace?.role || user.role;
 
     const rawImpersonatedBy = (currentRecord as any).impersonatedBy;
     const hasValidImpersonation = Boolean(rawImpersonatedBy && rawImpersonatedBy.id);
@@ -921,6 +887,7 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
       deviceName,
       organizationId: organization_id,
       isGuest: isGuestToken,
+      workspaceRole: workspace?.role,
       bookingPatientId: currentRecord.bookingPatientId?.toString(),
       isRoot: user.role === "root",
       familyId: currentRecord.familyId || crypto.randomUUID(),
@@ -930,7 +897,16 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
     });
 
     const newHash = crypto.createHash("sha256").update(newRefreshToken).digest("hex");
-    await RefreshToken.updateOne({ _id: currentRecord._id }, { $set: { replacedByTokenHash: newHash } });
+    const linked = await RefreshToken.updateOne({ _id: currentRecord._id, revoked: true, revocationReason: "rotated" }, { $set: { replacedByTokenHash: newHash } });
+    if (!linked.matchedCount) {
+      await revokeSessionInternal(sessionId, "terminated");
+      return reply.code(401).send(errorResponse("Session changed while refreshing; verify your current workspace"));
+    }
+    const newSession = await resolveSession(sessionId, authVersion);
+    if (!newSession.valid) {
+      await revokeSessionInternal(sessionId, "terminated");
+      return reply.code(401).send(errorResponse("Workspace authority changed while refreshing; sign in again"));
+    }
 
     const payload: JwtPayload = {
       id: user.id,
@@ -950,6 +926,10 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
     return reply.code(200).send(successResponse(null, "Token refreshed"));
   } catch (err) {
     console.error("refreshAccessToken error:", err);
+    if (err instanceof WorkspaceError) {
+      clearAuthCookies(reply);
+      return reply.code(401).send(errorResponse("Workspace membership is unavailable; sign in again"));
+    }
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1123,8 +1103,8 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(401).send(errorResponse("User not found or deactivated"));
     }
 
-    const orgMember = await OrgMember.findOne({ userId });
-    const organization_id = user.role === "root" ? req.user?.organization_id : orgMember?.organizationId?.toString();
+    const organization_id = req.user?.organization_id;
+    const role = req.user!.role;
 
     if (organization_id && user.role !== "root") {
       const organization = await Organization.findById(organization_id).select("status isActive").lean();
@@ -1134,7 +1114,7 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
       }
     }
 
-    const permissions = [...await getEffectivePermissions(user.role, organization_id, user.authVersion)];
+    const permissions = [...await getEffectivePermissions(role, organization_id, user.authVersion)];
 
     const rawImpersonatedBy = req.user?.impersonatedBy;
     const impersonatedBy = (rawImpersonatedBy && rawImpersonatedBy.id) ? {
@@ -1150,7 +1130,7 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
         name: user.name,
         email: user.email,
         isActive: user.isActive,
-        role: user.role,
+        role,
         image_url: user.image_url || null,
         organization_id,
         permissions,
@@ -1169,11 +1149,20 @@ export async function switchOrganization(req: FastifyRequest, reply: FastifyRepl
     const userId = req.user!.id;
     const userRole = req.user!.role;
 
-    if (userRole !== "root") {
-      return reply.code(403).send(errorResponse("Only platform Root Admin can switch organization contexts"));
-    }
-
     const { organizationId } = (req.body as any) || {};
+    if (userRole !== "root") {
+      if (isConsumerRole(userRole) || req.user?.impersonatedBy || !organizationId) {
+        return reply.code(403).send(errorResponse("Select a staff organization workspace"));
+      }
+      const workspace = await authorizeWorkspace(userId, organizationId);
+      const user = await User.findOne({ _id: userId, isActive: true });
+      if (!user) return reply.code(401).send(errorResponse("Account is unavailable"));
+      const session = await createAuthSession({ id: userId, email: user.email || "", role: workspace.role,
+        organization_id: organizationId }, { ipAddress: req.ip, userAgent: req.headers["user-agent"], workspaceRole: workspace.role });
+      await revokeSessionInternal(req.user!.sessionId!, "terminated");
+      setAuthCookies(reply, session.accessToken, session.refreshToken);
+      return reply.send(successResponse({ organization_id: organizationId }, "Organization workspace switched"));
+    }
 
     if (organizationId && !mongoose.isValidObjectId(organizationId)) {
       return reply.code(400).send(errorResponse("Invalid organization ID"));
@@ -1209,6 +1198,7 @@ export async function switchOrganization(req: FastifyRequest, reply: FastifyRepl
     );
   } catch (err) {
     console.error("switchOrganization error:", err);
+    if (err instanceof WorkspaceError) return reply.code(err.statusCode).send(errorResponse(err.message));
     return reply.code(500).send(errorResponse("Failed to switch organization context"));
   }
 }
@@ -1270,6 +1260,10 @@ export async function impersonateUser(req: FastifyRequest, reply: FastifyReply) 
 
     // Determine target user's organization context
     const requestedOrgId = organizationId?.toString();
+    if (!requestedOrgId && !isConsumerRole(targetUser.role) && targetUser.role !== "root" &&
+      await OrgMember.countDocuments({ userId: targetUser._id }) > 1) {
+      return reply.code(409).send(errorResponse("Select an organization before impersonating a multi-workspace account"));
+    }
     const orgMember = requestedOrgId
       ? await OrgMember.findOne({ userId: targetUser._id, organizationId: requestedOrgId })
       : await OrgMember.findOne({ userId: targetUser._id });
@@ -1277,8 +1271,10 @@ export async function impersonateUser(req: FastifyRequest, reply: FastifyReply) 
       return reply.code(403).send(errorResponse("Target user is not a member of the selected organization"));
     }
     const targetOrgId = requestedOrgId || targetUser.organization_id?.toString() || orgMember?.organizationId?.toString();
-
-    const permissions = [...await getEffectivePermissions(targetUser.role, targetOrgId, targetUser.authVersion)];
+    const workspace = targetOrgId && !isConsumerRole(targetUser.role) && targetUser.role !== "root"
+      ? await authorizeWorkspace(targetUser.id, targetOrgId) : undefined;
+    const targetRole = workspace?.role || targetUser.role;
+    const permissions = [...await getEffectivePermissions(targetRole, targetOrgId, targetUser.authVersion)];
 
     const impersonationData = {
       id: rootAdmin._id.toString(),
@@ -1290,7 +1286,7 @@ export async function impersonateUser(req: FastifyRequest, reply: FastifyReply) 
     const payload: JwtPayload = {
       id: targetUser._id.toString(),
       email: targetUser.email || "",
-      role: targetUser.role,
+      role: targetRole,
       organization_id: targetOrgId,
       impersonatedBy: impersonationData,
     };
@@ -1305,6 +1301,7 @@ export async function impersonateUser(req: FastifyRequest, reply: FastifyReply) 
       deviceName,
       organizationId: targetOrgId,
       impersonatedBy: impersonationData,
+      workspaceRole: workspace?.role,
     });
 
     setAuthCookies(reply, accessToken, refreshToken);
@@ -1326,7 +1323,7 @@ export async function impersonateUser(req: FastifyRequest, reply: FastifyReply) 
             id: targetUser._id.toString(),
             name: targetUser.name,
             email: targetUser.email,
-            role: targetUser.role,
+            role: targetRole,
             organization_id: targetOrgId,
             permissions,
             impersonatedBy: impersonationData,
@@ -1488,38 +1485,42 @@ export async function googleLoginController(req: FastifyRequest, reply: FastifyR
 
 
 // Shared session issuance for verified passwords and passkeys; existing 2FA remains required.
-export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyReply, user: any, extra: Record<string, unknown> = {}) {
+export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyReply, user: any,
+  extra: Record<string, unknown> = {}, mfaVerified = false, selectedOrganizationId?: string) {
     if (!user.isActive) return reply.code(403).send(errorResponse("Account is deactivated"));
     if (process.env.NODE_ENV === "production" && user.role === "root" && !user.twoFactorEnabled) return reply.code(403).send(errorResponse("Platform root MFA enrollment is required. Use the authorized recovery/setup procedure."));
-    if (user.role !== "root" && await OrgMember.countDocuments({ userId: user._id }) > 1) return reply.code(409).send(errorResponse("Multiple organization memberships require an explicit workspace selection flow; automatic workspace selection is disabled"));
-    const orgMember = await OrgMember.findOne({ userId: user._id });
-    const organization_id = orgMember?.organizationId?.toString();
-
-    // Enforce Organization Status Lockdown
-    if (organization_id && user.role !== "root") {
-      const org = await Organization.findById(organization_id).select("status isActive").lean();
-      if (!org || (org.status === "inactive" || org.isActive === false)) {
-        return reply.code(403).send(errorResponse("Organization workspace is inactive or suspended. Access revoked."));
-      }
-    }
-
-    const permissions = [...await getEffectivePermissions(user.role, organization_id, user.authVersion)];
-
-    if (user.twoFactorEnabled) {
+    if (user.twoFactorEnabled && !mfaVerified) {
       if (!user.twoFactorSecret) return reply.code(403).send(errorResponse("Two-factor configuration requires account recovery"));
       clearAuthCookies(reply);
-      const twoFactorToken = generateTwoFactorChallenge(user.id);
+      const twoFactorToken = generateTwoFactorChallenge(user.id, user.authVersion || 1);
       return reply.code(200).send(
         successResponse(
           {
             twoFactorRequired: true,
             twoFactorToken,
-            user: { id: user.id, name: user.name, email: user.email, role: user.role, organization_id, permissions },
+            user: { id: user.id, name: user.name, email: user.email, role: user.role },
           },
           "Two-factor verification required"
         )
       );
     }
+
+    let organization_id: string | undefined;
+    let role = user.role as string;
+    if (role !== "root" && !isConsumerRole(role)) {
+      const workspaces = await listUserWorkspaces(user.id);
+      if (!selectedOrganizationId && workspaces.length > 1) {
+        clearAuthCookies(reply);
+        const workspaceToken = await createWorkspaceChallenge(user.id, user.authVersion || 1, Boolean(user.twoFactorEnabled));
+        return reply.send(successResponse({ workspaceRequired: true, workspaceToken, workspaces }, "Select your organization workspace"));
+      }
+      organization_id = selectedOrganizationId || workspaces[0]?.organizationId;
+      if (organization_id) role = (await authorizeWorkspace(user.id, organization_id)).role;
+      else if (await OrgMember.exists({ userId: user._id })) {
+        return reply.code(403).send(errorResponse("No active organization workspace is available"));
+      }
+    }
+    const permissions = [...await getEffectivePermissions(role, organization_id, user.authVersion)];
 
     // Extract device metadata for session tracking
     const ipAddress = req.ip || "";
@@ -1532,9 +1533,10 @@ export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyR
       deviceName,
       organizationId: organization_id,
       isRoot: user.role === "root",
+      workspaceRole: organization_id ? role : undefined,
     });
 
-    const payload = { id: user.id, email: user.email || "", role: user.role, organization_id, sessionId };
+    const payload = { id: user.id, email: user.email || "", role, organization_id, sessionId, authVersion: user.authVersion || 1 };
     const accessToken = generateAccessToken(payload);
 
     // Set httpOnly cookies
@@ -1555,11 +1557,37 @@ export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyR
       successResponse(
         {
           ...extra,
-          user: { id: user.id, name: user.name, email: user.email || null, role: user.role, image_url: user.image_url || null, organization_id, permissions },
+          user: { id: user.id, name: user.name, email: user.email || null, role, image_url: user.image_url || null, organization_id, permissions },
         },
         "Login successful"
       )
     );
+}
+
+export async function selectLoginWorkspace(req: FastifyRequest, reply: FastifyReply) {
+  try {
+    const { workspaceToken, organizationId } = req.body as { workspaceToken: string; organizationId: string };
+    const challenge = await readWorkspaceChallenge(workspaceToken);
+    const user = await User.findOne({ _id: challenge.userId, isActive: true });
+    if (!user || user.role === "root" || isConsumerRole(user.role) ||
+      (user.authVersion || 1) !== challenge.authVersion || Boolean(user.twoFactorEnabled) !== challenge.mfaEnabled) {
+      return reply.code(401).send(errorResponse("Account changed; sign in again"));
+    }
+    await authorizeWorkspace(user.id, organizationId);
+    await consumeWorkspaceChallenge(String(challenge._id));
+    return await completeVerifiedLogin(req, reply, user, {}, true, organizationId);
+  } catch (error) {
+    if (error instanceof WorkspaceError) return reply.code(error.statusCode).send(errorResponse(error.message));
+    req.log.error("Workspace selection failed");
+    return reply.code(503).send(errorResponse("Workspace selection unavailable; sign in again"));
+  }
+}
+
+export async function getUserWorkspaces(req: FastifyRequest, reply: FastifyReply) {
+  if (!req.user || req.user.role === "root" || isConsumerRole(req.user.role) || req.user.impersonatedBy) {
+    return reply.code(403).send(errorResponse("Sign in to your own staff account to select a workspace"));
+  }
+  return reply.send(successResponse(await listUserWorkspaces(req.user.id)));
 }
 
 
@@ -1576,11 +1604,16 @@ async function replyWithRotationGrace(reply: FastifyReply, previous: any) {
     return reply.code(401).send(errorResponse("Session has expired or been terminated"));
   }
   const organization_id = successor.organizationId?.toString();
+  const workspace = organization_id && user.role !== "root" && !isConsumerRole(user.role) && !successor.isGuest
+    ? await authorizeWorkspace(String(user._id), organization_id) : undefined;
+  if (successor.workspaceRole && successor.workspaceRole !== workspace?.role) return reply.code(401).send(errorResponse("Workspace membership changed; sign in again"));
+  const liveSession = await resolveSession(String(successor._id), user.authVersion || 1);
+  if (!liveSession.valid) return reply.code(401).send(errorResponse("Workspace session changed; sign in again"));
   if (organization_id && user.role !== "root") {
     const organization = await Organization.findById(organization_id).select("status isActive").lean();
     if (!organization || organization.status === "inactive" || organization.isActive === false) return reply.code(403).send(errorResponse("Organization workspace is inactive or suspended"));
   }
-  const payload: JwtPayload = { id: user._id.toString(), email: user.email || "", role: successor.isGuest ? "guest" : user.role,
+  const payload: JwtPayload = { id: user._id.toString(), email: user.email || "", role: successor.isGuest ? "guest" : workspace?.role || user.role,
     organization_id, sessionId: successor._id.toString(), authVersion: user.authVersion || 1, bookingPatientId: successor.bookingPatientId?.toString() };
   if (successor.impersonatedBy?.id) payload.impersonatedBy = { ...successor.impersonatedBy, id: successor.impersonatedBy.id.toString() };
   setAccessCookie(reply, generateAccessToken(payload));

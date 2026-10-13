@@ -83,6 +83,7 @@ export default async function taskRoutes(app: FastifyInstance) {
       }
 
       const tasks = await taskRepo.find({
+        kind: { $in: ["general", null] },
         assignedTo: new mongoose.Types.ObjectId(userId),
       }, undefined, {
         organizationId,
@@ -119,9 +120,10 @@ export default async function taskRoutes(app: FastifyInstance) {
       if (!task) {
         return reply.code(404).send(errorResponse("Task not found"));
       }
+      if (task.kind && task.kind !== "general") return reply.code(403).send(errorResponse("Use the authorized workflow for this task"));
       const userId = req.user!.id;
-      const isAssignee = task.assignedTo.toString() === userId;
-      const isCreator = task.createdBy.toString() === userId;
+      const isAssignee = task.assignedTo?.toString() === userId;
+      const isCreator = task.createdBy?.toString() === userId;
       if (!isAssignee && !isCreator && req.user?.role !== "root") {
         return reply.code(403).send(errorResponse("Forbidden: not authorized to update this task"));
       }
@@ -131,11 +133,11 @@ export default async function taskRoutes(app: FastifyInstance) {
       await task.save();
 
       // Emit TASK_STATUS_CHANGED event to creator if updated by assignee
-      if (task.createdBy.toString() !== req.user!.id) {
+      if (task.createdBy?.toString() !== req.user!.id) {
         await eventBus.publishDurable({
           eventType: EVENT_TYPES.TASK_STATUS_CHANGED,
           category: "task",
-          targetUserId: task.createdBy.toString(),
+          targetUserId: task.createdBy?.toString(),
           title: `Task Status Updated`,
           message: `Task "${task.title}" status changed to ${status}.`,
           severity: "info",

@@ -1,3 +1,13 @@
+import crypto from 'node:crypto';
+import { Appointment } from '../models/Appointment.ts';
+import { AuditLog } from '../models/AuditLog.ts';
+import { OperationReceipt } from '../models/OperationReceipt.ts';
+import { appointmentService, AppointmentDomainError } from '../services/AppointmentService.ts';
+import { executeRecordedCommand, CommandError } from '../services/CommandReceiptService.ts';
+import { requestContextStore } from '../utilities/context.ts';
+import { checkPatientAccess } from '../utilities/tenant.ts';
+import { decryptField } from '../utilities/cryptoEnvelope.ts';
+import { hashTrackerCapability } from '../utilities/publicTracker.ts';
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { User } from "../models/User.ts";
@@ -332,151 +342,39 @@ export async function updatePrescriptionRefillRequestStatus(req: FastifyRequest,
 export async function patientSelfBookAppointment(req: FastifyRequest, reply: FastifyReply) {
   try {
     if (!requirePortalPatient(req, reply)) return;
-    const userId = req.user!.id;
-    const scope = resolveAuthorizedOrganizationScope(req);
-    const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
-
-    const { locationId, doctorId, appointmentTime, appointmentType, notes, lockId, forPatientId, payAtLocation } = req.body as {
-      locationId: string;
-      doctorId: string;
-      appointmentTime: string;
-      appointmentType?: "online" | "walk-in" | "reception";
-      notes?: string;
-      lockId?: string;
-      forPatientId?: string;
-      payAtLocation?: boolean;
-    };
-
-    if (!locationId || !doctorId || !appointmentTime) {
-      return reply.code(400).send(errorResponse("locationId, doctorId, and appointmentTime are required"));
-    }
-
-    if (!mongoose.Types.ObjectId.isValid(locationId) || !mongoose.Types.ObjectId.isValid(doctorId)) {
-      return reply.code(400).send(errorResponse("Invalid location or doctor ID"));
-    }
-    const locationAccess = await checkLocationAccess(req, locationId);
-    if (!locationAccess.allowed) return sendTenantError(reply, locationAccess);
-    const { canCreateLocationBooking } = await import("../services/billing/SubscriptionAccess.ts");
-    if (!(await canCreateLocationBooking(locationId))) {
-      return reply.code(409).send(errorResponse("Online booking is temporarily unavailable. Please contact reception directly."));
-    }
-
-    const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
-    let targetPatientId: string;
-
-    if (forPatientId) {
-      const isAuthorized = await FamilyRelationship.findOne({ userId, patientId: forPatientId, status: "active" });
-      if (!isAuthorized) {
-        return reply.code(403).send(errorResponse("Unauthorized: You do not have permission to book for this patient"));
-      }
-      targetPatientId = forPatientId;
-    } else {
-      let selfRel = await FamilyRelationship.findOne({ userId, relationship: "self", status: "active" });
-      let patient = selfRel ? await Patient.findById(selfRel.patientId) : await Patient.findOne({ userId });
-
-      if (!patient) {
-        const userObj = await User.findById(userId);
-        patient = await Patient.create({
-          userId,
-          name: userObj?.name || "Patient",
-          phone: userObj?.phone || undefined,
-          email: userObj?.email || undefined,
-          accountType: "self",
-          createdBy: userId,
-          organizationId: locationAccess.organizationId ? new mongoose.Types.ObjectId(locationAccess.organizationId) : (orgId ? new mongoose.Types.ObjectId(orgId) : undefined),
-        });
-        await FamilyRelationship.findOneAndUpdate(
-          { userId, patientId: patient._id },
-          { relationship: "self", status: "active" },
-          { upsert: true }
-        );
-      }
-      targetPatientId = patient.id;
-    }
-
-    const { validateSlotLockForBooking, forceReleaseSlotLock } = await import("../services/SlotLockService.ts");
-    const { Appointment } = await import("../models/Appointment.ts");
-    const { DoctorAssignment } = await import("../models/DoctorAssignment.ts");
-    const { getNextAtomicSequence } = await import("../models/Counter.ts");
-    const { sendBookingNotification } = await import("../utilities/notifications.ts");
-    const { AuditLog } = await import("../models/AuditLog.ts");
-
-    // Verify doctor assignment
-    const assignment = await DoctorAssignment.findOne({ doctorId, locationId });
-    if (!assignment) {
-      return reply.code(400).send(errorResponse("Doctor is not assigned to the selected location"));
-    }
-
-    const mode = (assignment as any)?.bookingMode;
-    const isSequentialQueue = mode ? mode === "sequential_queue" : true;
-
-    // Validate anti-double-booking slot lock (only for time_slot mode)
-    let lockValidation: { valid: boolean; message?: string; lockKey?: string } = { valid: true };
-    if (!isSequentialQueue) {
-      lockValidation = await validateSlotLockForBooking(locationId, doctorId, appointmentTime, userId, lockId);
-      if (!lockValidation.valid) {
-        return reply.code(409).send(errorResponse(lockValidation.message || "Slot is unavailable"));
-      }
-    }
-
-    const apptDateStr = new Date(appointmentTime).toISOString().split("T")[0];
-    const counterId = `queue_${locationId}_${doctorId}_${apptDateStr}`;
-    const tokenNumber = await getNextAtomicSequence(counterId);
-
-    const maxTokens = (assignment as any)?.maxDailyTokens;
-    if (maxTokens && tokenNumber > maxTokens) {
-      return reply.code(400).send(errorResponse(`Daily token limit of ${maxTokens} reached for this practitioner.`));
-    }
-
-    const isPaymentRequired = (assignment as any)?.paymentRequired === true;
-    const initialStatus = isPaymentRequired ? "pending_payment" : "confirmed";
-    const initialPaymentStatus = isPaymentRequired ? "pending" : (payAtLocation ? "pay_at_location" : "not_required");
-
-    const appointment = await Appointment.create({
-      patientId: targetPatientId,
-      bookedByUserId: userId,
-      doctorId,
-      locationId,
-      appointmentTime: new Date(appointmentTime),
-      appointmentType: appointmentType || "online",
-      notes: notes?.trim(),
-      status: initialStatus,
-      paymentStatus: initialPaymentStatus,
-      bookingSource: "patient_portal",
-      tokenNumber,
-      queuePosition: tokenNumber,
-      bookingMode: (assignment as any).bookingMode || "sequential_queue",
-    });
-
-    if (lockValidation.lockKey) {
-      forceReleaseSlotLock(lockValidation.lockKey).catch(() => {});
-    }
-
-    sendBookingNotification(appointment._id, "booked").catch(() => {});
-
-    await AuditLog.create({
-      userId,
-      action: "PATIENT_SELF_BOOKING",
-      targetId: appointment._id,
-      targetModel: "Appointment",
-      details: { tokenNumber, appointmentTime, locationId, doctorId, targetPatientId }
-    });
-
-    return reply.code(201).send(
-      successResponse(
-        {
-          appointment,
-          tokenNumber,
-          queuePosition: tokenNumber,
-          paymentRequired: isPaymentRequired,
-          fees: assignment.fees || 0,
-        },
-        `Appointment booked successfully! Your Queue Token Number is #${tokenNumber}`
-      )
-    );
-  } catch (err) {
-    console.error("patientSelfBookAppointment error:", err);
-    return reply.code(500).send(errorResponse("Internal server error"));
+    const input = req.body as { locationId: string; doctorId: string; appointmentTime: string; appointmentType?: 'online' | 'walk-in' | 'reception'; notes?: string; lockId?: string; forPatientId?: string; payAtLocation?: boolean; clientRequestId?: string };
+    if (!mongoose.isValidObjectId(input.locationId) || !mongoose.isValidObjectId(input.doctorId) || (input.forPatientId && !mongoose.isValidObjectId(input.forPatientId))) throw new AppointmentDomainError('Valid branch, clinician and patient identifiers are required', 400);
+    const branch = await checkLocationAccess(req, input.locationId);
+    if (!branch.allowed) return sendTenantError(reply, branch);
+    if (!branch.organizationId) throw new AppointmentDomainError('Branch organization is unavailable', 404);
+    const scope = 'portal-booking:' + req.user!.id + ':' + branch.organizationId;
+    const key = input.clientRequestId || crypto.randomUUID();
+    const effects: (() => Promise<void>)[] = [];
+    const command = await requestContextStore.run({ ...requestContextStore.getStore(), organizationId: branch.organizationId }, () => executeRecordedCommand(scope, key, input, async () => {
+      const currentBranch = await checkLocationAccess(req, input.locationId);
+      if (!currentBranch.allowed || currentBranch.organizationId !== branch.organizationId) throw new AppointmentDomainError('Branch authority changed', 403);
+      const booking = await appointmentService.book({ id: req.user!.id, role: 'patient', organizationId: branch.organizationId }, {
+        locationId: input.locationId, doctorId: input.doctorId, appointmentTime: input.appointmentTime, appointmentType: input.appointmentType || 'online',
+        patientId: input.forPatientId, notes: input.notes?.trim(), lockId: input.lockId, payAtLocation: input.payAtLocation,
+      }, branch.organizationId, { deferAfterCommit: effect => effects.push(effect) });
+      await AuditLog.create({ organizationId: branch.organizationId, userId: req.user!.id, action: 'PATIENT_SELF_BOOKING', targetId: booking.id, targetModel: 'Appointment', category: 'ADMIN', details: { locationId: booking.locationId, doctorId: booking.doctorId, patientId: booking.patientId } });
+      await OperationReceipt.updateOne({ scope, key }, { $set: { responseCiphertext: JSON.stringify(booking) } });
+      return booking.id;
+    }));
+    const appointment = await Appointment.findOne({ _id: command.resultId, organizationId: branch.organizationId }).select('+trackerTokenHash');
+    if (!appointment || !(await checkPatientAccess(req, String(appointment.patientId))).allowed) throw new AppointmentDomainError('Booking is no longer available in your scope', 404);
+    const receipt = await OperationReceipt.findOne({ scope, key }).select('+responseCiphertext');
+    if (!receipt?.responseCiphertext) throw new AppointmentDomainError('Booking was recorded; reception must review its response', 409);
+    const recorded = JSON.parse(decryptField(receipt.responseCiphertext));
+    const owner = await Patient.exists({ _id: appointment.patientId, userId: req.user!.id }).setOptions({ bypassTenantFilter: true });
+    const trackerToken = owner && recorded.trackerToken && appointment.trackerTokenExpiresAt && appointment.trackerTokenExpiresAt > new Date() && hashTrackerCapability(recorded.trackerToken) === appointment.trackerTokenHash ? recorded.trackerToken : undefined;
+    for (const effect of effects) await effect().catch(error => req.log.warn({ err: error }, 'Booking broadcast could not be refreshed'));
+    return reply.code(command.replayed ? 200 : 201).send(successResponse({ appointment: { id: appointment.id, patientId: String(appointment.patientId), doctorId: String(appointment.doctorId), locationId: String(appointment.locationId), appointmentTime: appointment.appointmentTime, status: appointment.status, paymentStatus: appointment.paymentStatus, tokenNumber: appointment.tokenNumber, queuePosition: appointment.queuePosition, trackerToken }, tokenNumber: appointment.tokenNumber, queuePosition: appointment.queuePosition,
+      paymentRequired: appointment.paymentStatus === 'pending', fees: appointment.paymentAmount, replayed: command.replayed }, 'Your visit was recorded. Review its current booking and payment status.'));
+  } catch (error) {
+    if (error instanceof AppointmentDomainError || error instanceof CommandError) return reply.code(error.statusCode).send(errorResponse(error.message));
+    req.log.error({ err: error }, 'Portal booking could not be confirmed');
+    return reply.code(503).send(errorResponse('The booking result could not be confirmed. Retry the submitted request.'));
   }
 }
 
@@ -487,20 +385,22 @@ export async function getPatientAppointmentsHistory(req: FastifyRequest, reply: 
     const userId = req.user!.id;
 
     const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
-    const relationships = await FamilyRelationship.find({ userId, status: "active" });
-    const familyPatientIds = relationships.map((r) => r.patientId);
+    const relationships = await FamilyRelationship.find({ userId, status: "active", identityClaim: { $ne: true } }).select('patientId');
+    const ownedPatients = await Patient.find({ userId }).select('_id').setOptions({ bypassTenantFilter: true });
+    const patientIds = [...relationships.map((r) => r.patientId), ...ownedPatients.map(patient => patient._id)];
+    const { page, limit, skip } = getPaginationParams(req.query as any);
 
     const { Appointment } = await import("../models/Appointment.ts");
     const appointments = await Appointment.find({
-      $or: [
-        { patientId: { $in: familyPatientIds } },
-        { bookedByUserId: userId },
-      ],
+      patientId: { $in: patientIds },
     })
-      .populate("doctorId", "name email phone")
+      .select('patientId doctorId locationId appointmentTime appointmentType status paymentStatus tokenNumber queuePosition')
+      .populate("doctorId", "name")
       .populate("locationId", "name address phone")
-      .populate("patientId", "name phone email dob gender accountType mrn")
-      .sort({ appointmentTime: -1 });
+      .populate("patientId", "name")
+      .sort({ appointmentTime: -1, _id: -1 }).skip(skip).limit(limit);
+    const total = await Appointment.countDocuments({ patientId: { $in: patientIds } });
+    setPaginationHeaders(reply, { currentPage: page, pageSize: limit, totalCount: total, totalPages: Math.ceil(total / limit) });
 
     return reply.code(200).send(successResponse(appointments));
   } catch (err) {

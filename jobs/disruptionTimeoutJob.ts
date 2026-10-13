@@ -2,25 +2,26 @@ import crypto from "node:crypto";
 import { disruptionService } from "../services/disruptionService.ts";
 import { WorkerLoop } from "../utilities/workerLoop.ts";
 import { acquireOrRenewWorkerLease, releaseWorkerLease } from "../utilities/workerLease.ts";
+import { WorkerLease } from '../models/WorkerLease.ts';
 
 const loop = new WorkerLoop();
 export const getDisruptionTimeoutProgress = () => loop.progress();
 const disruptionHolderId = `${process.env.HOSTNAME || "api"}:${process.pid}:${crypto.randomUUID()}`;
 
 /**
- * Periodically sweeps for appointments in disruption_triage whose 60-minute window
- * has expired without patient action, and automatically cancels & refunds them.
+ * Periodically sends unanswered disruption to staff review. This never cancels
+ * care or initiates refunds based on an unanswered or undelivered message.
  */
-export async function runDisruptionTimeoutSweep() {
+export async function runDisruptionTimeoutSweep(fence?: () => Promise<void>) {
   try {
-    const result = await disruptionService.processDisruptionTimeout();
-    if (result.autoCancelledCount > 0) {
-      console.log(`[DisruptionTimeoutJob] Auto-cancelled ${result.autoCancelledCount} expired disruption appointments.`);
+    const result = await disruptionService.processDisruptionTimeout(fence);
+    if (result.reviewRequiredCount > 0) {
+      console.log(`[DisruptionTimeoutJob] ${result.reviewRequiredCount} unanswered disruption appointments require staff review.`);
     }
     return result;
   } catch (err) {
     console.error("[DisruptionTimeoutJob] Error during disruption sweep:", err);
-    return { autoCancelledCount: 0, error: err };
+    return { autoCancelledCount: 0, reviewRequiredCount: 0, error: err };
   }
 }
 
@@ -29,10 +30,14 @@ export function startDisruptionTimeoutJob(intervalMs = 5 * 60 * 1000) {
     const name = 'disruption-timeout-sweeper';
     const ownsLease = await acquireOrRenewWorkerLease({ name, holderId: disruptionHolderId, leaseMs: 120_000 });
     if (!ownsLease) return { processed: 0 };
-    const heartbeat = setInterval(() => { void acquireOrRenewWorkerLease({ name, holderId: disruptionHolderId, leaseMs: 120_000 }).catch(() => console.error('[DisruptionTimeoutJob] Lease renewal failed')); }, 20_000);
-    heartbeat.unref?.();
-    try { const result = await runDisruptionTimeoutSweep(); if ("error" in result) throw result.error; return { processed: 1 }; }
-    finally { clearInterval(heartbeat); await releaseWorkerLease(name, disruptionHolderId); }
+    try {
+      const result = await runDisruptionTimeoutSweep(async () => {
+        const fence = await WorkerLease.updateOne({ name, holderId: disruptionHolderId, expiresAt: { $gt: new Date() } }, { $inc: { fenceRevision: 1 }, $set: { expiresAt: new Date(Date.now() + 120_000) } });
+        if (fence.matchedCount !== 1) throw new Error('Disruption review scheduler lease lost');
+      });
+      if ('error' in result) throw result.error;
+      return { processed: result.reviewRequiredCount };
+    } finally { await releaseWorkerLease(name, disruptionHolderId); }
   }, intervalMs);
 }
 export async function stopDisruptionTimeoutJob() { await loop.stop(); }

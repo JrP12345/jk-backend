@@ -195,7 +195,7 @@ describe("Disruption persistence and payment integrity", () => {
     expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
     expect(await Appointment.countDocuments({ priorityRescheduledFromId: original._id })).toBe(1);
     expect(await AuditLog.countDocuments({ targetId: original._id, action: "APPOINTMENT_RESCHEDULED" })).toBe(1);
-    expect(eventBus.publishDurable).toHaveBeenCalledOnce();
+    expect(vi.mocked(eventBus.publishDurable).mock.calls.filter(([event]) => event.eventType === "crm.appointment.communication")).toHaveLength(1);
   });
   it("shares the canonical counter for concurrent queue reschedules", async () => {
     const first = await visit(), second = await visit();
@@ -208,13 +208,15 @@ describe("Disruption persistence and payment integrity", () => {
   it("rolls back original/new visits, carried invoices and tokens after persistence failure", async () => {
     const original = await visit({ paymentStatus: "paid" });
     const paid = await invoice(original.id);
+    vi.mocked(eventBus.publishDurable).mockRestore();
     vi.spyOn(Invoice, "updateMany").mockRejectedValueOnce(new Error("Invoice persistence failed"));
+    const eventsBefore = await DomainEventOutbox.countDocuments();
     await expect(reschedule(original.id, "2027-02-04")).rejects.toThrow("Invoice persistence failed");
     expect((await Appointment.findById(original.id))?.status).toBe("disruption_triage");
     expect(await Appointment.countDocuments({ priorityRescheduledFromId: original._id })).toBe(0);
     expect(String((await Invoice.findById(paid.id))?.appointmentId)).toBe(original.id);
     expect(await Counter.exists({ id: `token_${locationId}_${doctorId}_2027-02-04` })).toBeNull();
-    expect(eventBus.publishDurable).not.toHaveBeenCalled();
+    expect(await DomainEventOutbox.countDocuments()).toBe(eventsBefore);
   });
   it("keeps the original visit pending when a target time slot collides", async () => {
     await DoctorAssignment.updateOne({ locationId, doctorId: replacementId }, { bookingMode: "time_slot" });
@@ -241,6 +243,15 @@ describe("Disruption persistence and payment integrity", () => {
     expect((await Appointment.findById(original.id))?.paymentStatus).toBe("refunded");
     expect((await Invoice.findById(paid.id))?.status).toBe("refunded");
   });
+  it('rolls cancellation and unpaid invoice changes back if their audit cannot persist', async () => {
+    const original = await visit({ paymentStatus: 'pending' });
+    const unpaid = await invoice(original.id, { status: 'unpaid', amountPaid: 0, balanceDue: 600, payments: [] });
+    vi.spyOn(AuditLog, 'create').mockRejectedValueOnce(new Error('cancellation audit unavailable'));
+    await expect(cancel(original.id)).rejects.toThrow('cancellation audit unavailable');
+    expect((await Appointment.findById(original.id))?.status).toBe('disruption_triage');
+    expect((await Invoice.findById(unpaid.id))?.status).toBe('unpaid');
+    expect(paymentProvider.processRefund).not.toHaveBeenCalled();
+  });
   it.each(["cash", "missing", "foreign", "split"])("retains %s receipts for billing review without fabricating a provider refund", async kind => {
     const original = await visit({ paymentStatus: "paid" });
     const payments = kind === "split" ? [{ amount: 300, paymentMethod: "online", referenceNumber: "pay_a" }, { amount: 300, paymentMethod: "cash" }] : [{ amount: 600, paymentMethod: kind === "cash" ? "cash" : "online", referenceNumber: kind === "missing" ? undefined : "pay_a" }];
@@ -258,14 +269,16 @@ describe("Disruption persistence and payment integrity", () => {
     expect((await Appointment.findById(original.id))?.paymentStatus).toBe("refund_pending");
     await expect(cancel(original.id)).rejects.toMatchObject({ statusCode: 409 });
     expect(paymentProvider.processRefund).toHaveBeenCalledOnce();
-    expect((await AuditLog.findOne({ action: "APPOINTMENT_CANCELLED", targetId: original._id }))?.details).toMatchObject({ refundId, refundProcessed: false });
+    expect((await AuditLog.findOne({ action: "APPOINTMENT_CANCELLED", targetId: original._id }))?.details).toMatchObject({ refundPending: true, refundProcessed: false });
+    expect((await AuditLog.findOne({ action: "REFUND_PROVIDER_RESULT", targetId: original._id }))?.details).toMatchObject({ refundId, providerStatus: status, refundProcessed: false });
   });
-  it("requires the timeout worker's exact claim token", async () => {
+  it("rejects automated cancellation even with a legacy timeout claim token", async () => {
     const original = await visit({ triageAction: "timeout_processing", disruptionTimeoutClaimToken: "current-worker" });
     await expect(disruptionService.cancelByDisruption({ appointmentId: original.id, cancelledByUserId: "system", timeoutClaimToken: "old-worker" })).rejects.toMatchObject({ statusCode: 409 });
     expect((await Appointment.findById(original.id))?.status).toBe("disruption_triage");
-    await disruptionService.cancelByDisruption({ appointmentId: original.id, cancelledByUserId: "system", timeoutClaimToken: "current-worker" });
-    expect((await Appointment.findById(original.id))?.status).toBe("cancelled");
+    await expect(disruptionService.cancelByDisruption({ appointmentId: original.id, cancelledByUserId: "system", timeoutClaimToken: "current-worker" })).rejects.toMatchObject({ statusCode: 409 });
+    expect((await Appointment.findById(original.id))?.status).toBe("disruption_triage");
+    expect(paymentProvider.processRefund).not.toHaveBeenCalled();
   });
 
   it("refunds an online capture before an invoice receipt is attached", async () => {
@@ -295,7 +308,8 @@ describe("Disruption persistence and payment integrity", () => {
     expect(results.map(result => result.statusCode)).toEqual([200, 200]);
     const paid = await Invoice.findById(unpaid.id);
     expect(paid?.amountPaid).toBe(600); expect(paid?.payments).toHaveLength(1);
-    expect(notifications.sendPaymentReceiptNotification).toHaveBeenCalledOnce();
+    expect(notifications.sendPaymentReceiptNotification).not.toHaveBeenCalled();
+    expect(eventBus.publishDurable).toHaveBeenCalledWith(expect.objectContaining({ eventId: `payment-receipt:pay_${payment.id}`, eventType: "crm.payment.receipt" }), undefined);
     await Appointment.updateOne({ _id: original._id }, { status: "disruption_triage" });
     await cancel(original.id);
     expect(paymentProvider.processRefund).toHaveBeenCalledOnce();

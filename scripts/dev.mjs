@@ -4,26 +4,14 @@ import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
 import { getServerPort } from "../utilities/serverPort.ts";
-
-const lockPurpose = "ekavyu-backend-dev-watcher";
+import { getProcessIdentity, isLockOwnerRunning, lockPurpose } from "./developmentWatcherLock.mjs";
 
 function parseLock(contents) {
   try {
     const lock = JSON.parse(contents);
-    return Number.isInteger(lock.pid) ? lock : undefined;
+    return Number.isInteger(lock.pid) && lock.pid > 0 ? lock : undefined;
   } catch {
     return undefined;
-  }
-}
-
-function isLockOwnerRunning(owner) {
-  try {
-    process.kill(owner.pid, 0);
-    return true;
-  } catch (error) {
-    if (error.code === "ESRCH") return false;
-    if (error.code === "EPERM") return owner.purpose === lockPurpose;
-    throw error;
   }
 }
 
@@ -31,10 +19,11 @@ async function runDevelopment() {
   process.chdir(fileURLToPath(new URL("../", import.meta.url)));
   const port = getServerPort();
   const lockPath = path.join(process.cwd(), `.dev-server-${port}.lock`);
+  const processIdentity = getProcessIdentity(process.pid);
   let ownsLock = false;
   for (let attempt = 0; attempt < 3 && !ownsLock; attempt++) {
     try {
-      fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, purpose: lockPurpose }), { flag: "wx" });
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, purpose: lockPurpose, processIdentity }), { flag: "wx" });
       ownsLock = true;
     } catch (error) {
       if (error.code !== "EEXIST") throw error;

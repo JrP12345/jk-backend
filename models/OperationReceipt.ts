@@ -1,10 +1,12 @@
 import mongoose, { Schema } from "mongoose";
+import { encryptField } from '../utilities/cryptoEnvelope.ts';
 
 const schema = new Schema({
   scope: { type: String, required: true },
   key: { type: String, required: true },
   requestHash: { type: String, required: true },
   resultId: { type: Schema.Types.ObjectId },
+  responseCiphertext: { type: String, select: false, set: encryptField },
   createdAt: { type: Date, default: Date.now },
 });
 schema.index({ scope: 1, key: 1 }, { unique: true });

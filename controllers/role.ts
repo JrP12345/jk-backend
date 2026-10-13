@@ -4,12 +4,30 @@ import { User } from "../models/User.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, revokeAllRefreshTokens } from "../utilities/helpers.ts";
-import { invalidateRoleCache } from "../utilities/permissions.ts";
+import { invalidateRoleCache, BUILTIN_ROLE_PERMISSIONS, getEffectivePermissions } from "../utilities/permissions.ts";
+import { CRM_PERMISSION_CATALOG } from "../utilities/crmPermissions.ts";
 import { isRootRequest, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { broadcastRealtimeNotification } from "../notifications/websocket.ts";
+import { withTransaction } from '../utilities/transaction.ts';
+import { handoffCrmPermissionLoss } from '../services/CrmRevocationService.ts';
+import { assertOtherActiveAdministrator } from '../services/OrganizationGovernanceService.ts';
+import { RefreshToken } from '../models/RefreshToken.ts';
+import { revokeSession } from '../utilities/sessionResolver.ts';
+import { CommandError } from '../services/CommandReceiptService.ts';
+import { pinAssignableRole } from '../services/RoleAssignmentService.ts';
 
 // Standard System Permissions Catalog with Human-Readable Labels & Categories
 export const SYSTEM_PERMISSIONS_CATALOG = [
+  ...CRM_PERMISSION_CATALOG,
+  { code: "VIEW_APPOINTMENTS", name: "View appointments", category: "Front Desk & Operations", description: "View permitted appointment information" },
+  { code: "VIEW_BILLING", name: "View billing", category: "Billing & Finance", description: "View permitted billing information" },
+  { code: "VIEW_STAFF", name: "View staff", category: "Administration", description: "View the permitted staff directory" },
+  { code: "VIEW_LOCATIONS", name: "View locations", category: "Administration", description: "View permitted locations" },
+  { code: "MANAGE_EHR", name: "Manage EHR", category: "Clinical Care", description: "Manage authorized clinical records" },
+  { code: "MANAGE_BEDS", name: "Manage beds", category: "Inpatient & Nursing", description: "Manage permitted bed operations" },
+  { code: "MANAGE_ADMISSIONS", name: "Manage admissions", category: "Inpatient & Nursing", description: "Manage permitted admissions" },
+  { code: "VIEW_ADMISSIONS", name: "View admissions", category: "Inpatient & Nursing", description: "Read permitted admissions" },
+  { code: "MANAGE_MEDICINES", name: "Manage medicines", category: "Pharmacy", description: "Manage authorized pharmacy inventory" },
   { code: "VIEW_PATIENTS", name: "View Patient Directory", category: "Patient Management", description: "Search and inspect basic patient profiles" },
   { code: "MANAGE_PATIENTS", name: "Manage Patient Demographics", category: "Patient Management", description: "Create and edit patient master records" },
   { code: "VIEW_EHR", name: "View EHR & Medical Timeline", category: "Clinical Care", description: "Access longitudinal electronic health records and clinical history" },
@@ -36,7 +54,7 @@ export const SYSTEM_PERMISSIONS_CATALOG = [
 ];
 
 const SYSTEM_PERMISSION_CODES = new Set(SYSTEM_PERMISSIONS_CATALOG.map((permission) => permission.code));
-const BUILT_IN_ROLE_NAMES = new Set(["root", "admin", "doctor", "receptionist", "nurse", "lab_tech", "pharmacist", "cashier", "patient"]);
+const BUILT_IN_ROLE_NAMES = new Set(["root", ...Object.keys(BUILTIN_ROLE_PERMISSIONS)]);
 
 const DEFAULT_SYSTEM_ROLES = [
   {
@@ -87,7 +105,9 @@ const DEFAULT_SYSTEM_ROLES = [
     permissions: ["VIEW_EHR"],
     isSystemRole: true,
   },
-];
+].map(role => ({ ...role, permissions: BUILTIN_ROLE_PERMISSIONS[role.name] || [] }));
+for (const name of ["location_manager", "family_member"]) DEFAULT_SYSTEM_ROLES.push({ name,
+  description: name.replaceAll("_", " "), permissions: BUILTIN_ROLE_PERMISSIONS[name], isSystemRole: true });
 
 export async function getRoles(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -100,7 +120,7 @@ export async function getRoles(req: FastifyRequest, reply: FastifyReply) {
     for (const sysRole of DEFAULT_SYSTEM_ROLES) {
       await Role.findOneAndUpdate(
         { name: sysRole.name, organizationId: null },
-        { $setOnInsert: { ...sysRole, organizationId: null } },
+        { $setOnInsert: { ...sysRole, permissions: BUILTIN_ROLE_PERMISSIONS[sysRole.name] || sysRole.permissions, organizationId: null } },
         { upsert: true, returnDocument: "after" }
       );
     }
@@ -110,22 +130,13 @@ export async function getRoles(req: FastifyRequest, reply: FastifyReply) {
       ? {}
       : { $or: [{ organizationId: orgId }, { organizationId: null }] };
     const roles = await Role.find(roleQuery).sort({ isSystemRole: -1, name: 1 });
-    const allCatalogCodes = SYSTEM_PERMISSIONS_CATALOG.map((p) => p.code);
     const effectiveRoles = orgId
       ? Array.from(roles.reduce((result, role) => {
           if (!result.has(role.name) || role.organizationId) result.set(role.name, role);
           return result;
         }, new Map<string, (typeof roles)[number]>()).values())
       : roles;
-    const sanitizedRoles = effectiveRoles.map((r) => {
-      if (r.name === "admin" || r.name === "root") {
-        // Admin and Root system roles possess full entitlement across all catalog permissions by default
-        const mergedPerms = Array.from(new Set([...allCatalogCodes, ...(r.permissions || [])]));
-        return { ...r.toObject(), permissions: mergedPerms };
-      }
-      return r;
-    });
-    return reply.code(200).send(successResponse(sanitizedRoles));
+    return reply.code(200).send(successResponse(effectiveRoles));
   } catch (err) {
     console.error("getRoles error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
@@ -238,7 +249,11 @@ export async function updateRolePermissions(req: FastifyRequest, reply: FastifyR
     const scope = resolveAuthorizedOrganizationScope(req);
     if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
     const orgId = scope.organizationId;
-    let role = await Role.findOne({ name, organizationId: orgId || null });
+    const role = await withTransaction(async () => {
+      if (!orgId && await OrgMember.exists({ role: name })) {
+        throw new CommandError(409, 'Select an organization before changing a staff role permission set');
+      }
+      let role = await Role.findOne({ name, organizationId: orgId || null });
     if (!role) {
       // Tenant edits create an override rather than changing the shared role.
       const globalRole = orgId ? await Role.findOne({ name, organizationId: null }).lean() : null;
@@ -252,7 +267,7 @@ export async function updateRolePermissions(req: FastifyRequest, reply: FastifyR
           permissions: finalPermissions,
         });
       } else {
-        return reply.code(404).send(errorResponse(`Role '${name}' not found`));
+        throw new CommandError(404, "Role is not configured");
       }
     } else {
       if (description !== undefined) role.description = description;
@@ -261,9 +276,22 @@ export async function updateRolePermissions(req: FastifyRequest, reply: FastifyR
       await role.save();
     }
 
+
+      const members = orgId ? await OrgMember.find({ organizationId: orgId, role: name }).select('userId').limit(1001).lean() : [];
+      if (members.length > 1000) throw new Error('This role change requires a staged organization review');
+      const crmHandoff = { inquiries: 0, tasks: 0, relationships: 0 };
+      for (const member of members) {
+        const counts = await handoffCrmPermissionLoss(orgId!, String(member.userId), new Set(finalPermissions));
+        crmHandoff.inquiries += counts.inquiries; crmHandoff.tasks += counts.tasks; crmHandoff.relationships += counts.relationships;
+      }
+      await AuditLog.create({ userId: req.user!.id, organizationId: orgId || null, action: 'ROLE_PERMISSIONS_CHANGED', targetId: role!._id, targetModel: 'Role', category: 'ADMIN', details: { roleName: name, crmHandoff } });
+      return role;
+    });
+
     await invalidateRoleCache(name, orgId);
     return reply.code(200).send(successResponse(role, `Permissions updated for role '${name}'`));
   } catch (err) {
+    if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
     console.error("updateRolePermissions error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
@@ -292,10 +320,23 @@ export async function deleteRole(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse(`System role '${name}' cannot be deleted`));
     }
 
-    await Role.deleteOne({ _id: role._id });
+    await withTransaction(async () => {
+      const current = await Role.findOneAndUpdate({ _id: role._id, isSystemRole: false },
+        { $inc: { assignmentRevision: 1 } }, { returnDocument: 'after' });
+      if (!current) throw new CommandError(409, 'Role changed; reload before deleting');
+      const organizationId = scope.organizationId;
+      if (await OrgMember.exists({ role: name, ...(organizationId ? { organizationId } : {}) }) ||
+          (!organizationId && await User.exists({ role: name }))) {
+        throw new CommandError(409, 'Reassign staff before deleting an assigned role');
+      }
+      await Role.deleteOne({ _id: current._id });
+      await AuditLog.create({ userId: req.user!.id, organizationId: organizationId || null,
+        action: 'ROLE_DELETED', targetId: current._id, targetModel: 'Role', category: 'ADMIN', details: { roleName: name } });
+    });
     await invalidateRoleCache(name, scope.organizationId);
     return reply.code(200).send(successResponse(null, `Role '${name}' deleted successfully`));
   } catch (err) {
+    if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
     console.error("deleteRole error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }
@@ -351,71 +392,38 @@ export async function updateUserRole(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(403).send(errorResponse("Forbidden: Only Root Super-Admin can modify accounts with the Root role"));
     }
     if (requesterOrgId && (newRole === "root" || user.role === "root")) return reply.code(403).send(errorResponse("Root identities are managed at platform level"));
-    if (id === req.user!.id && newRole !== user.role) return reply.code(400).send(errorResponse("Cannot change your own active role"));
-    // Authentication still uses User.role. A tenant edit must not affect access
-    // to another organization; divergent per-membership roles require a migration.
-    if (requesterOrgId && newRole !== user.role && await OrgMember.exists({ userId: id, organizationId: { $ne: requesterOrgId } })) {
-      return reply.code(409).send(errorResponse("This identity belongs to multiple organizations. Its global role requires platform review."));
-    }
-    if (requesterOrgId && user.role === "admin" && newRole !== "admin") {
-      const others = await OrgMember.find({ organizationId: requesterOrgId, role: "admin", userId: { $ne: id } }).populate("userId", "isActive").lean();
-      if (!others.some((m: any) => m.userId?.isActive !== false)) return reply.code(409).send(errorResponse("Keep at least one active organization administrator"));
-    }
-
-    const previousRole = user.role;
-    user.role = newRole;
-    (user as any).authVersion = ((user as any).authVersion || 1) + 1;
-    await user.save();
-
-    // If OrgMember exists for this org, keep membership role in sync
-    if (requesterOrgId) {
-      await OrgMember.updateOne({ userId: id, organizationId: requesterOrgId }, { $set: { role: newRole } });
-    }
-
-    // Invalidate existing sessions immediately (prevents privilege escalation window)
-    try {
-      await revokeAllRefreshTokens(id);
-    } catch (revokeErr) {
-      console.warn("[updateUserRole] Failed to revoke refresh tokens:", revokeErr);
-    }
-
-    // Broadcast WebSocket notification to target user
-    try {
-      broadcastRealtimeNotification(id, {
-        type: "NOTIFICATION_RECEIVED",
-        message: `Your account role has been updated to '${newRole}'. Please sign in again.`,
-        data: { newRole, previousRole }
-      });
-    } catch {
-      // safe ignore
-    }
-
-    // Create cryptographically signed Audit Log entry
-    try {
-      await AuditLog.create({
-        userId: req.user!.id,
-        organizationId: requesterOrgId || null,
-        action: "ROLE_ASSIGNED",
-        targetId: user._id,
-        targetModel: "User",
-        category: "ADMIN",
-        ipAddress: req.ip,
-        userAgent: req.headers["user-agent"],
-        details: {
-          previousRole,
-          newRole,
-          targetUserId: id,
-          targetUserName: user.name,
-          organizationId: requesterOrgId,
-          assignedBy: req.user!.id,
-        },
-      });
-    } catch (auditErr) {
-      console.error("[updateUserRole] Failed to create audit log entry:", auditErr);
-    }
-
-    return reply.code(200).send(successResponse(user, `User '${user.name}' assigned role '${newRole}' successfully`));
+    if (id === req.user!.id && newRole !== req.user!.role) return reply.code(400).send(errorResponse("Cannot change your own active role"));
+    let previousRole = user.role;
+    let auditTargetId = user._id;
+    let sessions: { _id: unknown }[] = [];
+    await withTransaction(async () => {
+      await pinAssignableRole(newRole, requesterOrgId);
+      let crmHandoff;
+      if (requesterOrgId) {
+        const member = await OrgMember.findOne({ userId: id, organizationId: requesterOrgId });
+        if (!member) throw new CommandError(404, 'User not found in your organization');
+        previousRole = member.role;
+        auditTargetId = member._id;
+        if (member.role === 'admin' && newRole !== 'admin') await assertOtherActiveAdministrator(requesterOrgId, id);
+        const changed = await OrgMember.updateOne({ _id: member._id, organizationId: requesterOrgId, role: member.role, ...((member.accessRevision || 0) === 0 ? { $or: [{ accessRevision: 0 }, { accessRevision: { $exists: false } }] } : { accessRevision: member.accessRevision }) }, { $set: { role: newRole }, $inc: { accessRevision: 1 } });
+        if (changed.modifiedCount !== 1) throw new CommandError(409, 'Membership changed; reload before saving');
+        crmHandoff = await handoffCrmPermissionLoss(requesterOrgId, id, await getEffectivePermissions(newRole, requesterOrgId, 1, true));
+        sessions = await RefreshToken.find({ userId: id, organizationId: requesterOrgId, revoked: false }).select('_id').lean();
+        await RefreshToken.updateMany({ userId: id, organizationId: requesterOrgId, revoked: false }, { $set: { revoked: true, revocationReason: 'terminated' } });
+      } else {
+        if (await OrgMember.exists({ userId: id })) throw new CommandError(409, 'Select an organization before changing a staff membership role');
+        user.role = newRole;
+        user.authVersion = (user.authVersion || 1) + 1;
+        await user.save();
+      }
+      await AuditLog.create({ userId: req.user!.id, organizationId: requesterOrgId || null, action: 'ROLE_ASSIGNED', targetId: auditTargetId, targetModel: requesterOrgId ? 'OrgMember' : 'User', category: 'ADMIN', ipAddress: req.ip, userAgent: req.headers['user-agent'], details: { previousRole, newRole, targetUserId: id, crmHandoff } });
+    });
+    if (requesterOrgId) for (const session of sessions) await revokeSession(String(session._id), 'terminated');
+    else await revokeAllRefreshTokens(id);
+    broadcastRealtimeNotification(id, { type: 'NOTIFICATION_RECEIVED', message: 'Your workspace role changed. Sign in to that workspace again.', data: { newRole, previousRole, organizationId: requesterOrgId } });
+    return reply.code(200).send(successResponse({ id: user.id, name: user.name, role: newRole, organizationId: requesterOrgId || null }, `Role updated successfully`));
   } catch (err) {
+    if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
     console.error("updateUserRole error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }

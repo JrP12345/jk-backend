@@ -30,6 +30,16 @@ const OrganizationSchema = new Schema({
     registration: { type: String, enum: ["full", "essential"], default: "full" },
     consultation: { type: String, enum: ["full", "focused"], default: "full" },
   },
+  crmSettings: {
+    automationEnabled: { type: Boolean, default: false },
+    defaultInquiryHours: { type: Number, min: 1, max: 168, default: 1 },
+    defaultTaskHours: { type: Number, min: 1, max: 168, default: 24 },
+    reminderStartHour: { type: Number, min: 0, max: 23, default: 8 },
+    reminderEndHour: { type: Number, min: 1, max: 24, default: 20 },
+    feedbackRecoveryRating: { type: Number, min: 1, max: 3, default: 2 },
+    campaignsEnabled: { type: Boolean, default: false, immutable: true },
+    revision: { type: Number, default: 0 },
+  },
   onboardingStatus: {
     type: String,
     enum: ["NOT_STARTED", "ORGANIZATION_CREATED", "ADMIN_CREATED", "LOCATION_CREATED", "TWO_FACTOR_PENDING", "COMPLETED"],

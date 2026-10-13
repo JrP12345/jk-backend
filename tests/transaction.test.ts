@@ -1,9 +1,11 @@
-import { afterEach, describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import mongoose from "mongoose";
 import { withTransaction } from "../utilities/transaction.ts";
 
 const originalNodeEnv = process.env.NODE_ENV;
 
 afterEach(() => {
+  vi.restoreAllMocks();
   if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
   else process.env.NODE_ENV = originalNodeEnv;
 });
@@ -27,6 +29,7 @@ describe("ACID Session Transaction Helper Tests", () => {
 
   it("fails closed when production lacks a transaction-capable MongoDB topology", async () => {
     process.env.NODE_ENV = "production";
+    vi.spyOn((mongoose.connection as any).client.topology, "description", "get").mockReturnValue({ type: "Single" });
     await expect(withTransaction(async () => "must not run")).rejects.toThrow("Replica Set");
   });
 });

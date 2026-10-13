@@ -1,27 +1,33 @@
-import crypto from "node:crypto";
 import mongoose from "mongoose";
 import { Appointment } from "../models/Appointment.ts";
+import { publishAppointmentCommunication } from "./AppointmentCommunicationEvents.ts";
+import { createCrmTask } from "./CrmTaskService.ts";
+import { Location } from "../models/Location.ts";
+import { PatientRelationship } from "../models/PatientRelationship.ts";
 import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { onlineRefundSource } from "./AppointmentRefundService.ts";
 import { AuditLog } from "../models/AuditLog.ts";
+import { recordAppointmentRecovery, resolveAppointmentRecovery } from "./CareFollowUpService.ts";
 import { User } from "../models/User.ts";
-import { eventBus } from "../events/eventBus.ts";
-import { EVENT_TYPES } from "../events/types.ts";
-import { broadcastQueueUpdate, broadcastRealtimeNotification } from "../notifications/websocket.ts";
-import { SmsWhatsAppService } from "./SmsWhatsAppService.ts";
+import { broadcastQueueUpdate } from "../notifications/websocket.ts";
 import { paymentProvider } from "./payment/PaymentProvider.ts";
 import { withClinicalTransaction } from "../utilities/transaction.ts";
 import { Counter, getNextAtomicSequence } from "../models/Counter.ts";
 import { AppointmentDomainError, validateAppointmentAvailability } from "./AppointmentService.ts";
-import { issueAppointmentTrackerLink } from "../utilities/publicTracker.ts";
 import { locationClockMinutes, locationDateKey, locationDayRange, locationLocalTimeToDate, getLocationTimezone } from "../utilities/locationTime.ts";
 
 function requirePendingDisruption(appointment: any) {
   if (appointment.status !== "disruption_triage" || appointment.triageAction !== "pending") {
     throw new AppointmentDomainError("Appointment is no longer awaiting a disruption response", 409);
   }
+}
+
+async function communicationActor(userId: string) {
+  if (!mongoose.Types.ObjectId.isValid(userId)) return undefined;
+  const actor = await User.findById(userId).select('role').lean();
+  return actor && !['patient', 'family_member', 'guest'].includes(actor.role) ? userId : undefined;
 }
 
 async function nextDisruptionToken(locationId: string, doctorId: string, date: string, start: Date, end: Date) {
@@ -83,7 +89,7 @@ export const disruptionService = {
    * Orchestrates patient triage when doctor availability is disrupted.
    * - In-consultation patients are preserved and completed normally
    * - Checked-in waiting patients are flagged for immediate reception triage
-   * - Confirmed/pending patients receive WhatsApp alert with reschedule/cancel links (60-min window)
+   * - Confirmed/pending patients enter staff review with consent-aware durable communication
    */
   async processDoctorDisruption(params: ProcessDisruptionParams) {
     const {
@@ -111,7 +117,7 @@ export const disruptionService = {
       locationId,
       doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay },
-      status: { $in: ["in-consultation", "checked-in", "confirmed", "pending"] },
+      status: { $in: ["in-consultation", "checked-in", "confirmed", "pending", "pending_payment"] },
     })
       .populate("locationId", "name phone organizationId")
       .populate("doctorId", "name email")
@@ -122,11 +128,11 @@ export const disruptionService = {
 
     let inConsultationPreservedCount = 0;
     let checkedInTriageCount = 0;
-    let remoteNotifiedCount = 0;
+    let remoteTriageCount = 0;
     const triagedAppointments: any[] = [];
 
     const now = new Date();
-    const responseDeadline = new Date(now.getTime() + 60 * 60 * 1000); // 60-minute window
+    const reviewDueAt = new Date(now.getTime() + 60 * 60 * 1000);
 
     for (const appt of appointments) {
       const apptDate = new Date(appt.appointmentTime);
@@ -148,11 +154,13 @@ export const disruptionService = {
           : `[TRIAGE: Doctor unavailable - awaiting reception action]`;
         // Compare-and-set makes repeated scheduler/API delivery idempotent.
         // Only the request that claims this appointment may emit notifications.
-        const triagedAppointment = await Appointment.findOneAndUpdate(
+        const triagedAppointment = await withClinicalTransaction(async () => {
+          const claimed = await Appointment.findOneAndUpdate(
           { _id: appt._id, status: "checked-in" },
           {
             $set: {
               status: "disruption_triage",
+              disruptionOriginalStatus: "checked-in",
               disruptionId,
               disruptedAt: now,
               triageAction: "pending",
@@ -164,6 +172,10 @@ export const disruptionService = {
           .populate("locationId", "name phone organizationId")
           .populate("doctorId", "name email")
           .populate({ path: "patientId", populate: { path: "userId", select: "name email phone" } });
+          if (claimed) await recordAppointmentRecovery(claimed, userId, "disruption");
+          return claimed;
+        });
+        triagedAppointment?.$session(null);
         if (!triagedAppointment) continue;
 
         checkedInTriageCount++;
@@ -171,41 +183,24 @@ export const disruptionService = {
         const patientDoc = triagedAppointment.patientId as any;
         triagedAppointments.push(triagedAppointment);
 
-        // Publish triage domain event
-        await eventBus.publishDurable({
-          eventType: EVENT_TYPES.PATIENT_DISRUPTION_TRIAGED,
-          category: "patient",
-          organizationId: organizationId || undefined,
-          targetUserId: patientDoc?.userId?._id?.toString() || patientDoc?.userId?.toString(),
-          title: "Doctor Disruption: In-Person Triage Required",
-          message: `Patient ${patientDoc?.name || "Patient"} (Token #${appt.tokenNumber}) requires reception reassignment.`,
-          severity: "warning",
-          priority: "urgent",
-          actionUrl: `/dashboard/queue`,
-          metadata: {
-            appointmentId: triagedAppointment._id.toString(),
-            locationId,
-            doctorId,
-            tokenNumber: triagedAppointment.tokenNumber,
-          },
-        });
         continue;
       }
 
-      // 3. Confirmed & Pending patients: Remote triage with 60-minute deadline
-      if (appt.status === "confirmed" || appt.status === "pending") {
+      // 3. Confirmed & Pending patients: Remote triage with staff review if unanswered
+      if (["confirmed", "pending", "pending_payment"].includes(appt.status)) {
         const notes = appt.notes
-          ? `${appt.notes} | [Doctor unavailable (${status}) - 60min patient action window]`
-          : `[Doctor unavailable (${status}) - 60min patient action window]`;
-        const triagedAppointment = await Appointment.findOneAndUpdate(
+          ? `${appt.notes} | [Doctor unavailable (${status}) - awaiting patient or reception action]`
+          : `[Doctor unavailable (${status}) - awaiting patient or reception action]`;
+        const triagedAppointment = await withClinicalTransaction(async () => {
+          const claimed = await Appointment.findOneAndUpdate(
           { _id: appt._id, status: appt.status },
           {
             $set: {
               status: "disruption_triage",
+              disruptionOriginalStatus: appt.status,
               disruptionId,
               disruptedAt: now,
-              disruptionNotifiedAt: now,
-              disruptionResponseDeadline: responseDeadline,
+              disruptionReviewDueAt: reviewDueAt,
               triageAction: "pending",
               notes,
             },
@@ -215,65 +210,20 @@ export const disruptionService = {
           .populate("locationId", "name phone organizationId")
           .populate("doctorId", "name email")
           .populate({ path: "patientId", populate: { path: "userId", select: "name email phone" } });
+          if (claimed) {
+            await recordAppointmentRecovery(claimed, userId, "disruption");
+            await publishAppointmentCommunication(claimed, { action: "disruption", actorId: userId });
+          }
+          return claimed;
+        });
+        triagedAppointment?.$session(null);
         if (!triagedAppointment) continue;
 
-        remoteNotifiedCount++;
+        remoteTriageCount++;
 
         triagedAppointments.push(triagedAppointment);
 
-        // Send WhatsApp notification with interactive action URLs
-        const patientDoc = triagedAppointment.patientId as any;
-        const patientPhone = patientDoc?.phone || patientDoc?.userId?.phone;
-        const patientName = patientDoc?.name || patientDoc?.userId?.name || "Patient";
-        const doctorName = (triagedAppointment.doctorId as any)?.name || "Doctor";
-        const locationName = (triagedAppointment.locationId as any)?.name || "Location";
-        const formattedTime = new Date(triagedAppointment.appointmentTime).toLocaleDateString("en-US", {
-          timeZone: timezone,
-          month: "short",
-          day: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-        });
 
-        const { url: trackerUrl } = await issueAppointmentTrackerLink(triagedAppointment as any);
-        const rescheduleUrl = `${trackerUrl}&action=reschedule`;
-        const cancelUrl = `${trackerUrl}&action=cancel`;
-
-        if (patientPhone) {
-          SmsWhatsAppService.sendDisruptionAlert(
-            triagedAppointment._id.toString(),
-            organizationId || (triagedAppointment.locationId as any)?.organizationId?.toString() || "",
-            patientPhone,
-            {
-              patientName,
-              doctorName,
-              locationName,
-              appointmentTime: formattedTime,
-              rescheduleUrl,
-              cancelUrl,
-              actionDeadlineMinutes: 60,
-            }
-          ).catch((err) => console.error("[DisruptionService] WhatsApp alert failed:", err));
-        }
-
-        // Publish domain event
-        await eventBus.publishDurable({
-          eventType: EVENT_TYPES.PATIENT_DISRUPTION_NOTIFIED,
-          category: "patient",
-          organizationId: organizationId || undefined,
-          targetUserId: patientDoc?.userId?._id?.toString() || patientDoc?.userId?.toString(),
-          title: "Doctor Schedule Disruption Alert",
-          message: `Dr. ${doctorName} is unavailable on ${formattedTime}. Please reschedule or cancel within 60 minutes.`,
-          severity: "warning",
-          priority: "high",
-          actionUrl: trackerUrl,
-          metadata: {
-            appointmentId: triagedAppointment._id.toString(),
-            locationId,
-            doctorId,
-            deadline: responseDeadline.toISOString(),
-          },
-        });
       }
     }
 
@@ -302,7 +252,8 @@ export const disruptionService = {
         date,
         overrideStatus: status,
         checkedInTriageCount,
-        remoteNotifiedCount,
+        remoteTriageCount,
+        remoteNotifiedCount: 0,
         inConsultationPreservedCount,
       },
       message: `Doctor availability modified: ${status}`,
@@ -323,15 +274,17 @@ export const disruptionService = {
         status,
         inConsultationPreservedCount,
         checkedInTriageCount,
-        remoteNotifiedCount,
-        totalAffected: checkedInTriageCount + remoteNotifiedCount,
+        remoteTriageCount,
+        remoteNotifiedCount: 0,
+        totalAffected: checkedInTriageCount + remoteTriageCount,
       },
     });
 
     return {
       inConsultationPreservedCount,
       checkedInTriageCount,
-      remoteNotifiedCount,
+      remoteTriageCount,
+      remoteNotifiedCount: 0,
       triagedAppointmentsCount: triagedAppointments.length,
     };
   },
@@ -506,7 +459,7 @@ export const disruptionService = {
       appt.transferredAt = new Date();
       appt.transferredBy = new mongoose.Types.ObjectId(transferredByUserId);
       appt.triageAction = "transferred";
-      appt.status = isWaiting ? "checked-in" : "confirmed";
+      appt.status = isWaiting ? "checked-in" : appt.paymentStatus === "pending" ? "pending_payment" : "confirmed";
       appt.feeVariance = feeVariance;
       appt.feeResolution = feeResolution;
       appt.notes = appt.notes
@@ -514,6 +467,8 @@ export const disruptionService = {
         : `[PRIORITY TRANSFER: Next up for Dr. ${targetDoctor.name} (transferred from Dr. ${previousDoctorName}): ${reason || "Disruption reassignment"}]`;
 
       await appt.save();
+      await resolveAppointmentRecovery(appt, transferredByUserId, "transferred", appt.id);
+      await publishAppointmentCommunication(appt, { action: "rescheduled", actorId: await communicationActor(transferredByUserId) });
 
       // Update corresponding Invoice doctor reference, notes, and fee waiver documentation
       const feeNote = feeVariance > 0
@@ -535,7 +490,7 @@ export const disruptionService = {
       const patientDoc = appt.patientId as any;
       const auditUserId = mongoose.Types.ObjectId.isValid(transferredByUserId)
         ? new mongoose.Types.ObjectId(transferredByUserId)
-        : (patientDoc?.userId?._id || new mongoose.Types.ObjectId());
+        : undefined;
 
       // Immutable Audit Log: APPOINTMENT_TRANSFERRED { fromDoctor, toDoctor, reason, staffId, feeVariance }
       await AuditLog.create({
@@ -566,47 +521,6 @@ export const disruptionService = {
       return { appt, locationId, previousDoctorId, previousDoctorName, replacementDoctorId, targetDoctor, patientDoc, newTokenNumber };
     });
     appt.$session(null);
-    const { url: trackerUrl } = await issueAppointmentTrackerLink(appt as any);
-
-    // Domain Event
-    await eventBus.publishDurable({
-      eventType: EVENT_TYPES.PATIENT_TRANSFERRED_DOCTOR,
-      category: "patient",
-      organizationId: (appt.locationId as any)?.organizationId?.toString(),
-      targetUserId: patientDoc?.userId?._id?.toString() || patientDoc?.userId?.toString(),
-      title: "Appointment Transferred",
-      message: `Your appointment has been transferred to Dr. ${targetDoctor.name}. Your new token is #${newTokenNumber}.`,
-      severity: "info",
-      actionUrl: trackerUrl,
-      metadata: {
-        appointmentId: appt._id.toString(),
-        previousDoctorId,
-        replacementDoctorId,
-        newTokenNumber,
-      },
-    });
-
-    // WhatsApp Notification
-    const patientPhone = patientDoc?.phone || patientDoc?.userId?.phone;
-    const patientName = patientDoc?.name || patientDoc?.userId?.name || "Patient";
-    const locationName = (appt.locationId as any)?.name || "Location";
-
-    if (patientPhone) {
-      SmsWhatsAppService.sendDisruptionTransferAlert(
-        appt._id.toString(),
-        (appt.locationId as any)?.organizationId?.toString() || "",
-        patientPhone,
-        {
-          patientName,
-          originalDoctorName: previousDoctorName,
-          newDoctorName: targetDoctor.name,
-          locationName,
-          tokenNumber: newTokenNumber,
-          trackingUrl: trackerUrl,
-        }
-      ).catch((err) => console.error("[DisruptionService] WhatsApp transfer alert failed:", err));
-    }
-
     // Real-time queue broadcasts for both doctors
     broadcastQueueUpdate(locationId, {
       type: "QUEUE_UPDATED",
@@ -629,7 +543,8 @@ export const disruptionService = {
    * Cancels an appointment due to doctor disruption and processes refund for prepaid bookings.
    */
   async cancelByDisruption(params: CancelDisruptionParams) {
-    const { appointmentId, cancelledByUserId, reason, timeoutClaimToken } = params;
+    const { appointmentId, cancelledByUserId, reason } = params;
+    if (cancelledByUserId === "system") throw new AppointmentDomainError("Unanswered disruption requires staff review", 409);
 
     let appt = await Appointment.findById(appointmentId)
       .populate("locationId", "name phone organizationId")
@@ -643,20 +558,25 @@ export const disruptionService = {
       throw new Error("Appointment not found");
     }
 
-    const timeoutClaim = cancelledByUserId === "system" && timeoutClaimToken && appt.triageAction === "timeout_processing"
-      && appt.disruptionTimeoutClaimToken === timeoutClaimToken;
-    if (!timeoutClaim) requirePendingDisruption(appt);
+    requirePendingDisruption(appt);
     if (appt.status !== "disruption_triage") throw new AppointmentDomainError("Appointment is no longer awaiting a disruption response", 409);
     const previousPaymentStatus = appt.paymentStatus;
-    const claimed = await withClinicalTransaction(() => Appointment.findOneAndUpdate(
-      { _id: appt!._id, status: "disruption_triage", paymentStatus: previousPaymentStatus, triageAction: timeoutClaim ? "timeout_processing" : "pending",
-        ...(timeoutClaim ? { disruptionTimeoutClaimToken: timeoutClaimToken } : {}) },
+    const claimed = await withClinicalTransaction(async () => {
+      const changed = await Appointment.findOneAndUpdate(
+      { _id: appt!._id, status: "disruption_triage", paymentStatus: previousPaymentStatus, triageAction: "pending" },
       { $set: { status: "cancelled", triageAction: "cancelled", paymentStatus: previousPaymentStatus === "paid" ? "refund_pending" : previousPaymentStatus,
         cancellationReason: reason || "Doctor schedule disruption",
         notes: `${appt!.notes ? `${appt!.notes} | ` : ""}[Cancelled due to doctor disruption: ${reason || "Doctor unavailable"}]` } },
       { returnDocument: "after" },
     ).populate("locationId", "name phone organizationId").populate("doctorId", "name email")
-      .populate({ path: "patientId", populate: { path: "userId", select: "name email phone" } }));
+      .populate({ path: "patientId", populate: { path: "userId", select: "name email phone" } });
+      if (changed) {
+        if (previousPaymentStatus !== 'paid') await Invoice.updateMany({ appointmentId: changed._id, organizationId: changed.organizationId, status: 'unpaid' }, { status: 'cancelled' });
+        await AuditLog.create({ userId: mongoose.Types.ObjectId.isValid(cancelledByUserId) ? cancelledByUserId : undefined, organizationId: changed.organizationId, action: 'APPOINTMENT_CANCELLED', targetId: changed._id, targetModel: 'Appointment', category: 'ADMIN', details: { appointmentId: changed.id, fromDoctor: String(changed.doctorId?._id || changed.doctorId), doctorId: String(changed.doctorId?._id || changed.doctorId), locationId: String(changed.locationId?._id || changed.locationId), staffId: cancelledByUserId, refundProcessed: false, refundPending: previousPaymentStatus === 'paid', reason: reason || 'Doctor schedule disruption' } });
+        await publishAppointmentCommunication(changed, { action: "cancelled", actorId: await communicationActor(cancelledByUserId) });
+      }
+      return changed;
+    });
     if (!claimed) throw new AppointmentDomainError("Appointment was changed by another request", 409);
     appt = claimed;
     appt.$session(null);
@@ -671,9 +591,8 @@ export const disruptionService = {
 
     const auditUserId = mongoose.Types.ObjectId.isValid(cancelledByUserId)
       ? new mongoose.Types.ObjectId(cancelledByUserId)
-      : (patientDoc?.userId?._id || new mongoose.Types.ObjectId());
+      : undefined;
 
-    let refundProcessed = false;
     let refundAmount = 0;
     let refundId = "";
 
@@ -703,7 +622,6 @@ export const disruptionService = {
         if (refundResult?.status === "processed") {
           appt.paymentStatus = "refunded";
           appt.triageAction = "refunded";
-          refundProcessed = true;
 
           if (invoice) {
             invoice.status = "refunded";
@@ -711,97 +629,16 @@ export const disruptionService = {
           await withClinicalTransaction(async () => {
             if (invoice) await invoice.save();
             await appt!.save();
+            await AuditLog.create({ userId: auditUserId, organizationId: appt!.organizationId, action: 'APPOINTMENT_REFUNDED', targetId: invoice?._id || appt!._id, targetModel: 'Invoice', category: 'BILLING', details: { appointmentId: appt!.id, invoiceId: invoice?.id, amount: refundAmount, refundId, staffId: cancelledByUserId } });
+            await publishAppointmentCommunication(appt, { action: 'refund', actorId: await communicationActor(cancelledByUserId) });
           });
           appt.$session(null);
           invoice?.$session(null);
-
-          // Emit refund domain event
-          await eventBus.publishDurable({
-            eventType: EVENT_TYPES.PATIENT_DISRUPTION_REFUNDED,
-            category: "billing",
-            organizationId: (appt.locationId as any)?.organizationId?.toString(),
-            targetUserId: patientDoc?.userId?._id?.toString() || patientDoc?.userId?.toString(),
-            title: "Refund Processed",
-            message: `A refund of ₹${refundAmount} has been processed for your appointment with Dr. ${doctorName}.`,
-            severity: "info",
-            actionUrl: `/dashboard/billing`,
-            metadata: { appointmentId: appt._id.toString(), refundId, refundAmount },
-          });
-
-          // WhatsApp Refund Confirmation
-          if (patientPhone) {
-            SmsWhatsAppService.sendDisruptionRefundAlert(
-              appt._id.toString(),
-              (appt.locationId as any)?.organizationId?.toString() || "",
-              patientPhone,
-              {
-                patientName,
-                doctorName,
-                locationName,
-                refundAmount,
-                refundId,
-              }
-            ).catch((err) => console.error("[DisruptionService] WhatsApp refund alert failed:", err));
-          }
-          // Immutable Audit Log: APPOINTMENT_REFUNDED
-          await AuditLog.create({
-            userId: auditUserId,
-            organizationId: (appt.locationId as any)?.organizationId,
-            action: "APPOINTMENT_REFUNDED",
-            targetId: invoice?._id || appt._id,
-            targetModel: "Invoice",
-            category: "BILLING",
-            details: {
-              appointmentId: appt._id.toString(),
-              invoiceId: invoice?._id?.toString(),
-              amount: refundAmount,
-              refundId,
-              reason: `Doctor Disruption Cancellation: ${reason || "Doctor unavailable"}`,
-              staffId: cancelledByUserId,
-            },
-          });
+        } else {
+          await AuditLog.create({ userId: auditUserId, organizationId: appt.organizationId, action: 'REFUND_PROVIDER_RESULT', targetId: appt._id, targetModel: 'Appointment', category: 'BILLING', details: { appointmentId: appt.id, paymentId: source.paymentId, refundId, providerStatus: refundResult?.status || 'unknown', refundProcessed: false, amount: refundAmount } });
         }
       }
-    } else {
-      // Cancel any unpaid invoices
-      await Invoice.updateMany({ appointmentId: appt._id, status: "unpaid" }, { status: "cancelled" });
     }
-
-    await appt.save();
-
-    // Immutable Audit Log: APPOINTMENT_CANCELLED
-    await AuditLog.create({
-      userId: auditUserId,
-      organizationId: appt.organizationId || (appt.locationId as any)?.organizationId,
-      action: "APPOINTMENT_CANCELLED",
-      targetId: appt._id,
-      targetModel: "Appointment",
-      category: "ADMIN",
-      details: {
-        appointmentId: appt._id.toString(),
-        fromDoctor: doctorId,
-        doctorId,
-        locationId,
-        staffId: cancelledByUserId,
-        refundProcessed,
-        refundAmount,
-        refundId,
-        reason: reason || "Doctor schedule disruption",
-      },
-    });
-
-    // Domain Event
-    await eventBus.publishDurable({
-      eventType: EVENT_TYPES.PATIENT_DISRUPTION_CANCELLED,
-      category: "patient",
-      organizationId: (appt.locationId as any)?.organizationId?.toString(),
-      targetUserId: patientDoc?.userId?._id?.toString() || patientDoc?.userId?.toString(),
-      title: "Appointment Cancelled",
-      message: `Your appointment with Dr. ${doctorName} has been cancelled due to doctor unavailability.`,
-      severity: "warning",
-      actionUrl: `/dashboard/appointments`,
-      metadata: { appointmentId: appt._id.toString(), doctorId, reason },
-    });
 
     // Real-time queue broadcast
     broadcastQueueUpdate(locationId, {
@@ -861,7 +698,7 @@ export const disruptionService = {
       const claimed = await Appointment.updateOne({ _id: originalAppt._id, status: "disruption_triage", triageAction: "pending" }, { $set: { status: "cancelled", triageAction: "rescheduled" } });
       if (!claimed.modifiedCount) throw new AppointmentDomainError("Appointment was changed by another request", 409);
 
-      if (assignment.bookingMode === "sequential_queue") {
+      if (assignment.bookingMode === "sequential_queue" && originalAppt.paymentStatus !== "pending") {
         const waiting = await Appointment.find({ locationId, doctorId, appointmentTime: { $gte: startOfDay, $lte: endOfDay },
           status: { $in: ["pending", "confirmed", "checked-in"] }, _id: { $ne: originalAppt._id } }).sort({ queuePosition: 1, tokenNumber: 1 });
         for (let index = 0; index < waiting.length; index++) {
@@ -879,11 +716,11 @@ export const disruptionService = {
         bookedByUserId: originalAppt.bookedByUserId,
         appointmentTime: newAppointmentTime,
         appointmentType: originalAppt.appointmentType,
-        status: "confirmed",
+        status: originalAppt.paymentStatus === "pending" ? "pending_payment" : "confirmed",
         paymentStatus: originalAppt.paymentStatus, // carry forward prepaid status!
         bookingSource: originalAppt.bookingSource,
         tokenNumber: newTokenNumber,
-        queuePosition: assignment.bookingMode === "sequential_queue" ? 1 : newTokenNumber,
+        queuePosition: assignment.bookingMode === "sequential_queue" && originalAppt.paymentStatus !== "pending" ? 1 : newTokenNumber,
         bookingMode: assignment.bookingMode,
         duration: originalAppt.duration || 15,
         reasonForVisit: originalAppt.reasonForVisit,
@@ -899,11 +736,13 @@ export const disruptionService = {
         ? `${originalAppt.notes} | [Rescheduled to ${targetDate} - New Appointment ID: ${newAppt._id}]`
         : `[Rescheduled to ${targetDate} - New Appointment ID: ${newAppt._id}]`;
       await originalAppt.save();
+      await resolveAppointmentRecovery(originalAppt, mongoose.Types.ObjectId.isValid(rescheduledByUserId) ? rescheduledByUserId : undefined, "rescheduled", newAppt.id);
+      await publishAppointmentCommunication(newAppt, { action: "rescheduled", actorId: await communicationActor(rescheduledByUserId) });
 
-      // Carry forward invoice if paid
-      if (originalAppt.paymentStatus === "paid") {
+      // Carry the canonical invoice to the replacement booking, including unpaid balances.
+      if (["paid", "pending", "pay_at_location"].includes(originalAppt.paymentStatus)) {
         await Invoice.updateMany(
-          { appointmentId: originalAppt._id },
+          { appointmentId: originalAppt._id, organizationId: originalAppt.organizationId, status: { $ne: "cancelled" } },
           {
             appointmentId: newAppt._id,
             notes: `Carried forward from appointment ${originalAppt._id}`,
@@ -914,7 +753,7 @@ export const disruptionService = {
       const patientDoc = originalAppt.patientId as any;
       const auditUserId = mongoose.Types.ObjectId.isValid(rescheduledByUserId)
         ? new mongoose.Types.ObjectId(rescheduledByUserId)
-        : (patientDoc?.userId?._id || new mongoose.Types.ObjectId());
+        : undefined;
 
       // Immutable Audit Log: APPOINTMENT_RESCHEDULED
       await AuditLog.create({
@@ -941,48 +780,6 @@ export const disruptionService = {
     });
     originalAppt.$session(null);
     newAppt.$session(null);
-    const { url: newAppointmentTrackerUrl } = await issueAppointmentTrackerLink(newAppt as any);
-
-    // Domain Event
-    await eventBus.publishDurable({
-      eventType: EVENT_TYPES.PATIENT_PRIORITY_RESCHEDULED,
-      category: "patient",
-      organizationId: (originalAppt.locationId as any)?.organizationId?.toString(),
-      targetUserId: patientDoc?.userId?._id?.toString() || patientDoc?.userId?.toString(),
-      title: "Appointment Rescheduled",
-      message: `Your appointment has been rescheduled to ${targetDate} with token #${newTokenNumber}.`,
-      severity: "success",
-      actionUrl: newAppointmentTrackerUrl,
-      metadata: {
-        originalAppointmentId: originalAppt._id.toString(),
-        newAppointmentId: newAppt._id.toString(),
-        targetDate,
-        tokenNumber: newTokenNumber,
-      },
-    });
-
-    // WhatsApp Notification for new booking
-    const patientPhone = patientDoc?.phone || patientDoc?.userId?.phone;
-    const patientName = patientDoc?.name || patientDoc?.userId?.name || "Patient";
-    const doctor = await User.findById(doctorId);
-
-    if (patientPhone) {
-      SmsWhatsAppService.sendBookingConfirmation(
-        newAppt._id.toString(),
-        (originalAppt.locationId as any)?.organizationId?.toString() || "",
-        patientPhone,
-        {
-          patientName,
-          tokenNumber: newTokenNumber,
-          doctorName: doctor?.name || "Doctor",
-          locationName: (originalAppt.locationId as any)?.name || "Location",
-          date: targetDate,
-          appointmentTime: newAppointmentTime.toLocaleTimeString([], { timeZone: timezone, hour: "2-digit", minute: "2-digit" }),
-          trackingUrl: newAppointmentTrackerUrl,
-        }
-      ).catch((err) => console.error("[DisruptionService] WhatsApp reschedule confirmation failed:", err));
-    }
-
     // Real-time queue broadcast
     broadcastQueueUpdate(locationId, {
       type: "QUEUE_UPDATED",
@@ -1047,81 +844,28 @@ export const disruptionService = {
     return { successfulCount, failedCount, errors, processed };
   },
 
-  /**
-   * Disruption timeout sweeper: Finds un-actioned remote appointments whose 60-min window expired,
-   * automatically cancels and processes refunds.
-   */
-  async processDisruptionTimeout() {
+  /** Unanswered disruption is staff review; silence never cancels or refunds care. */
+  async processDisruptionTimeout(fence?: () => Promise<void>) {
     const now = new Date();
-    const staleClaimBefore = new Date(now.getTime() - 15 * 60 * 1000);
-    const expiredAppointments = await Appointment.find({
-      status: "disruption_triage",
-      disruptionResponseDeadline: { $lte: now },
-      $or: [
-        { triageAction: "pending" },
-        {
-          triageAction: "timeout_processing",
-          disruptionTimeoutClaimedAt: { $lte: staleClaimBefore },
-        },
-      ],
-    });
-
-    let autoCancelledCount = 0;
-    for (const appt of expiredAppointments) {
-      const claimToken = crypto.randomUUID();
-      try {
-        // Scheduler leadership prevents normal duplicate sweeps; this CAS is
-        // the fencing layer if a worker dies or loses its lease mid-sweep.
-        const claimedAppointment = await Appointment.findOneAndUpdate(
-          {
-            _id: appt._id,
-            status: "disruption_triage",
-            disruptionResponseDeadline: { $lte: now },
-            $or: [
-              { triageAction: "pending" },
-              {
-                triageAction: "timeout_processing",
-                disruptionTimeoutClaimedAt: { $lte: staleClaimBefore },
-              },
-            ],
-          },
-          {
-            $set: {
-              triageAction: "timeout_processing",
-              disruptionTimeoutClaimedAt: now,
-              disruptionTimeoutClaimToken: claimToken,
-            },
-          },
-          { returnDocument: "after" },
-        );
-        if (!claimedAppointment) continue;
-
-        await this.cancelByDisruption({
-          appointmentId: appt._id.toString(),
-          cancelledByUserId: "system",
-          reason: "Disruption 60-minute patient response window expired",
-          timeoutClaimToken: claimToken,
-        });
-        autoCancelledCount++;
-      } catch (err) {
-        // A delivery/provider failure should be retried by a later sweep, but
-        // only the worker that owns this claim may return it to pending.
-        await Appointment.updateOne(
-          {
-            _id: appt._id,
-            status: "disruption_triage",
-            triageAction: "timeout_processing",
-            disruptionTimeoutClaimToken: claimToken,
-          },
-          {
-            $set: { triageAction: "pending" },
-            $unset: { disruptionTimeoutClaimedAt: 1, disruptionTimeoutClaimToken: 1 },
-          },
-        );
-        console.error(`[DisruptionService] Failed to auto-cancel expired appointment ${appt._id}:`, err);
-      }
+    const due: mongoose.QueryFilter<mongoose.InferSchemaType<typeof Appointment.schema>> = { status: "disruption_triage", triageAction: { $in: ["pending", "timeout_processing"] }, disruptionReviewRequiredAt: { $exists: false }, $or: [
+      { disruptionReviewDueAt: { $lte: now } },
+      { disruptionResponseDeadline: { $lte: now } },
+      { disruptionReviewDueAt: { $exists: false }, disruptionResponseDeadline: { $exists: false }, disruptedAt: { $lte: new Date(now.getTime() - 60 * 60 * 1000) } },
+    ] };
+    const appointments = await Appointment.find(due).sort({ _id: 1 }).limit(100);
+    let reviewRequiredCount = 0;
+    for (const appointment of appointments) {
+      const claimed = await withClinicalTransaction(async () => {
+        if (fence) await fence();
+        if (!appointment.organizationId || !await Location.exists({ _id: appointment.locationId, organizationId: appointment.organizationId, isActive: true })) return false;
+        const changed = await Appointment.findOneAndUpdate({ ...due, _id: appointment._id, organizationId: appointment.organizationId }, { $set: { disruptionReviewRequiredAt: now, triageAction: "pending" }, $unset: { disruptionTimeoutClaimedAt: 1, disruptionTimeoutClaimToken: 1 } }, { returnDocument: 'after' });
+        if (!changed) return false;
+        const relationship = await PatientRelationship.findOne({ organizationId: changed.organizationId, patientId: changed.patientId, locationId: changed.locationId, status: 'active' }).select('ownerId').lean();
+        await createCrmTask({ organizationId: String(changed.organizationId), locationId: String(changed.locationId), patientId: String(changed.patientId), appointmentId: changed.id, kind: 'crm_recovery', title: 'Review unanswered doctor disruption', dueDate: now, assignedTo: relationship?.ownerId?.toString(), dedupeKey: 'disruption-unanswered:' + changed.id + ':' + String(changed.disruptionId || 'legacy') });
+        return true;
+      });
+      if (claimed) reviewRequiredCount++;
     }
-
-    return { autoCancelledCount, totalExpiredFound: expiredAppointments.length };
+    return { autoCancelledCount: 0, reviewRequiredCount, totalExpiredFound: appointments.length };
   },
 };

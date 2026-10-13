@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import { RefreshToken } from "../models/RefreshToken.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
+import { OrgMember } from "../models/OrgMember.ts";
 import { redisClient, publishRedisEvent, createRedisSubscriber } from "./redis.ts";
 import { disconnectUserWebSockets } from "../notifications/websocket.ts";
 import { logger } from "./logger.ts";
@@ -65,7 +66,10 @@ export async function resolveSession(sessionId: string, expectedAuthVersion?: nu
         pipeline: [{ $project: { isActive: 1, authVersion: 1, role: 1, twoFactorEnabled: 1 } }], as: "owner" } },
       { $lookup: { from: Organization.collection.name, localField: "organizationId", foreignField: "_id",
         pipeline: [{ $project: { isActive: 1, status: 1 } }], as: "organization" } },
-      { $project: { userId: 1, organizationId: 1, isGuest: 1, authVersion: 1, revoked: 1,
+      { $lookup: { from: OrgMember.collection.name, let: { uid: "$userId", oid: "$organizationId" },
+        pipeline: [{ $match: { $expr: { $and: [{ $eq: ["$userId", "$$uid"] }, { $eq: ["$organizationId", "$$oid"] }] } } },
+          { $project: { role: 1, accessRevision: 1 } }], as: "membership" } },
+      { $project: { userId: 1, organizationId: 1, workspaceRole: 1, workspaceAccessRevision: 1, membership: 1, isGuest: 1, authVersion: 1, revoked: 1,
         revocationReason: 1, expiresAt: 1, owner: 1, organization: 1 } },
     ]);
     if (!session) return { valid: false, reason: "Session not found" };
@@ -78,12 +82,17 @@ export async function resolveSession(sessionId: string, expectedAuthVersion?: nu
       return { valid: false, reason: "Organization is unavailable" };
     }
     const version = owner.authVersion || 1;
+    if (session.workspaceRole && (!session.membership[0] || session.membership[0].role !== session.workspaceRole ||
+      (session.workspaceAccessRevision !== undefined && session.workspaceAccessRevision !== (session.membership[0].accessRevision || 0)) ||
+      ["root", "patient", "family_member", "guest"].includes(session.workspaceRole))) {
+      return { valid: false, reason: "Workspace membership changed or was removed; sign in again" };
+    }
     if ((session.authVersion || 1) !== version ||
       (expectedAuthVersion !== undefined && expectedAuthVersion !== version)) {
       return { valid: false, reason: "Session invalidated by role or credential change" };
     }
     return { valid: true, session: { sessionId, userId: String(session.userId),
-      organizationId: session.organizationId?.toString(), role: session.isGuest ? "guest" : owner.role,
+      organizationId: session.organizationId?.toString(), role: session.isGuest ? "guest" : session.workspaceRole || owner.role,
       authVersion: version, status: "active", expiresAt: new Date(session.expiresAt).getTime() } };
   } catch {
     logger.error("Session resolution failed closed");

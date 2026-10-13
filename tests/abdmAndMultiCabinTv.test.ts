@@ -8,7 +8,7 @@ import { Appointment } from "../models/Appointment.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { OutboundMessage } from "../models/OutboundMessage.ts";
-import { readEncryptedOutboundPayload } from "../services/CommunicationOutbox.ts";
+import { WhatsAppInboundMessage } from "../models/WhatsAppInboundMessage.ts";
 import { whatsAppWebhookWorker } from "../services/WhatsAppWebhookService.ts";
 import crypto from "node:crypto";
 
@@ -275,11 +275,6 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
       await whatsAppWebhookWorker.processBatch();
       return response;
     }
-    async function readBotReply() {
-      const row = await OutboundMessage.findOne({ idempotencyKey: `whatsapp-freeform:${lastInboundId}` }).select("+sensitivePayloadCiphertext").lean();
-      expect(row, "Expected a durable bot reply").not.toBeNull();
-      return { messageContent: readEncryptedOutboundPayload<{ text: string }>(row!).text };
-    }
     const makeInbound = (text: string) => ({
       object: "whatsapp_business_account",
       entry: [
@@ -307,72 +302,12 @@ describe("ABDM / ABHA Foundation, Multi-Cabin Polyclinic TV, & WhatsApp Conversa
       ],
     });
 
-    it("Step 1: Patient triggers booking via WhatsApp with 'BOOK'", async () => {
-      const res = await sendInbound("BOOK");
-
-      expect(res.statusCode).toBe(200);
-
-      const log = await readBotReply();
-
-      expect(log).toBeDefined();
-      expect(log?.messageContent).toContain("Schedule an OPD Appointment");
-      expect(log?.messageContent).toContain("Dr. Vikram Sethi");
-      expect(log?.messageContent).toContain("Dr. Sunita Rao");
-    });
-
-    it("Step 2: Patient selects Doctor 1", async () => {
-      const res = await sendInbound("1");
-
-      expect(res.statusCode).toBe(200);
-
-      const log = await readBotReply();
-
-      expect(log).toBeDefined();
-      expect(log?.messageContent).toContain("Select Consultation Date");
-      expect(log?.messageContent).toContain("Today");
-      expect(log?.messageContent).toContain("Tomorrow");
-    });
-
-    it("Step 3: Patient selects tomorrow and completes confirmation", async () => {
-      // Select tomorrow so the test is independent of today's closing time.
-      await sendInbound("2");
-
-      const confirmPrompt = await readBotReply();
-
-      expect(confirmPrompt?.messageContent).toContain("Confirm Your OPD Appointment");
-
-      // Step 3b: Send "YES" to confirm
-      const confirmRes = await sendInbound("YES");
-
-      expect(confirmRes.statusCode).toBe(200);
-
-      const bookedLog = await readBotReply();
-
-      expect(bookedLog?.messageContent).toContain("Appointment Confirmed!");
-      expect(bookedLog?.messageContent).toContain("Your Token: *#");
-      expect(bookedLog?.messageContent).toContain("track/");
-
-      // Verify Appointment in MongoDB
-      const createdAppt = await Appointment.findOne({
-        notes: { $regex: /WhatsApp 24\/7 Self-Service Desk/ },
-      }).sort({ createdAt: -1 });
-
-      expect(createdAppt).toBeDefined();
-      expect(createdAppt?.tokenNumber).toBeGreaterThanOrEqual(1);
-    });
-
-    it("should allow patient to reset or cancel booking session at any time", async () => {
-      // Start session
-      await sendInbound("4");
-
-      // Cancel session
-      const cancelRes = await sendInbound("CANCEL");
-
-      expect(cancelRes.statusCode).toBe(200);
-
-      const cancelLog = await readBotReply();
-
-      expect(cancelLog?.messageContent).toContain("Booking session cancelled");
+    it.each(["BOOK", "1", "2", "YES", "CANCEL"])("quarantines %s without inferring identity or booking from a shared sender", async text => {
+      const before = await Appointment.countDocuments({});
+      await sendInbound(text);
+      expect(await WhatsAppInboundMessage.findOne({ wamid: lastInboundId })).toMatchObject({ pendingReview: true });
+      expect(await OutboundMessage.findOne({ idempotencyKey: `whatsapp-freeform:${lastInboundId}` })).toBeNull();
+      expect(await Appointment.countDocuments({})).toBe(before);
     });
   });
 });

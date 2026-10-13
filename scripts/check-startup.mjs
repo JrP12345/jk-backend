@@ -8,11 +8,14 @@ import { MongoMemoryReplSet } from "mongodb-memory-server";
 process.chdir(fileURLToPath(new URL("../", import.meta.url)));
 const baseEnv = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, NODE_ENV: "production" };
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+const entryPoint = process.argv.includes("--source") ? "index.ts" : "dist/index.js";
+const runtime = entryPoint === "index.ts" ? "native TypeScript API" : "built API";
+console.log(`Checking ${runtime}; only isolated synthetic configuration and data are used.`);
 
 function launch(env, signalBridge = false) {
   const args = signalBridge
-    ? ["--input-type=module", "-e", "process.on('message', message => { if (message === 'shutdown') process.emit('SIGTERM'); }); await import('./dist/index.js');"]
-    : ["dist/index.js"];
+    ? ["--input-type=module", "-e", `process.on('message', message => { if (message === 'shutdown') process.emit('SIGTERM'); }); await import('./${entryPoint}');`]
+    : [entryPoint];
   const child = spawn(process.execPath, args, { env, stdio: ["ignore", "pipe", "pipe", "ipc"] });
   let output = "";
   child.stdout.on("data", chunk => { output += chunk; });
@@ -42,7 +45,7 @@ try {
   assert.match(missing.output(), /Fatal Configuration Error/);
   assert.doesNotMatch(missing.output(), /MongoDB connection error/);
 } finally { if (missing.child.exitCode === null) missing.child.kill(); }
-console.log("PASS: built API validates production configuration before connecting to MongoDB.");
+console.log(`PASS: ${runtime} validates production configuration before connecting to MongoDB.`);
 
 const replica = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
 const reservation = net.createServer();
@@ -81,7 +84,7 @@ try {
   const origin = `http://127.0.0.1:${port}`;
   let ready;
   for (let attempt = 0; attempt < 120; attempt++) {
-    if (api.child.exitCode !== null) throw new Error(`Built API exited before readiness: ${api.output()}`);
+    if (api.child.exitCode !== null) throw new Error(`${runtime} exited before readiness: ${api.output()}`);
     try {
       const response = await fetch(`${origin}/api/health/readiness`, { signal: AbortSignal.timeout(2000) });
       const body = await response.json();
@@ -95,14 +98,14 @@ try {
   assert.equal(ready.configuration.valid, true);
   assert.equal(ready.redis.status, "single_node_override");
   assert.equal((await fetch(`${origin}/api/health/liveness`)).status, 200);
-  console.log("PASS: built API starts with production settings and an isolated MongoDB replica set; readiness and liveness return 200.");
+  console.log(`PASS: ${runtime} starts with production settings and an isolated MongoDB replica set; readiness and liveness return 200.`);
 
   const duplicate = launch(env);
   processes.push(duplicate);
   assert.equal((await waitForExit(duplicate)).code, 1);
   assert.match(duplicate.output(), /API port is already in use/);
   assert.doesNotMatch(duplicate.output(), /Default system roles verified/);
-  console.log("PASS: a duplicate built API exits cleanly before bootstrap writes or jobs.");
+  console.log(`PASS: a duplicate ${runtime} exits cleanly before bootstrap writes or jobs.`);
 
   // Emit the signal in-process so Windows also exercises the graceful handler.
   api.child.send("shutdown");
@@ -113,7 +116,7 @@ try {
     reservation.listen(port, "0.0.0.0", resolve);
   });
   await new Promise(resolve => reservation.close(resolve));
-  console.log("PASS: SIGTERM shuts down the built API and releases its port for restart.");
+  console.log(`PASS: SIGTERM shuts down the ${runtime} and releases its port for restart.`);
 } finally {
   if (reservation.listening) await new Promise(resolve => reservation.close(resolve));
   for (const process of processes) {

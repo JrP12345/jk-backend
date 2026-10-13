@@ -1,3 +1,4 @@
+import { grantFixtureBranch } from './helpers/locationEssentialsSetup.ts';
 import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { fixtureAccessToken } from "./helpers/sessionFixture.ts";
 import { reuseOnboardingLocation } from "./helpers/locationEssentialsSetup.ts";
@@ -156,6 +157,7 @@ describe("Clinic Essentials Cycle 3 — location_manager Desk Workflows", () => 
       },
     });
 
+    await grantFixtureBranch(managerEmail, locationId);
     const loginRes = await app.inject({
       method: "POST",
       url: "/api/auth/login",
@@ -174,7 +176,7 @@ describe("Clinic Essentials Cycle 3 — location_manager Desk Workflows", () => 
         phone: `9333${Date.now().toString().slice(-6)}`,
         dob: "1988-07-20",
         gender: "female",
-        ignoreDuplicate: true,
+        locationId,
       },
     });
     expect(res.statusCode).toBe(201);

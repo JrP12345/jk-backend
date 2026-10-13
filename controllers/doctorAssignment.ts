@@ -5,7 +5,13 @@ import { Location } from "../models/Location.ts";
 import { User } from "../models/User.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+import { isRootRequest, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+import { withTransaction } from '../utilities/transaction.ts';
+import { publishDoctorAssignmentRemoval } from '../services/DoctorAssignmentRecoveryEvents.ts';
+import { unassignRevokedCrmWork } from '../services/CrmRevocationService.ts';
+import { resolveStaffLocationGrant } from '../services/LocationAccessService.ts';
+import { AuditLog } from '../models/AuditLog.ts';
+import { CommandError } from '../services/CommandReceiptService.ts';
 
 export async function assignDoctor(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -39,13 +45,14 @@ export async function assignDoctor(req: FastifyRequest, reply: FastifyReply) {
     const assignment = await DoctorAssignment.findOneAndUpdate(
       { doctorId, locationId, organizationId: orgId },
       {
-        workingHours,
+        $set: { workingHours,
         fees,
         feeType: feeType || "fixed",
         appointmentDuration: appointmentDuration || 15,
         bookingMode: bookingMode || "sequential_queue",
         maxDailyTokens: maxDailyTokens !== undefined ? maxDailyTokens : null,
-        isActive: true,
+        isActive: true },
+        $inc: { assignmentRevision: 1 },
       },
       { returnDocument: "after", upsert: true }
     );
@@ -149,10 +156,23 @@ export async function removeAssignment(req: FastifyRequest, reply: FastifyReply)
     const assignment = await DoctorAssignment.findOne(query);
     if (!assignment) return reply.code(404).send(errorResponse("Doctor assignment not found"));
 
-    await DoctorAssignment.findByIdAndDelete(id);
+    await withTransaction(async () => {
+      if (!isRootRequest(req)) {
+        const grant = await resolveStaffLocationGrant(req.user!.id, String(assignment.organizationId), req.user!.role, true);
+        if (grant && !grant.includes(String(assignment.locationId))) throw new CommandError(403, 'This branch is outside your authority');
+      }
+      const removed = await DoctorAssignment.findOneAndUpdate({ _id: assignment._id, organizationId: assignment.organizationId, isActive: true }, { $set: { isActive: false }, $inc: { assignmentRevision: 1 } }, { returnDocument: 'after' });
+      if (!removed) return;
+      const member = await OrgMember.findOne({ userId: removed.doctorId, organizationId: removed.organizationId }).select('role').lean();
+      const grant = member ? await resolveStaffLocationGrant(String(removed.doctorId), String(removed.organizationId), member.role, true) : [];
+      const crmHandoff = grant ? await unassignRevokedCrmWork(String(removed.organizationId), String(removed.doctorId), grant) : undefined;
+      await AuditLog.create({ organizationId: removed.organizationId, userId: req.user!.id, action: 'DOCTOR_ASSIGNMENT_REMOVED', targetId: removed._id, targetModel: 'DoctorAssignment', category: 'ADMIN', details: { locationId: String(removed.locationId), crmHandoff } });
+      await publishDoctorAssignmentRemoval(removed, req.user!.id);
+    });
 
     return reply.code(200).send(successResponse(null, "Doctor assignment removed successfully"));
   } catch (err) {
+    if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
     console.error("removeAssignment error:", err);
     return reply.code(500).send(errorResponse("Internal server error"));
   }

@@ -3,6 +3,13 @@ import { Appointment } from "../models/Appointment.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { enqueueTransactionalEmail } from "../services/CommunicationOutbox.ts";
+import { organizationCommunicationRecipient } from '../services/FamilyAuthorityService.ts';
+
+async function organizationContact(appt: any) {
+  const patientId = String(appt.patientId?._id || appt.patientId), organizationId = String(appt.organizationId || appt.locationId?.organizationId);
+  const recipient = await organizationCommunicationRecipient(patientId, organizationId);
+  return { phone: recipient.available ? recipient.phone : undefined, email: recipient.available ? recipient.email : undefined };
+}
 import { appendTrackerCapability, hashTrackerCapability, issueAppointmentTrackerLink } from "./publicTracker.ts";
 
 /**
@@ -23,29 +30,17 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
       return;
     }
 
-    let targetUserId = appt.patientId?.userId?._id?.toString() || appt.patientId?.userId?.id || appt.patientId?.userId || appt.bookedByUserId?.toString();
-    let patientName = appt.patientId?.name || appt.patientId?.userId?.name || "Patient";
-    let patientEmail = appt.patientId?.email || appt.patientId?.userId?.email;
-    let patientPhone = appt.patientId?.phone || appt.patientId?.userId?.phone;
-
-    // If patient has no contact info & no linked userId, look up guardian FamilyRelationship
-    if (!targetUserId || (!patientEmail && !patientPhone)) {
-      const { FamilyRelationship } = await import("../models/FamilyRelationship.ts");
-      const familyRel: any = await FamilyRelationship.findOne({
-        patientId: appt.patientId?._id || appt.patientId,
-        status: "active",
-      }).populate("userId", "name email phone");
-
-      if (familyRel?.userId) {
-        targetUserId = familyRel.userId._id?.toString();
-        if (!patientEmail) patientEmail = familyRel.userId.email;
-        if (!patientPhone) patientPhone = familyRel.userId.phone;
-      }
-    }
+    const targetUserId = appt.patientId?.userId?._id?.toString() || appt.patientId?.userId?.id;
+    const patientName = appt.patientId?.name || appt.patientId?.userId?.name || "Patient";
+    const { email: patientEmail, phone: patientPhone } = await organizationContact(appt);
 
     const doctorName = appt.doctorId?.name || "Doctor";
     const locationName = appt.locationId?.name || "Location";
     const token = appt.tokenNumber;
+    const bookingState = appt.status === "pending_payment" ? "awaiting payment" : appt.status === "pending" ? "requested" : "confirmed";
+    const bookingTitle = appt.status === "pending_payment" ? "Booking awaiting payment" : appt.status === "pending" ? "Booking requested" : "Appointment confirmed";
+    const cancelled = actionType === "cancelled";
+    const title = cancelled ? "Appointment cancelled" : actionType === "rescheduled" ? `Appointment rescheduled — ${bookingState}` : bookingTitle;
     const time = new Date(appt.appointmentTime).toLocaleString("en-US", {
       dateStyle: "medium",
       timeStyle: "short"
@@ -66,25 +61,26 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
 
     if (targetUserId) {
       await eventBus.publishDurable({
-        eventType: actionType === "booked" ? EVENT_TYPES.PATIENT_APPOINTMENT_BOOKED : EVENT_TYPES.PATIENT_APPOINTMENT_CANCELLED,
+        eventType: cancelled ? EVENT_TYPES.PATIENT_APPOINTMENT_CANCELLED : EVENT_TYPES.PATIENT_APPOINTMENT_BOOKED,
         category: "patient",
         targetUserId: targetUserId.toString(),
-        title: actionType === "booked" ? `Appointment Confirmed (#${token})` : `Appointment Cancelled`,
-        message: actionType === "booked"
-          ? `Appointment for ${patientName} with Dr. ${doctorName} at ${locationName} confirmed for ${time}. Token: #${token}. Track live queue: ${trackingUrl}`
+        title: cancelled ? title : `${title} (#${token})`,
+        message: !cancelled
+          ? `Appointment for ${patientName} with Dr. ${doctorName} at ${locationName} is ${bookingState} for ${time}. Token: #${token}. Booking details: ${trackingUrl}`
           : `Appointment for ${patientName} with Dr. ${doctorName} at ${locationName} scheduled for ${time} has been cancelled.`,
-        severity: actionType === "booked" ? "success" : "warning",
-        actionUrl: actionType === "booked" ? trackingUrl : "/dashboard/appointments",
+        severity: cancelled || appt.status !== "confirmed" ? "warning" : "success",
+        actionUrl: cancelled ? "/dashboard/appointments" : trackingUrl,
+        organizationId: appt.organizationId?.toString(),
         metadata: { appointmentId, locationName, doctorName, token, time, trackingUrl },
       });
     }
 
     if (patientEmail) {
-      const subject = actionType === "booked"
-        ? `Appointment Confirmed - Token #${token} at ${locationName}`
+      const subject = !cancelled
+        ? `${title} - Token #${token} at ${locationName}`
         : `Appointment Cancelled - ${locationName}`;
-      const body = actionType === "booked"
-        ? `Hello ${patientName},\n\nYour appointment booking with Dr. ${doctorName} at ${locationName} is confirmed for ${time}.\n\nYour assigned daily queue token is #${token}.\n\nYou can track your live queue position in real-time here:\n${trackingUrl}\n\nPlease scan the reception QR code or check in via the tracker when you arrive.\n\nBest regards,\nEkavyu Health Desk`
+      const body = !cancelled
+        ? `Hello ${patientName},\n\nYour appointment booking with Dr. ${doctorName} at ${locationName} is ${bookingState} for ${time}.\n\nYour assigned token is #${token}.\n\nReview booking details here:\n${trackingUrl}\n\n${appt.status === "pending_payment" ? "Payment is still required before confirmation." : "Contact reception if you need assistance."}\n\nBest regards,\nEkavyu Health Desk`
         : `Hello ${patientName},\n\nThis is to inform you that your appointment with Dr. ${doctorName} at ${locationName} scheduled for ${time} has been cancelled.\n\nIf you believe this is an error, please contact reception.\n\nBest regards,\nEkavyu Health Desk`;
 
       await enqueueTransactionalEmail({
@@ -92,11 +88,12 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
         subject,
         text: body,
         html: `<div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">${body.replace(/\n/g, "<br/>")}</div>`,
-        idempotencyKey: `transactional-email:booking:${appt._id}:${actionType}`,
+        idempotencyKey: `transactional-email:booking:${appt._id}:${actionType}:${new Date(appt.appointmentTime).toISOString()}`,
+        communicationContext: { organizationId: String(appt.organizationId), appointmentId: String(appt._id), purpose: 'care_operations' },
       });
     }
 
-    if (patientPhone) {
+    if (patientPhone && (cancelled || appt.status === "confirmed")) {
       const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
       sendSmsWhatsAppNotification({
         organizationId: appt.locationId?.organizationId?.toString() || appt.organizationId?.toString(),
@@ -138,8 +135,7 @@ export async function sendTurnApproachingNotification(appointmentId: any, people
     const targetUserId =
       appt.patientId?.userId?._id?.toString() ||
       appt.patientId?.userId?.id ||
-      appt.patientId?.userId ||
-      appt.bookedByUserId?.toString();
+      appt.patientId?.userId;
     const patientName = appt.patientId?.name || appt.patientId?.userId?.name || "Patient";
     const doctorName = appt.doctorId?.name || "Doctor";
     const token = appt.tokenNumber;
@@ -160,7 +156,7 @@ export async function sendTurnApproachingNotification(appointmentId: any, people
       });
     }
 
-    const patientPhone = appt.patientId?.phone || appt.patientId?.userId?.phone;
+    const { phone: patientPhone } = await organizationContact(appt);
     if (patientPhone) {
       const { sendSmsWhatsAppNotification } = await import("../services/SmsWhatsAppService.ts");
       await sendSmsWhatsAppNotification({
@@ -207,11 +203,9 @@ export async function sendConsultationCompletedNotification(
     const targetUserId =
       appt.patientId?.userId?._id?.toString() ||
       appt.patientId?.userId?.id ||
-      appt.patientId?.userId ||
-      appt.bookedByUserId?.toString();
+      appt.patientId?.userId;
     const patientName = appt.patientId?.name || appt.patientId?.userId?.name || "Patient";
-    const patientEmail = appt.patientId?.email || appt.patientId?.userId?.email;
-    const defaultPatientPhone = appt.patientId?.phone || appt.patientId?.userId?.phone;
+    const { email: patientEmail, phone: defaultPatientPhone } = await organizationContact(appt);
     const targetPhone = options?.phone || defaultPatientPhone;
     const channel = options?.channel || "whatsapp";
     const doctorName = appt.doctorId?.name || "Doctor";
@@ -247,6 +241,7 @@ export async function sendConsultationCompletedNotification(
         text: body,
         html: `<div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">${body.replace(/\n/g, "<br/>")}</div>`,
         idempotencyKey: `transactional-email:consultation-completed:${appt._id}`,
+        communicationContext: { organizationId: String(appt.organizationId), appointmentId: String(appt._id), purpose: 'care_operations' },
       });
     }
 
@@ -278,6 +273,7 @@ export async function sendConsultationCompletedNotification(
       const documentUrl = prescriptionUrl;
 
       if (channel === "whatsapp") await enqueueWhatsAppDocument({
+        communicationContext: { organizationId: String(appt.organizationId), appointmentId: String(appt._id), purpose: 'care_operations' },
         to: targetPhone,
         organizationId: appt.organizationId?.toString(),
         documentUrl,
@@ -322,8 +318,7 @@ export async function sendPaymentReceiptNotification(params: {
     }
 
     const patientName = appt.patientId?.name || appt.patientId?.userId?.name || "Patient";
-    const patientPhone = appt.patientId?.phone || appt.patientId?.userId?.phone;
-    const patientEmail = appt.patientId?.email || appt.patientId?.userId?.email;
+    const { phone: patientPhone, email: patientEmail } = await organizationContact(appt);
     const doctorName = appt.doctorId?.name || "Doctor";
     const locationName = appt.locationId?.name || "Ekavyu Healthcare";
     const token = appt.tokenNumber || "OPD";
@@ -367,6 +362,7 @@ export async function sendPaymentReceiptNotification(params: {
         text: body,
         html: `<div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">${body.replace(/\n/g, "<br/>")}</div>`,
         idempotencyKey: `transactional-email:payment-receipt:${invoice?._id || params.invoiceId || appt._id}:${params.paymentMethod}:${params.amount}`,
+        communicationContext: { organizationId: String(appt.organizationId), appointmentId: String(appt._id), purpose: 'care_operations' },
       }).catch((err) => console.error("Email payment receipt outbox enqueue failed:", err));
     }
   } catch (err) {
@@ -395,7 +391,8 @@ export async function sendFollowUpRecallNotification(params: {
     if (!appt) return;
 
     const patientName = appt.patientId?.name || appt.patientId?.userId?.name || "Patient";
-    const targetPhone = params.phone || appt.patientId?.phone || appt.patientId?.userId?.phone;
+    const contact = await organizationContact(appt);
+    const targetPhone = params.phone || contact.phone;
     if (!targetPhone) return;
 
     const doctorName = appt.doctorId?.name || "Doctor";
@@ -413,6 +410,7 @@ export async function sendFollowUpRecallNotification(params: {
     await sendSmsWhatsAppNotification({
       organizationId: appt.locationId?.organizationId?.toString() || appt.organizationId?.toString(),
       appointmentId: appt._id?.toString(),
+      communicationContext: { organizationId: String(appt.organizationId), appointmentId: String(appt._id), purpose: 'care_followup' },
       phone: targetPhone,
       patientName,
       channel: params.channel || "whatsapp",
@@ -452,7 +450,8 @@ export async function sendDoorwaySummonNotification(params: {
     if (!appt) return;
 
     const patientName = appt.patientId?.name || appt.patientId?.userId?.name || "Patient";
-    const targetPhone = params.phone || appt.patientId?.phone || appt.patientId?.userId?.phone;
+    const contact = await organizationContact(appt);
+    const targetPhone = params.phone || contact.phone;
     if (!targetPhone) return;
 
     const doctorName = appt.doctorId?.name || "Doctor";

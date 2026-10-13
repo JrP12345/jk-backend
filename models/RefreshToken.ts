@@ -10,6 +10,8 @@ const ImpersonationSchema = new Schema({
 const RefreshTokenSchema = new Schema({
   userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
+  workspaceRole: { type: String },
+  workspaceAccessRevision: { type: Number },
   familyId: { type: String, required: true, index: true },
   generation: { type: Number, default: 1 },
   authVersion: { type: Number, default: 1 },

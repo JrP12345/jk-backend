@@ -6,6 +6,7 @@ import { Organization } from "../models/Organization.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { isIanaTimezone } from "../utilities/countrySettings.ts";
 import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+import { resolveStaffLocationGrant } from "../services/LocationAccessService.ts";
 import { isFacilityType } from "../utilities/facility.ts";
 import { attachBranding, locationBranding, validateBrandingReferences, BrandingValidationError, retireUnusedBranding, organizationImageReference } from "../services/OrganizationBranding.ts";
 
@@ -116,6 +117,10 @@ export async function getLocations(req: FastifyRequest, reply: FastifyReply) {
     }
 
     filter.organizationId = orgId;
+    if (req.user?.role !== "root") {
+      const grant = await resolveStaffLocationGrant(req.user!.id, orgId, req.user!.role);
+      if (grant) filter._id = { $in: grant };
+    }
     const locations = await Location.find(filter).sort({ name: 1 });
     return reply.code(200).send(successResponse(await withTimezone(locations)));
   } catch (err) {

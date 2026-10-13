@@ -9,8 +9,10 @@ import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { CashierShift } from "../models/CashierShift.ts";
+import { TaskModel } from "../models/Task.ts";
+import { ClinicalNote } from "../models/ClinicalNote.ts";
 
-describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Reconciliation Suite", () => {
+describe("Care Follow-Up Recommendations, Public Tracker Sync & Cashier Till Reconciliation Suite", () => {
   let adminCookies: string[] = [];
   let orgId: string;
   let locationId: string;
@@ -125,7 +127,7 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
     appointmentId = appt._id.toString();
   });
 
-  it("1. Concluding consultation with followUpRecommended automatically books next appointment with confirmed token", async () => {
+  it("1. Concluding consultation records a recommendation and administrative task without booking", async () => {
     const futureDate = new Date();
     futureDate.setDate(futureDate.getDate() + 7);
     const futureDateStr = futureDate.toISOString();
@@ -150,7 +152,7 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
         followUpRecommended: true,
         followUpTimeline: "1 week",
         followUpNotes: "Review BP response to Telmisartan",
-        followUpDate: futureDateStr,
+        followUpDueAt: futureDateStr,
       },
     });
 
@@ -158,24 +160,23 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
     const updatedBody = JSON.parse(updateRes.body);
     expect(updatedBody.success).toBe(true);
 
-    // Verify original appointment has followUpAppointmentId recorded
     const originalAppt = await Appointment.findById(appointmentId);
     expect(originalAppt).toBeDefined();
     expect(originalAppt?.status).toBe("completed");
-    expect(originalAppt?.followUpAppointmentId).toBeDefined();
-
-    // Verify auto-created confirmed follow-up appointment in MongoDB
-    const followUpAppt = await Appointment.findById(originalAppt?.followUpAppointmentId);
-    expect(followUpAppt).toBeDefined();
-    expect(followUpAppt?.status).toBe("confirmed");
-    expect(followUpAppt?.patientId.toString()).toBe(patient._id.toString());
-    expect(followUpAppt?.doctorId.toString()).toBe(doctorId.toString());
-    expect(followUpAppt?.locationId.toString()).toBe(locationId.toString());
-    expect(followUpAppt?.tokenNumber).toBeGreaterThan(0);
-    expect(followUpAppt?.notes).toContain("Review BP response to Telmisartan");
+    expect(originalAppt?.followUpAppointmentId).toBeUndefined();
+    expect(originalAppt?.followUpWorkflow).toBe("recommended");
+    const task = await TaskModel.findById(originalAppt?.followUpTaskId);
+    expect(task?.kind).toBe("crm_followup");
+    expect(task?.patientId?.toString()).toBe(patient.id);
+    expect(task?.dueDate?.toISOString()).toBe(futureDateStr);
+    expect(task?.description || "").not.toContain("Telmisartan");
+    expect(await Appointment.countDocuments({ patientId: patient.id })).toBe(1);
+    expect(await Invoice.countDocuments({ appointmentId: { $ne: appointmentId }, patientId: patient.id })).toBe(0);
+    const note = await ClinicalNote.findOne({ patientId: patient.id, organizationId: orgId });
+    expect((note as any)?.plan.followUpInstructions).toContain("Review BP response");
   });
 
-  it("2. Patient public tracker synchronizes confirmed follow-up consultation and token", async () => {
+  it("2. Patient public tracker reports a recommendation without claiming a confirmed booking", async () => {
     const trackerRes = await app.inject({
       method: "GET",
       url: `/api/public/track/${appointmentId}`,
@@ -187,11 +188,9 @@ describe("Autonomous Follow-Up Scheduling, Public Tracker Sync & Cashier Till Re
     expect(trackerData).toBeDefined();
     expect(trackerData.status).toBe("completed");
 
-    // Must return synchronized follow-up appointment
-    expect(trackerData.followUpAppointment).toBeDefined();
-    expect(trackerData.followUpAppointment.id).toBeDefined();
-    expect(trackerData.followUpAppointment.tokenNumber).toBeGreaterThan(0);
-    expect(trackerData.followUpAppointment.status).toBe("confirmed");
+    expect(trackerData.followUpAppointment).toBeNull();
+    expect(trackerData.followUpRecommendation.status).toBe("recommended");
+    expect(trackerData.followUpRecommendation.dueAt).toBeTruthy();
   });
 
   it("3. Cashier Till Ledger computes accurate system collections for cash, UPI, and card receipts", async () => {

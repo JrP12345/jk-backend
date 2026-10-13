@@ -75,12 +75,13 @@ describe("Variable & Post-Consultation Doctor Fee Workflow Suite", () => {
       },
     });
     expect(docRes.statusCode).toBe(201);
-    doctorId = JSON.parse(docRes.body).data.id;
+    doctorId = JSON.parse(docRes.body).data.userId || JSON.parse(docRes.body).data.id;
 
     // 4. Ensure DoctorAssignment has feeType: "post_consultation"
     await DoctorAssignment.findOneAndUpdate(
       { doctorId, locationId },
       {
+        organizationId: orgId,
         fees: 0,
         feeType: "post_consultation",
         workingHours: JSON.stringify({

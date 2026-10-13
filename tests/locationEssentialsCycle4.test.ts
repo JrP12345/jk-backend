@@ -1,3 +1,4 @@
+import { grantFixtureBranch } from './helpers/locationEssentialsSetup.ts';
 import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { reuseOnboardingLocation } from "./helpers/locationEssentialsSetup.ts";
 import { describe, it, expect, beforeAll } from "vitest";
@@ -145,6 +146,7 @@ describe("Clinic Essentials Cycle 4 — location_manager Billing", () => {
       },
     });
 
+    await grantFixtureBranch(managerEmail, locationId);
     const loginRes = await app.inject({
       method: "POST",
       url: "/api/auth/login",
@@ -161,9 +163,10 @@ describe("Clinic Essentials Cycle 4 — location_manager Billing", () => {
         phone: `9777${Date.now().toString().slice(-6)}`,
         dob: "1985-05-05",
         gender: "female",
-        ignoreDuplicate: true,
+        locationId,
       },
     });
+    expect(patientRes.statusCode, patientRes.body).toBe(201);
     patientId = JSON.parse(patientRes.body).data.id;
   });
 

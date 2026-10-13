@@ -4,8 +4,10 @@ import { decryptField, encryptField } from "../utilities/cryptoEnvelope.ts";
 import { OutboundMessage } from "../models/OutboundMessage.ts";
 import type { SendMessageOptions } from "./SmsWhatsAppService.ts";
 import type { EmailOptions, SmtpConfig } from "../notifications/providers/emailProvider.ts";
+import { patientCommunicationPolicy, CommunicationPolicyError, type PatientCommunicationContext } from './PatientCommunicationPolicy.ts';
 
 export interface WhatsAppDocumentMessage {
+  communicationContext?: PatientCommunicationContext;
   to: string;
   organizationId?: string;
   documentUrl: string;
@@ -15,6 +17,7 @@ export interface WhatsAppDocumentMessage {
 }
 
 export interface WhatsAppFreeformMessage {
+  communicationContext?: PatientCommunicationContext;
   to: string;
   text: string;
   organizationId?: string;
@@ -23,6 +26,7 @@ export interface WhatsAppFreeformMessage {
 }
 
 export interface TransactionalEmailMessage extends EmailOptions {
+  communicationContext?: PatientCommunicationContext;
   /** A stable business-event key prevents duplicate sends across retries/pods. */
   idempotencyKey?: string;
   /** Lets callers persist the notification in the business transaction. */
@@ -51,6 +55,14 @@ function getCommunicationIdempotencyKey(options: SendMessageOptions): string {
  * standalone outbound worker decrypts and dispatches this record after commit.
  */
 export async function enqueueCommunicationTemplate(options: SendMessageOptions) {
+  if (options.templateId !== 'OTP_VERIFICATION') {
+    if (options.channel === 'sms') throw new CommunicationPolicyError('COMMUNICATION_SMS_UNSUPPORTED');
+    const context = options.communicationContext || (options.organizationId && options.appointmentId ? { organizationId: options.organizationId, appointmentId: options.appointmentId } : undefined);
+    if (!context) throw new CommunicationPolicyError('COMMUNICATION_CONTEXT_REQUIRED');
+    const decision = await patientCommunicationPolicy(context, 'whatsapp', options.phone);
+    if (decision.context.familyRelationshipId && !['CRM_CONTACT_REQUEST', 'CRM_CARE_FOLLOWUP', 'CRM_FEEDBACK_REQUEST'].includes(options.templateId)) throw new CommunicationPolicyError('COMMUNICATION_FAMILY_CLINICAL_REVIEW_REQUIRED');
+    options = { ...options, organizationId: decision.context.organizationId, communicationContext: decision.context, phone: decision.recipient };
+  }
   const idempotencyKey = getCommunicationIdempotencyKey(options);
   const normalized: SendMessageOptions = {
     ...options,
@@ -72,6 +84,7 @@ export async function enqueueCommunicationTemplate(options: SendMessageOptions) 
             templateId: normalized.templateId,
             appointmentId: normalized.appointmentId || null,
             organizationId: normalized.organizationId || null,
+            ...(normalized.communicationContext || {}),
           },
           sensitivePayloadCiphertext: encryptField(JSON.stringify(normalized)),
           status: "pending",
@@ -113,11 +126,12 @@ async function enqueueEncryptedOutbound(
           nextAttemptAt: new Date(),
         },
       },
-      { upsert: true, returnDocument: "after", setDefaultsOnInsert: true, session: session || undefined },
+      { upsert: true, returnDocument: "after", setDefaultsOnInsert: true, ...(session ? { session } : {}) },
     );
   } catch (error: any) {
     if (error?.code === 11000) {
-      const existing = await OutboundMessage.findOne({ idempotencyKey }).session(session || null);
+      const query = OutboundMessage.findOne({ idempotencyKey });
+      const existing = await (session ? query.session(session) : query);
       if (existing) return existing;
     }
     throw error;
@@ -125,6 +139,10 @@ async function enqueueEncryptedOutbound(
 }
 
 export async function enqueueWhatsAppDocument(options: WhatsAppDocumentMessage) {
+  if (!options.communicationContext) throw new CommunicationPolicyError('COMMUNICATION_CONTEXT_REQUIRED');
+  const decision = await patientCommunicationPolicy(options.communicationContext, 'whatsapp', options.to);
+  if (decision.context.familyRelationshipId) throw new CommunicationPolicyError('COMMUNICATION_FAMILY_CLINICAL_REVIEW_REQUIRED');
+  options = { ...options, organizationId: decision.context.organizationId, communicationContext: decision.context, to: decision.recipient };
   const idempotencyKey = options.idempotencyKey || `whatsapp-document:${crypto
     .createHash("sha256")
     .update(JSON.stringify([options.to, options.documentUrl, options.filename, options.caption || ""]))
@@ -133,11 +151,15 @@ export async function enqueueWhatsAppDocument(options: WhatsAppDocumentMessage) 
     "whatsapp_document",
     idempotencyKey,
     { ...options, to: options.to.trim(), idempotencyKey },
-    { deliveryType: "document", organizationId: options.organizationId || null },
+    { deliveryType: "document", ...decision.context },
   );
 }
 
 export async function enqueueWhatsAppFreeform(options: WhatsAppFreeformMessage) {
+  if (!options.communicationContext) throw new CommunicationPolicyError('COMMUNICATION_CONTEXT_REQUIRED');
+  const decision = await patientCommunicationPolicy(options.communicationContext, 'whatsapp', options.to);
+  if (decision.context.familyRelationshipId) throw new CommunicationPolicyError('COMMUNICATION_FAMILY_CLINICAL_REVIEW_REQUIRED');
+  options = { ...options, organizationId: decision.context.organizationId, communicationContext: decision.context, to: decision.recipient };
   const idempotencyKey = options.idempotencyKey || `whatsapp-freeform:${crypto
     .createHash("sha256")
     .update(JSON.stringify([options.to, options.text]))
@@ -146,7 +168,7 @@ export async function enqueueWhatsAppFreeform(options: WhatsAppFreeformMessage) 
     "whatsapp_freeform",
     idempotencyKey,
     { ...options, to: options.to.trim(), idempotencyKey },
-    { deliveryType: "freeform", organizationId: options.organizationId || null },
+    { deliveryType: "freeform", ...decision.context },
   );
 }
 
@@ -156,6 +178,10 @@ export async function enqueueWhatsAppFreeform(options: WhatsAppFreeformMessage) 
  * payload; normal outbox projections expose only delivery state.
  */
 export async function enqueueTransactionalEmail(options: TransactionalEmailMessage) {
+  if (options.communicationContext) {
+    const decision = await patientCommunicationPolicy(options.communicationContext, 'email', options.to);
+    options = { ...options, communicationContext: decision.context, to: decision.recipient };
+  }
   const { session, ...email } = options;
   const normalized = { ...email, to: email.to.trim() };
   const idempotencyKey = options.idempotencyKey || `transactional-email:${crypto
@@ -167,7 +193,7 @@ export async function enqueueTransactionalEmail(options: TransactionalEmailMessa
     "transactional_email",
     idempotencyKey,
     { ...normalized, idempotencyKey },
-    { deliveryType: "transactional_email" },
+    { deliveryType: "transactional_email", ...(options.communicationContext || {}) },
     session,
   );
 }

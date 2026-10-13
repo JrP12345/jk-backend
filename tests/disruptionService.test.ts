@@ -12,7 +12,9 @@ import { runDisruptionTimeoutSweep } from "../jobs/disruptionTimeoutJob.ts";
 import { disruptionService } from "../services/disruptionService.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { createTrackerCapability } from "../utilities/publicTracker.ts";
+import { TaskModel } from "../models/Task.ts";
 import { locationDateKey } from "../utilities/locationTime.ts";
+import { onlineRefundSource } from '../services/AppointmentRefundService.ts';
 
 describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () => {
   let adminCookies: string[] = [];
@@ -224,7 +226,8 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
     expect(body.success).toBe(true);
     expect(body.data.affectedSummary.inConsultationPreservedCount).toBe(1);
     expect(body.data.affectedSummary.checkedInTriageCount).toBe(1);
-    expect(body.data.affectedSummary.remoteNotifiedCount).toBe(2);
+    expect(body.data.affectedSummary.remoteTriageCount).toBe(2);
+    expect(body.data.affectedSummary.remoteNotifiedCount).toBe(0);
 
     // Verify In-Consultation: PRESERVED and untouched
     const freshInConsultation = await Appointment.findById(apptInConsultation._id);
@@ -233,16 +236,21 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
     // Verify Checked-in: In disruption_triage, NOT auto-cancelled!
     const freshCheckedIn = await Appointment.findById(apptCheckedIn._id);
     expect(freshCheckedIn?.status).toBe("disruption_triage");
+    expect(freshCheckedIn?.disruptionOriginalStatus).toBe("checked-in");
     expect(freshCheckedIn?.triageAction).toBe("pending");
     expect(freshCheckedIn?.notes).toContain("[TRIAGE: Doctor unavailable - awaiting reception action]");
 
     // Verify Confirmed & Pending: In disruption_triage with 60-min deadline
     const freshConfirmed = await Appointment.findById(apptConfirmed._id);
     expect(freshConfirmed?.status).toBe("disruption_triage");
-    expect(freshConfirmed?.disruptionResponseDeadline).toBeDefined();
+    expect(freshConfirmed?.disruptionOriginalStatus).toBe("confirmed");
+    expect(freshConfirmed?.disruptionReviewDueAt).toBeInstanceOf(Date);
+    expect(freshConfirmed?.disruptionNotifiedAt).toBeUndefined();
+    expect(freshConfirmed?.disruptionResponseDeadline).toBeUndefined();
 
     const freshPending = await Appointment.findById(apptPending._id);
     expect(freshPending?.status).toBe("disruption_triage");
+    expect(freshPending?.disruptionOriginalStatus).toBe("pending");
   });
 
   it("claims each disruption appointment once when duplicate processors run concurrently", async () => {
@@ -290,15 +298,15 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
       ]);
 
       expect(summaries.reduce((count, summary) => count + summary.checkedInTriageCount, 0)).toBe(1);
-      expect(summaries.reduce((count, summary) => count + summary.remoteNotifiedCount, 0)).toBe(1);
+      expect(summaries.reduce((count, summary) => count + summary.remoteTriageCount, 0)).toBe(1);
       expect((await Appointment.findById(checkedInAppointment._id))?.status).toBe("disruption_triage");
       expect((await Appointment.findById(confirmedAppointment._id))?.status).toBe("disruption_triage");
 
       const claimedIds = new Set([checkedInAppointment._id.toString(), confirmedAppointment._id.toString()]);
       const disruptionEvents = publishSpy.mock.calls.filter(([event]) =>
-        claimedIds.has((event as any)?.metadata?.appointmentId),
+        event.eventType === "crm.appointment.communication" && claimedIds.has((event as any)?.metadata?.context?.appointmentId),
       );
-      expect(disruptionEvents).toHaveLength(2);
+      expect(disruptionEvents).toHaveLength(1);
     } finally {
       publishSpy.mockRestore();
     }
@@ -421,6 +429,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
       status: "paid",
     });
 
+    expect(await onlineRefundSource(apptConfirmed, invoice)).not.toBeNull();
     const cancelRes = await app.inject({
       method: "POST",
       url: "/api/doctor-overrides/triage/cancel",
@@ -448,7 +457,8 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
     });
     expect(auditCancel).toBeDefined();
     expect(auditCancel?.details.fromDoctor).toBe(doc1Id);
-    expect(auditCancel?.details.refundProcessed).toBe(true);
+    expect(auditCancel?.details.refundProcessed).toBe(false);
+    expect(auditCancel?.details.refundPending).toBe(true);
 
     const auditRefund = await AuditLog.findOne({
       action: "APPOINTMENT_REFUNDED",
@@ -482,7 +492,8 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
 
     const newApptId = body.data.newAppt?.id || body.data.newAppt?._id;
     const newAppt = await Appointment.findById(newApptId);
-    expect(newAppt?.status).toBe("confirmed");
+    expect(newAppt?.status).toBe("pending_payment");
+    expect(newAppt?.paymentStatus).toBe("pending");
     expect(newAppt?.priorityRescheduledFromId?.toString()).toBe(apptPending._id.toString());
     expect(new Date(newAppt!.appointmentTime).toISOString().slice(0, 10)).toBe(targetDate);
 
@@ -496,7 +507,7 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
     expect(auditReschedule?.details.targetDate).toBe(targetDate);
   });
 
-  it("Scenario H: Disruption timeout sweeper auto-cancels un-actioned appointments after 60 mins", async () => {
+  it("Scenario H: Unanswered disruption creates staff review and preserves the booking", async () => {
     // Create an un-actioned remote appointment with an expired deadline
     const expiredAppt = await Appointment.create({
       organizationId: orgId,
@@ -512,11 +523,13 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
     });
 
     const sweepResult = await runDisruptionTimeoutSweep();
-    expect(sweepResult.autoCancelledCount).toBeGreaterThanOrEqual(1);
+    expect(sweepResult.autoCancelledCount).toBe(0);
+    expect(sweepResult.reviewRequiredCount).toBeGreaterThanOrEqual(1);
 
     const checkAppt = await Appointment.findById(expiredAppt._id);
-    expect(checkAppt?.status).toBe("cancelled");
-    expect(checkAppt?.cancellationReason).toContain("expired");
+    expect(checkAppt?.status).toBe("disruption_triage");
+    expect(checkAppt?.disruptionReviewRequiredAt).toBeInstanceOf(Date);
+    expect(await TaskModel.countDocuments({ appointmentId: expiredAppt._id, title: "Review unanswered doctor disruption" })).toBe(1);
   });
 
   it("claims an expired disruption appointment once when timeout workers overlap", async () => {
@@ -538,10 +551,12 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
       disruptionService.processDisruptionTimeout(),
     ]);
 
-    expect(first.autoCancelledCount + second.autoCancelledCount).toBe(1);
+    expect(first.reviewRequiredCount + second.reviewRequiredCount).toBe(1);
+    expect(first.autoCancelledCount + second.autoCancelledCount).toBe(0);
     const updated = await Appointment.findById(expiredAppt._id);
-    expect(updated?.status).toBe("cancelled");
-    expect(["cancelled", "refunded"]).toContain(updated?.triageAction);
+    expect(updated?.status).toBe("disruption_triage");
+    expect(updated?.triageAction).toBe("pending");
+    expect(await TaskModel.countDocuments({ appointmentId: expiredAppt._id, title: "Review unanswered doctor disruption" })).toBe(1);
   });
 
   it("Scenario I: Patient self-service endpoint handles action from live tracker", async () => {

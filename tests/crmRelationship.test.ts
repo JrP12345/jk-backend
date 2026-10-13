@@ -1,0 +1,82 @@
+﻿import crypto from 'node:crypto';
+import { describe, expect, it, afterEach, vi } from 'vitest';
+import { app } from '../index.ts';
+import { User } from '../models/User.ts';
+import { OrgMember } from '../models/OrgMember.ts';
+import { Organization } from '../models/Organization.ts';
+import { Location } from '../models/Location.ts';
+import { Patient } from '../models/Patient.ts';
+import { PatientRelationship } from '../models/PatientRelationship.ts';
+import { CrmActivity } from '../models/CrmActivity.ts';
+import { Inquiry } from '../models/Inquiry.ts';
+import { Appointment } from '../models/Appointment.ts';
+import { AuditLog } from '../models/AuditLog.ts';
+import { createAuthSession } from '../utilities/helpers.ts';
+async function fixture() {
+  const org = await Organization.create({ name: 'Relationships', city: 'Pune', plan: 'enterprise' });
+  const branch = await Location.create({ organizationId: org.id, name: 'Branch', city: 'Pune' });
+  const otherBranch = await Location.create({ organizationId: org.id, name: 'Other branch', city: 'Pune' });
+  const admin = await User.create({ name: 'Owner', role: 'admin', email: `${crypto.randomUUID()}@example.test` });
+  await OrgMember.create({ userId: admin.id, organizationId: org.id, role: 'admin' });
+  const patient = await Patient.create({ name: 'Patient', phone: '9876543210', medicalNotes: 'private clinical content', organizationId: org.id });
+  const session = await createAuthSession({ id: admin.id, email: admin.email!, role: 'admin', organization_id: org.id }, { organizationId: org.id, workspaceRole: 'admin' });
+  const url = `/api/crm/patients/${patient.id}/relationship`, cookies = { access_token: session.accessToken };
+  const payload = { clientRequestId: crypto.randomUUID(), expectedRevision: 0, locationId: branch.id, ownerId: admin.id, availability: 'reachable', preferences: { language: 'Hindi', preferredChannel: 'phone', doNotContact: true } };
+  return { org, branch, otherBranch, admin, patient, url, cookies, payload, save: (extra = {}) => app.inject({ method: 'PATCH', url, cookies, payload: { ...payload, ...extra } }) };
+}
+afterEach(() => vi.restoreAllMocks());
+describe('Organization patient relationships', () => {
+  it('reads without creating rows and saves preferences with exact replay and revision conflicts', async () => {
+    const f = await fixture();
+    const before = await app.inject({ method: 'GET', url: f.url, cookies: f.cookies });
+    expect(before.statusCode, before.body).toBe(200);
+    expect(before.json().data.patient).not.toHaveProperty('medicalNotes');
+    expect(await PatientRelationship.countDocuments({ patientId: f.patient.id })).toBe(0);
+    const pair = await Promise.all([f.save(), f.save()]);
+    expect(pair.map(row => row.statusCode)).toEqual([200, 200]);
+    expect(await PatientRelationship.countDocuments({ patientId: f.patient.id })).toBe(1);
+    expect((await PatientRelationship.findOne({ patientId: f.patient.id }))?.preferences).toMatchObject({ doNotContact: true, language: 'Hindi' });
+    expect(await CrmActivity.countDocuments({ patientId: f.patient.id, kind: 'relationship_reassigned' })).toBe(1);
+    expect((await f.save({ clientRequestId: crypto.randomUUID(), expectedRevision: 0 })).statusCode).toBe(409);
+    expect((await Patient.findById(f.patient.id))?.phone).toBe('9876543210');
+  });
+  it('rolls preferences and the timeline back if the audit cannot be persisted', async () => {
+    const f = await fixture();
+    vi.spyOn(AuditLog, 'create').mockRejectedValueOnce(new Error('audit unavailable'));
+    expect((await f.save()).statusCode).toBe(503);
+    expect(await PatientRelationship.countDocuments({ patientId: f.patient.id })).toBe(0);
+    expect(await CrmActivity.countDocuments({ patientId: f.patient.id })).toBe(0);
+    expect((await f.save()).statusCode).toBe(200);
+  });
+  it('hides other branch relationship details and restricted evidence, with bounded administrative continuation', async () => {
+    const f = await fixture(); await f.save();
+    const desk = await User.create({ name: 'Scoped desk', role: 'receptionist', email: `${crypto.randomUUID()}@example.test` });
+    await OrgMember.create({ userId: desk.id, organizationId: f.org.id, role: 'receptionist', locationAccess: { mode: 'selected', locationIds: [f.otherBranch.id], reviewedAt: new Date(), reviewedBy: f.admin.id } });
+    await Appointment.create({ organizationId: f.org.id, patientId: f.patient.id, locationId: f.otherBranch.id, doctorId: f.admin.id, appointmentTime: new Date(), tokenNumber: 1, appointmentType: "reception" });
+    await CrmActivity.create({ organizationId: f.org.id, patientId: f.patient.id, locationId: f.branch.id, kind: 'hidden_branch', note: 'hidden branch instruction' });
+    await CrmActivity.create({ organizationId: f.org.id, patientId: f.patient.id, locationId: f.otherBranch.id, kind: 'consent_recorded', visibility: 'consent', note: 'restricted evidence' });
+    await CrmActivity.create(Array.from({ length: 23 }, () => ({ organizationId: f.org.id, patientId: f.patient.id, locationId: f.otherBranch.id, kind: 'call_recorded', note: 'administrative outcome' })));
+    await Inquiry.create({ organizationId: f.org.id, patientId: f.patient.id, locationId: f.branch.id, createdBy: f.admin.id, callerName: 'hidden inquiry', nextAction: { kind: 'review', dueAt: new Date() } });
+    const session = await createAuthSession({ id: desk.id, email: desk.email!, role: 'receptionist', organization_id: f.org.id }, { organizationId: f.org.id, workspaceRole: 'receptionist' });
+    const cookies = { access_token: session.accessToken };
+    const page = await app.inject({ method: 'GET', url: f.url, cookies });
+    expect(page.statusCode, page.body).toBe(200);
+    expect(page.json().data.relationship).toMatchObject({ canEdit: false, ownerId: null, preferences: {} });
+    expect(page.json().data.activities).toHaveLength(20);
+    expect(page.body).not.toContain('hidden'); expect(page.body).not.toContain('restricted evidence');
+    expect(page.json().data.inquiries).toHaveLength(0);
+    const next = await app.inject({ method: 'GET', url: `${f.url}?activityCursor=${page.json().data.nextActivityCursor}`, cookies });
+    expect(next.json().data.activities).toHaveLength(3);
+    const denied = await app.inject({ method: 'PATCH', url: f.url, cookies, payload: { ...f.payload, expectedRevision: 1, clientRequestId: crypto.randomUUID() } });
+    expect(denied.statusCode).toBe(404);
+  });
+  it('rejects unrelated owners and foreign branches without creating a relationship', async () => {
+    const f = await fixture();
+    const outsider = await User.create({ name: 'Outside', role: 'admin', email: `${crypto.randomUUID()}@example.test` });
+    expect((await f.save({ ownerId: outsider.id })).statusCode).toBe(400);
+    const other = await Organization.create({ name: 'Foreign', city: 'Pune' });
+    const branch = await Location.create({ organizationId: other.id, name: 'Foreign branch', city: 'Pune' });
+    expect((await f.save({ locationId: branch.id })).statusCode).toBe(404);
+    expect(await PatientRelationship.countDocuments({ patientId: f.patient.id })).toBe(0);
+  });
+});

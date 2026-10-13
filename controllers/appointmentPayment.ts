@@ -9,7 +9,7 @@ import { Invoice } from "../models/Invoice.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { razorpayService } from "../services/billing/RazorpayService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { checkOperationalRecordAccess, checkPatientAccess } from "../utilities/tenant.ts";
+import { checkOperationalRecordAccess, checkPatientAccess, checkLocationAccess } from "../utilities/tenant.ts";
 import { requestHasAnyPermission, BILLING_STAFF_PAYMENT_PERMISSIONS } from "../utilities/permissions.ts";
 import { broadcastQueueUpdate } from "../notifications/websocket.ts";
 import { withClinicalTransaction } from "../utilities/transaction.ts";
@@ -17,6 +17,8 @@ import { AppointmentDomainError } from "../services/AppointmentService.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { resilientHttpClient } from "../utilities/resilientHttpClient.ts";
 import { reconcileAppointmentRefund } from "../services/AppointmentRefundService.ts";
+import { enqueuePaymentReceipt } from '../services/PaymentReceiptEvents.ts';
+import { publishAppointmentCommunication } from '../services/AppointmentCommunicationEvents.ts';
 
 export async function reconcileRefund(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -65,16 +67,17 @@ async function settleAppointmentPayment(paymentId: string, transactionId: string
     if (!payment) throw new AppointmentDomainError("Payment record not found", 404);
     const appointment = await Appointment.findById(payment.appointmentId);
     if (!appointment) throw new AppointmentDomainError("Appointment not found", 404);
+    const invoice = payment.invoiceId ? await Invoice.findById(payment.invoiceId) : await Invoice.findOne({ appointmentId: appointment._id });
     if (payment.status === "captured") {
       if (payment.razorpayPaymentId !== transactionId) throw new AppointmentDomainError("Payment order was captured by another transaction", 409);
+      if (invoice) await enqueuePaymentReceipt({ appointmentId: appointment.id, invoiceId: invoice.id, amount: payment.amount, paymentMethod: 'online', transactionId }, undefined, true);
       return { replayed: true, appointment };
     }
     if (!["created", "authorized"].includes(payment.status) || appointment.status === "cancelled"
       || ["refunded", "refund_pending", "paid"].includes(appointment.paymentStatus || "")) {
       throw new AppointmentDomainError("This visit is not eligible for payment settlement; contact billing", 409);
     }
-    const invoice = payment.invoiceId ? await Invoice.findById(payment.invoiceId) : await Invoice.findOne({ appointmentId: appointment._id });
-    if (!invoice || String(invoice.appointmentId) !== appointment.id || String(invoice.locationId) !== String(appointment.locationId)
+    if (!invoice || String(invoice.organizationId) !== String(appointment.organizationId) || String(invoice.appointmentId) !== appointment.id || String(invoice.locationId) !== String(appointment.locationId)
       || String(payment.patientId) !== String(appointment.patientId) || String(invoice.patientId) !== String(appointment.patientId)
       || ["refunded", "cancelled"].includes(invoice.status)) {
       throw new AppointmentDomainError("Invoice is no longer eligible for this payment", 409);
@@ -102,6 +105,8 @@ async function settleAppointmentPayment(paymentId: string, transactionId: string
     await AuditLog.create({ userId: actorId, organizationId: appointment.organizationId, action: "PAYMENT_RECONCILED",
       targetId: payment._id, targetModel: "AppointmentPayment", category: "ADMIN",
       details: { appointmentId: appointment._id, razorpayOrderId: payment.razorpayOrderId, razorpayPaymentId: transactionId, reconciliationOutcome: "captured_settled" } });
+    await enqueuePaymentReceipt({ appointmentId: appointment.id, invoiceId: invoice.id, amount, paymentMethod: 'online', transactionId });
+    await publishAppointmentCommunication(appointment, { action: 'booked' });
     return { replayed: false, appointment };
   });
 }
@@ -293,13 +298,6 @@ export async function verifyAppointmentPayment(req: FastifyRequest, reply: Fasti
       });
     }
 
-    const { sendPaymentReceiptNotification } = await import("../utilities/notifications.ts");
-    sendPaymentReceiptNotification({
-      appointmentId: appointment._id.toString(),
-      amount: paymentRecord.amount || 0,
-      paymentMethod: "online",
-    }).catch((err) => console.error("verify payment receipt notification notice:", err));
-
     return reply.code(200).send(successResponse(null, "Appointment payment verified and confirmed successfully!"));
   } catch (err: any) {
     console.error("verifyAppointmentPayment error:", err);
@@ -388,15 +386,23 @@ export async function collectCounterPayment(req: FastifyRequest, reply: FastifyR
       }
     }
 
-    let invoice: any = await Invoice.findOne({ appointmentId: appointment._id });
+    const collection = await withClinicalTransaction(async () => {
+    const branch = await checkLocationAccess(req, appointment.locationId, { requireExplicitScope: true });
+    if (!branch.allowed || branch.organizationId !== String(appointment.organizationId)) throw new AppointmentDomainError('Branch authority changed; reload before collecting payment', 403);
+    const currentVisit = await Appointment.findOne({ _id: appointment._id, organizationId: appointment.organizationId, patientId: appointment.patientId, locationId: appointment.locationId });
+    if (!currentVisit) throw new AppointmentDomainError('Appointment subject changed', 409);
+    let invoice: any = await Invoice.findOne({ appointmentId: currentVisit._id, organizationId: currentVisit.organizationId });
     if (!invoice) {
       const { Encounter } = await import("../models/Encounter.ts");
       const encounter = await Encounter.findOne({ appointmentId: appointment._id, organizationId: appointment.organizationId });
       if (encounter) invoice = await Invoice.findOne({ encounterId: encounter._id, organizationId: appointment.organizationId });
     }
+    if (invoice && (String(invoice.patientId) !== String(currentVisit.patientId) || String(invoice.locationId) !== String(currentVisit.locationId)
+      || (invoice.appointmentId && String(invoice.appointmentId) !== currentVisit.id))) throw new AppointmentDomainError('Invoice does not match this visit', 409);
+    if (invoice && !invoice.appointmentId) { invoice.appointmentId = currentVisit._id; await invoice.save(); }
     if (!invoice) {
-      const assignment = await DoctorAssignment.findOne({ doctorId: appointment.doctorId, locationId: appointment.locationId });
-      const feeAmount = Number(assignment?.fees ?? appointment.paymentAmount ?? 500);
+      const feeAmount = Number(currentVisit.paymentAmount);
+      if (currentVisit.feeType === 'post_consultation' || currentVisit.feeType === 'free' || currentVisit.paymentStatus === 'not_required' || !Number.isFinite(feeAmount) || feeAmount <= 0) throw new AppointmentDomainError('Review the canonical bill before collecting payment', 409);
       const { generateLocationInvoiceNumber } = await import("../utilities/invoiceNumber.ts");
       const invoiceNumber = await generateLocationInvoiceNumber(appointment.locationId.toString());
       invoice = await Invoice.create({
@@ -418,29 +424,35 @@ export async function collectCounterPayment(req: FastifyRequest, reply: FastifyR
     const feeAmount = Number(
       invoice.balanceDue ?? Math.max(0, Number(invoice.totalAmount || 0) - Number(invoice.amountPaid || 0))
     );
+    if (paymentMethod === 'upi' && (invoice.currency || 'INR') !== 'INR') throw new AppointmentDomainError('UPI cannot settle a non-INR invoice', 409);
     if (!Number.isFinite(feeAmount) || feeAmount <= 0 || invoice.status === "paid") {
-      return reply.code(409).send(errorResponse("This appointment invoice has already been paid"));
+      throw new AppointmentDomainError('This appointment invoice has already been paid', 409);
     }
 
     // The conditional update is the single settlement gate: a concurrent or
     // replayed request observes the already-paid status and cannot append an
     // additional payment record.
-    const collection = await withClinicalTransaction(async () => {
-      const claimedVisit = await Appointment.findOneAndUpdate({ _id: appointment._id, status: { $ne: "cancelled" }, paymentStatus: { $nin: ["paid", "refunded", "refund_pending"] } },
-        { $set: { paymentStatus: "paid", paymentAmount: feeAmount, invoiceId: invoice._id } }, { returnDocument: "after" });
+      const claimedVisit = await Appointment.findOneAndUpdate({ _id: currentVisit._id, organizationId: currentVisit.organizationId, patientId: currentVisit.patientId, locationId: currentVisit.locationId,
+        status: { $eq: currentVisit.status, $ne: 'cancelled' }, paymentStatus: { $nin: ["paid", "refunded", "refund_pending"] } },
+        { $set: { paymentStatus: "paid", paymentAmount: feeAmount, invoiceId: invoice._id, ...(['pending_payment', 'pending'].includes(currentVisit.status) ? { status: 'confirmed' } : {}) } }, { returnDocument: "after" });
       if (!claimedVisit) throw new AppointmentDomainError("This visit's payment cannot be collected", 409);
       const settledInvoice = await Invoice.findOneAndUpdate(
         { _id: invoice._id, status: { $in: ["unpaid", "partially_paid"] }, amountPaid: invoice.amountPaid },
         { $set: { status: "paid", amountPaid: Number(invoice.amountPaid || 0) + feeAmount, balanceDue: 0, paymentMethod, paymentDate: new Date() },
-          $push: { payments: { amount: feeAmount, paymentMethod, paidAt: new Date(), notes: "Settled via authenticated front-desk payment flow" } } },
+          $push: { payments: { amount: feeAmount, paymentMethod, operationKey: `counter_payment_${invoice._id}`, paidAt: new Date(), notes: "Settled via authenticated front-desk payment flow" } } },
         { returnDocument: "after" },
       );
       if (!settledInvoice) throw new AppointmentDomainError("This invoice has already been settled or changed", 409);
-      await AppointmentPayment.create({ appointmentId: appointment._id, invoiceId: settledInvoice._id, patientId: appointment.patientId,
+      const counterPayment = await AppointmentPayment.create({ appointmentId: appointment._id, invoiceId: settledInvoice._id, patientId: appointment.patientId,
         amount: feeAmount, currency: settledInvoice.currency, paymentMethod, status: "captured", idempotencyKey: `counter_payment_${settledInvoice._id}` });
-      return { invoice: settledInvoice, appointment: claimedVisit };
+      await AuditLog.create({ organizationId: claimedVisit.organizationId, userId: req.user!.id, action: 'COUNTER_PAYMENT_COLLECTED', targetId: counterPayment._id, targetModel: 'AppointmentPayment', category: 'ADMIN',
+        details: { appointmentId: claimedVisit.id, invoiceId: settledInvoice.id, amount: feeAmount, currency: settledInvoice.currency, paymentMethod, paymentReference: `counter_payment_${settledInvoice._id}` } });
+      await enqueuePaymentReceipt({ appointmentId: claimedVisit.id, invoiceId: settledInvoice.id, amount: feeAmount, paymentMethod, transactionId: `counter_payment_${settledInvoice._id}` });
+      if (['pending_payment', 'pending'].includes(currentVisit.status)) await publishAppointmentCommunication(claimedVisit, { action: 'booked' });
+      return { invoice: settledInvoice, appointment: claimedVisit, feeAmount };
     });
-    invoice = collection.invoice;
+    const invoice = collection.invoice, feeAmount = collection.feeAmount;
+    const amountLabel = new Intl.NumberFormat('en-IN', { style: 'currency', currency: invoice.currency || 'INR' }).format(feeAmount);
     invoice.$session(null);
     collection.appointment.$session(null);
     const locationIdStr = appointment.locationId.toString();
@@ -454,22 +466,14 @@ export async function collectCounterPayment(req: FastifyRequest, reply: FastifyR
         amount: feeAmount,
         paymentMethod,
       },
-      message: `Payment of ₹${feeAmount} received via ${paymentMethod.toUpperCase()} for Token #${appointment.tokenNumber}`,
+      message: `Payment of ${amountLabel} received via ${paymentMethod.toUpperCase()} for Token #${appointment.tokenNumber}`,
       timestamp: new Date().toISOString(),
     });
-
-    const { sendPaymentReceiptNotification } = await import("../utilities/notifications.ts");
-    sendPaymentReceiptNotification({
-      appointmentId: appointment._id.toString(),
-      invoiceId: invoice._id?.toString(),
-      amount: feeAmount,
-      paymentMethod,
-    }).catch((err) => console.error("counter payment receipt notification notice:", err));
 
     return reply.code(200).send(
       successResponse(
         { invoice, appointment: collection.appointment },
-        `Payment of ₹${feeAmount} collected successfully via ${paymentMethod.toUpperCase()}!`
+        `Payment of ${amountLabel} collected successfully via ${paymentMethod.toUpperCase()}!`
       )
     );
   } catch (err: any) {
@@ -537,14 +541,6 @@ export async function reconcileAppointmentPayment(req: FastifyRequest, reply: Fa
       // Reconcile and settle atomically in transaction
       const settlement = await settleAppointmentPayment(paymentRecord.id, capturedItem.id, req.user!.id, undefined, capturedItem);
       if (settlement.replayed) return reply.code(200).send(successResponse({ status: paymentRecord.status, paymentStatus: settlement.appointment.paymentStatus }, "Payment already reconciled"));
-      // Post-commit side effects
-      const { sendPaymentReceiptNotification } = await import("../utilities/notifications.ts");
-      sendPaymentReceiptNotification({
-        appointmentId: appointment._id.toString(),
-        amount: paymentRecord.amount || 0,
-        paymentMethod: capturedItem.method || "online",
-      }).catch((err) => console.error("reconcile payment receipt notification notice:", err));
-
       return reply.code(200).send(
         successResponse(
           { status: "captured", paymentId: capturedItem.id },

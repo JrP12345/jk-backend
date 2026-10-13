@@ -1,40 +1,19 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import crypto from "node:crypto";
 import { NotificationLog, type INotificationLog } from "../models/NotificationLog.ts";
-import { Patient } from "../models/Patient.ts";
-import { Appointment } from "../models/Appointment.ts";
+import { OutboundMessage } from '../models/OutboundMessage.ts';
+import { Appointment } from '../models/Appointment.ts';
+import { recordCommunicationRecovery, resolveCommunicationRecovery } from '../services/CommunicationRecoveryService.ts';
+import { withTransaction } from '../utilities/transaction.ts';
 import { UsageRecord } from "../models/UsageRecord.ts";
-import { Location } from "../models/Location.ts";
-import { DoctorAssignment } from "../models/DoctorAssignment.ts";
-import { Doctor } from "../models/Doctor.ts";
-import { User } from "../models/User.ts";
-import { appointmentService } from "../services/AppointmentService.ts";
-import { enqueueWhatsAppDocument, enqueueWhatsAppFreeform } from "../services/CommunicationOutbox.ts";
-import { getFrontendBaseUrl } from "../utilities/config.ts";
-import { appendTrackerCapability, issueAppointmentTrackerLink } from "../utilities/publicTracker.ts";
 import { Organization } from "../models/Organization.ts";
 import { WhatsAppRecipient } from "../models/WhatsAppRecipient.ts";
 import { WhatsAppTemplate } from "../models/WhatsAppTemplate.ts";
 import { WhatsAppInboundMessage } from "../models/WhatsAppInboundMessage.ts";
-import { WhatsAppBookingSession as DurableBookingSession } from "../models/WhatsAppBookingSession.ts";
 import { encryptField, decryptField } from "../utilities/cryptoEnvelope.ts";
 import { phoneHash } from "../services/WhatsAppSendPolicy.ts";
 import { getPlatformAccount, secretProjection } from "../services/WhatsAppAccountService.ts";
 import { enqueueWhatsAppWebhook, whatsAppWebhookWorker } from "../services/WhatsAppWebhookService.ts";
-
-interface WhatsAppBookingSession {
-  step: "SELECT_DOCTOR" | "SELECT_DATE" | "CONFIRM_BOOKING";
-  locationId?: string;
-  locationName?: string;
-  doctorId?: string;
-  doctorName?: string;
-  fee?: number;
-  date?: string;
-  doctorsList?: Array<{ id: string; locationId?: string; locationName?: string; name: string; specialization?: string; fee?: number }>;
-  updatedAt: number;
-}
-
-export const bookingSessions = new Map<string, WhatsAppBookingSession>();
 
 /**
  * GET /api/webhooks/whatsapp
@@ -119,13 +98,28 @@ export async function processWhatsAppWebhookPayload(body: any) {
           });
 
           if (!log) throw new Error("ORPHAN_STATUS");
-          const allowed: Record<string, string[]> = { sent: ["queued", "sending", "accepted"], delivered: ["queued", "sending", "accepted", "sent"], read: ["queued", "sending", "accepted", "sent", "delivered"], failed: ["queued", "sending", "accepted", "sent", "delivered"] };
+          const allowed: Record<string, string[]> = { sent: ["queued", "sending", "accepted"], delivered: ["queued", "sending", "accepted", "sent", "failed"], read: ["queued", "sending", "accepted", "sent", "delivered", "failed"], failed: ["queued", "sending", "accepted", "sent"] };
           if (!allowed[status]) continue;
           const changed = await NotificationLog.updateOne({ _id: log._id, status: { $in: allowed[status] as INotificationLog["status"][] } }, { $set: {
             status, [`${status}At`]: new Date(Number(statusObj.timestamp || Date.now() / 1000) * 1000),
             ...(statusObj.pricing ? { pricing: statusObj.pricing } : {}),
             ...(statusObj.errors?.length ? { errorReason: `META_ERROR_${statusObj.errors[0].code || "UNKNOWN"}` } : {}),
           } });
+          // Reconcile independently on every replay: a crash after the ledger write
+          // must not strand the outbox. Never downgrade delivered/read evidence.
+          if (log.idempotencyKey && log.organizationId) {
+            const key = log.idempotencyKey.replace(/^outbound:/, '');
+            const evidence = await NotificationLog.findById(log._id);
+            const observed = evidence?.status;
+            if (observed && allowed[observed]) await OutboundMessage.updateOne({ idempotencyKey: key, 'payload.organizationId': String(log.organizationId), status: { $in: ['pending', 'processing', 'retrying', ...allowed[observed]] } }, { $set: { status: observed, [observed + 'At']: evidence?.get(observed + 'At') || new Date(), ...(observed === 'failed' ? { error: evidence?.errorReason || 'PROVIDER_REJECTED' } : {}) }, $unset: { lockedAt: 1, lockedUntil: 1, lockedBy: 1, nextAttemptAt: 1, ...(observed !== 'failed' ? { error: 1 } : {}) } });
+            const current = await OutboundMessage.findOne({ idempotencyKey: key, 'payload.organizationId': String(log.organizationId) });
+            if (current && ['failed', 'delivered', 'read'].includes(current.status)) await withTransaction(async () => {
+              if (current.status === 'failed') await recordCommunicationRecovery(current);
+              else await resolveCommunicationRecovery(current);
+              if (['delivered', 'read'].includes(current.status) && current.kind === 'whatsapp_document' && (current.idempotencyKey.startsWith('rx:') || current.idempotencyKey.startsWith('whatsapp-document:consultation-complete:')) && current.payload.appointmentId) await Appointment.updateOne({ _id: current.payload.appointmentId, organizationId: current.payload.organizationId, patientId: current.payload.patientId }, { $set: { rxDispatchedAt: current.deliveredAt || current.readAt || new Date() } });
+              if (['delivered', 'read'].includes(current.status) && current.payload.communicationAction === 'disruption' && current.payload.appointmentId) await Appointment.updateOne({ _id: current.payload.appointmentId, organizationId: current.payload.organizationId, patientId: current.payload.patientId, communicationRevision: current.payload.communicationRevision, status: 'disruption_triage', disruptionNotifiedAt: { $exists: false } }, { $set: { disruptionNotifiedAt: current.deliveredAt || current.readAt || new Date() } });
+            });
+          }
           if (changed.modifiedCount) {
 
             // Update organization-level UsageRecord aggregates
@@ -158,425 +152,18 @@ export async function processWhatsAppWebhookPayload(body: any) {
           const digits = fullDigits.startsWith("91") && fullDigits.length === 12 ? fullDigits.slice(2) : fullDigits;
 
           if (!digits) continue;
-          await WhatsAppInboundMessage.updateOne({ scope: owner.scope, wamid: msg.id }, { $setOnInsert: { phoneHash: phoneHash(from), type: msg.type || "unknown", payloadCiphertext: encryptField(JSON.stringify(msg)) } }, { upsert: true });
 
           const stopped = /^(STOP(?:\s+ALL)?|UNSUBSCRIBE|OPT[ -]?OUT)[.!]*$/.test(textBody);
           const started = /^(START|SUBSCRIBE)[.!]*$/.test(textBody);
-          await WhatsAppRecipient.updateOne({ scope: owner.scope, phoneHash: phoneHash(from) }, { $max: {
-            lastInboundAt: new Date(Math.min(Date.now(), Number(msg.timestamp || Date.now() / 1000) * 1000)),
-          }, $set: {
-            ...(stopped ? { optedOut: true } : started ? { optedOut: false } : {}),
-          } }, { upsert: true });
-          if (!rawText) continue;
-          const matchingPatients = await Patient.find({ ...(owner.organizationId ? { organizationId: owner.organizationId } : {}), phone: { $in: [digits, fullDigits, `+${fullDigits}`] } }).limit(2);
-          // Shared-number replies must not choose between different patient profiles.
-          if (matchingPatients.length > 1) continue;
-          let patient = matchingPatients[0];
-
-          // Self-service auto-registration for new patients initiating WhatsApp chat
-          if (!patient && owner.organizationId && !stopped) {
-            const location = await Location.findOne({ organizationId: owner.organizationId }).lean();
-            if (location) {
-              const defaultUser = await User.create({
-                name: `WhatsApp Patient (${digits.slice(-4)})`,
-                phone: digits,
-                role: "patient",
-                isActive: true,
-              });
-              patient = await Patient.create({
-                userId: defaultUser._id,
-                name: `WhatsApp Patient (${digits.slice(-4)})`,
-                phone: digits,
-                organizationId: location.organizationId,
-              });
-            }
-          }
-
-          // 2A. Patient Consent Opt-Out ("STOP")
-          if (stopped || started) {
-            if (patient) {
-              patient.optOutWhatsApp = stopped;
-              await patient.save();
-
-              await NotificationLog.create({
-                organizationId: patient.organizationId || undefined,
-                recipientPhone: from,
-                recipientName: patient.name || undefined,
-                channel: "whatsapp",
-                templateId: stopped ? "OPT_OUT" : "OPT_IN",
-                messageContent: `Patient requested opt-out via text: ${textBody}`,
-                status: "delivered",
-                errorReason: "PATIENT_OPTED_OUT_WHATSAPP",
-              });
-            }
-            continue;
-          }
-
-          // If patient is not found or has previously opted out, skip auto-responses
-          if (!patient || patient.optOutWhatsApp) continue;
-
-          const frontendUrl = getFrontendBaseUrl();
-          let replyText = "";
-
-          const sessionKey = `${owner.scope}:${phoneHash(from)}`;
-          const storedSession = await DurableBookingSession.findOne({ key: sessionKey, expiresAt: { $gt: new Date() } }).select("+payloadCiphertext");
-          if (storedSession) bookingSessions.set(sessionKey, JSON.parse(decryptField(storedSession.payloadCiphertext)));
-          else bookingSessions.delete(sessionKey);
-          const activeSession = bookingSessions.get(sessionKey);
-
-          // 2A. Cancel active session
-          if (["CANCEL", "ABORT", "STOP_BOOKING"].includes(textBody)) {
-            if (activeSession) {
-              bookingSessions.delete(sessionKey);
-              replyText = `❌ Booking session cancelled.\n\nReply *"HELP"* to see the main menu.`;
-            } else {
-              replyText = `No active booking session found. Reply *"HELP"* for available options.`;
-            }
-          }
-
-          // 2B. Ongoing Booking State Machine Step
-          else if (activeSession) {
-            if (activeSession.step === "SELECT_DOCTOR") {
-              const choiceIdx = parseInt(textBody, 10) - 1;
-              const selectedDoc = activeSession.doctorsList && activeSession.doctorsList[choiceIdx];
-              if (selectedDoc) {
-                activeSession.doctorId = selectedDoc.id;
-                activeSession.doctorName = selectedDoc.name;
-                if (selectedDoc.locationId) {
-                  activeSession.locationId = selectedDoc.locationId;
-                }
-                if (selectedDoc.locationName) {
-                  activeSession.locationName = selectedDoc.locationName;
-                }
-                activeSession.fee = selectedDoc.fee || 500;
-                activeSession.step = "SELECT_DATE";
-                activeSession.updatedAt = Date.now();
-
-                const todayStr = new Date().toISOString().slice(0, 10);
-                const tomorrow = new Date();
-                tomorrow.setDate(tomorrow.getDate() + 1);
-                const tomorrowStr = tomorrow.toISOString().slice(0, 10);
-
-                replyText = `📅 *Select Consultation Date*\nSelected: Dr. ${selectedDoc.name} (${selectedDoc.specialization || "General OPD"})\nFee: ₹${activeSession.fee}\n\nPlease reply with a date choice:\n1️⃣ *Today* (${todayStr})\n2️⃣ *Tomorrow* (${tomorrowStr})\nOr type a date (YYYY-MM-DD)\n\n_Reply "CANCEL" to abort._`;
-              } else {
-                replyText = `Please reply with a valid doctor number (e.g. 1) from the list above, or reply "CANCEL".`;
-              }
-            } else if (activeSession.step === "SELECT_DATE") {
-              let chosenDate = "";
-              if (textBody === "1" || textBody === "TODAY") {
-                chosenDate = new Date().toISOString().slice(0, 10);
-              } else if (textBody === "2" || textBody === "TOMORROW") {
-                const tomorrow = new Date();
-                tomorrow.setDate(tomorrow.getDate() + 1);
-                chosenDate = tomorrow.toISOString().slice(0, 10);
-              } else if (/^\d{4}-\d{2}-\d{2}$/.test(textBody)) {
-                chosenDate = textBody;
-              }
-
-              if (chosenDate) {
-                activeSession.date = chosenDate;
-                activeSession.step = "CONFIRM_BOOKING";
-                activeSession.updatedAt = Date.now();
-
-                replyText = `📋 *Confirm Your OPD Appointment*\n\n• Patient: ${patient.name}\n• Doctor: Dr. ${activeSession.doctorName}\n• Date: ${chosenDate}\n• Location: ${activeSession.locationName || "Healthcare facility"}\n• Consultation Fee: ₹${activeSession.fee} (Pay at Location / UPI)\n\nReply *"YES"* or *"CONFIRM"* to book your token now!`;
-              } else {
-                replyText = `Please reply with:\n1️⃣ *Today*\n2️⃣ *Tomorrow*\nOr type a date in YYYY-MM-DD format (or "CANCEL").`;
-              }
-            } else if (activeSession.step === "CONFIRM_BOOKING") {
-              if (["YES", "CONFIRM", "Y", "OK", "1"].includes(textBody)) {
-                try {
-                  const todayDateStr = new Date().toISOString().slice(0, 10);
-                  const isToday = activeSession.date === todayDateStr;
-                  const appointmentTime = isToday
-                    ? new Date().toISOString()
-                    : new Date(`${activeSession.date}T10:00:00.000Z`).toISOString();
-                  const orgIdStr = patient.organizationId ? String(patient.organizationId) : undefined;
-                  const booked = await appointmentService.book(
-                    { id: String(patient.userId || patient._id), role: "patient", organizationId: orgIdStr },
-                    {
-                      locationId: activeSession.locationId!,
-                      doctorId: activeSession.doctorId!,
-                      appointmentTime,
-                      appointmentType: "walk-in",
-                      patientId: patient.id,
-                      notes: "Booked via WhatsApp 24/7 Self-Service Desk",
-                      forceBooking: true,
-                    },
-                    orgIdStr
-                  );
-
-                  bookingSessions.delete(sessionKey);
-
-                  const trackingUrl = `${frontendUrl}/track/${booked.id}${booked.trackerToken ? `?t=${encodeURIComponent(booked.trackerToken)}` : ""}`;
-                  replyText = `🎉 *Appointment Confirmed!*\n\nHello ${patient.name}, your visit has been booked successfully!\n\n• Your Token: *#${booked.tokenNumber}*\n• Attending Doctor: Dr. ${activeSession.doctorName}\n• Date: ${activeSession.date}\n• Location: ${activeSession.locationName}\n\n🔗 Live Queue Tracker:\n${trackingUrl}\n\n_Please arrive at the location 10 minutes before your slot. Reply "1" anytime to check live queue status!_`;
-                } catch (bErr: any) {
-                  bookingSessions.delete(sessionKey);
-                  replyText = `⚠️ Booking could not be completed: ${bErr.message || "Please contact reception directly."}`;
-                }
-              } else {
-                bookingSessions.delete(sessionKey);
-                replyText = `Booking aborted. Reply *"HELP"* for the main menu.`;
-              }
-            }
-          }
-
-          // 2C. Start Booking Flow: BOOK / APPOINTMENT / APPT / SCHEDULE / 4
-          else if (["BOOK", "APPOINTMENT", "APPT", "SCHEDULE", "DOCTOR", "4"].includes(textBody)) {
-            const orgFilter = patient.organizationId ? { organizationId: patient.organizationId } : {};
-
-            // Find all active doctor assignments across this organization
-            const assignments = await DoctorAssignment.find({ ...orgFilter, isActive: true })
-              .populate("doctorId", "name")
-              .populate("locationId", "name")
-              .lean();
-
-            let availableDocs: Array<{
-              id: string;
-              locationId?: string;
-              locationName?: string;
-              name: string;
-              specialization?: string;
-              fee?: number;
-            }> = [];
-            let defaultLocationId: string | undefined;
-            let defaultLocationName = "Healthcare facility";
-
-            if (assignments.length > 0) {
-              const docUserIds = assignments.map((a: any) => a.doctorId?._id || a.doctorId).filter(Boolean);
-              const docProfiles = await Doctor.find({
-                $or: [{ userId: { $in: docUserIds } }, { _id: { $in: docUserIds } }],
-              }).lean();
-
-              const profileMap = new Map<string, any>();
-              docProfiles.forEach((p) => {
-                if (p.userId) profileMap.set(p.userId.toString(), p);
-                profileMap.set(p._id.toString(), p);
-              });
-
-              for (const a of assignments) {
-                if (!a.doctorId) continue;
-                const docUser = a.doctorId as any;
-                const uId = docUser._id ? docUser._id.toString() : a.doctorId.toString();
-                const locationObj = a.locationId as any;
-                const cId = locationObj?._id ? locationObj._id.toString() : a.locationId?.toString();
-                const cName = locationObj?.name || defaultLocationName;
-                const profile = profileMap.get(uId);
-
-                if (!defaultLocationId && cId) {
-                  defaultLocationId = cId;
-                  defaultLocationName = cName;
-                }
-
-                availableDocs.push({
-                  id: uId,
-                  locationId: cId,
-                  locationName: cName,
-                  name: docUser.name || profile?.name || "Physician",
-                  specialization: profile?.specialization || "General Medicine",
-                  fee: a.fees || 500,
-                });
-              }
-            }
-
-            // Fallback: If no assignments found, find locations in the org
-            if (availableDocs.length === 0) {
-              const location = await Location.findOne(orgFilter).lean();
-              if (location) {
-                defaultLocationId = location._id.toString();
-                defaultLocationName = location.name;
-                const docUsers = process.env.NODE_ENV === "test" ? await User.find({ role: "doctor", isActive: true }).limit(3).lean() : [];
-                for (const du of docUsers) {
-                  availableDocs.push({
-                    id: du._id.toString(),
-                    locationId: defaultLocationId,
-                    locationName: defaultLocationName,
-                    name: du.name,
-                    specialization: (du as any).specialization || "General OPD",
-                    fee: 500,
-                  });
-                }
-              }
-            }
-
-            if (!defaultLocationId) {
-              replyText = `Hello ${patient.name}, no active location found for your account. Please visit: ${frontendUrl}`;
-            } else if (availableDocs.length > 0) {
-              bookingSessions.set(sessionKey, {
-                step: "SELECT_DOCTOR",
-                locationId: defaultLocationId,
-                locationName: defaultLocationName,
-                doctorsList: availableDocs,
-                updatedAt: Date.now(),
-              });
-
-              const docListText = availableDocs
-                .map((d, i) => `${i + 1}️⃣ Dr. ${d.name} (${d.specialization}) — ₹${d.fee}`)
-                .join("\n");
-
-              replyText = `🩺 *Schedule an OPD Appointment*\n\nPlease reply with the doctor's number:\n${docListText}\n\n_Reply "CANCEL" to exit._`;
-            } else {
-              replyText = `Hello ${patient.name}, no doctors are currently available for online booking today. Please visit reception directly.`;
-            }
-          }
-
-          // 2D. Interactive Keyword: STATUS / TOKEN / QUEUE / 1
-          else if (["STATUS", "TOKEN", "QUEUE", "WAIT", "1"].includes(textBody)) {
-            const todayStart = new Date();
-            todayStart.setHours(0, 0, 0, 0);
-            const todayEnd = new Date();
-            todayEnd.setHours(23, 59, 59, 999);
-
-            const activeAppt = await Appointment.findOne({
-              patientId: patient._id,
-              organizationId: patient.organizationId,
-              appointmentTime: { $gte: todayStart, $lte: todayEnd },
-              status: { $in: ["pending", "confirmed", "checked-in", "in-consultation", "standby"] },
-            }).populate("locationId doctorId").sort({ appointmentTime: -1 });
-
-            if (activeAppt) {
-              const docName = (activeAppt.doctorId as any)?.name || "Doctor";
-              const locationName = (activeAppt.locationId as any)?.name || "Location";
-
-              if (activeAppt.status === "in-consultation") {
-                replyText = `🩺 *Hello ${patient.name}!*\n\nIt is currently your turn! Dr. ${docName} is waiting for you in the consultation room for *Token #${activeAppt.tokenNumber}* at ${locationName}.\n\nPlease step inside immediately.`;
-              } else {
-                const inConsult = await Appointment.findOne({
-                  locationId: activeAppt.locationId,
-                  doctorId: activeAppt.doctorId,
-                  status: "in-consultation",
-                });
-                const aheadCount = await Appointment.countDocuments({
-                  locationId: activeAppt.locationId,
-                  doctorId: activeAppt.doctorId,
-                  status: "checked-in",
-                  queuePosition: { $lt: activeAppt.queuePosition || 999 },
-                });
-                const estWait = Math.max(0, aheadCount * 12);
-
-                const { url } = await issueAppointmentTrackerLink(activeAppt as any);
-                const trackingUrl = `${frontendUrl}${url}`;
-                replyText = `🎫 *Live OPD Queue Status*\n\nHello ${patient.name},\n• Your Token: *#${activeAppt.tokenNumber}*\n• Currently in Cabin: *Token #${inConsult?.tokenNumber || "None"}*\n• Patients Ahead: *${aheadCount}*\n• Est. Wait Time: *~${estWait} mins*\n• Status: *${activeAppt.status.toUpperCase()}*\n\n📍 ${locationName} (Dr. ${docName})\n\n🔗 Live Queue Tracker:\n${trackingUrl}\n\n_Reply "3" if you are running late and need to postpone._`;
-              }
-            } else {
-            const completedToday = await Appointment.findOne({
-              patientId: patient._id,
-              organizationId: patient.organizationId,
-                appointmentTime: { $gte: todayStart, $lte: todayEnd },
-                status: "completed",
-              }).sort({ updatedAt: -1 });
-
-              if (completedToday) {
-                replyText = `✅ *Consultation Complete*\n\nHello ${patient.name}, your visit today for Token #${completedToday.tokenNumber} has been concluded.\n\nReply *"2"* or *"RX"* to retrieve your prescription summary and printable PDF.`;
-              } else {
-                replyText = `Hello ${patient.name}, no active OPD appointment found for today.\n\nReply *"4"* or *"BOOK"* to schedule a new consultation with a doctor!`;
-              }
-            }
-          }
-
-          // 2E. Interactive Keyword: RX / PRESCRIPTION / MEDS / PDF / 2
-          else if (["RX", "PRESCRIPTION", "MEDS", "MEDICINES", "PDF", "2"].includes(textBody)) {
-            const latestCompleted = await Appointment.findOne({
-              patientId: patient._id,
-              organizationId: patient.organizationId,
-              status: "completed",
-              "prescriptions.0": { $exists: true },
-            }).populate("doctorId locationId").sort({ updatedAt: -1 });
-
-            if (latestCompleted && latestCompleted.prescriptions && latestCompleted.prescriptions.length > 0) {
-              const docName = (latestCompleted.doctorId as any)?.name || "Attending Physician";
-              const medList = latestCompleted.prescriptions.map((p, idx) => `  ${idx + 1}. *${p.name}* — ${p.dosage} (${p.duration})`).join("\n");
-
-              const { token: trackerToken, url } = await issueAppointmentTrackerLink(latestCompleted as any);
-              const trackingUrl = `${frontendUrl}${url}`;
-              const prescriptionUrl = appendTrackerCapability(`/api/public/track/${latestCompleted._id}/prescription/print`, trackerToken);
-              replyText = `📋 *Digital Prescription (Rx)*\nDoctor: Dr. ${docName}\nDiagnosis: ${latestCompleted.diagnosis || "General Outpatient Consultation"}\nDate: ${new Date(latestCompleted.appointmentTime).toLocaleDateString("en-IN")}\n\n*Prescribed Medicines:*\n${medList}\n\n${latestCompleted.followUpNotes ? `*Advice:* ${latestCompleted.followUpNotes}\n\n` : ""}📄 Download Official Rx: ${trackingUrl}\n\n_Your PDF document attachment is arriving below..._`;
-
-              // Dispatch official PDF document directly into WhatsApp chat
-              const cleanDoc = docName.replace(/[^a-zA-Z0-9]/g, "_");
-              await enqueueWhatsAppDocument({
-                to: from,
-                organizationId: patient.organizationId?.toString(),
-                documentUrl: prescriptionUrl,
-                filename: `Prescription_Token_${latestCompleted.tokenNumber}_Dr_${cleanDoc}.pdf`,
-                idempotencyKey: `whatsapp-document:rx:${msg.id}:${latestCompleted._id}`,
-                caption: `📄 Official Signed Prescription from Dr. ${docName} (Token #${latestCompleted.tokenNumber})`,
-              });
-            } else {
-              replyText = `Hello ${patient.name}, no completed digital prescription found for your registered profile.`;
-            }
-          }
-
-          // 2E2. Interactive Keyword: BILL / INVOICE / RECEIPT / 5
-          else if (["BILL", "INVOICE", "RECEIPT", "PAYMENT", "5"].includes(textBody)) {
-            const latestAppt = await Appointment.findOne({
-              patientId: patient._id,
-              organizationId: patient.organizationId,
-              paymentStatus: { $in: ["paid", "pay_at_location", "pending"] },
-            }).populate("doctorId locationId").sort({ updatedAt: -1 });
-
-            if (latestAppt) {
-              const locationName = (latestAppt.locationId as any)?.name || "Location";
-              const fee = latestAppt.paymentAmount || 500;
-              const isPaid = latestAppt.paymentStatus === "paid";
-
-              const { token: trackerToken, url } = await issueAppointmentTrackerLink(latestAppt as any);
-              const trackingUrl = `${frontendUrl}${url}`;
-              const prescriptionUrl = appendTrackerCapability(`/api/public/track/${latestAppt._id}/prescription/print`, trackerToken);
-              replyText = `🧾 *OPD Invoice Summary*\n\n• Patient: ${patient.name}\n• Facility: ${locationName}\n• Token: #${latestAppt.tokenNumber}\n• Amount: ₹${fee}\n• Payment Status: *${isPaid ? "PAID ✅" : "PENDING ⏳"}*\n\n🔗 View & Pay Online:\n${trackingUrl}`;
-
-              if (isPaid) {
-                // Billing tracker is the authoritative receipt; never attach an Rx as an invoice.
-              }
-            } else {
-              replyText = `Hello ${patient.name}, no recent billing records found.`;
-            }
-          }
-
-          // 2F. Interactive Keyword: DELAY / LATE / BUMP / 3
-          else if (["DELAY", "LATE", "BUMP", "POSTPONE", "3"].includes(textBody)) {
-            const todayStart = new Date();
-            todayStart.setHours(0, 0, 0, 0);
-            const todayEnd = new Date();
-            todayEnd.setHours(23, 59, 59, 999);
-
-            const activeAppt = await Appointment.findOne({
-              patientId: patient._id,
-              organizationId: patient.organizationId,
-              appointmentTime: { $gte: todayStart, $lte: todayEnd },
-              status: { $in: ["pending", "confirmed", "checked-in"] },
-            }).sort({ appointmentTime: -1 });
-
-            if (activeAppt) {
-              activeAppt.queuePosition = (activeAppt.queuePosition || 1) + 2;
-              activeAppt.parkedReason = "Patient requested arrival postponement via WhatsApp self-service";
-              await activeAppt.save();
-
-              const { url } = await issueAppointmentTrackerLink(activeAppt as any);
-              replyText = `⏳ *Token Postponed Successfully*\n\nHello ${patient.name}, your Token *#${activeAppt.tokenNumber}* has been moved back 2 positions to give you extra arrival time.\n\nNew Queue Sequence: Position #${activeAppt.queuePosition}\n\n🔗 Live Tracker: ${frontendUrl}${url}`;
-            } else {
-              replyText = `Hello ${patient.name}, you do not have an active waiting queue token today to postpone.`;
-            }
-          }
-
-          // 2G. Default Help Menu
-          else {
-            replyText = `👋 *Ekavyu Healthcare OPD Assistant*\n\nHello ${patient.name}, how can we help you today?\n\nReply with a number:\n1️⃣ *STATUS* - Check live token & queue wait time\n2️⃣ *RX* - View & receive PDF prescription\n3️⃣ *DELAY* - Running late? Postpone token by 2 turns\n4️⃣ *BOOK* - Schedule an appointment with a doctor\n5️⃣ *BILL* - View receipt & payment details\n\n_Reply "STOP" at any time to opt out._`;
-          }
-
-          // Dispatch conversational response to patient's WhatsApp
-          const nextSession = bookingSessions.get(sessionKey);
-          if (nextSession) await DurableBookingSession.updateOne({ key: sessionKey }, { $set: { payloadCiphertext: encryptField(JSON.stringify(nextSession)), expiresAt: new Date(Date.now() + 30 * 60_000) } }, { upsert: true });
-          else await DurableBookingSession.deleteOne({ key: sessionKey });
-          bookingSessions.delete(sessionKey);
-          if (replyText) {
-            await enqueueWhatsAppFreeform({
-              to: from,
-              text: replyText,
-              organizationId: patient.organizationId || undefined,
-              recipientName: patient.name || undefined,
-              idempotencyKey: `whatsapp-freeform:${msg.id}`,
-            });
-          }
+          if (!msg.id) continue;
+          const inboundAt = new Date(Math.min(Date.now(), Number(msg.timestamp || Date.now() / 1000) * 1000));
+          if (!Number.isFinite(inboundAt.getTime())) continue;
+          await WhatsAppInboundMessage.updateOne({ scope: owner.scope, wamid: msg.id }, { $setOnInsert: { phoneHash: phoneHash(from), type: msg.type || "unknown", payloadCiphertext: encryptField(JSON.stringify(msg)), organizationId: owner.organizationId || null, pendingReview: !stopped && !started } }, { upsert: true });
+          await WhatsAppRecipient.updateOne({ scope: owner.scope, phoneHash: phoneHash(from) }, { $max: { lastInboundAt: inboundAt } }, { upsert: true });
+          if (stopped || started) await WhatsAppRecipient.updateOne({ scope: owner.scope, phoneHash: phoneHash(from), $or: [{ lastPreferenceAt: { $lt: inboundAt } }, { lastPreferenceAt: { $exists: false } }] }, { $set: { optedOut: stopped, lastPreferenceAt: inboundAt } });
+          // Staff explicitly route and associate messages. Phone hints are not identity.
+          // STOP is a sender-channel suppression; START never creates patient consent.
+          continue;
         }
       }
     }

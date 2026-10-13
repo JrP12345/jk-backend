@@ -10,6 +10,7 @@ export interface IWorkerLease extends mongoose.Document {
   name: string;
   holderId: string;
   expiresAt: Date;
+  fenceRevision?: number;
 }
 
 const WorkerLeaseSchema = new Schema<IWorkerLease>(
@@ -17,6 +18,7 @@ const WorkerLeaseSchema = new Schema<IWorkerLease>(
     name: { type: String, required: true, unique: true, immutable: true },
     holderId: { type: String, required: true },
     expiresAt: { type: Date, required: true },
+    fenceRevision: { type: Number, default: 0 },
   },
   { timestamps: true },
 );

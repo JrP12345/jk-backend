@@ -72,7 +72,7 @@ describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite"
     });
     expect(docRes.statusCode).toBe(201);
     const docData = JSON.parse(docRes.body).data;
-    doctorId = docData.id;
+    doctorId = docData.userId || docData.id;
     doctorUserId = docData.userId || docData.id;
 
     await DoctorAssignment.create({

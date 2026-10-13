@@ -1,3 +1,11 @@
+import { appointmentService, AppointmentDomainError } from '../services/AppointmentService.ts';
+import { executeRecordedCommand, CommandError } from '../services/CommandReceiptService.ts';
+import { OperationReceipt } from '../models/OperationReceipt.ts';
+import { PatientRelationship } from '../models/PatientRelationship.ts';
+import { CrmActivity } from '../models/CrmActivity.ts';
+import { createCrmTask } from '../services/CrmTaskService.ts';
+import { getNextAtomicSequence as fencePublicContact } from '../models/Counter.ts';
+import { computeBlindIndex, decryptField } from '../utilities/cryptoEnvelope.ts';
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { publicFacilityType } from "../utilities/facility.ts";
 import { organizationImageReference, locationBranding, publicBrandingImages } from "../services/OrganizationBranding.ts";
@@ -715,115 +723,44 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
       return reply.code(400).send(errorResponse(`Doctor is unavailable today${reason}. Please select another doctor.`));
     }
 
-    // 4. Duplicate Active Token Guard
-    const phoneVariants = /^\d{10}$/.test(cleanPhone)
-      ? [cleanPhone, `+91${cleanPhone}`, `91${cleanPhone}`]
-      : [cleanPhone];
-    let patient = await Patient.findOne({
-      organizationId: org._id,
-      phone: { $in: phoneVariants },
+    const clientRequestId = (req.body as { clientRequestId?: string }).clientRequestId;
+    if (clientRequestId && !/^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$/.test(clientRequestId)) throw new CommandError(400, 'A random request identifier is required');
+    const scope = 'public-walkin:' + org.id + ':' + location.id, key = clientRequestId || crypto.randomUUID();
+    const input = { locationId, doctorId, name: name.trim(), phone: cleanPhone, gender, notes: notes?.trim() };
+    if (input.name.length > 200 || (input.notes && input.notes.length > 2000) || (gender && !['male', 'female', 'other'].includes(gender))) throw new CommandError(400, 'Check the patient name, optional gender and notes');
+    const effects: (() => Promise<void>)[] = [];
+    const command = await executeRecordedCommand(scope, key, input, async () => {
+      await fencePublicContact('public_contact_' + computeBlindIndex(org.id + ':' + cleanPhone));
+      const phoneVariants = /^\d{10}$/.test(cleanPhone) ? [cleanPhone, '+91' + cleanPhone, '91' + cleanPhone] : [cleanPhone];
+      const matched = await Patient.exists({ organizationId: org.id, phone: { $in: phoneVariants } });
+      // A phone number, including a shared family number, is a matching hint.
+      // Never attach this unauthenticated visitor to an existing medical record.
+      if (matched) throw new CommandError(409, 'An active token already exists or this contact needs identity review. Please ask reception to verify the patient.');
+      const patient = await Patient.create({ organizationId: org.id, name: input.name, phone: cleanPhone, ...(gender ? { gender } : {}), accountType: 'walkin' });
+      await PatientRelationship.create({ organizationId: org.id, patientId: patient.id, locationId: location.id });
+      const booking = await appointmentService.book({ role: 'guest', organizationId: org.id, bookingPatientId: patient.id }, { locationId, doctorId, patientId: patient.id, appointmentTime: new Date().toISOString(), appointmentType: 'walk-in', notes: input.notes, payAtLocation: true }, org.id,
+        { anonymousWalkIn: true, deferAfterCommit: effect => effects.push(effect) });
+      await CrmActivity.create({ organizationId: org.id, locationId: location.id, patientId: patient.id, appointmentId: booking.id, kind: 'public_walkin_recorded', outcome: 'unverified_self_report', eventKey: 'public-walkin:' + booking.id });
+      await createCrmTask({ organizationId: org.id, locationId: location.id, patientId: patient.id, appointmentId: booking.id, kind: 'crm_review', title: 'Review self-declared walk-in identity', dueDate: new Date(), dedupeKey: 'public-walkin-review:' + booking.id });
+      await OperationReceipt.updateOne({ scope, key }, { $set: { responseCiphertext: JSON.stringify(booking) } });
+      return booking.id;
     });
-
-    if (patient) {
-      const activeAppt = await Appointment.findOne({
-        locationId,
-        doctorId,
-        patientId: patient._id,
-        status: { $in: ["pending", "confirmed", "checked-in", "in-consultation"] },
-        appointmentTime: { $gte: startOfDay, $lte: endOfDay },
-      });
-
-      if (activeAppt) {
-        return reply.code(409).send(errorResponse("An active token already exists for this contact today. Ask reception for its tracker link."));
-      }
-    } else {
-      patient = await Patient.create({
-        organizationId: org._id,
-        name: name.trim(),
-        phone: cleanPhone,
-        gender: gender || "other",
-        dob: "2000-01-01",
-      });
-    }
-
-    // 5. Atomic Token Generation
-    const { getNextAtomicSequence } = await import("../models/Counter.ts");
-    const counterKey = `token_${locationId}_${doctorId}_${todayStr}`;
-    const tokenNumber = await getNextAtomicSequence(counterKey);
-
-    // 6. Dynamic Queue Wait Duration Calculation
-    const queueCount = await Appointment.countDocuments({
-      locationId,
-      doctorId,
-      status: { $in: ["pending", "confirmed", "checked-in"] },
-      appointmentTime: { $gte: startOfDay, $lte: endOfDay },
-    });
-
-    const { duration: adaptiveDuration } = await getAdaptiveConsultationDuration(
-      locationId,
-      doctorId,
-      startOfDay,
-      endOfDay,
-      assignment.appointmentDuration || 15
-    );
-
-    const estWaitMinutes = queueCount * (adaptiveDuration || 15);
-    const estCallTime = new Date(Date.now() + estWaitMinutes * 60000);
-
-    // 7. Create Appointment with checked-in status for physical arrival
-    const trackerCapability = createTrackerCapability();
-    const appointment = await Appointment.create({
-      organizationId: org._id,
-      locationId,
-      doctorId,
-      patientId: patient._id,
-      appointmentTime: new Date(),
-      appointmentType: "walk-in",
-      status: "checked-in",
-      tokenNumber,
-      trackerTokenHash: trackerCapability.hash,
-      trackerTokenExpiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
-      queuePosition: tokenNumber,
-      duration: adaptiveDuration || 15,
-      notes: notes?.trim() || "Walk-In self-registered via Location QR Poster",
-    });
-
-    // 8. Real-Time Broadcast & WhatsApp notification dispatch
-    try {
-      broadcastQueueUpdate(locationId.toString(), {
-        type: "QUEUE_UPDATED",
-        data: {
-          appointmentId: appointment._id.toString(),
-          status: "checked-in",
-          doctorId: doctorId.toString(),
-          locationId: locationId.toString(),
-          tokenNumber,
-        },
-        timestamp: new Date().toISOString(),
-      });
-    } catch {
-      // Non-blocking broadcast
-    }
-
-    // Send WhatsApp confirmation (with tracking URL) asynchronously
-    const { sendBookingNotification } = await import("../utilities/notifications.ts");
-    sendBookingNotification(appointment._id, "booked", trackerCapability.token).catch((err) =>
-      console.warn("[WhatsApp Notice] Walk-in notification dispatch skipped:", err?.message || err)
-    );
-
-    return reply.code(201).send(successResponse({
-      appointmentId: appointment._id.toString(),
-      tokenNumber: appointment.tokenNumber,
-      queuePosition: appointment.queuePosition,
-      estimatedWaitMinutes: estWaitMinutes,
-      estimatedCallTime: estCallTime.toISOString(),
-      isExisting: false,
-      trackingUrl: `/track/${appointment._id}#t=${encodeURIComponent(trackerCapability.token)}`,
-      trackerToken: trackerCapability.token,
-    }, `Token #${appointment.tokenNumber} confirmed! Proceed to waiting lounge.`));
-  } catch (err) {
-    console.error("joinPublicQueue error:", err);
-    return reply.code(500).send(errorResponse("Failed to join queue. Please speak with reception desk."));
+    const receipt = await OperationReceipt.findOne({ scope, key }).select('+responseCiphertext');
+    const appointment = await Appointment.findOne({ _id: command.resultId, organizationId: org.id, locationId: location.id }).select('+trackerTokenHash');
+    if (!receipt?.responseCiphertext || !appointment) throw new CommandError(409, 'Reception must review the recorded visit before its link can be restored');
+    const recorded = JSON.parse(decryptField(receipt.responseCiphertext));
+    if (!recorded.trackerToken || !appointment.trackerTokenExpiresAt || appointment.trackerTokenExpiresAt <= new Date() || hashTrackerCapability(recorded.trackerToken) !== appointment.trackerTokenHash) throw new CommandError(409, 'The recorded visit link is no longer available. Please contact reception.');
+    for (const effect of effects) await effect().catch(error => req.log.warn({ err: error }, 'Walk-in queue broadcast could not be refreshed'));
+    const queueCount = await Appointment.countDocuments({ organizationId: org.id, locationId, doctorId, status: { $in: ['confirmed', 'checked-in'] }, appointmentTime: { $gte: startOfDay, $lte: endOfDay }, _id: { $ne: appointment._id } });
+    const estimatedWaitMinutes = queueCount * (appointment.duration || 15);
+    const statusMessage = appointment.status === 'pending_payment' ? 'Payment is required before confirmation. Contact reception.' : appointment.status === 'checked-in' ? 'Your walk-in visit is checked in. Please wait for your turn.' : 'Your visit was recorded. Review its current status.';
+    return reply.code(command.replayed ? 200 : 201).send(successResponse({ appointmentId: appointment.id, tokenNumber: appointment.tokenNumber, queuePosition: appointment.queuePosition,
+      estimatedWaitMinutes, estimatedCallTime: new Date(Date.now() + estimatedWaitMinutes * 60000).toISOString(), isExisting: false, replayed: command.replayed, status: appointment.status, paymentStatus: appointment.paymentStatus,
+      trackingUrl: '/track/' + appointment.id + '#t=' + encodeURIComponent(recorded.trackerToken), trackerToken: recorded.trackerToken }, statusMessage));
+  } catch (error) {
+    if (error instanceof CommandError || error instanceof AppointmentDomainError) return reply.code(error.statusCode).send(errorResponse(error.message));
+    req.log.error({ err: error }, 'Walk-in booking could not be confirmed');
+    return reply.code(503).send(errorResponse('The walk-in result could not be confirmed. Retry the submitted request.'));
   }
 }
 
@@ -902,7 +839,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
     }
 
     const appointment = await Appointment.findById(appointmentId)
-      .select("+trackerTokenHash trackerTokenExpiresAt locationId doctorId patientId tokenNumber queuePosition status paymentStatus appointmentTime appointmentType disruptionResponseDeadline triageAction parkedAt parkedReason patientReturned patientReturnedAt consultationPhase investigationSentAt investigationNotes delayNotifiedAt lastNotifiedDelayMinutes isEmergency vitals investigationResults updatedAt")
+      .select("+trackerTokenHash trackerTokenExpiresAt organizationId locationId doctorId patientId tokenNumber queuePosition status paymentStatus appointmentTime appointmentType disruptionResponseDeadline disruptionReviewDueAt disruptionReviewRequiredAt triageAction parkedAt parkedReason patientReturned patientReturnedAt consultationPhase investigationSentAt investigationNotes delayNotifiedAt lastNotifiedDelayMinutes isEmergency vitals investigationResults updatedAt followUpAppointmentId followUpRecommended followUpWorkflow followUpDueAt")
       .populate("locationId", "name city address phone upiVpa merchantName")
       .populate("doctorId", "name specialization")
       .populate({
@@ -1037,31 +974,32 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
 
     // Avoid loading full encounters, clinical notes, prescriptions, and invoices unless appointment has actually completed
     if (appointment.status === "completed") {
-      const encounter = await Encounter.findOne({ appointmentId: appointment._id }).sort({ createdAt: -1 }).select("endedAt _id").lean();
+      const clinicalScope = { organizationId: appointment.organizationId, locationId: (appointment.locationId as any)?._id || appointment.locationId, patientId: (appointment.patientId as any)?._id || appointment.patientId };
+      const encounter = await Encounter.findOne({ ...clinicalScope, appointmentId: appointment._id, status: 'completed', deletedAt: null }).sort({ createdAt: -1 }).select("endedAt _id").lean();
       if (encounter) {
         const { ClinicalNote } = await import("../models/ClinicalNote.ts");
         const { Prescription } = await import("../models/Prescription.ts");
         const { decryptField } = await import("../utilities/cryptoEnvelope.ts");
 
-        const note = (await ClinicalNote.findOne({ encounterId: encounter._id, isLatest: true })
+        const note = (await ClinicalNote.findOne({ ...clinicalScope, encounterId: encounter._id, isLatest: true, status: { $in: ['signed', 'amended'] }, deletedAt: null })
           .select("subjective assessment plan signature")
           .lean()) as any;
-        let prescriptions = (await Prescription.find({ encounterId: encounter._id, deletedAt: null })
+        let prescriptions = note ? (await Prescription.find({ ...clinicalScope, encounterId: encounter._id, deletedAt: null })
           .select("medicineName dosage frequency duration instructions status")
-          .lean()) as any[];
+          .lean()) as any[] : [];
 
         if (prescriptions.length === 0 && note?.plan?.prescriptionIds?.length > 0) {
-          prescriptions = (await Prescription.find({ _id: { $in: note.plan.prescriptionIds }, deletedAt: null })
+          prescriptions = (await Prescription.find({ ...clinicalScope, encounterId: encounter._id, _id: { $in: note.plan.prescriptionIds }, deletedAt: null })
             .select("medicineName dosage frequency duration instructions status")
             .lean()) as any[];
         }
 
         if (note || prescriptions.length > 0) {
-          const rawDoctorAdvice = note?.plan?.treatmentPlan || note?.subjective?.historyOfPresentIllness;
-          const doctorAdvice = (rawDoctorAdvice ? decryptField(rawDoctorAdvice) : null) || "Follow all prescribed medicines and maintain adequate hydration.";
+          const rawDoctorAdvice = note?.plan?.treatmentPlan;
+          const doctorAdvice = rawDoctorAdvice ? decryptField(rawDoctorAdvice) : null;
 
           consultationSummary = {
-            completedAt: encounter.endedAt || (appointment as any).updatedAt || new Date().toISOString(),
+            completedAt: encounter.endedAt || null,
             chiefComplaint: note?.subjective?.chiefComplaint || null,
             diagnoses:
               note?.assessment?.diagnoses?.map((d: any) => ({
@@ -1072,7 +1010,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
             followUp: note?.plan?.followUpDate
               ? {
                   date: note.plan.followUpDate,
-                  instructions: note.plan.followUpInstructions || "Follow up with attending physician as scheduled.",
+                  instructions: note.plan.followUpInstructions || null,
                 }
               : null,
             prescriptions: prescriptions.map((p: any) => ({
@@ -1081,11 +1019,11 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
               dosage: p.dosage,
               frequency: p.frequency,
               duration: p.duration,
-              instructions: p.instructions || "As instructed",
+              instructions: p.instructions || "",
               status: p.status,
             })),
-            signedBy: note?.signature?.signerName || (appointment.doctorId as any)?.name || null,
-            signedAt: note?.signature?.signedAt || encounter.endedAt || null,
+            signedBy: note?.signature?.signerName || null,
+            signedAt: note?.signature?.signedAt || null,
           };
         }
       }
@@ -1093,6 +1031,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
       // Check for linked invoice only when completed
       const { Invoice } = await import("../models/Invoice.ts");
       const invoiceFilter: any = {
+        ...clinicalScope,
         deletedAt: null,
         $or: [
           { appointmentId: appointment._id },
@@ -1134,11 +1073,13 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
         ? "dispensed"
         : "sent_to_pharmacy";
 
-    // Check if an auto-booked follow-up review appointment exists
+    // Only an explicit or reviewed booking can be presented as a booked follow-up.
     let followUpAppointment: any = null;
     if (appointment.status === "completed") {
       const followUpDoc = (await Appointment.findOne({
         followUpForAppointmentId: appointment._id,
+        organizationId: appointment.organizationId, patientId: appointment.patientId,
+        followUpConfirmationEvidence: { $in: ["explicit_booking", "legacy_reviewed"] },
         status: { $ne: "cancelled" },
       })
         .select("tokenNumber appointmentTime status")
@@ -1190,6 +1131,8 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
         doctorAvailability,
         isToday: dateStr === locationDateKey(new Date(), timezone),
         disruptionResponseDeadline: appointment.disruptionResponseDeadline || null,
+        disruptionReviewDueAt: appointment.disruptionReviewDueAt || null,
+        disruptionReviewRequiredAt: appointment.disruptionReviewRequiredAt || null,
         triageAction: appointment.triageAction || "pending",
         parkedAt: appointment.parkedAt || null,
         parkedReason: appointment.parkedReason || null,
@@ -1203,6 +1146,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
         consultationSummary,
         pharmacyStatus,
         followUpAppointment,
+        followUpRecommendation: appointment.followUpRecommended ? { status: appointment.followUpWorkflow || "review_required", dueAt: appointment.followUpDueAt || null } : null,
         billing,
         vitals: (appointment as any).vitals || null,
         isEmergency: (appointment as any).isEmergency || false,
@@ -1660,25 +1604,29 @@ export async function printPublicTrackerPrescription(req: FastifyRequest, reply:
       return reply.code(401).send(errorResponse("A valid appointment tracker link is required"));
     }
 
-    const encounter = await Encounter.findOne({ appointmentId: appointment._id }).sort({ createdAt: -1 });
+    if (appointment.status !== 'completed') return reply.code(409).send(errorResponse('The prescription is available after the visit is completed'));
+
+    const clinicalScope = { organizationId: appointment.organizationId, locationId: (appointment.locationId as any)?._id || appointment.locationId, patientId: (appointment.patientId as any)?._id || appointment.patientId };
+    const encounter = await Encounter.findOne({ ...clinicalScope, appointmentId: appointment._id, status: 'completed', deletedAt: null }).sort({ createdAt: -1 });
     const { ClinicalNote } = await import("../models/ClinicalNote.ts");
     const { Prescription } = await import("../models/Prescription.ts");
     const { Doctor } = await import("../models/Doctor.ts");
     const { decryptField } = await import("../utilities/cryptoEnvelope.ts");
 
     const note = encounter
-      ? (((await ClinicalNote.findOne({ encounterId: encounter._id, isLatest: true }).lean()) as any) || null)
+      ? (((await ClinicalNote.findOne({ ...clinicalScope, encounterId: encounter._id, isLatest: true, status: { $in: ['signed', 'amended'] }, deletedAt: null }).lean()) as any) || null)
       : null;
+    if (!encounter || !note) return reply.code(409).send(errorResponse('The finalized prescription requires clinical review'));
     let prescriptions = encounter
-      ? (((await Prescription.find({ encounterId: encounter._id, deletedAt: null }).lean()) as any[]) || [])
+      ? (((await Prescription.find({ ...clinicalScope, encounterId: encounter._id, deletedAt: null }).lean()) as any[]) || [])
       : [];
 
     if (prescriptions.length === 0 && note?.plan?.prescriptionIds?.length > 0) {
-      prescriptions = (await Prescription.find({ _id: { $in: note.plan.prescriptionIds }, deletedAt: null }).lean()) as any[];
+      prescriptions = (await Prescription.find({ ...clinicalScope, encounterId: encounter._id, _id: { $in: note.plan.prescriptionIds }, deletedAt: null }).lean()) as any[];
     }
 
     const doctorUserId = (appointment.doctorId as any)?._id || appointment.doctorId;
-    const doctorProfile = (await Doctor.findOne({ userId: doctorUserId }).lean()) as any;
+    const doctorProfile = (await Doctor.findOne({ organizationId: appointment.organizationId, userId: doctorUserId }).lean()) as any;
 
     const patientDoc = appointment.patientId as any;
     const patientUser = patientDoc?.userId || {};
@@ -1704,13 +1652,7 @@ export async function printPublicTrackerPrescription(req: FastifyRequest, reply:
           duration: p.duration,
           instructions: p.instructions,
         }))
-      : (appointment.prescriptions || []).map((p: any) => ({
-          medicineName: p.name,
-          dosage: p.dosage,
-          frequency: "1-0-1",
-          duration: p.duration,
-          instructions: "Follow prescribed meal instructions",
-        })));
+      : []);
 
     const investigations = appointment.investigationResults && appointment.investigationResults.length > 0
       ? appointment.investigationResults.map((inv: any) => ({
@@ -1724,20 +1666,20 @@ export async function printPublicTrackerPrescription(req: FastifyRequest, reply:
     const diagnoses = (note?.assessment?.diagnoses?.map((d: any) => d.description || d.code) || [])
       .concat(appointment.diagnosis ? [appointment.diagnosis] : []);
 
-    const rawDoctorAdvice = note?.plan?.treatmentPlan || note?.subjective?.historyOfPresentIllness || appointment.notes;
+    const rawDoctorAdvice = note?.plan?.treatmentPlan;
     const doctorAdvice = rawDoctorAdvice ? decryptField(rawDoctorAdvice) : undefined;
 
     const html = generatePrintablePrescriptionHtml({
       locationName: locationDoc?.name || "Healthcare facility",
-      locationAddress: locationDoc?.address || locationDoc?.city || "Medical Plaza",
-      locationPhone: locationDoc?.phone || "Reception",
+      locationAddress: locationDoc?.address || locationDoc?.city || "",
+      locationPhone: locationDoc?.phone || "",
       doctorName: formattedDoctorName,
-      doctorSpecialty: doctorProfile?.specialization || "General Medicine & Primary Care",
+      doctorSpecialty: doctorProfile?.specialization || "",
       doctorLicenseNumber: doctorProfile?.licenseNumber,
       patientName,
       patientAge,
       patientGender,
-      encounterDate: encounter?.endedAt ? new Date(encounter.endedAt).toLocaleDateString() : new Date().toLocaleDateString(),
+      encounterDate: encounter?.endedAt ? new Date(encounter.endedAt).toLocaleDateString() : "",
       chiefComplaint: note?.subjective?.chiefComplaint || appointment.symptoms,
       diagnoses,
       doctorAdvice,

@@ -45,8 +45,17 @@ export default async function patientPortalRoutes(app: FastifyInstance) {
   app.get("/api/patient/me", patientProfile, getCurrentPatientProfile);
   app.put("/api/patient/me", patientProfile, updateCurrentPatientProfile);
 
-  app.post("/api/patient-portal/self-book", patientAppointments, patientSelfBookAppointment);
-  app.get("/api/patient-portal/appointments", patientAppointments, getPatientAppointmentsHistory);
+  app.post("/api/patient-portal/self-book", { ...patientAppointments, schema: { body: {
+    type: 'object', required: ['locationId', 'doctorId', 'appointmentTime'], additionalProperties: false,
+    properties: {
+      locationId: { type: 'string', pattern: '^[a-fA-F0-9]{24}$' }, doctorId: { type: 'string', pattern: '^[a-fA-F0-9]{24}$' },
+      appointmentTime: { type: 'string', minLength: 10, maxLength: 40 }, appointmentType: { type: 'string', enum: ['online', 'walk-in', 'reception'] },
+      notes: { type: 'string', maxLength: 2000 }, forPatientId: { type: 'string', pattern: '^[a-fA-F0-9]{24}$' },
+      lockId: { type: 'string', maxLength: 200 }, payAtLocation: { type: 'boolean' }, clientRequestId: { type: 'string', pattern: '^[a-zA-Z0-9_-]{8,100}$' },
+    },
+  } } }, patientSelfBookAppointment);
+  app.get("/api/patient-portal/appointments", { ...patientAppointments, schema: { querystring: { type: 'object', additionalProperties: false,
+    properties: { page: { type: 'integer', minimum: 1, maximum: 10000 }, limit: { type: 'integer', minimum: 1, maximum: 100 } } } } }, getPatientAppointmentsHistory);
 
   app.get("/api/patient-portal/records", patientRecords, getPatientMedicalRecords);
 

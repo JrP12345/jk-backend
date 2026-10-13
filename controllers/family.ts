@@ -3,9 +3,9 @@ import mongoose from "mongoose";
 import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import { Patient } from "../models/Patient.ts";
 import { User } from "../models/User.ts";
-import { successResponse, errorResponse, normalizePhone } from "../utilities/helpers.ts";
+import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
-import { otpService } from "../services/OtpService.ts";
+import { patientAdministrativeDTO } from '../services/PatientAdministrativeDTO.ts';
 
 // ─── GET /api/family — List all family members managed by authenticated user ───
 export async function getFamilyMembers(req: FastifyRequest, reply: FastifyReply) {
@@ -26,7 +26,8 @@ export async function getFamilyMembers(req: FastifyRequest, reply: FastifyReply)
       return {
         relationshipId: rel._id.toString(),
         relationship: rel.relationship,
-        patient: p,
+        patient: p ? patientAdministrativeDTO(p) : null,
+        organizationPrivacyAvailable: rel.organizationAuthorizations?.some((row: any) => (row.consent || row.dataRights) && row.reviewedAt && row.reviewedBy) === true,
       };
     });
 
@@ -117,6 +118,7 @@ export async function updateFamilyMember(req: FastifyRequest, reply: FastifyRepl
     const userId = req.user!.id;
     const { id } = req.params as { id: string }; // relationshipId
     const { relationship, name, dob, gender, bloodGroup, allergies, conditions } = req.body as any;
+    if ([bloodGroup, allergies, conditions].some(value => value !== undefined)) return reply.code(403).send(errorResponse('Family booking access does not authorize clinical profile changes. Use the authorized clinical workflow.'));
 
     const familyRel = await FamilyRelationship.findOne({ _id: id, userId, status: "active" });
     if (!familyRel) {
@@ -133,9 +135,6 @@ export async function updateFamilyMember(req: FastifyRequest, reply: FastifyRepl
       if (name) patient.name = name.trim();
       if (dob) patient.dob = new Date(dob);
       if (gender) patient.gender = gender;
-      if (bloodGroup) patient.bloodGroup = bloodGroup;
-      if (allergies) patient.allergies = allergies;
-      if (conditions) patient.conditions = conditions;
       await patient.save();
     }
 
@@ -174,56 +173,22 @@ export async function removeFamilyMember(req: FastifyRequest, reply: FastifyRepl
 // ─── POST /api/family/claim — Claim an existing walk-in patient record ───
 export async function claimPatientRecord(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const userId = req.user!.id;
+    if (!["patient", "family_member"].includes(req.user?.role || "")) return reply.code(403).send(errorResponse("Patient account required"));
     const { patientId } = req.body as { patientId: string };
-
-    if (!mongoose.Types.ObjectId.isValid(patientId)) {
-      return reply.code(400).send(errorResponse("Invalid patient ID"));
-    }
-
-    const patient = await Patient.findById(patientId);
-    if (!patient) {
-      return reply.code(404).send(errorResponse("Patient record not found"));
-    }
-
-    // Ensure record is not already claimed by another user
-    if (patient.userId && patient.userId.toString() !== userId) {
-      return reply.code(409).send(errorResponse("This patient record is already linked to another online account"));
-    }
-
-    const { otp } = req.body as { patientId: string; otp?: string };
-    const user = await User.findById(userId);
-    const normUserPhone = normalizePhone(user?.phone || "");
-    const normPatientPhone = normalizePhone(patient.phone || "");
-
-    const isPhoneMatched = Boolean(normUserPhone && normPatientPhone && normUserPhone === normPatientPhone);
-    const isCreator = patient.createdBy?.toString() === userId;
-
-    if (!isPhoneMatched && !isCreator) {
-      if (!otp) {
-        return reply.code(403).send(errorResponse("Phone verification required to claim this medical record."));
-      }
-      const otpResult = await otpService.verifyOtp(patient.phone || "", otp, "record_claim");
-      if (!otpResult.verified) {
-        return reply.code(403).send(errorResponse(otpResult.message || "Invalid OTP for record claim"));
-      }
-    }
-
-    // Link Patient to User
-    patient.userId = new mongoose.Types.ObjectId(userId);
-    patient.accountType = "self";
-    await patient.save();
-
-    // Create or update FamilyRelationship for self
-    await FamilyRelationship.findOneAndUpdate(
-      { userId, patientId: patient._id },
-      { relationship: "self", status: "active" },
-      { upsert: true }
-    );
-
-    return reply.code(200).send(successResponse(patient, "Patient record linked to your account successfully!"));
+    if (!mongoose.isValidObjectId(patientId)) return reply.code(400).send(errorResponse("Invalid patient ID"));
+    const patient = await Patient.findById(patientId).setOptions({ bypassTenantFilter: true }).select("userId organizationId");
+    if (!patient || (patient.userId && String(patient.userId) !== req.user!.id)) return reply.code(404).send(errorResponse("Patient record not available for an identity claim"));
+    if (String(patient.userId || "") === req.user!.id) return reply.send(successResponse({ status: "active" }, "This record is already linked"));
+    if (!patient.organizationId) return reply.code(409).send(errorResponse("This record requires support review before it can be claimed"));
+    // Shared contact possession, OTP and name similarity never grant medical access.
+    const existing = await FamilyRelationship.findOne({ userId: req.user!.id, patientId });
+    if (existing?.status === "active") return reply.send(successResponse({ status: "active" }, "An authorized relationship already exists"));
+    const relationship = await FamilyRelationship.findOneAndUpdate({ userId: req.user!.id, patientId },
+      { $set: { relationship: "self", status: "pending", identityClaim: true }, $unset: { reviewedAt: 1, reviewedBy: 1, reviewReason: 1 } },
+      { upsert: true, returnDocument: "after", runValidators: true });
+    return reply.code(202).send(successResponse({ status: "pending", relationshipId: relationship.id }, "Identity review requested. The organization must verify the person before medical access is granted."));
   } catch (err) {
-    console.error("claimPatientRecord error:", err);
-    return reply.code(500).send(errorResponse("Internal server error"));
+    req.log.error({ err }, "Identity claim failed");
+    return reply.code(503).send(errorResponse("The identity claim could not be saved. Retry your request."));
   }
 }

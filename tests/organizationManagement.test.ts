@@ -202,13 +202,16 @@ describe("organization ownership and members", () => {
     expect((await app.inject({ method: "POST", url: "/api/onboarding/locations", cookies: (await cookie(admin, orgA.id)), payload: { organizationId: orgB.id, name: "Wrong Tenant", city: "Delhi" } })).statusCode).toBe(403);
   });
 
-  it("preserves membership role over clinical profile and blocks global role changes for shared identities", async () => {
+  it("preserves membership roles and changes only the explicitly selected shared workspace", async () => {
     await Doctor.create({ userId: admin._id, organizationId: orgA._id, specialization: "General medicine" });
     const res = await app.inject({ method: "GET", url: `/api/onboarding/organizations/${orgA.id}/members`, cookies: (await cookie(root)) });
     expect(res.json().data.members.find((m: any) => m.id === admin.id).role).toBe("admin");
     const shared = await User.create({ name: "Shared Nurse", email: "shared@management.test", role: "nurse" });
     await OrgMember.create([{ userId: shared._id, organizationId: orgA._id, role: "nurse" }, { userId: shared._id, organizationId: orgB._id, role: "nurse" }]);
-    expect((await app.inject({ method: "PUT", url: `/api/users/${shared.id}/role?organizationId=${orgA.id}`, cookies: (await cookie(root)), payload: { role: "cashier" } })).statusCode).toBe(409);
+    expect((await app.inject({ method: "PUT", url: `/api/users/${shared.id}/role?organizationId=${orgA.id}`, cookies: (await cookie(root)), payload: { role: "cashier" } })).statusCode).toBe(200);
+    expect((await OrgMember.findOne({ userId: shared.id, organizationId: orgA.id }))?.role).toBe("cashier");
+    expect((await OrgMember.findOne({ userId: shared.id, organizationId: orgB.id }))?.role).toBe("nurse");
+    expect((await User.findById(shared.id))?.role).toBe("nurse");
     const global = await app.inject({ method: "GET", url: `/api/admin/users?q=shared`, cookies: (await cookie(root)) });
     expect(global.json().data.users[0].memberships).toHaveLength(2);
     expect((await app.inject({ method: "DELETE", url: `/api/organizations/${orgA.id}/members/${shared.id}`, cookies: (await cookie(admin, orgA.id)) })).statusCode).toBe(200);

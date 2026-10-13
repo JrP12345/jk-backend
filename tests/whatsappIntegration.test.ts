@@ -1,3 +1,6 @@
+import { patientCommunicationFixture } from './helpers/patientCommunicationFixture.ts';
+import { WhatsAppRecipient } from '../models/WhatsAppRecipient.ts';
+import { phoneHash } from '../services/WhatsAppSendPolicy.ts';
 import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll, vi } from "vitest";
 import { app } from "../index.ts";
@@ -17,7 +20,8 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
   let orgId: string;
   let testPatientId: string;
   const testPhone = "919876543210";
-  const testAppointmentId = `apt_test_${Date.now()}`;
+  let testAppointmentId: string;
+  let communication: Awaited<ReturnType<typeof patientCommunicationFixture>>;
 
   beforeAll(async () => {
     process.env.META_WHATSAPP_WABA_ID = "109283746592019";
@@ -49,6 +53,8 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
       dob: "1982-01-01",
     });
     testPatientId = patient._id.toString();
+    communication = await patientCommunicationFixture(orgId, testPhone, testPatientId);
+    testAppointmentId = communication.appointment.id;
   });
 
   it("1. should fetch initial WhatsApp configuration with default quotas and packs", async () => {
@@ -195,12 +201,14 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
       const replyKey = `whatsapp-freeform:test:${Date.now()}`;
       await enqueueWhatsAppDocument({
         to: testPhone,
+        communicationContext: communication.context,
         documentUrl: "https://example.test/private-prescription.pdf?capability=secret",
         filename: "Prescription.pdf",
         caption: "Private prescription",
         idempotencyKey: documentKey,
       });
       await enqueueWhatsAppFreeform({
+        communicationContext: communication.context,
         to: testPhone,
         text: "Private clinical reply",
         organizationId: orgId,
@@ -217,8 +225,8 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
 
       expect(documentSpy).toHaveBeenCalledOnce();
       expect(replySpy).toHaveBeenCalledOnce();
-      expect((await OutboundMessage.findOne({ idempotencyKey: documentKey }))?.status).toBe("sent");
-      expect((await OutboundMessage.findOne({ idempotencyKey: replyKey }))?.status).toBe("sent");
+      expect((await OutboundMessage.findOne({ idempotencyKey: documentKey }))?.status).toBe("accepted");
+      expect((await OutboundMessage.findOne({ idempotencyKey: replyKey }))?.status).toBe("accepted");
       expect(await NotificationLog.exists({ idempotencyKey: `outbound:${replyKey}` })).toBeTruthy();
     } finally {
       documentSpy.mockRestore();
@@ -232,7 +240,8 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
 
     try {
       await enqueueTransactionalEmail({
-        to: "private-recipient@example.test",
+        communicationContext: communication.context,
+        to: "ramesh@example.com",
         subject: "Private clinical update",
         text: "Sensitive appointment details",
         html: "<p>Sensitive appointment details</p>",
@@ -240,7 +249,8 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
       });
       // A retry from the producer does not add a second durable delivery.
       await enqueueTransactionalEmail({
-        to: "private-recipient@example.test",
+        communicationContext: communication.context,
+        to: "ramesh@example.com",
         subject: "Private clinical update",
         text: "Sensitive appointment details",
         html: "<p>Sensitive appointment details</p>",
@@ -259,7 +269,7 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
       await outboundMessageDeliveryWorker.processBatch();
 
       expect(emailSpy).toHaveBeenCalledOnce();
-      expect((await OutboundMessage.findOne({ idempotencyKey }))?.status).toBe("sent");
+      expect((await OutboundMessage.findOne({ idempotencyKey }))?.status).toBe("accepted");
     } finally {
       emailSpy.mockRestore();
     }
@@ -272,7 +282,7 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
       { $set: { "whatsappConfig.creditsBalance": 0 } }
     );
 
-    const exhaustedAptId = `apt_exhausted_${Date.now()}`;
+    const exhaustedAptId = (await communication.newAppointment()).id;
     const result = await SmsWhatsAppService.sendBookingConfirmation(
       exhaustedAptId,
       orgId,
@@ -450,31 +460,11 @@ describe("Meta WhatsApp Business & Credit Management Integration Tests", () => {
 
     // Verify Patient record has optOutWhatsApp set to true
     const patient = await Patient.findById(testPatientId);
-    expect(patient?.optOutWhatsApp).toBe(true);
+    expect(patient?.optOutWhatsApp).toBe(false);
+    expect((await WhatsAppRecipient.findOne({ scope: "platform", phoneHash: phoneHash(testPhone) }))?.optedOut).toBe(true);
 
     // Future notifications to this patient must now be blocked
-    const blockedAptId = `apt_blocked_${Date.now()}`;
-    const blockedResult = await SmsWhatsAppService.sendBookingConfirmation(
-      blockedAptId,
-      orgId,
-      testPhone,
-      {
-        patientName: "Ramesh Sharma",
-        tokenNumber: 22,
-        doctorName: "Dr. Ananya Roy",
-        date: "2026-09-07",
-        time: "12:00 PM",
-        trackingUrl: `https://app.ananthealth.com/track/${blockedAptId}`,
-      }
-    );
+    await expect(SmsWhatsAppService.sendBookingConfirmation(testAppointmentId, orgId, testPhone, { patientName: 'Ramesh Sharma', tokenNumber: 22, doctorName: 'Dr. Ananya Roy', trackingUrl: 'https://example.test/track' })).rejects.toMatchObject({ reason: 'PATIENT_OPTED_OUT_WHATSAPP' });
 
-    expect(blockedResult.success).toBe(true);
-    expect(blockedResult.status).toBe("pending");
-    await outboundMessageDeliveryWorker.processBatch();
-    const blockedLog = await NotificationLog.findOne({
-      idempotencyKey: `whatsapp_${blockedAptId}_BOOKING_CONFIRMATION`,
-    });
-    expect(blockedLog?.errorReason).toBe("PATIENT_OPTED_OUT_WHATSAPP");
-    expect((await OutboundMessage.findOne({ idempotencyKey: `whatsapp_${blockedAptId}_BOOKING_CONFIRMATION` }))?.status).toBe("failed");
   });
 });

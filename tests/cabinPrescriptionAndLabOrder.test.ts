@@ -1,6 +1,10 @@
+import crypto from 'node:crypto';
+import { patientCommunicationFixture } from './helpers/patientCommunicationFixture.ts';
 import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
+import { DomainEventOutbox } from "../models/DomainEventOutbox.ts";
+import { domainEventDeliveryWorker } from "../services/DomainEventDeliveryWorker.ts";
 import { Organization } from "../models/Organization.ts";
 import { Location } from "../models/Location.ts";
 import { Patient } from "../models/Patient.ts";
@@ -104,6 +108,7 @@ describe("In-Cabin Diagnostic Lab Ordering & Digital Rx WhatsApp Suite", () => {
       gender: "male",
       dob: new Date("1987-04-30"),
     });
+    await patientCommunicationFixture(orgId, patientDoc.phone, patientDoc.id);
   });
 
   it("should order diagnostic lab tests from cabin and move patient to standby with LabOrders", async () => {
@@ -180,13 +185,19 @@ describe("In-Cabin Diagnostic Lab Ordering & Digital Rx WhatsApp Suite", () => {
     });
 
     expect(res.statusCode).toBe(200);
+    const intent = await DomainEventOutbox.findOne({ idempotencyKey: `crm:appointment:${appt.id}:1:prescription` });
+    expect(intent?.status).toBe("pending");
+    expect((await Appointment.findById(appt._id))?.rxQueuedAt).toBeNull();
+    // Other setup events may precede this source event in the shared worker.
+    for (let attempt = 0; attempt < 30 && (await DomainEventOutbox.findById(intent!.id))?.status !== "sent"; attempt++) await domainEventDeliveryWorker.processOne();
     const updatedAppt = await Appointment.findById(appt._id);
     expect(updatedAppt?.status).toBe("completed");
-    expect(updatedAppt?.rxDispatchedAt).not.toBeNull();
+    expect(updatedAppt?.rxDispatchedAt).toBeNull();
+    expect(updatedAppt?.rxQueuedAt).toBeInstanceOf(Date);
     expect(updatedAppt?.prescriptions?.length).toBe(2);
   });
 
-  it("should support 1-click re-dispatch of digital e-Prescription to custom phone via WhatsApp", async () => {
+  it("should support reviewed prescription queueing with truthful delivery state", async () => {
     const appt = await Appointment.create({
       organizationId: orgId,
       locationId,
@@ -208,22 +219,25 @@ describe("In-Cabin Diagnostic Lab Ordering & Digital Rx WhatsApp Suite", () => {
       url: `/api/appointments/${appt._id}/resend-rx`,
       headers: { cookie: adminCookies.join("; ") },
       payload: {
-        phone: "+919988776655",
+        phone: patientDoc.phone,
+        clientRequestId: crypto.randomUUID(),
         channel: "whatsapp",
       },
     });
 
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(202);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
     expect(body.data.channel).toBe("whatsapp");
 
     // Verify audit log
     const audit = await AuditLog.findOne({
-      action: "PRESCRIPTION_NOTIFICATION_RESENT",
+      action: "PRESCRIPTION_NOTIFICATION_QUEUED",
       targetId: appt._id,
     });
     expect(audit).not.toBeNull();
-    expect(audit?.details?.phone).toBe("[REDACTED]");
+    expect(audit?.details?.outboxId).toBe(body.data.outboxId);
+    expect(body.data.status).toBe("pending");
+    expect((await Appointment.findById(appt._id))?.rxDispatchedAt).toBeNull();
   });
 });

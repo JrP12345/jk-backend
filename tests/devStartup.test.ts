@@ -3,6 +3,7 @@ import path from "node:path";
 import http from "node:http";
 import { spawn } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getProcessIdentity, lockPurpose } from "../scripts/developmentWatcherLock.mjs";
 
 let server: http.Server;
 let port: number;
@@ -31,7 +32,7 @@ async function runDev(): Promise<{ code: number | null; output: string }> {
   let output = "";
   child.stdout.on("data", chunk => { output += chunk; });
   child.stderr.on("data", chunk => { output += chunk; });
-  const timer = setTimeout(() => child.kill(), 10000);
+  const timer = setTimeout(() => child.kill(), 45000);
   try {
     return await new Promise((resolve, reject) => {
       child.once("error", reject);
@@ -50,10 +51,47 @@ describe("Local development duplicate startup", () => {
   });
 
   it("recognizes a live watcher even during its API restart window", async () => {
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid }), { flag: "wx" });
+    const processIdentity = getProcessIdentity(process.pid);
+    expect(processIdentity).toBeDefined();
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, purpose: lockPurpose, processIdentity }), { flag: "wx" });
     const result = await runDev();
     expect(result.code).toBe(0);
     expect(result.output).toContain("A development watcher is already active");
     expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).pid).toBe(process.pid);
+  });
+
+  it("reclaims a stale lock when its PID has been reused by another Node process", async () => {
+    const identity = getProcessIdentity(process.pid);
+    expect(identity).toBeDefined();
+    fs.writeFileSync(lockPath, JSON.stringify({
+      pid: process.pid, purpose: lockPurpose,
+      processIdentity: { ...identity, startedAt: "previous process start time" },
+    }), { flag: "wx" });
+    const result = await runDev();
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain("Ekavyu API is already running");
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("preserves an existing legacy lock owned by a live Node process", async () => {
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, purpose: lockPurpose }), { flag: "wx" });
+    const result = await runDev();
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain("A development watcher is already active");
+    expect(fs.existsSync(lockPath)).toBe(true);
+  });
+
+  it.skipIf(process.platform !== "win32")("reclaims a legacy lock whose PID belongs to a non-Node process", async () => {
+    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 90"], {
+      windowsHide: true, stdio: "ignore",
+    });
+    try {
+      expect(child.pid).toBeDefined();
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: child.pid, purpose: lockPurpose }), { flag: "wx" });
+      const result = await runDev();
+      expect(result.code, result.output).toBe(0);
+      expect(result.output).toContain("Ekavyu API is already running");
+      expect(fs.existsSync(lockPath)).toBe(false);
+    } finally { child.kill(); }
   });
 });

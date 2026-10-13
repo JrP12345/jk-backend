@@ -1,4 +1,5 @@
 import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
+import { patientCommunicationFixture } from './helpers/patientCommunicationFixture.ts';
 import crypto from "node:crypto";
 import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { app } from "../index.ts";
@@ -20,6 +21,7 @@ import { whatsAppWebhookWorker } from "../services/WhatsAppWebhookService.ts";
 describe("WhatsApp setup, isolation and durable delivery", () => {
   let organizationId: string;
   let cookie: string;
+  let communication: Awaited<ReturnType<typeof patientCommunicationFixture>>;
   const secret = "test-only-meta-app-secret";
   const phone = "919876510001";
   const wabaId = "100001";
@@ -32,14 +34,16 @@ describe("WhatsApp setup, isolation and durable delivery", () => {
     expect(response.statusCode).toBe(201);
     cookie = (await provisionedAdminCookies(response)).join("; ");
     organizationId = response.json().data.organization.id;
+    communication = await patientCommunicationFixture(organizationId, phone);
   });
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
   const signed = (payload: any, appSecret = secret) => ({
     "content-type": "application/json",
     "x-hub-signature-256": `sha256=${crypto.createHmac("sha256", appSecret).update(JSON.stringify(payload)).digest("hex")}`,
   });
+  let inboundSequence = 0;
   const inbound = (id: string, text: string, accountId = wabaId) => ({ object: "whatsapp_business_account", entry: [{ id: accountId, changes: [{ field: "messages", value: {
-    metadata: { phone_number_id: phoneNumberId }, messages: [{ id, from: phone, timestamp: String(Math.floor(Date.now() / 1000)), type: "text", text: { body: text } }],
+    metadata: { phone_number_id: phoneNumberId }, messages: [{ id, from: phone, timestamp: String(Math.floor(Date.now() / 1000) - 100 + inboundSequence++), type: "text", text: { body: text } }],
   } }] }] });
 
   it("saves encrypted credentials, preserves blank secrets and exposes only readiness flags", async () => {
@@ -130,14 +134,14 @@ describe("WhatsApp setup, isolation and durable delivery", () => {
   it("prevents duplicate sends and charges under concurrent dispatch", async () => {
     await Organization.updateOne({ _id: organizationId }, { $set: { "whatsappConfig.mode": "shared", "whatsappConfig.creditsBalance": 10 } });
     const provider = vi.spyOn(whatsAppCloudApiService, "sendTemplateMessage").mockResolvedValue({ success: true, status: "accepted", providerMessageId: "wamid.concurrent" });
-    const options = { organizationId, phone, templateId: "BOOKING_CONFIRMATION" as const, variables: {}, idempotencyKey: "concurrent-send" };
+    const options = { communicationContext: communication.context, organizationId, phone, templateId: "BOOKING_CONFIRMATION" as const, variables: {}, idempotencyKey: "concurrent-send" };
     await Promise.allSettled([dispatchSmsWhatsAppNotification(options), dispatchSmsWhatsAppNotification(options)]);
     expect(provider).toHaveBeenCalledTimes(1);
     expect((await Organization.findById(organizationId))?.whatsappConfig?.creditsBalance).toBe(9);
   });
   it("never retries an ambiguous provider result, including manual job replay", async () => {
     const provider = vi.spyOn(whatsAppCloudApiService, "sendFreeformTextMessage").mockResolvedValue({ success: false, status: "failed", errorReason: "AMBIGUOUS_NETWORK" });
-    const queued = await enqueueWhatsAppFreeform({ to: phone, organizationId, text: "A reply", idempotencyKey: "ambiguous-reply" });
+    const queued = await enqueueWhatsAppFreeform({ communicationContext: communication.context, to: phone, organizationId, text: "A reply", idempotencyKey: "ambiguous-reply" });
     await outboundMessageDeliveryWorker.processBatch(20);
     expect((await OutboundMessage.findById(queued._id))?.status).toBe("failed");
     await OutboundMessage.updateOne({ _id: queued._id }, { $set: { status: "pending", nextAttemptAt: new Date(0) } });

@@ -2,6 +2,7 @@ import type { FastifyRequest } from "fastify";
 import mongoose from "mongoose";
 import { Role } from "../models/Role.ts";
 import { redisClient, publishRedisEvent, createRedisSubscriber } from "./redis.ts";
+import { CRM_ROLE_PERMISSIONS } from "./crmPermissions.ts";
 
 export const ADMIN_PERMISSIONS = [
   "MANAGE_STAFF",
@@ -143,6 +144,9 @@ export const BUILTIN_ROLE_PERMISSIONS: Record<string, string[]> = {
   patient: PATIENT_PERMISSIONS,
   family_member: FAMILY_MEMBER_PERMISSIONS,
 };
+for (const [role, permissions] of Object.entries(CRM_ROLE_PERMISSIONS)) {
+  BUILTIN_ROLE_PERMISSIONS[role] = [...new Set([...(BUILTIN_ROLE_PERMISSIONS[role] || []), ...permissions])];
+}
 
 /**
  * Platform Root check.
@@ -230,9 +234,11 @@ export async function invalidateRoleCache(roleName?: string, organizationId?: st
 export async function getEffectivePermissions(
   role: string,
   organizationId?: string,
-  authVersion: number = 1
+  authVersion: number = 1,
+  requireLive = false,
 ): Promise<Set<string>> {
   if (!role) return new Set();
+  if (requireLive) return readLiveRolePermissions(role, organizationId);
 
   let generation = "local";
   let cacheAvailable = true;
@@ -267,7 +273,23 @@ export async function getEffectivePermissions(
     }
   }
 
-  // Authoritative Database Query
+  const effectivePermissions = [...await readLiveRolePermissions(role, organizationId)];
+
+  // Cache in memory
+  rolePermissionsCache.set(cacheKey, {
+    permissions: effectivePermissions,
+    expiresAt: now + ROLE_CACHE_TTL_MS,
+  });
+
+  if (redisClient && cacheAvailable) {
+    try { await redisClient.set(`auth:role:${cacheKey}`, JSON.stringify(effectivePermissions), "EX", REDIS_PERM_TTL_SECONDS); }
+    catch { /* Safe database fallback on the next read. */ }
+  }
+  return new Set(effectivePermissions);
+}
+
+async function readLiveRolePermissions(role: string, organizationId?: string): Promise<Set<string>> {
+  // Worker authorization is read directly; cached grants cannot survive revocation.
   const orgFilter = organizationId && mongoose.Types.ObjectId.isValid(organizationId)
     ? [{ organizationId: new mongoose.Types.ObjectId(organizationId) }, { organizationId: null }]
     : [{ organizationId: null }];
@@ -285,26 +307,6 @@ export async function getEffectivePermissions(
     effectivePermissions = Array.isArray(roleConfig.permissions) ? roleConfig.permissions : [];
   } else {
     effectivePermissions = BUILTIN_ROLE_PERMISSIONS[role] || [];
-  }
-
-  // Cache in memory
-  rolePermissionsCache.set(cacheKey, {
-    permissions: effectivePermissions,
-    expiresAt: now + ROLE_CACHE_TTL_MS,
-  });
-
-  // Cache in Redis
-  if (redisClient && cacheAvailable) {
-    try {
-      await redisClient.set(
-        `auth:role:${cacheKey}`,
-        JSON.stringify(effectivePermissions),
-        "EX",
-        REDIS_PERM_TTL_SECONDS
-      );
-    } catch {
-      // non-fatal
-    }
   }
 
   return new Set(effectivePermissions);

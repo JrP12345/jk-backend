@@ -11,6 +11,7 @@ import { Appointment } from "../models/Appointment.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { AppointmentPayment } from "../models/AppointmentPayment.ts";
 import { OutboundMessage } from "../models/OutboundMessage.ts";
+import { DomainEventOutbox } from '../models/DomainEventOutbox.ts';
 import { Prescription } from "../models/Prescription.ts";
 import { CDSEvaluation } from "../models/CDSEvaluation.ts";
 import { generateAccessToken, createRefreshToken } from "../utilities/helpers.ts";
@@ -484,7 +485,7 @@ describe("Security & Safety Hardening Verification Suite", () => {
       expect(settledInvoice?.payments).toHaveLength(1);
       expect(settledPayment?.status).toBe("captured");
       expect(settledPayment?.razorpayPaymentId).toBe("pay_webhook_exact_001");
-      const receiptMessages = await OutboundMessage.find({
+      const receiptMessages = await DomainEventOutbox.find({
         idempotencyKey: "payment-receipt:pay_webhook_exact_001",
       });
       expect(receiptMessages).toHaveLength(1);

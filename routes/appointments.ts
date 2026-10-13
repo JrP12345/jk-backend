@@ -49,6 +49,8 @@ import {
   verifyAuditLogsIntegrity,
 } from "../controllers/queue.ts";
 import { handleQueueWebSocket, handleClinicalWebSocket } from "../notifications/websocket.ts";
+import { listPatientIdentityClaims, reviewPatientIdentityClaim, getOrganizationPatientContact, correctOrganizationPatientContact, associateOrganizationPatient } from "../controllers/patientIdentity.ts";
+import { listCrmLocations } from '../controllers/crmLocations.ts';
 
 export default async function appointmentRoutes(app: FastifyInstance) {
   const denyConsumerQueueAccess = async (req: FastifyRequest, reply: FastifyReply) => {
@@ -96,7 +98,7 @@ export default async function appointmentRoutes(app: FastifyInstance) {
   app.post("/api/appointments/:id/check-in", checkIn, checkInAppointment);
   app.put("/api/appointments/:id/cancel", manageAppointments, cancelAppointment);
   app.patch("/api/appointments/:id/reschedule", manageAppointments, rescheduleAppointment);
-  app.post("/api/appointments/:id/resend-rx", manageAppointments, resendPrescriptionNotification);
+  app.post("/api/appointments/:id/resend-rx", { ...manageAppointments, preHandler: [...manageAppointments.preHandler, checkAnyPermission('COMMUNICATE_PATIENTS')], schema: { body: { type: 'object', additionalProperties: false, required: ['clientRequestId'], properties: { clientRequestId: { type: 'string', minLength: 8, maxLength: 100 }, phone: { type: 'string', maxLength: 30 }, channel: { type: 'string', enum: ['whatsapp'] } } } } }, resendPrescriptionNotification);
   app.get("/api/appointments/follow-ups", viewAppointments, getFollowUpRegister);
   app.post("/api/appointments/:id/send-followup-reminder", manageAppointments, sendFollowUpReminder);
   app.get("/api/doctors/:doctorId/slots", viewAppointments, getDoctorSlots);
@@ -107,7 +109,31 @@ export default async function appointmentRoutes(app: FastifyInstance) {
   app.get("/api/appointments/slot-lock-status", viewAppointments, getSlotLockStatus);
 
   // Patients
+  app.get('/api/patients/association-locations', { preHandler: [authenticate, checkAnyPermission('MANAGE_PATIENTS'), checkAnyPermission('REVIEW_PATIENT_IDENTITY')], schema: { querystring: { type: 'object', additionalProperties: false, properties: { page: { type: 'integer', minimum: 1, maximum: 5000, default: 1 }, limit: { type: 'integer', minimum: 1, maximum: 200, default: 200 } } } } }, listCrmLocations);
   app.post("/api/patients", managePatients, createPatient);
+  const patientIdParams = { type: "object", required: ["id"], properties: { id: { type: "string", pattern: "^[a-fA-F0-9]{24}$" }, claimId: { type: "string", pattern: "^[a-fA-F0-9]{24}$" } } };
+  const identityClaims = { preHandler: [authenticate, requireModule("patients"), checkPermission("REVIEW_PATIENT_IDENTITY")] };
+  app.post("/api/patients/:id/associate", { preHandler: [...identityClaims.preHandler, checkPermission("MANAGE_PATIENTS")], schema: {
+    params: patientIdParams, body: { type: "object", additionalProperties: false, required: ["locationId", "verificationMethod", "reason", "clientRequestId"], properties: {
+      locationId: { type: "string", pattern: "^[a-fA-F0-9]{24}$" }, verificationMethod: { type: "string", enum: ["in_person", "patient_record_access"] },
+      identityVerified: { type: "boolean" }, reason: { type: "string", minLength: 1, maxLength: 500 }, clientRequestId: { type: "string", minLength: 8, maxLength: 100 },
+    } },
+  } }, associateOrganizationPatient);
+  app.get("/api/patients/:id/identity-claims", { ...identityClaims, schema: { params: patientIdParams, querystring: {
+    type: "object", additionalProperties: false, properties: { cursor: { type: "string", pattern: "^[a-fA-F0-9]{24}$" } },
+  } } }, listPatientIdentityClaims);
+  app.post("/api/patients/:id/identity-claims/:claimId/review", { ...identityClaims, schema: { params: { ...patientIdParams, required: ["id", "claimId"] },
+    body: { type: "object", additionalProperties: false, required: ["decision", "reason", "clientRequestId"], properties: {
+      decision: { type: "string", enum: ["approve", "reject"] }, identityVerified: { type: "boolean" }, reason: { type: "string", minLength: 1, maxLength: 500 }, clientRequestId: { type: "string", minLength: 8, maxLength: 100 },
+    } } } }, reviewPatientIdentityClaim);
+  app.get("/api/patients/:id/contact", { ...managePatients, schema: { params: patientIdParams } }, getOrganizationPatientContact);
+  app.patch("/api/patients/:id/contact", { ...managePatients, schema: { params: patientIdParams, body: {
+    type: "object", additionalProperties: false, required: ["phone", "email", "availability", "expectedRevision", "reason", "clientRequestId"], properties: {
+      phone: { type: "string", maxLength: 30 }, email: { type: "string", maxLength: 200 },
+      availability: { type: "string", enum: ["unknown", "reachable", "unreachable", "invalid"] },
+      expectedRevision: { type: "integer", minimum: 0 }, reason: { type: "string", minLength: 1, maxLength: 500 }, clientRequestId: { type: "string", minLength: 8, maxLength: 100 },
+    },
+  } } }, correctOrganizationPatientContact);
   app.get("/api/patients", viewPatients, searchPatients);
   app.get("/api/patients/:id", viewPatients, getPatientDetails);
   app.patch("/api/patients/:id", managePatients, updatePatientProfile);

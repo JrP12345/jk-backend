@@ -10,6 +10,7 @@ import { resolveWhatsAppAccount, recordWhatsAppCredentialError } from "./WhatsAp
 import { assertWhatsAppConsent, assertApprovedTemplate } from "./WhatsAppSendPolicy.ts";
 import { claimWhatsAppIntent } from "./WhatsAppLedger.ts";
 import { withConcurrencyBudget } from "../utilities/concurrencyBudget.ts";
+import { patientCommunicationPolicy, CommunicationPolicyError, type PatientCommunicationContext } from './PatientCommunicationPolicy.ts';
 
 export type SupportedTemplateId =
   | "OTP_VERIFICATION"
@@ -24,6 +25,7 @@ export type SupportedTemplateId =
   | "DISRUPTION_TRANSFER"
   | "DISRUPTION_REFUND_CONFIRMATION"
   | "QUEUE_DELAY_ALERT";
+export type CrmTemplateId = 'CRM_CONTACT_REQUEST' | 'CRM_CARE_FOLLOWUP' | 'CRM_FEEDBACK_REQUEST';
 
 export interface SendMessageOptions {
   organizationId?: string;
@@ -31,9 +33,10 @@ export interface SendMessageOptions {
   phone: string;
   patientName?: string;
   channel?: "sms" | "whatsapp";
-  templateId: SupportedTemplateId;
+  templateId: SupportedTemplateId | CrmTemplateId;
   variables: Record<string, string>;
   idempotencyKey?: string;
+  communicationContext?: PatientCommunicationContext;
 }
 
 /**
@@ -68,6 +71,12 @@ async function dispatchBounded(options: SendMessageOptions): Promise<any> {
   const phone = options.phone.trim();
   const appointmentId = options.appointmentId;
   const templateId = options.templateId;
+  if (templateId !== 'OTP_VERIFICATION') {
+    if (channel !== 'whatsapp') throw new CommunicationPolicyError('COMMUNICATION_SMS_UNSUPPORTED');
+    const context = options.communicationContext || (options.organizationId && appointmentId ? { organizationId: options.organizationId, appointmentId } : undefined);
+    if (!context) throw new CommunicationPolicyError('COMMUNICATION_CONTEXT_REQUIRED');
+    await patientCommunicationPolicy(context, 'whatsapp', phone);
+  }
 
   // ───────────────────────────────────────────────────────────────────────────
   // 1. WhatsApp Channel Processing (Meta Cloud API & Credit System)
@@ -88,7 +97,8 @@ async function dispatchBounded(options: SendMessageOptions): Promise<any> {
       APPOINTMENT_CANCELLED: "sendAppointmentCancellation", QUEUE_UPDATE: "sendTurnApproaching", QUEUE_DELAY_ALERT: "sendQueueDelayAlert",
       DOCTOR_DISRUPTION: "sendDisruptionAlert", DISRUPTION_TRANSFER: "sendDisruptionAlert", DISRUPTION_REFUND_CONFIRMATION: "sendDisruptionAlert",
     };
-    if (toggles[templateId] && (org?.whatsappConfig?.notifications as any)?.[toggles[templateId]!] === false) return null;
+    const manualTracker = options.communicationContext?.communicationAction === 'queue_tracker' && options.communicationContext.automated === false && !!options.communicationContext.actorId;
+    if (!manualTracker && toggles[templateId as SupportedTemplateId] && (org?.whatsappConfig?.notifications as any)?.[toggles[templateId as SupportedTemplateId]!] === false) throw new CommunicationPolicyError('COMMUNICATION_CHANNEL_DISABLED');
     let account: any;
     let windowOpen: boolean;
     const { templateName, parameters, messageContent } = buildMetaTemplateParams(options);
@@ -190,8 +200,8 @@ async function dispatchBounded(options: SendMessageOptions): Promise<any> {
     channel: "sms",
     templateId,
     messageContent,
-    status: smsProvider === "console" ? "sent" : "failed",
-    errorReason: smsProvider === "console" ? undefined : "SMS provider is not configured",
+    status: "failed",
+    errorReason: "SMS provider is not configured",
   });
 }
 
@@ -210,6 +220,12 @@ export function buildMetaTemplateParams(options: SendMessageOptions) {
   const patientName = options.patientName || v.patientName || "Patient";
 
   switch (options.templateId) {
+    case 'CRM_CONTACT_REQUEST':
+    case 'CRM_CARE_FOLLOWUP':
+    case 'CRM_FEEDBACK_REQUEST': {
+      const label = options.templateId === 'CRM_CARE_FOLLOWUP' ? 'care follow-up' : options.templateId === 'CRM_FEEDBACK_REQUEST' ? 'feedback' : 'contact request';
+      return { templateName: options.templateId.toLowerCase(), parameters: [v.locationName || 'Your clinic'], messageContent: `Please contact ${v.locationName || 'your clinic'} about your ${label}. Reply STOP to stop WhatsApp messages.` };
+    }
     case "OTP_VERIFICATION":
       return { templateName: process.env.META_WHATSAPP_OTP_TEMPLATE || "otp_verification", parameters: [v.otpCode || ""], messageContent: "Your verification code is " + (v.otpCode || "") };
     case "LAB_RESULTS_READY":

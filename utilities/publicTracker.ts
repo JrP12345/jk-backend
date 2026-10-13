@@ -1,10 +1,14 @@
 import crypto from "node:crypto";
 import type { FastifyRequest } from "fastify";
+import { Appointment } from '../models/Appointment.ts';
+import { decryptField } from './cryptoEnvelope.ts';
 
 /**
  * Public appointment tracking is capability-based.  Appointment identifiers are
  * database references, never credentials; only this random value authorizes a
- * public tracker request.  The database stores the SHA-256 digest only.
+ * public tracker request. Validation uses a SHA-256 digest. The original token
+ * is separately encrypted and excluded from ordinary reads, allowing authorized
+ * reissue without invalidating existing patient links or extending their expiry.
  */
 export function createTrackerCapability(): { token: string; hash: string } {
   const token = crypto.randomBytes(32).toString("base64url");
@@ -18,9 +22,32 @@ export async function issueAppointmentTrackerLink(
     trackerTokenExpiresAt?: Date | null;
     save?: () => Promise<unknown>;
   },
-  options: { ttlDays?: number; pathPrefix?: string } = {},
+  options: { ttlDays?: number; pathPrefix?: string; rotate?: boolean } = {},
 ): Promise<{ token: string; url: string }> {
   const ttlDays = options.ttlDays ?? 30;
+  if (!Number.isFinite(ttlDays) || ttlDays <= 0 || ttlDays > 90) throw new Error('Invalid tracker lifetime');
+  const pathPrefix = options.pathPrefix || '/track';
+  if (Appointment.db.readyState === 1) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const current = await Appointment.findById(appointment._id).select('+trackerTokenHash +trackerTokenCiphertext trackerTokenExpiresAt');
+      if (!current) break;
+      if (!options.rotate && current.trackerTokenCiphertext && current.trackerTokenExpiresAt && current.trackerTokenExpiresAt > new Date()) {
+        const token = decryptField(current.trackerTokenCiphertext);
+        if (hashTrackerCapability(token) !== current.trackerTokenHash) throw new Error('Tracker capability requires review');
+        appointment.trackerTokenHash = current.trackerTokenHash;
+        appointment.trackerTokenExpiresAt = current.trackerTokenExpiresAt;
+        return { token, url: `${pathPrefix}/${appointment._id}#t=${encodeURIComponent(token)}` };
+      }
+      const next = createTrackerCapability(), expiresAt = new Date(Date.now() + ttlDays * 86400000);
+      const changed = await Appointment.findOneAndUpdate({ _id: current._id, trackerTokenHash: current.trackerTokenHash || null, trackerTokenCiphertext: current.trackerTokenCiphertext || null },
+        { $set: { trackerTokenHash: next.hash, trackerTokenCiphertext: next.token, trackerTokenExpiresAt: expiresAt } }, { returnDocument: 'after' });
+      if (!changed) continue;
+      appointment.trackerTokenHash = next.hash;
+      appointment.trackerTokenExpiresAt = expiresAt;
+      return { token: next.token, url: `${pathPrefix}/${appointment._id}#t=${encodeURIComponent(next.token)}` };
+    }
+    throw new Error('Tracker source changed or is unavailable; reload before issuing a link');
+  }
   const capability = createTrackerCapability();
 
   appointment.trackerTokenHash = capability.hash;
@@ -29,7 +56,6 @@ export async function issueAppointmentTrackerLink(
     await appointment.save();
   }
 
-  const pathPrefix = options.pathPrefix || "/track";
   // Use URL fragment #t= to prevent leaking capability token in Referer headers and web logs (Finding: Step 2.8)
   const url = `${pathPrefix}/${appointment._id}#t=${encodeURIComponent(capability.token)}`;
   return { token: capability.token, url };

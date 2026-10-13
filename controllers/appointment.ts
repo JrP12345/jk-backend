@@ -1,6 +1,13 @@
+import { queuePrescriptionCommunication } from '../services/PrescriptionCommunicationService.ts';
+import { CommandError, executeRecordedCommand } from '../services/CommandReceiptService.ts';
+import { OperationReceipt } from '../models/OperationReceipt.ts';
+import { decryptField } from '../utilities/cryptoEnvelope.ts';
+import { hashTrackerCapability } from '../utilities/publicTracker.ts';
+import { CommunicationPolicyError } from '../services/PatientCommunicationPolicy.ts';
 import { withClinicalTransaction } from "../utilities/transaction.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
+import { recommendationDueDate, recordFollowUpRecommendation, recordAppointmentRecovery, resolveAppointmentRecovery } from "../services/CareFollowUpService.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { getActiveConsultationDoctorDayKey, isActiveConsultationLockConflict } from "../utilities/consultationLock.ts";
 import { Patient } from "../models/Patient.ts";
@@ -15,7 +22,7 @@ import { ClinicalNote } from "../models/ClinicalNote.ts";
 import { getEffectivePermissions, isPrivilegedRole } from "../utilities/permissions.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { successResponse, errorResponse, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
-import { sendBookingNotification } from "../utilities/notifications.ts";
+import { publishAppointmentCommunication } from '../services/AppointmentCommunicationEvents.ts';
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
 import {
   acquireSlotLock,
@@ -119,13 +126,19 @@ function isAllowedAppointmentTransition(from: string, to: string): boolean {
   return allowedAppointmentTransitions[from]?.includes(to) ?? false;
 }
 
+function bookedVisitResponse(appointment: any, trackerToken = appointment.trackerToken) {
+  return { id: appointment.id, locationId: appointment.locationId, doctorId: appointment.doctorId, patientId: appointment.patientId,
+    appointmentTime: appointment.appointmentTime, appointmentType: appointment.appointmentType, status: appointment.status,
+    tokenNumber: appointment.tokenNumber, queuePosition: appointment.queuePosition, notes: appointment.notes,
+    paymentStatus: appointment.paymentStatus, paymentAmount: appointment.paymentAmount, trackerToken };
+}
 export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) {
   try {
     const userRole = req.user!.role;
     const userId = req.user!.id;
     let orgId = req.user?.organization_id;
 
-    const body = (req.body || {}) as BookAppointmentInput;
+    const body = (req.body || {}) as BookAppointmentInput & { clientRequestId?: string };
     if (!body?.locationId || !body?.doctorId || !body?.appointmentTime || !body?.appointmentType) {
       return reply.code(400).send(errorResponse("locationId, doctorId, appointmentTime, and appointmentType are required"));
     }
@@ -136,11 +149,36 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
     }
     if (locationAccess.organizationId && (!orgId || ["patient", "family_member", "guest"].includes(userRole))) orgId = locationAccess.organizationId;
 
+    const effects: (() => Promise<void>)[] = [];
     const book = () => appointmentService.book(
       { id: userId, role: userRole, organizationId: orgId, bookingPatientId: req.user?.bookingPatientId },
       body,
-      orgId
+      orgId,
+      body.clientRequestId ? { deferAfterCommit: effect => effects.push(effect) } : undefined
     );
+    if (body.clientRequestId) {
+      if (["patient", "family_member", "guest"].includes(userRole)) throw new CommandError(403, "Use the patient portal's recorded booking workflow");
+      if (!orgId) throw new CommandError(403, "Organization booking context is required");
+      const scope = `staff-booking:${orgId}:${userId}:${String(req.user?.impersonatedBy || 'self')}`;
+      const command = await executeRecordedCommand(scope, body.clientRequestId, body, async () => {
+        effects.length = 0;
+        const currentBranch = await checkLocationAccess(req, body.locationId);
+        if (!currentBranch.allowed || currentBranch.organizationId !== orgId) throw new CommandError(403, "Booking branch authority changed");
+        const created = await book();
+        await OperationReceipt.updateOne({ scope, key: body.clientRequestId }, { $set: { responseCiphertext: JSON.stringify(bookedVisitResponse(created)) } });
+        return created.id;
+      });
+      const appointment = await Appointment.findOne({ _id: command.resultId, organizationId: orgId }).select('+trackerTokenHash');
+      if (!appointment) throw new CommandError(404, "Recorded booking is no longer available in this organization");
+      const currentBranch = await checkLocationAccess(req, String(appointment.locationId));
+      if (!currentBranch.allowed || currentBranch.organizationId !== orgId || (userRole === 'doctor' && String(appointment.doctorId) !== userId)) throw new CommandError(403, "Recorded booking is outside your current scope");
+      const receipt = await OperationReceipt.findOne({ scope, key: body.clientRequestId }).select('+responseCiphertext');
+      if (!receipt?.responseCiphertext) throw new CommandError(409, "Booking is recorded; reception must review its response");
+      const recorded = JSON.parse(decryptField(receipt.responseCiphertext));
+      const trackerToken = recorded.trackerToken && appointment.trackerTokenExpiresAt && appointment.trackerTokenExpiresAt > new Date() && hashTrackerCapability(recorded.trackerToken) === appointment.trackerTokenHash ? recorded.trackerToken : undefined;
+      if (!command.replayed) for (const effect of effects) await effect();
+      return reply.code(command.replayed ? 200 : 201).send(successResponse({ ...bookedVisitResponse(appointment, trackerToken), notes: recorded.notes }, 'Appointment booking recorded'));
+    }
     // Scope only this authorized booking to its branch; keep the signed session unchanged.
     const appointment = ["patient", "family_member", "guest"].includes(userRole)
       ? await requestContextStore.run({ ...requestContextStore.getStore(), organizationId: orgId }, book)
@@ -148,26 +186,12 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
 
     return reply.code(201).send(
       successResponse(
-        {
-          id: appointment.id,
-          locationId: appointment.locationId,
-          doctorId: appointment.doctorId,
-          patientId: appointment.patientId,
-          appointmentTime: appointment.appointmentTime,
-          appointmentType: appointment.appointmentType,
-          status: appointment.status,
-          tokenNumber: appointment.tokenNumber,
-          queuePosition: appointment.queuePosition,
-          notes: appointment.notes,
-          paymentStatus: appointment.paymentStatus,
-          paymentAmount: appointment.paymentAmount,
-          trackerToken: appointment.trackerToken
-        },
+        bookedVisitResponse(appointment),
         "Appointment booked successfully"
       )
     );
   } catch (err: any) {
-    if (err instanceof AppointmentDomainError) {
+    if (err instanceof AppointmentDomainError || err instanceof CommandError) {
       return reply.code(err.statusCode).send(errorResponse(err.message));
     }
     if (err?.code === 11000) {
@@ -304,6 +328,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
       prescriptions,
       followUpRecommended,
       followUpTimeline,
+      followUpDueAt,
       followUpNotes,
       dispatchWhatsAppRx,
       recipientPhone,
@@ -317,6 +342,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
       prescriptions?: Array<{ name: string; dosage?: string; duration?: string; frequency?: string; instructions?: string }>;
       followUpRecommended?: boolean;
       followUpTimeline?: string;
+      followUpDueAt?: string;
       followUpNotes?: string;
       dispatchWhatsAppRx?: boolean;
       recipientPhone?: string;
@@ -598,23 +624,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
       }
 
       // Calculate follow-up target date
-      let followUpDate: Date | undefined;
-      if (followUpRecommended && followUpTimeline) {
-        const target = new Date();
-        if (followUpTimeline.includes("day")) {
-          const days = parseInt(followUpTimeline, 10) || 7;
-          target.setDate(target.getDate() + days);
-        } else if (followUpTimeline.includes("week")) {
-          const weeks = parseInt(followUpTimeline, 10) || 1;
-          target.setDate(target.getDate() + weeks * 7);
-        } else if (followUpTimeline.includes("month")) {
-          const months = parseInt(followUpTimeline, 10) || 1;
-          target.setMonth(target.getMonth() + months);
-        } else {
-          target.setDate(target.getDate() + 7);
-        }
-        followUpDate = target;
-      }
+      const followUpDate = followUpRecommended ? await recommendationDueDate(String(appointment.locationId), followUpTimeline, followUpDueAt) : undefined;
 
       // The explicit focused path records the visit without fabricating a SOAP note.
       if (optionalDocumentation) {
@@ -689,59 +699,10 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
         throw noteErr;
       }
 
-      // Auto-schedule confirmed follow-up review appointment in MongoDB
-      if (followUpRecommended && followUpDate && appointment.locationId && appointment.patientId && appointment.doctorId) {
-        try {
-          const existingFollowUp = await Appointment.findOne({
-            followUpForAppointmentId: appointment._id,
-            status: { $ne: "cancelled" },
-          });
+      if (followUpRecommended) await recordFollowUpRecommendation(appointment, req.user!.id, followUpDate);
 
-          const { canCreateLocationBooking } = await import("../services/billing/SubscriptionAccess.ts");
-          if (!existingFollowUp && await canCreateLocationBooking(String(appointment.locationId))) {
-            const dateStr = locationDateKey(followUpDate, await getLocationTimezone(String(appointment.locationId)));
-            const counterKey = `token_${appointment.locationId}_${appointment.doctorId}_${dateStr}`;
-            const tokenNumber = await getNextAtomicSequence(counterKey);
-
-            const followUp = await Appointment.create({
-              organizationId: (appointment as any).organizationId || undefined,
-              locationId: appointment.locationId,
-              doctorId: appointment.doctorId,
-              patientId: appointment.patientId,
-              appointmentTime: followUpDate,
-              appointmentType: "walk-in",
-              status: "confirmed",
-              tokenNumber,
-              queuePosition: tokenNumber,
-              notes: followUpNotes || `Recommended Follow-up Review (${followUpTimeline})`,
-              followUpRecommended: true,
-              followUpForAppointmentId: appointment._id,
-              paymentStatus: "unpaid",
-            });
-
-            (appointment as any).followUpAppointmentId = followUp._id;
-            await appointment.save();
-          } else if (existingFollowUp) {
-            (appointment as any).followUpAppointmentId = existingFollowUp._id;
-            await appointment.save();
-          }
-        } catch (followUpErr) {
-          throw followUpErr;
-        }
-      }
-
+      if (dispatchWhatsAppRx !== false) await publishAppointmentCommunication(appointment, { action: 'prescription', actorId: req.user!.id, intendedPhone: recipientPhone?.trim() || undefined });
       afterCommit.push(async () => {
-      if (dispatchWhatsAppRx !== false) {
-        const { sendConsultationCompletedNotification } = await import("../utilities/notifications.ts");
-        await sendConsultationCompletedNotification(appointment._id, {
-          phone: recipientPhone?.trim() || undefined,
-          channel: "whatsapp",
-        });
-        (appointment as any).rxDispatchedAt = new Date();
-        if (recipientPhone) (appointment as any).rxDispatchPhone = recipientPhone.trim();
-        await appointment.save();
-      }
-
       // Real-time pharmacy broadcast for dispensary desk
       if (createdPrescriptionIds.length > 0 && appointment.locationId) {
         try {
@@ -785,9 +746,10 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
     }
 
     if (status === "cancelled") {
-      afterCommit.push(() => sendBookingNotification(appointment._id, "cancelled"));
+      await publishAppointmentCommunication(appointment, { action: 'cancelled', actorId: req.user!.id });
       await Invoice.updateMany({ appointmentId: appointment._id, status: "unpaid" }, { status: "cancelled" });
     }
+    if (["cancelled", "no-show"].includes(status)) await recordAppointmentRecovery(appointment, req.user!.id, status);
 
     await AuditLog.create({
       userId: req.user!.id,
@@ -836,6 +798,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
     return reply.code(200).send(successResponse(appointment, "Appointment status updated successfully"));
   } catch (err) {
     console.error("updateAppointmentStatus error:", err);
+    if (err instanceof AppointmentDomainError) return reply.code(err.statusCode).send(errorResponse(err.message));
     if ((err as any)?.statusCode === 409) return reply.code(409).send(errorResponse((err as Error).message));
     if (isActiveConsultationLockConflict(err)) {
       return reply.code(409).send(errorResponse("Doctor already has an active consultation. Complete it before starting another.", "ACTIVE_CONSULTATION_IN_PROGRESS"));
@@ -868,40 +831,15 @@ export async function resendPrescriptionNotification(req: FastifyRequest, reply:
       return reply.code(400).send(errorResponse("channel must be whatsapp or sms"));
     }
 
-    const { sendConsultationCompletedNotification } = await import("../utilities/notifications.ts");
-    await sendConsultationCompletedNotification(appointment._id, {
-      phone: phone?.trim(),
-      channel,
-    });
-
-    (appointment as any).rxDispatchedAt = new Date();
-    if (phone) (appointment as any).rxDispatchPhone = phone.trim();
-    await appointment.save();
-
-    const { AuditLog } = await import("../models/AuditLog.ts");
-    await AuditLog.create({
-      organizationId: (appointment as any).organizationId,
-      userId: req.user!.id,
-      category: "CLINICAL_WRITE",
-      action: "PRESCRIPTION_NOTIFICATION_RESENT",
-      targetId: appointment._id,
-      targetModel: "Appointment",
-      details: {
-        tokenNumber: appointment.tokenNumber,
-        channel,
-        phone: phone || "patient_registered_phone",
-      },
-    });
-
-    return reply.code(200).send(
-      successResponse(
-        { appointmentId: appointment._id, channel, dispatchedAt: (appointment as any).rxDispatchedAt },
-        `Digital e-Prescription successfully dispatched via ${channel.toUpperCase()}`
-      )
-    );
+    if (channel !== 'whatsapp') return reply.code(400).send(errorResponse('Prescription messaging supports WhatsApp only'));
+    const { clientRequestId } = req.body as { clientRequestId: string };
+    const result = await queuePrescriptionCommunication({ appointmentId: appointment.id, organizationId: String(appointment.organizationId), actorId: req.user!.id, clientRequestId, phone: phone?.trim() });
+    return reply.code(result.replayed ? 200 : 202).send(successResponse(result, 'Prescription message queued or restored; delivery is not confirmed'));
   } catch (err: any) {
-    console.error("resendPrescriptionNotification error:", err);
-    return reply.code(500).send(errorResponse(err.message || "Failed to resend prescription notification"));
+    if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
+    if (err instanceof CommunicationPolicyError) return reply.code(409).send(errorResponse('Prescription message blocked: review current recipient, consent and preferences', { reason: err.reason }));
+    req.log.error({ err }, 'Prescription communication queue failed');
+    return reply.code(503).send(errorResponse('Prescription message could not be confirmed. Retry the same submitted request.'));
   }
 }
 
@@ -941,6 +879,7 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
     if (newDateObj < new Date()) {
       return reply.code(400).send(errorResponse("Cannot reschedule an appointment to a past time"));
     }
+    if (newDateObj.getTime() === appointment.appointmentTime.getTime()) return reply.send(successResponse(appointment, "Existing rescheduled booking restored"));
 
     // Validate slot lock anti-double booking (only in time_slot mode)
     const rescheduleAssignment = await DoctorAssignment.findOne({ doctorId: appointment.doctorId, locationId: appointment.locationId, isActive: true });
@@ -982,7 +921,7 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
       appointmentTime: newDateObj,
       tokenNumber,
       queuePosition: tokenNumber,
-      status: appointment.status === "pending_payment" ? "pending_payment" : "confirmed",
+      status: originalStatus === "pending_payment" ? "pending_payment" : "confirmed",
     };
     if (reason) {
       rescheduleUpdate.notes = appointment.notes
@@ -991,7 +930,7 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
     }
 
     const rescheduledAppointment = await Appointment.findOneAndUpdate(
-      { _id: appointment._id, status: originalStatus },
+      { _id: appointment._id, organizationId: appointment.organizationId, status: originalStatus, appointmentTime: new Date(oldTimeStr) },
       { $set: rescheduleUpdate },
       { returnDocument: "after" },
     );
@@ -999,6 +938,8 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
       throw new AppointmentDomainError("Appointment was changed by another request. Refresh and try again.", 409);
     }
     appointment = rescheduledAppointment;
+    await resolveAppointmentRecovery(appointment, userId, "rescheduled", appointment.id);
+    await publishAppointmentCommunication(appointment, { action: 'rescheduled', actorId: ['patient', 'family_member', 'guest'].includes(req.user!.role) ? undefined : userId });
 
     await AuditLog.create({
       userId,
@@ -1015,7 +956,6 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
       forceReleaseSlotLock(lockValidation.lockKey).catch(() => {});
     }
 
-    sendBookingNotification(appointment._id, "rescheduled").catch(() => {});
 
     return reply.code(200).send(successResponse(appointment, `Appointment successfully rescheduled to ${newDateObj.toISOString()}`));
   } catch (err: any) {
@@ -1073,36 +1013,39 @@ export async function cancelAppointment(req: FastifyRequest, reply: FastifyReply
     if (!(await ensureAppointmentObjectAccess(req, reply, appointment, "patient-self-service"))) return;
 
     const cancellableStatuses = ["pending_payment", "pending", "confirmed", "checked-in", "standby", "disruption_triage"];
+    if (appointment.status === "cancelled") return reply.send(successResponse(appointment, "Existing cancellation restored"));
     if (!cancellableStatuses.includes(appointment.status)) {
       return reply.code(409).send(errorResponse(`Cannot cancel appointment already in '${appointment.status}' status`));
     }
 
     const cancellationUpdate: Record<string, unknown> = { status: "cancelled" };
+    const originalStatus = appointment.status;
+    const originalId = appointment._id, organizationId = appointment.organizationId;
     if (reason) cancellationUpdate.notes = `Cancelled by patient: ${reason}`;
-    const cancelledAppointment = await Appointment.findOneAndUpdate(
-      { _id: appointment._id, status: appointment.status },
-      { $set: cancellationUpdate },
-      { returnDocument: "after" },
-    );
-    if (!cancelledAppointment) {
-      return reply.code(409).send(errorResponse("Appointment was changed by another request. Refresh and try again."));
-    }
-    appointment = cancelledAppointment;
-
-    sendBookingNotification(appointment._id, "cancelled").catch((err) => console.error("Cancellation notification failed:", err));
-
-    await AuditLog.create({
+    await withClinicalTransaction(async () => {
+      const cancelledAppointment = await Appointment.findOneAndUpdate(
+        { _id: originalId, organizationId, status: originalStatus },
+        { $set: cancellationUpdate }, { returnDocument: "after" });
+      if (!cancelledAppointment) throw new AppointmentDomainError("Appointment changed. Reload before cancelling.", 409);
+      appointment = cancelledAppointment;
+      await Invoice.updateMany({ appointmentId: appointment._id, organizationId: appointment.organizationId, status: "unpaid" }, { $set: { status: "cancelled" } });
+      await recordAppointmentRecovery(appointment, req.user!.id, "cancelled");
+      await publishAppointmentCommunication(appointment, { action: 'cancelled', actorId: ['patient', 'family_member', 'guest'].includes(req.user!.role) ? undefined : req.user!.id });
+      await AuditLog.create({
       userId: req.user!.id,
       organizationId: appointment.organizationId || undefined,
       action: "PATIENT_CANCEL_APPOINTMENT",
       targetId: appointment._id,
       targetModel: "Appointment",
       details: { reason: reason || "Self-service cancellation" }
+      });
     });
+    appointment.$session(null);
 
     return reply.code(200).send(successResponse(appointment, "Appointment cancelled successfully"));
   } catch (err) {
     console.error("cancelAppointment error:", err);
+    if (err instanceof AppointmentDomainError) return reply.code(err.statusCode).send(errorResponse(err.message));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1128,6 +1071,15 @@ export async function getAppointmentById(req: FastifyRequest, reply: FastifyRepl
     }
 
     if (!(await ensureAppointmentObjectAccess(req, reply, appointment, "view"))) return;
+
+    if ((req.query as { view?: string }).view === "administrative") {
+      return reply.code(200).send(successResponse({ id: appointment.id,
+        status: appointment.status, paymentStatus: appointment.paymentStatus,
+        tokenNumber: appointment.tokenNumber, appointmentTime: appointment.appointmentTime,
+        locationName: (appointment.locationId as any)?.name || "Location",
+        doctorName: (appointment.doctorId as any)?.name || "Doctor",
+      }));
+    }
 
     const { appointmentReviewState } = await import("../utilities/appointmentReview.ts");
     return reply.code(200).send(successResponse({ ...appointment.toJSON(), reviewState: appointmentReviewState(appointment) }));

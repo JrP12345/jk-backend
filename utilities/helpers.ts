@@ -26,22 +26,23 @@ export function verifyAccessToken(token: string): JwtPayload {
   return jwt.verify(token, SERVICE_PUBLIC_KEY, { algorithms: ["RS256"] }) as JwtPayload;
 }
 
-export function generateTwoFactorChallenge(userId: string): string {
-  return jwt.sign({ userId, purpose: "login_2fa" }, SERVICE_PRIVATE_KEY, {
+export function generateTwoFactorChallenge(userId: string, authVersion = 1): string {
+  return jwt.sign({ userId, authVersion, purpose: "login_2fa" }, SERVICE_PRIVATE_KEY, {
     algorithm: "RS256",
     expiresIn: "10m",
     keyid: KEY_ID,
   });
 }
 
-export function verifyTwoFactorChallenge(token: string): { userId: string; purpose: "login_2fa" } {
-  const payload = jwt.verify(token, SERVICE_PUBLIC_KEY, { algorithms: ["RS256"] }) as { userId?: string; purpose?: string };
-  if (!payload.userId || payload.purpose !== "login_2fa") throw new Error("Invalid two-factor challenge");
-  return { userId: payload.userId, purpose: "login_2fa" };
+export function verifyTwoFactorChallenge(token: string): { userId: string; authVersion: number; purpose: "login_2fa" } {
+  const payload = jwt.verify(token, SERVICE_PUBLIC_KEY, { algorithms: ["RS256"] }) as { userId?: string; authVersion?: number; purpose?: string };
+  if (!payload.userId || payload.purpose !== "login_2fa" || !Number.isInteger(payload.authVersion) || payload.authVersion! < 1) throw new Error("Invalid two-factor challenge");
+  return { userId: payload.userId, authVersion: payload.authVersion!, purpose: "login_2fa" };
 }
 
 
 import { User } from "../models/User.ts";
+import { OrgMember } from "../models/OrgMember.ts";
 import { revokeSession } from "./sessionResolver.ts";
 
 /**
@@ -57,6 +58,7 @@ export async function createRefreshTokenDetails(
     userAgent?: string;
     deviceName?: string;
     organizationId?: string;
+    workspaceRole?: string;
     isGuest?: boolean;
     bookingPatientId?: string;
     isRoot?: boolean;
@@ -116,10 +118,16 @@ export async function createRefreshTokenDetails(
   const familyId = meta?.familyId || crypto.randomUUID();
   const generation = meta?.generation || 1;
   const effectiveAuthVersion = userAuthVersion || 1;
+  const workspaceMembership = meta?.organizationId && !isRoot && !meta?.isGuest &&
+    !["patient", "family_member"].includes(userRole)
+    ? await OrgMember.findOne({ userId, organizationId: meta.organizationId }).select("role accessRevision").lean()
+    : undefined;
 
   const sessionRecord = await RefreshToken.create({
     userId,
     organizationId: meta?.organizationId || undefined,
+    workspaceRole: meta?.workspaceRole || workspaceMembership?.role,
+    workspaceAccessRevision: workspaceMembership ? workspaceMembership.accessRevision || 0 : undefined,
     familyId,
     generation,
     authVersion: effectiveAuthVersion,

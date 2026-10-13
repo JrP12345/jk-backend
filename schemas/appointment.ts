@@ -6,6 +6,7 @@ export const bookAppointmentSchema = {
     type: "object",
     required: ["locationId", "doctorId", "appointmentTime", "appointmentType"],
     properties: {
+      clientRequestId: { type: "string", pattern: "^[a-zA-Z0-9_-]{8,100}$" },
       locationId: { type: "string", pattern: objectIdPattern },
       doctorId: { type: "string", pattern: objectIdPattern },
       appointmentTime: { type: "string", minLength: 1 },
@@ -62,6 +63,7 @@ export const updateAppointmentStatusSchema = {
       },
       followUpRecommended: { type: "boolean" },
       followUpTimeline: { type: "string" },
+      followUpDueAt: { type: "string", format: "date-time" },
       followUpNotes: { type: "string" },
       symptoms: { type: "string" },
       diagnosis: { type: "string" },

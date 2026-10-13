@@ -1,3 +1,4 @@
+import { grantFixtureBranch } from './helpers/locationEssentialsSetup.ts';
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import {
@@ -29,6 +30,7 @@ describe("Clinic Essentials Cycle 6 — location_manager Desk Booking", () => {
       role: "location_manager",
     });
 
+    await grantFixtureBranch(managerEmail, locationId);
     managerCookies = await loginTestUser(app, managerEmail);
 
     const patientRes = await app.inject({
@@ -40,9 +42,10 @@ describe("Clinic Essentials Cycle 6 — location_manager Desk Booking", () => {
         phone: `9111${Date.now().toString().slice(-6)}`,
         dob: "1990-02-02",
         gender: "male",
-        ignoreDuplicate: true,
+        locationId,
       },
     });
+    expect(patientRes.statusCode, patientRes.body).toBe(201);
     patientId = JSON.parse(patientRes.body).data.id;
   });
 

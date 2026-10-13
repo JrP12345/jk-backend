@@ -6,6 +6,8 @@ import { Organization } from "../models/Organization.ts";
 import { Location } from "../models/Location.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { Receptionist } from "../models/Receptionist.ts";
+import { DoctorAssignment } from "../models/DoctorAssignment.ts";
+import { providerFixtureSlug } from "./helpers/providerFixture.ts";
 
 describe("Onboarding & Clinic API Integration Tests", () => {
   const adminEmail = "owner@test.com";
@@ -140,6 +142,58 @@ describe("Onboarding & Clinic API Integration Tests", () => {
     });
 
     expect(response.statusCode).toBe(403);
+  });
+
+  it("links an admin profile with its fee model while retaining the admin role and requiring explicit public assignment", async () => {
+    const admin = await User.findOne({ email: adminEmail });
+    const linked = await app.inject({ method: "POST", url: "/api/onboarding/admin/enable-doctor-profile", headers: { cookie: adminCookies.join("; ") }, payload: { specialization: "General Physician", qualification: "MBBS", fees: 650, feeType: "post_consultation" } });
+    expect(linked.statusCode, linked.body).toBe(200);
+    expect(linked.json().data).toMatchObject({ userId: admin!.id, fees: 650, feeType: "post_consultation" });
+    expect((await User.findById(admin!._id))!.role).toBe("admin");
+    expect(await DoctorAssignment.countDocuments({ doctorId: admin!._id })).toBe(0);
+    const staff = await app.inject({ method: "GET", url: "/api/onboarding/staff", headers: { cookie: adminCookies.join("; ") } });
+    expect(staff.json().data.doctors).toContainEqual(expect.objectContaining({ id: admin!.id, fees: 650, feeType: "post_consultation" }));
+    const slug = await providerFixtureSlug("location", locationId);
+    const before = await app.inject({ method: "GET", url: `/api/public/locations/${slug}` });
+    expect(before.json().data.doctors.some((doctor: { id: string }) => doctor.id === admin!.id)).toBe(false);
+    const assigned = await app.inject({ method: "POST", url: "/api/onboarding/doctors/assignments", headers: { cookie: adminCookies.join("; ") }, payload: { doctorId: admin!.id, locationId, fees: 650, feeType: "post_consultation", workingHours: JSON.stringify({ Monday: [{ start: "09:00", end: "17:00" }] }) } });
+    expect(assigned.statusCode, assigned.body).toBe(201);
+    const after = await app.inject({ method: "GET", url: `/api/public/locations/${slug}` });
+    expect(after.json().data.doctors).toContainEqual(expect.objectContaining({ id: admin!.id, fees: 650, feeType: "post_consultation" }));
+  });
+
+  it("persists a free admin profile and returns the same fee model when setup resumes", async () => {
+    const response = await app.inject({ method: "POST", url: "/api/onboarding/admin/enable-doctor-profile", headers: { cookie: adminCookies.join("; ") }, payload: { specialization: "General Physician", feeType: "free", fees: 500 } });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().data).toMatchObject({ feeType: "free", fees: 0 });
+    const staff = await app.inject({ method: "GET", url: "/api/onboarding/staff", headers: { cookie: adminCookies.join("; ") } });
+    expect(staff.json().data.doctors).toContainEqual(expect.objectContaining({ feeType: "free", fees: 0 }));
+    const legacy = await app.inject({ method: "POST", url: "/api/onboarding/admin/enable-doctor-profile", headers: { cookie: adminCookies.join("; ") }, payload: { specialization: "General Physician" } });
+    expect(legacy.statusCode, legacy.body).toBe(200);
+    expect(legacy.json().data.feeType).toBe("free");
+  });
+
+  it("rejects invalid admin profile fees without overwriting the saved profile", async () => {
+    const admin = await User.findOne({ email: adminEmail });
+    const before = await Doctor.findOne({ userId: admin!._id }).lean();
+    for (const payload of [{ feeType: "unknown" }, { fees: -1 }, { fees: "invalid" }]) {
+      const response = await app.inject({ method: "POST", url: "/api/onboarding/admin/enable-doctor-profile", headers: { cookie: adminCookies.join("; ") }, payload: { specialization: "Invalid replacement", ...payload } });
+      expect(response.statusCode, response.body).toBe(400);
+    }
+    expect(await Doctor.findOne({ userId: admin!._id }).lean()).toEqual(before);
+  });
+
+  it("retains fee models when a new doctor is created and edited, and rejects invalid assignment fee types", async () => {
+    const created = await app.inject({ method: "POST", url: "/api/onboarding/doctor", headers: { cookie: adminCookies.join("; ") }, payload: { name: "Free Clinic Doctor", email: "free-doctor@test.com", password: "Password123!", specialization: "General Physician", fees: 500, feeType: "free" } });
+    expect(created.statusCode, created.body).toBe(201);
+    const userId = created.json().data.id;
+    expect(await Doctor.findOne({ userId }).lean()).toMatchObject({ feeType: "free", fees: 0 });
+    const updated = await app.inject({ method: "PUT", url: `/api/onboarding/doctor/${userId}`, headers: { cookie: adminCookies.join("; ") }, payload: { name: "Free Clinic Doctor", specialization: "General Physician", feeType: "post_consultation", fees: 200 } });
+    expect(updated.statusCode, updated.body).toBe(200);
+    expect(await Doctor.findOne({ userId }).lean()).toMatchObject({ feeType: "post_consultation", fees: 200 });
+    const invalid = await app.inject({ method: "POST", url: "/api/onboarding/doctors/assignments", headers: { cookie: adminCookies.join("; ") }, payload: { doctorId: userId, locationId, workingHours: "{}", fees: 200, feeType: "unsupported" } });
+    expect(invalid.statusCode, invalid.body).toBe(400);
+    expect(await DoctorAssignment.countDocuments({ doctorId: userId })).toBe(0);
   });
 
   it("should allow admin to fetch settings and update settings of organization", async () => {
