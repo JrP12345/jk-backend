@@ -34,7 +34,7 @@ const soapTemplateSchema = new Schema<ISoapTemplate>(
     plan: { type: String, default: "" },
     createdBy: { type: Schema.Types.ObjectId, ref: "User" },
     organizationId: { type: Schema.Types.ObjectId, ref: "Organization", index: true },
-    isPublic: { type: Boolean, default: true },
+    isPublic: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

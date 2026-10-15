@@ -72,6 +72,8 @@ const ClinicalNoteSchema = new Schema({
 }, { timestamps: true });
 
 ClinicalNoteSchema.index({ organizationId: 1, patientId: 1, isLatest: 1 });
+// Default history pages include all versions, ordered by time and cursor ID.
+ClinicalNoteSchema.index({ organizationId: 1, patientId: 1, createdAt: -1, _id: -1 }, { name: "clinical_history_by_patient" });
 ClinicalNoteSchema.index({ encounterId: 1, version: -1 });
 
 // Apply automatic multi-tenant scoping

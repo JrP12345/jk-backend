@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate, checkPermission, checkAnyPermissionOrRoles } from "../middleware/auth.ts";
+import { authenticate, checkPermission, checkAnyPermission, checkAnyPermissionOrRoles } from "../middleware/auth.ts";
 import { requireModule } from "../middleware/moduleGuard.ts";
 import { getPatientTimelineController } from "../controllers/patient.ts";
 import { requestPatientRecordOtp, verifyPatientRecordOtp } from "../controllers/patientRecordAccess.ts";
@@ -55,14 +55,18 @@ export default async function clinicalRoutes(app: FastifyInstance) {
   app.post("/api/prescriptions/:id/amend", manageNotes, amendPrescriptionController);
 
   // Vital Signs & NEWS2 Observation Analytics
-  app.post("/api/encounters/:id/evaluate-score", viewEhr, evaluateEncounterScoreController);
+  app.post("/api/encounters/:id/evaluate-score", {
+    preHandler: [authenticate, requireModule("consultations"), checkAnyPermission("EVALUATE_NEWS2", "MANAGE_EHR", "MANAGE_CLINICAL_NOTES")],
+  }, evaluateEncounterScoreController);
   app.get("/api/encounters/:id/scores", viewEhr, getEncounterScoresController);
   app.post("/api/alerts/:id/acknowledge", manageNotes, acknowledgeAlertController);
   app.get("/api/patients/:id/vital-trends", viewEhr, getPatientVitalTrendsController);
 
   // 1-Click OPD Clinical Presets & Custom Templates
   const { getOpdTemplates, createOpdTemplate, deleteOpdTemplate } = await import("../controllers/opdTemplate.ts");
-  app.get("/api/clinical/opd-templates", { preHandler: [authenticate] }, getOpdTemplates);
-  app.post("/api/clinical/opd-templates", { preHandler: [authenticate] }, createOpdTemplate);
-  app.delete("/api/clinical/opd-templates/:id", { preHandler: [authenticate] }, deleteOpdTemplate);
+  const viewTemplates = { preHandler: [authenticate, requireModule("consultations"), checkAnyPermission("VIEW_EHR", "MANAGE_EHR", "MANAGE_CLINICAL_NOTES")] };
+  const manageTemplates = { preHandler: [authenticate, requireModule("consultations"), checkAnyPermission("MANAGE_EHR", "MANAGE_CLINICAL_NOTES")] };
+  app.get("/api/clinical/opd-templates", viewTemplates, getOpdTemplates);
+  app.post("/api/clinical/opd-templates", manageTemplates, createOpdTemplate);
+  app.delete("/api/clinical/opd-templates/:id", manageTemplates, deleteOpdTemplate);
 }

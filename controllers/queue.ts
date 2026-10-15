@@ -1204,11 +1204,9 @@ export async function getQueueDelayStatus(req: FastifyRequest, reply: FastifyRep
       doctorId,
       appointmentTime: { $gte: startOfDay, $lte: endOfDay }
     })
-    .populate({
-      path: "patientId",
-      populate: { path: "userId", select: "name email phone" }
-    })
-    .sort({ queuePosition: 1, tokenNumber: 1 });
+    .select("patientId status tokenNumber queuePosition appointmentTime delayNotifiedAt lastNotifiedDelayMinutes")
+    .sort({ queuePosition: 1, tokenNumber: 1 })
+    .lean();
 
     const inConsultationAppt = appointments.find((a: any) => a.status === "in-consultation");
     let inConsultationRemainingMinutes = 0;
@@ -1225,7 +1223,7 @@ export async function getQueueDelayStatus(req: FastifyRequest, reply: FastifyRep
 
     let waitingAheadCount = 0;
     const now = new Date();
-    const delayedPatients: any[] = [];
+    const delayedCandidates: any[] = [];
 
     for (const appt of appointments) {
       if (appt.status === "pending" || appt.status === "confirmed" || appt.status === "checked-in") {
@@ -1235,27 +1233,27 @@ export async function getQueueDelayStatus(req: FastifyRequest, reply: FastifyRep
         const delayMinutes = Math.round((projectedStartTime.getTime() - scheduledTime.getTime()) / (60 * 1000));
 
         if ((appt.status === "pending" || appt.status === "confirmed") && delayMinutes >= 20) {
-          const patientUser = (appt.patientId as any)?.userId;
-          const phone = patientUser?.phone || (appt.patientId as any)?.phone;
-          const patientName = patientUser?.name || (appt.patientId as any)?.name || "Patient";
-          delayedPatients.push({
-            appointmentId: appt._id.toString(),
-            tokenNumber: appt.tokenNumber,
-            patientName,
-            phone,
-            scheduledTime: scheduledTime.toISOString(),
-            projectedStartTime: projectedStartTime.toISOString(),
-            delayMinutes,
-            revisedArrivalTime: projectedStartTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-            delayNotifiedAt: appt.delayNotifiedAt,
-            lastNotifiedDelayMinutes: appt.lastNotifiedDelayMinutes,
-          });
+          delayedCandidates.push({ ...appt, projectedStartTime, delayMinutes });
         }
         waitingAheadCount++;
       }
     }
 
-    const maxDelayMinutes = delayedPatients.length > 0 ? Math.max(...delayedPatients.map(p => p.delayMinutes)) : 0;
+    // Load contact details only for booked patients who actually need a delay alert.
+    const populatedCandidates = delayedCandidates.length ? await Appointment.populate(delayedCandidates, {
+      path: "patientId", select: "name phone userId",
+      populate: { path: "userId", select: "name phone" },
+    }) : [];
+    const delayedPatients = populatedCandidates.map((appt: any) => ({
+      appointmentId: appt._id.toString(), tokenNumber: appt.tokenNumber,
+      patientName: appt.patientId?.userId?.name || appt.patientId?.name || "Patient",
+      phone: appt.patientId?.userId?.phone || appt.patientId?.phone,
+      scheduledTime: new Date(appt.appointmentTime).toISOString(),
+      projectedStartTime: appt.projectedStartTime.toISOString(), delayMinutes: appt.delayMinutes,
+      revisedArrivalTime: appt.projectedStartTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      delayNotifiedAt: appt.delayNotifiedAt, lastNotifiedDelayMinutes: appt.lastNotifiedDelayMinutes,
+    }));
+    const maxDelayMinutes = delayedPatients.length > 0 ? Math.max(...delayedPatients.map((p: any) => p.delayMinutes)) : 0;
 
     return reply.code(200).send(successResponse({
       isDelayed: delayedPatients.length > 0,

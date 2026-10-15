@@ -10,7 +10,8 @@ export async function getDailyDashboard(req: FastifyRequest, reply: FastifyReply
   const scope = resolveAuthorizedOrganizationScope(req);
   if (!scope.allowed || !scope.organizationId) return reply.code(403).send(errorResponse("Organization context is required"));
   if (["patient", "family_member", "guest"].includes(req.user!.role)) return reply.code(403).send(errorResponse("Staff access required"));
-  const { startDate, endDate, locationId, doctorId } = req.query as { startDate?: string; endDate?: string; locationId?: string; doctorId?: string };
+  const { startDate, endDate, locationId, doctorId, includeAppointments } = req.query as { startDate?: string; endDate?: string; locationId?: string; doctorId?: string; includeAppointments?: string };
+  if (includeAppointments !== undefined && !["true", "false"].includes(includeAppointments)) return reply.code(400).send(errorResponse("includeAppointments must be true or false"));
   if (doctorId && !mongoose.Types.ObjectId.isValid(doctorId)) return reply.code(400).send(errorResponse("Invalid doctor ID"));
   const start = new Date(startDate || "");
   const end = new Date(endDate || "");
@@ -25,7 +26,8 @@ export async function getDailyDashboard(req: FastifyRequest, reply: FastifyReply
   else if (doctorId) appointmentMatch.doctorId = new mongoose.Types.ObjectId(doctorId);
   const [statuses, recentAppointments] = await Promise.all([
     Appointment.aggregate([{ $match: appointmentMatch }, { $group: { _id: "$status", count: { $sum: 1 } } }]),
-    Appointment.find(appointmentMatch).populate("locationId", "name city address").populate("doctorId", "name specialization").populate({ path: "patientId", populate: { path: "userId", select: "name phone" } }).sort({ appointmentTime: 1 }).limit(100).lean(),
+    // Summary-only consumers already fetch a paginated appointment list.
+    includeAppointments === "false" ? Promise.resolve([]) : Appointment.find(appointmentMatch).populate("locationId", "name city address").populate("doctorId", "name specialization").populate({ path: "patientId", populate: { path: "userId", select: "name phone" } }).sort({ appointmentTime: 1 }).limit(100).lean(),
   ]);
   const byStatus = Object.fromEntries(statuses.map((row) => [row._id, row.count]));
   let collections = 0, outstanding = 0;

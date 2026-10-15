@@ -17,7 +17,7 @@ export class ObservationAnalyticsService {
     algorithmId = "NEWS2",
     recordedBy?: string
   ): Promise<{ scoreDoc: any; alertDoc: any | null }> {
-    let observations = await Observation.find({ encounterId }).lean();
+    const observations = await Observation.find({ encounterId, organizationId, locationId, patientId }).lean();
 
     const obsInputs = observations.map((o) => ({
       id: o._id.toString(),
@@ -73,12 +73,13 @@ export class ObservationAnalyticsService {
   /**
    * Aggregates time-series vital sign trends for patient charting.
    */
-  static async getPatientVitalTrends(patientId: string, days = 30) {
+  static async getPatientVitalTrends(patientId: string, days: number, staffScope: { organizationId: string; locationIds: string[] } | null) {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - days);
 
     const obs = await Observation.find({
       patientId,
+      ...(staffScope ? { organizationId: staffScope.organizationId, locationId: { $in: staffScope.locationIds } } : {}),
       recordedAt: { $gte: cutoff },
     })
       .sort({ recordedAt: 1 })

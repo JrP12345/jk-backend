@@ -1,11 +1,12 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import mongoose from "mongoose";
 import { Encounter } from "../models/Encounter.ts";
 import { ObservationScore } from "../models/ObservationScore.ts";
 import { ObservationAlert } from "../models/ObservationAlert.ts";
 import { ObservationAnalyticsService } from "../services/ObservationAnalyticsService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { Patient } from "../models/Patient.ts";
-import { checkOperationalRecordAccess, checkPatientAccess, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+import { checkOperationalRecordAccess, checkPatientAccess, getRequestLocationIds, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));
@@ -15,6 +16,7 @@ export async function evaluateEncounterScoreController(req: FastifyRequest, repl
   try {
     const { id: encounterId } = req.params as { id: string };
     const { algorithmId = "NEWS2" } = (req.body || {}) as { algorithmId?: string };
+    if (!mongoose.isValidObjectId(encounterId)) return reply.code(400).send(errorResponse("Invalid encounter ID"));
 
     const encounter = await Encounter.findById(encounterId).lean();
     if (!encounter) return reply.code(404).send(errorResponse("Encounter not found"));
@@ -47,11 +49,16 @@ export async function evaluateEncounterScoreController(req: FastifyRequest, repl
 export async function getEncounterScoresController(req: FastifyRequest, reply: FastifyReply) {
   try {
     const { id: encounterId } = req.params as { id: string };
+    if (!mongoose.isValidObjectId(encounterId)) return reply.code(400).send(errorResponse("Invalid encounter ID"));
     const encounter = await Encounter.findById(encounterId).lean();
     if (!encounter) return reply.code(404).send(errorResponse("Encounter not found"));
+    if (["patient", "family_member"].includes(req.user!.role)) {
+      const patientAccess = await checkPatientAccess(req, encounter.patientId.toString());
+      if (!patientAccess.allowed) return reply.code(404).send(errorResponse("Encounter not found"));
+    }
     const encounterAccess = await checkOperationalRecordAccess(req, encounter);
     if (!encounterAccess.allowed) return sendTenantError(reply, encounterAccess);
-    const scores = await ObservationScore.find({ encounterId }).sort({ evaluatedAt: -1 }).lean();
+    const scores = await ObservationScore.find({ encounterId, organizationId: encounter.organizationId, patientId: encounter.patientId }).sort({ evaluatedAt: -1 }).lean();
     return reply.code(200).send(successResponse(scores));
   } catch (err) {
     console.error("getEncounterScoresController error:", err);
@@ -109,7 +116,16 @@ export async function getPatientVitalTrendsController(req: FastifyRequest, reply
       if (!patient) return reply.code(404).send(errorResponse("Patient not found"));
     }
 
-    const trends = await ObservationAnalyticsService.getPatientVitalTrends(patientId, daysNum);
+    let staffScope: { organizationId: string; locationIds: string[] } | null = null;
+    if (!["root", "patient", "family_member"].includes(req.user!.role)) {
+      const scope = resolveAuthorizedOrganizationScope(req);
+      if (!scope.allowed) return sendTenantError(reply, scope);
+      if (!scope.organizationId) return reply.code(403).send(errorResponse("Organization context required"));
+      staffScope = { organizationId: scope.organizationId, locationIds: (await getRequestLocationIds(req) || []).map(String) };
+    }
+    // Portal ownership was checked above; only the patient/family and root may
+    // receive the authorized patient's history across organizations.
+    const trends = await ObservationAnalyticsService.getPatientVitalTrends(patientId, daysNum, staffScope);
     return reply.code(200).send(successResponse(trends));
   } catch (err) {
     console.error("getPatientVitalTrendsController error:", err);

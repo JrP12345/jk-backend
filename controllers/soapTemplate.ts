@@ -12,7 +12,9 @@ export async function getSoapTemplates(req: FastifyRequest, reply: FastifyReply)
     const orgId = scope.organizationId;
 
     const filter: any = {
-      $or: [{ isPublic: true }],
+      // Only the platform catalog is shared; a legacy public flag on a tenant
+      // template must not make that organization's clinical text global.
+      $or: [{ isPublic: true, organizationId: null }],
     };
 
     if (orgId) {
@@ -39,6 +41,9 @@ export async function createSoapTemplate(req: FastifyRequest, reply: FastifyRepl
     const orgId = scope.organizationId;
     const { title, specialty, subjective, objective, assessment, plan, isPublic } = req.body as any;
 
+    if (isPublic !== undefined && typeof isPublic !== "boolean") return reply.code(400).send(errorResponse("isPublic must be a boolean"));
+    if (isPublic === true && req.user!.role !== "root") return reply.code(403).send(errorResponse("Only platform root can publish shared templates"));
+
     if (!title || !specialty) {
       return reply.code(400).send(errorResponse("title and specialty are required"));
     }
@@ -52,7 +57,7 @@ export async function createSoapTemplate(req: FastifyRequest, reply: FastifyRepl
       plan: plan || "",
       createdBy: userId,
       organizationId: orgId || undefined,
-      isPublic: isPublic !== undefined ? isPublic : true,
+      isPublic: req.user!.role === "root" && isPublic === true,
     });
 
     return reply.code(201).send(successResponse(template, "SOAP template created successfully"));
@@ -64,7 +69,7 @@ export async function createSoapTemplate(req: FastifyRequest, reply: FastifyRepl
 
 export async function seedDefaultSoapTemplates(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const count = await SoapTemplate.countDocuments();
+    const count = await SoapTemplate.countDocuments({ organizationId: null, isPublic: true });
     if (count > 0) {
       return reply.code(200).send(successResponse(null, `Catalog already has ${count} SOAP templates`));
     }

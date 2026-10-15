@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 import { OpdTemplate } from "../models/OpdTemplate.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { AuditLog } from "../models/AuditLog.ts";
-import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+import { checkLocationAccess, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 
 export const STANDARD_OPD_PRESETS = [
   {
@@ -135,7 +135,6 @@ export const STANDARD_OPD_PRESETS = [
 
 export async function getOpdTemplates(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const userId = req.user?.id;
     const scope = resolveAuthorizedOrganizationScope(req);
     if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
     const orgId = scope.organizationId;
@@ -143,8 +142,7 @@ export async function getOpdTemplates(req: FastifyRequest, reply: FastifyReply) 
     // Retrieve doctor's custom templates and organization templates
     const query: any = {
       $or: [
-        { isPublic: true },
-        ...(userId ? [{ doctorId: new mongoose.Types.ObjectId(userId) }] : []),
+        { isPublic: true, organizationId: null },
         ...(orgId ? [{ organizationId: new mongoose.Types.ObjectId(orgId) }] : []),
       ],
     };
@@ -199,7 +197,14 @@ export async function createOpdTemplate(req: FastifyRequest, reply: FastifyReply
     const orgId = scope.organizationId;
     const body = req.body as any;
 
-    if (!body?.title?.trim()) {
+    if (!orgId) return reply.code(400).send(errorResponse("Organization context is required to save a template"));
+    if (body?.locationId !== undefined) {
+      const locationAccess = await checkLocationAccess(req, body.locationId);
+      if (!locationAccess.allowed) return reply.code(locationAccess.statusCode).send(errorResponse(locationAccess.message));
+      if (locationAccess.organizationId !== orgId) return reply.code(404).send(errorResponse("Location not found"));
+    }
+
+    if (typeof body?.title !== "string" || !body.title.trim()) {
       return reply.code(400).send(errorResponse("Template title is required"));
     }
 
@@ -263,21 +268,23 @@ export async function deleteOpdTemplate(req: FastifyRequest, reply: FastifyReply
   try {
     const { id } = req.params as { id: string };
     const userId = req.user?.id;
+    const scope = resolveAuthorizedOrganizationScope(req);
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    if (!scope.organizationId) return reply.code(400).send(errorResponse("Organization context is required to delete a template"));
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return reply.code(400).send(errorResponse("Invalid template ID"));
     }
 
-    const template = await OpdTemplate.findOne({
+    const template = await OpdTemplate.findOneAndDelete({
       _id: new mongoose.Types.ObjectId(id),
       doctorId: new mongoose.Types.ObjectId(userId),
+      organizationId: new mongoose.Types.ObjectId(scope.organizationId),
     });
 
     if (!template) {
       return reply.code(404).send(errorResponse("Custom preset not found or access denied"));
     }
-
-    await OpdTemplate.findByIdAndDelete(template._id);
 
     await AuditLog.create({
       userId,

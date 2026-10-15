@@ -144,6 +144,11 @@ export async function verifyPrescriptionIntegrityController(req: FastifyRequest,
     const prescription = await Prescription.findById(id).lean();
     if (!prescription) return reply.code(404).send(errorResponse("Prescription not found"));
 
+    if (["patient", "family_member"].includes(req.user!.role)) {
+      const patientAccess = await checkPatientAccess(req, prescription.patientId.toString());
+      if (!patientAccess.allowed) return reply.code(404).send(errorResponse("Prescription not found"));
+    }
+
     const access = await checkOperationalRecordAccess(req, prescription);
     if (!access.allowed) return sendTenantError(reply, access);
 
