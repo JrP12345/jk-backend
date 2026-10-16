@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import mongoose from "mongoose";
 import { Appointment } from "../models/Appointment.ts";
 import { publishAppointmentCommunication } from "./AppointmentCommunicationEvents.ts";
@@ -614,7 +615,7 @@ export const disruptionService = {
           amount: refundAmount,
           reason: `Doctor Disruption Cancellation: ${reason || "Doctor unavailable"}`,
         }).catch((error) => {
-          console.error("[DisruptionService] Automatic refund failed:", error);
+          console.error("[DisruptionService] Automatic refund failed:", safeError(error));
           return null;
         });
 

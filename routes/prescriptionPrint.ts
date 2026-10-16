@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyInstance } from "fastify";
 import { ClinicalNote } from "../models/ClinicalNote.ts";
 import { Prescription } from "../models/Prescription.ts";
@@ -83,7 +84,7 @@ export default async function prescriptionPrintRoutes(fastify: FastifyInstance) 
           .header("Referrer-Policy", "no-referrer")
           .send(html);
       } catch (err: any) {
-        fastify.log.error("Failed to generate printable prescription HTML:", err);
+        fastify.log.error(safeError(err), "Failed to generate printable prescription HTML");
         return reply.code(500).send({ error: "Internal server error generating prescription PDF" });
       }
     }

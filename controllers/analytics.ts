@@ -1,7 +1,7 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { Location } from "../models/Location.ts";
-import { Organization } from "../models/Organization.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { Medicine } from "../models/Medicine.ts";
 import { Appointment } from "../models/Appointment.ts";
@@ -10,7 +10,16 @@ import { Encounter } from "../models/Encounter.ts";
 import { Claim } from "../models/Claim.ts";
 import { PatientFeedback } from "../models/PatientFeedback.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+import { getRequestLocationIds, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+import { DoctorAssignment } from "../models/DoctorAssignment.ts";
+import { escapeCsv } from "../services/ReportExportService.ts";
+
+async function analyticsLocations(req: FastifyRequest, organizationId?: string) {
+  const granted = await getRequestLocationIds(req);
+  return Location.find({ isActive: true, ...(organizationId ? { organizationId } : {}),
+    ...(granted ? { _id: { $in: granted } } : {}),
+  }).select("name city organizationId");
+}
 
 /**
  * Executive Analytics Dashboard Endpoint
@@ -24,12 +33,7 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
     const { startDate, endDate, locationId } = req.query as { startDate?: string; endDate?: string; locationId?: string };
 
     // 1. Resolve Locations under organization scope
-    let locations = orgId ? await Location.find({ organizationId: orgId, isActive: true }) : [];
-    if (!orgId && req.user?.role === "root") {
-      const activeOrgs = await Organization.find().select("_id").lean();
-      const activeOrgIds = activeOrgs.map((o: any) => o._id);
-      locations = await Location.find({ organizationId: { $in: activeOrgIds }, isActive: true });
-    }
+    const locations = await analyticsLocations(req, orgId);
     const locationIds = locations.map((c) => c._id);
 
     if (locationId) {
@@ -56,7 +60,7 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
     // Aggregation bypasses Mongoose query tenant hooks. Keep the explicit
     // organization condition even when a caller selects an authorized location.
     const organizationMatch = orgId ? { organizationId: new mongoose.Types.ObjectId(orgId) } : {};
-    const invoiceMatch: any = { ...organizationMatch, locationId: { $in: locationIds } };
+    const invoiceMatch: any = { ...organizationMatch, locationId: { $in: locationIds }, deletedAt: null, status: { $in: ["paid", "partially_paid", "unpaid"] } };
     const apptMatch: any = { ...organizationMatch, locationId: { $in: locationIds } };
 
     if (locationId && mongoose.Types.ObjectId.isValid(locationId)) {
@@ -75,7 +79,7 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
       }
       if (endDate) {
         const e = new Date(endDate);
-        e.setHours(23, 59, 59, 999);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(endDate)) e.setUTCHours(23, 59, 59, 999);
         invoiceMatch.createdAt.$lte = e;
         apptMatch.appointmentTime.$lte = e;
       }
@@ -84,6 +88,10 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
     // 2. High-Performance MongoDB Aggregation for Invoices Revenue ($facet)
     const invoiceAgg = await Invoice.aggregate([
       { $match: invoiceMatch },
+      { $set: {
+        collected: { $cond: [{ $eq: ["$status", "paid"] }, "$totalAmount", { $ifNull: ["$amountPaid", 0] }] },
+        balance: { $cond: [{ $in: ["$status", ["unpaid", "partially_paid"]] }, { $max: [0, { $subtract: ["$totalAmount", { $ifNull: ["$amountPaid", 0] }] }] }, 0] },
+      } },
       {
         $facet: {
           overallRevenue: [
@@ -91,6 +99,8 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
               $group: {
                 _id: "$status",
                 total: { $sum: "$totalAmount" },
+                collected: { $sum: "$collected" },
+                balance: { $sum: "$balance" },
                 count: { $sum: 1 },
               },
             },
@@ -100,6 +110,8 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
               $group: {
                 _id: { locationId: "$locationId", status: "$status" },
                 totalAmount: { $sum: "$totalAmount" },
+                collected: { $sum: "$collected" },
+                balance: { $sum: "$balance" },
                 count: { $sum: 1 },
               },
             },
@@ -109,11 +121,8 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
     ]);
 
     const revenueStatusList = invoiceAgg[0]?.overallRevenue || [];
-    const paidEntry = revenueStatusList.find((r: any) => r._id === "paid");
-    const unpaidEntry = revenueStatusList.find((r: any) => r._id === "unpaid");
-
-    const totalRevenue = paidEntry ? paidEntry.total : 0;
-    const outstandingBilling = unpaidEntry ? unpaidEntry.total : 0;
+    const totalRevenue = revenueStatusList.reduce((sum: number, row: any) => sum + row.collected, 0);
+    const outstandingBilling = revenueStatusList.reduce((sum: number, row: any) => sum + row.balance, 0);
     const bedOccupancyRate = 0;
 
     // 4. Low Stock Medicines Aggregation
@@ -178,8 +187,7 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
     const locationsPerformance = locations.map((c) => {
       const cIdStr = c.id;
 
-      const cPaid = locationBreakdownList.find((cb: any) => cb._id.locationId?.toString() === cIdStr && cb._id.status === "paid");
-      const cUnpaid = locationBreakdownList.find((cb: any) => cb._id.locationId?.toString() === cIdStr && cb._id.status === "unpaid");
+      const branchInvoices = locationBreakdownList.filter((cb: any) => cb._id.locationId?.toString() === cIdStr);
       const cAppt = locationApptCounts.find((ca: any) => ca._id?.toString() === cIdStr);
 
       return {
@@ -187,13 +195,14 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
         name: c.name,
         city: c.city,
         appointmentCount: cAppt ? cAppt.count : 0,
-        revenue: cPaid ? cPaid.totalAmount : 0,
-        outstanding: cUnpaid ? cUnpaid.totalAmount : 0,
+        revenue: branchInvoices.reduce((sum: number, row: any) => sum + row.collected, 0),
+        outstanding: branchInvoices.reduce((sum: number, row: any) => sum + row.balance, 0),
       };
     });
 
     // 6. Doctor Specialization Counts
-    const doctorsList = await Doctor.find(orgId ? { organizationId: orgId } : {});
+    const doctorIds = await DoctorAssignment.distinct("doctorId", { locationId: { $in: locationIds }, ...(orgId ? { organizationId: orgId } : {}), isActive: true });
+    const doctorsList = await Doctor.find({ userId: { $in: doctorIds }, ...(orgId ? { organizationId: orgId } : {}) }).select("specialization").lean();
     const specCounts: Record<string, number> = {};
     doctorsList.forEach((doc: any) => {
       const spec = doc.specialization || "General Medicine";
@@ -233,7 +242,7 @@ export async function getExecutiveAnalytics(req: FastifyRequest, reply: FastifyR
       })
     );
   } catch (err) {
-    console.error("getExecutiveAnalytics error:", err);
+    console.error("getExecutiveAnalytics error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -248,14 +257,9 @@ export async function getNabhKpis(req: FastifyRequest, reply: FastifyReply) {
     if (!scope.allowed && req.user?.role !== "root") return reply.code(scope.statusCode).send(errorResponse(scope.message));
     const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
 
-    let locations = orgId ? await Location.find({ organizationId: orgId, isActive: true }) : [];
-    if (locations.length === 0 && req.user?.role === "root") {
-      const rootOrgs = await Organization.find().select("_id").lean();
-      const rootOrgIds = rootOrgs.map((o: any) => o._id);
-      locations = await Location.find({ organizationId: { $in: rootOrgIds }, isActive: true });
-    }
+    const locations = await analyticsLocations(req, orgId);
     const locationIds = locations.map((c) => c._id);
-    const locationFilter = { locationId: { $in: locationIds } };
+    const locationFilter = { ...(orgId ? { organizationId: orgId } : {}), locationId: { $in: locationIds } };
 
     const feedback = await PatientFeedback.find(locationFilter).select("rating").lean();
     const patientSatisfactionScore = feedback.length > 0
@@ -279,7 +283,7 @@ export async function getNabhKpis(req: FastifyRequest, reply: FastifyReply) {
       })
     );
   } catch (err) {
-    console.error("getNabhKpis error:", err);
+    console.error("getNabhKpis error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -292,20 +296,15 @@ export async function getClinicalSummaryAnalyticsController(req: FastifyRequest,
     const scope = resolveAuthorizedOrganizationScope(req);
     if (!scope.allowed && req.user?.role !== "root") return reply.code(scope.statusCode).send(errorResponse(scope.message));
     const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
-    let locations = orgId ? await Location.find({ organizationId: orgId, isActive: true }) : [];
-    if (locations.length === 0 && req.user?.role === "root") {
-      const rootOrgs = await Organization.find().select("_id").lean();
-      const rootOrgIds = rootOrgs.map((o: any) => o._id);
-      locations = await Location.find({ organizationId: { $in: rootOrgIds }, isActive: true });
-    }
+    const locations = await analyticsLocations(req, orgId);
     const locationIds = locations.map((c) => c._id);
 
-    const encounterFilter = { locationId: { $in: locationIds } };
+    const encounterFilter = { ...(orgId ? { organizationId: orgId } : {}), locationId: { $in: locationIds } };
     const totalEncounters = await Encounter.countDocuments(encounterFilter);
     const completedEncounters = await Encounter.countDocuments({ ...encounterFilter, status: "completed" });
     const activeEncounters = await Encounter.countDocuments({ ...encounterFilter, status: "in_progress" });
-    const totalClaims = await Claim.countDocuments({ locationId: { $in: locationIds }, deletedAt: null });
-    const approvedClaims = await Claim.countDocuments({ locationId: { $in: locationIds }, deletedAt: null, status: { $in: ["approved", "settled"] } });
+    const totalClaims = await Claim.countDocuments({ ...encounterFilter, deletedAt: null });
+    const approvedClaims = await Claim.countDocuments({ ...encounterFilter, deletedAt: null, status: { $in: ["approved", "settled"] } });
 
     return reply.code(200).send(
       successResponse({
@@ -317,7 +316,7 @@ export async function getClinicalSummaryAnalyticsController(req: FastifyRequest,
       })
     );
   } catch (err) {
-    console.error("getClinicalSummaryAnalyticsController error:", err);
+    console.error("getClinicalSummaryAnalyticsController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -333,16 +332,10 @@ export async function exportAnalyticsReportController(req: FastifyRequest, reply
     const format = (req.query as any)?.format || "json";
     const reportType = (req.query as any)?.reportType || "executive";
 
-    let rootOrgIds: any[] = [];
-    if (!orgId && req.user?.role === "root") {
-      const rootOrgs = await Organization.find().select("_id").lean();
-      rootOrgIds = rootOrgs.map((o: any) => o._id);
-    }
-    const locations = orgId
-      ? await Location.find({ organizationId: orgId, isActive: true }).select("_id")
-      : (req.user?.role === "root" ? await Location.find({ organizationId: { $in: rootOrgIds }, isActive: true }).select("_id") : []);
+    if (!["json", "csv"].includes(format) || !["executive", "clinical", "quality", "nabh"].includes(reportType)) return reply.code(400).send(errorResponse("Invalid analytics export options"));
+    const locations = await analyticsLocations(req, orgId);
     const locationIds = locations.map((location) => location._id);
-    const locationFilter = { locationId: { $in: locationIds } };
+    const locationFilter = { ...(orgId ? { organizationId: orgId } : {}), locationId: { $in: locationIds } };
     const [invoiceCount, appointmentCount, encounterCount, claimCount] = await Promise.all([
       Invoice.countDocuments(locationFilter),
       Appointment.countDocuments(locationFilter),
@@ -365,7 +358,7 @@ export async function exportAnalyticsReportController(req: FastifyRequest, reply
       return reply.code(200).send([
         "Metric,Value",
         `Exported At,${reportData.exportedAt}`,
-        `Report Type,${reportData.reportType}`,
+        `Report Type,${escapeCsv(reportData.reportType)}`,
         `Invoice Count,${invoiceCount}`,
         `Appointment Count,${appointmentCount}`,
         `Encounter Count,${encounterCount}`,
@@ -375,7 +368,7 @@ export async function exportAnalyticsReportController(req: FastifyRequest, reply
 
     return reply.code(200).send(successResponse(reportData));
   } catch (err) {
-    console.error("exportAnalyticsReportController error:", err);
+    console.error("exportAnalyticsReportController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

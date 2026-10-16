@@ -1,3 +1,4 @@
+import { safeError } from "./safeError.ts";
 import http from "node:http";
 import { checkWorkerReadiness, markShuttingDown } from "./readiness.ts";
 
@@ -76,7 +77,7 @@ export function startWorkerHealthServer(options: WorkerHealthServerOptions): {
   });
 
   server.on("error", (err) => {
-    console.warn(`[${options.workerName}] Health server error:`, err.message);
+    console.warn(`[${options.workerName}] Health server error:`, safeError(err));
   });
 
   const stop = async () => {

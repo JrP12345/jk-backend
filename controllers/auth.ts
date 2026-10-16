@@ -1,3 +1,5 @@
+import { safeError } from "../utilities/safeError.ts";
+import { staffMfaEnrollmentRequired } from "../services/StaffMfaPolicy.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import bcrypt from "bcryptjs";
 import { User } from "../models/User.ts";
@@ -67,7 +69,7 @@ export async function requestOtpController(req: FastifyRequest, reply: FastifyRe
     const result = await otpService.requestOtp(target, purpose || "authentication");
     return reply.code(200).send(successResponse(result, result.message));
   } catch (err: any) {
-    console.error("requestOtpController error:", err);
+    console.error("requestOtpController error:", safeError(err));
     return reply.code(400).send(errorResponse(err.message || "Failed to request OTP"));
   }
 }
@@ -197,7 +199,7 @@ export async function createPublicBookingSession(req: FastifyRequest, reply: Fas
       )
     );
   } catch (err) {
-    console.error("createPublicBookingSession error:", err);
+    console.error("createPublicBookingSession error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -392,7 +394,7 @@ export async function verifyOtpController(req: FastifyRequest, reply: FastifyRep
 
     return completeVerifiedLogin(req, reply, user, { patient: patient || null, potentialMatch: potentialMatch || null, isNewUser });
   } catch (err) {
-    console.error("verifyOtpController error:", err);
+    console.error("verifyOtpController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -456,7 +458,7 @@ export async function login(req: FastifyRequest, reply: FastifyReply) {
 
     return await completeVerifiedLogin(req, reply, user);
   } catch (err) {
-    console.error("login error:", err);
+    console.error("login error:", safeError(err));
     if (err instanceof WorkspaceError) return reply.code(err.statusCode).send(errorResponse(err.message));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
@@ -500,7 +502,7 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
     if (process.env.NODE_ENV === "production" && user.email && !user.isEmailVerified) return reply.code(403).send(errorResponse("Please verify your email address before signing in."));
     return await completeVerifiedLogin(req, reply, user, {}, true);
   } catch (err) {
-    console.error("verifyLoginTwoFactor error:", err);
+    console.error("verifyLoginTwoFactor error:", safeError(err));
     if (err instanceof WorkspaceError) return reply.code(err.statusCode).send(errorResponse(err.message));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
@@ -730,7 +732,7 @@ export async function getAdminAllSessions(req: FastifyRequest, reply: FastifyRep
 
     return reply.send(successResponse(formatted, "Active platform sessions retrieved"));
   } catch (err: any) {
-    console.error("getAdminAllSessions error:", err);
+    console.error("getAdminAllSessions error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to fetch active platform sessions"));
   }
 }
@@ -742,7 +744,7 @@ export async function adminRevokeSession(req: FastifyRequest, reply: FastifyRepl
     await revokeSessionInternal(sessionId, "admin_revocation");
     return reply.send(successResponse(null, "Session terminated successfully"));
   } catch (err: any) {
-    console.error("adminRevokeSession error:", err);
+    console.error("adminRevokeSession error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to terminate session"));
   }
 }
@@ -754,7 +756,7 @@ export async function adminRevokeUserSessions(req: FastifyRequest, reply: Fastif
     await revokeUserSessions(userId, "admin_revocation");
     return reply.send(successResponse(null, "Terminated active sessions for user"));
   } catch (err: any) {
-    console.error("adminRevokeUserSessions error:", err);
+    console.error("adminRevokeUserSessions error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to terminate user sessions"));
   }
 }
@@ -892,6 +894,7 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
       isRoot: user.role === "root",
       familyId: currentRecord.familyId || crypto.randomUUID(),
       generation: nextGeneration,
+      authenticatedAt: currentRecord.authenticatedAt || new Date(0),
       authVersion,
       impersonatedBy: validImpersonatedBy,
     });
@@ -925,7 +928,7 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
     setAuthCookies(reply, accessToken, newRefreshToken, isGuestToken);
     return reply.code(200).send(successResponse(null, "Token refreshed"));
   } catch (err) {
-    console.error("refreshAccessToken error:", err);
+    console.error("refreshAccessToken error:", safeError(err));
     if (err instanceof WorkspaceError) {
       clearAuthCookies(reply);
       return reply.code(401).send(errorResponse("Workspace membership is unavailable; sign in again"));
@@ -975,7 +978,7 @@ export async function logout(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(null, "Logged out — cookies cleared"));
   } catch (err) {
-    console.error("logout error:", err);
+    console.error("logout error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1081,7 +1084,7 @@ export async function registerPatient(req: FastifyRequest, reply: FastifyReply) 
       )
     );
   } catch (err) {
-    console.error("registerPatient error:", err);
+    console.error("registerPatient error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1130,6 +1133,8 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
         name: user.name,
         email: user.email,
         isActive: user.isActive,
+        twoFactorEnabled: !!user.twoFactorEnabled,
+        mfaEnrollmentRequired: staffMfaEnrollmentRequired(role, !!user.twoFactorEnabled, process.env, Date.now(), !!user.twoFactorEnrollmentRequired),
         role,
         image_url: user.image_url || null,
         organization_id,
@@ -1138,7 +1143,7 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
       }
     }, "User fetched successfully"));
   } catch (err) {
-    console.error("me error:", err);
+    console.error("me error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1158,7 +1163,7 @@ export async function switchOrganization(req: FastifyRequest, reply: FastifyRepl
       const user = await User.findOne({ _id: userId, isActive: true });
       if (!user) return reply.code(401).send(errorResponse("Account is unavailable"));
       const session = await createAuthSession({ id: userId, email: user.email || "", role: workspace.role,
-        organization_id: organizationId }, { ipAddress: req.ip, userAgent: req.headers["user-agent"], workspaceRole: workspace.role });
+        organization_id: organizationId }, { ipAddress: req.ip, userAgent: req.headers["user-agent"], workspaceRole: workspace.role, authenticatedAt: req.primaryAuthenticatedAt || new Date(0) });
       await revokeSessionInternal(req.user!.sessionId!, "terminated");
       setAuthCookies(reply, session.accessToken, session.refreshToken);
       return reply.send(successResponse({ organization_id: organizationId }, "Organization workspace switched"));
@@ -1186,7 +1191,7 @@ export async function switchOrganization(req: FastifyRequest, reply: FastifyRepl
       organization_id: organizationId || undefined,
     };
 
-    const { accessToken, refreshToken } = await createAuthSession(payload);
+    const { accessToken, refreshToken } = await createAuthSession(payload, { authenticatedAt: req.primaryAuthenticatedAt || new Date(0) });
 
     setAuthCookies(reply, accessToken, refreshToken);
 
@@ -1197,7 +1202,7 @@ export async function switchOrganization(req: FastifyRequest, reply: FastifyRepl
       )
     );
   } catch (err) {
-    console.error("switchOrganization error:", err);
+    console.error("switchOrganization error:", safeError(err));
     if (err instanceof WorkspaceError) return reply.code(err.statusCode).send(errorResponse(err.message));
     return reply.code(500).send(errorResponse("Failed to switch organization context"));
   }
@@ -1333,7 +1338,7 @@ export async function impersonateUser(req: FastifyRequest, reply: FastifyReply) 
       )
     );
   } catch (err: any) {
-    console.error("impersonateUser error:", err);
+    console.error("impersonateUser error:", safeError(err));
     return reply.code(500).send(errorResponse(err.message || "Failed to start impersonation session"));
   }
 }
@@ -1452,7 +1457,7 @@ export async function stopImpersonation(req: FastifyRequest, reply: FastifyReply
       )
     );
   } catch (err: any) {
-    console.error("stopImpersonation error:", err);
+    console.error("stopImpersonation error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to restore Root session"));
   }
 }
@@ -1478,7 +1483,7 @@ export async function googleLoginController(req: FastifyRequest, reply: FastifyR
     return await completeVerifiedLogin(req, reply, authResult.userRecord,
       { patient: authResult.patient, isNewUser: authResult.isNewUser });
   } catch (err: any) {
-    console.error("googleLoginController error:", err);
+    console.error("googleLoginController error:", safeError(err));
     return reply.code(400).send(errorResponse(err.message || "Failed to authenticate with Google"));
   }
 }
@@ -1557,7 +1562,7 @@ export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyR
       successResponse(
         {
           ...extra,
-          user: { id: user.id, name: user.name, email: user.email || null, role, image_url: user.image_url || null, organization_id, permissions },
+          user: { id: user.id, name: user.name, email: user.email || null, role, image_url: user.image_url || null, organization_id, permissions, twoFactorEnabled: !!user.twoFactorEnabled, mfaEnrollmentRequired: staffMfaEnrollmentRequired(role, !!user.twoFactorEnabled, process.env, Date.now(), !!user.twoFactorEnrollmentRequired) },
         },
         "Login successful"
       )

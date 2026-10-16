@@ -1,3 +1,4 @@
+import { safeError } from "./safeError.ts";
 /**
  * Ekavyu Telemetry, Error Tracking & Alert Dispatcher
  *
@@ -22,22 +23,6 @@ export interface AlertContext {
 
 // ─── Allowlist PHI / PII Scrubber ──────────────────────────────────────────
 // Pattern redaction complements data minimization; it is not a PHI classifier.
-function sanitizeErrorMessage(msg: string): string {
-  if (!msg) return "";
-  return msg
-    // Redact 10-digit Indian mobile numbers
-    .replace(/\b[6-9]\d{9}\b/g, "[REDACTED_PHONE]")
-    // Redact 12-digit Aadhaar numbers
-    .replace(/\b\d{4}\s?\d{4}\s?\d{4}\b/g, "[REDACTED_AADHAAR]")
-    // Redact 14-digit ABHA addresses
-    .replace(/\b\d{2}-\d{4}-\d{4}-\d{4}\b/g, "[REDACTED_ABHA]")
-    // Redact email addresses
-    .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, "[REDACTED_EMAIL]")
-    // Redact bearer tokens and hex secrets
-    .replace(/bearer\s+[a-zA-Z0-9._-]+/gi, "Bearer [REDACTED_TOKEN]")
-    .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[REDACTED_JWT]")
-    .replace(/\b[0-9a-fA-F]{32,64}\b/g, "[REDACTED_HASH]");
-}
 
 // ─── Sentry Initialization ────────────────────────────────────────────────
 const sentryDsn = process.env.SENTRY_DSN;
@@ -49,7 +34,8 @@ export function scrubTelemetry<T extends Event>(event: T): T {
   event.extra = undefined;
   event.contexts = undefined;
   event.logentry = undefined;
-  if (event.message) event.message = sanitizeErrorMessage(event.message);
+  // Free text can contain clinical narrative that pattern redaction cannot identify.
+  if (event.message) event.message = "Operation failed";
   // A URL-derived transaction name may include private route identifiers.
   if (event.transaction) event.transaction = event.transaction.split(/[?#]/, 1)[0].replace(/\b[a-f\d]{24}\b/gi, ':id');
   for (const span of event.spans || []) {
@@ -57,7 +43,10 @@ export function scrubTelemetry<T extends Event>(event: T): T {
     span.data = {};
   }
   for (const ex of event.exception?.values || []) {
-    if (ex.value) ex.value = sanitizeErrorMessage(ex.value);
+    ex.type = safeError({ name: ex.type }).errorType;
+    ex.value = "Operation failed";
+    ex.stacktrace = undefined;
+    ex.mechanism = undefined;
   }
   event.tags = { nodeId: NODE_ID, service: 'ekavyu-backend' };
   return event;
@@ -103,9 +92,9 @@ export async function dispatchOpsAlert(
   context: AlertContext = {}
 ): Promise<void> {
   const webhookUrl = process.env.OPS_ALERT_WEBHOOK_URL;
-  const rawErrorMessage = typeof error === "string" ? error : error.message;
-  const sanitizedMsg = sanitizeErrorMessage(rawErrorMessage);
-  const errorStack = typeof error !== "string" && error.stack ? sanitizeErrorMessage(error.stack.split("\n").slice(1, 4).join("\n")) : "";
+  const sanitizedMsg = safeError(error).errorType;
+  const safeContext = Object.fromEntries(Object.entries(context).filter(([key, value]) =>
+    ["component", "action"].includes(key) && typeof value === "string" && /^[a-zA-Z0-9_.:-]{1,80}$/.test(value)));
 
   const dedupeKey = `${severity}:${title}:${sanitizedMsg}`;
   const now = Date.now();
@@ -126,8 +115,7 @@ export async function dispatchOpsAlert(
     nodeId: NODE_ID,
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || "development",
-    context,
-    stackTrace: errorStack,
+    context: safeContext,
   };
 
   // 1. Console alert logging
@@ -147,7 +135,7 @@ export async function dispatchOpsAlert(
         signal: AbortSignal.timeout(5000),
       });
     } catch (err: any) {
-      console.warn("[Telemetry Warning] Failed to dispatch ops alert webhook:", err?.message || err);
+      console.warn("[Telemetry Warning] Failed to dispatch ops alert webhook:", safeError(err));
     }
   }
 
@@ -155,7 +143,7 @@ export async function dispatchOpsAlert(
   if (sentryDsn && typeof error !== "string") {
     Sentry.withScope((scope) => {
       scope.setLevel(severity === "P0_CRITICAL" ? "fatal" : "warning");
-      scope.setTags({ severity, ...context });
+      scope.setTags({ severity, ...safeContext });
       Sentry.captureException(error);
     });
   }

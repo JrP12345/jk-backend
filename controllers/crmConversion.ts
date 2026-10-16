@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { syncInquiryTask } from "../services/CrmTaskService.ts";
 import { Inquiry } from "../models/Inquiry.ts";
@@ -64,7 +65,7 @@ export async function convertInquiry(req: FastifyRequest, reply: FastifyReply) {
   } catch (error: any) {
     if (error instanceof CommandError || error instanceof AppointmentDomainError) return reply.code(error.statusCode).send(errorResponse(error.message, error instanceof CommandError ? error.details : undefined));
     if (error?.code === 11000) return reply.code(409).send(errorResponse("The booking slot or command changed. Reload before booking again."));
-    req.log.error({ err: error }, "Inquiry conversion failed");
+    req.log.error(safeError(error), "Inquiry conversion failed");
     return reply.code(503).send(errorResponse("The conversion result could not be confirmed. Retry the same request."));
   }
 }

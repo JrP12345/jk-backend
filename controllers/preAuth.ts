@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { PreAuthorization } from "../models/PreAuthorization.ts";
@@ -77,7 +78,7 @@ export async function createPreAuthRequest(req: FastifyRequest, reply: FastifyRe
 
     return reply.code(201).send(successResponse(preAuth, "Pre-authorization cashless request submitted to TPA"));
   } catch (err) {
-    console.error("createPreAuthRequest error:", err);
+    console.error("createPreAuthRequest error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -128,7 +129,7 @@ export async function getPreAuthList(req: FastifyRequest, reply: FastifyReply) {
     setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
     return reply.code(200).send(successResponse(preAuths));
   } catch (err) {
-    console.error("getPreAuthList error:", err);
+    console.error("getPreAuthList error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -197,7 +198,7 @@ export async function updatePreAuthStatus(req: FastifyRequest, reply: FastifyRep
 
     return reply.code(200).send(successResponse(preAuth, `Pre-authorization status updated to ${status}`));
   } catch (err) {
-    console.error("updatePreAuthStatus error:", err);
+    console.error("updatePreAuthStatus error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import crypto from "node:crypto";
 import { disruptionService } from "../services/disruptionService.ts";
 import { WorkerLoop } from "../utilities/workerLoop.ts";
@@ -20,7 +21,7 @@ export async function runDisruptionTimeoutSweep(fence?: () => Promise<void>) {
     }
     return result;
   } catch (err) {
-    console.error("[DisruptionTimeoutJob] Error during disruption sweep:", err);
+    console.error("[DisruptionTimeoutJob] Error during disruption sweep:", safeError(err));
     return { autoCancelledCount: 0, reviewRequiredCount: 0, error: err };
   }
 }

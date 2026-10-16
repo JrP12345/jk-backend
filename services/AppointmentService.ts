@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import mongoose from "mongoose";
 import { Appointment } from "../models/Appointment.ts";
 import { Patient } from "../models/Patient.ts";
@@ -662,12 +663,12 @@ export class AppointmentService {
     });
 
     const afterCommit = async () => {
-      if (lockKey) await forceReleaseSlotLock(lockKey).catch(err => console.warn("Slot lock release failed:", err));
+      if (lockKey) await forceReleaseSlotLock(lockKey).catch(err => console.warn("Slot lock release failed:", safeError(err)));
       try { broadcastQueueUpdate(locationId, { type: "QUEUE_UPDATED", data: { locationId, appointmentId: String(appointmentId) }, timestamp: new Date().toISOString() }); }
-      catch (err) { console.warn("Booking queue broadcast skipped:", err); }
+      catch (err) { console.warn("Booking queue broadcast skipped:", safeError(err)); }
     };
     if (options.deferAfterCommit) options.deferAfterCommit(afterCommit);
-    else afterCommit().catch(err => console.warn("Booking follow-up failed:", err));
+    else afterCommit().catch(err => console.warn("Booking follow-up failed:", safeError(err)));
 
     return booking;
   }

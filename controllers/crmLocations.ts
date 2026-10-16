@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { Location } from '../models/Location.ts';
 import { Organization } from '../models/Organization.ts';
@@ -23,7 +24,7 @@ export async function listCrmLocations(req: FastifyRequest, reply: FastifyReply)
       effectiveTimezone: row.timezone || organization?.timezone || 'Asia/Kolkata' }))));
   } catch (error) {
     if (error instanceof CommandError) return reply.code(error.statusCode).send(errorResponse(error.message));
-    req.log.error({ err: error }, 'CRM branch choices failed');
+    req.log.error(safeError(error), 'CRM branch choices failed');
     return reply.code(503).send(errorResponse('Authorized CRM branches could not be loaded. Retry the branch list.'));
   }
 }

@@ -1,3 +1,4 @@
+import { safeError } from "../../utilities/safeError.ts";
 import mongoose from "mongoose";
 import { SaaSPlan } from "../../models/SaaSPlan.ts";
 import { Subscription } from "../../models/Subscription.ts";
@@ -703,7 +704,7 @@ export class SubscriptionService {
         actionUrl: "/dashboard/settings/billing",
       });
     } catch (eventError) {
-      console.error("Failed to publish subscription activation event:", eventError);
+      console.error("Failed to publish subscription activation event:", safeError(eventError));
     }
 
     // Send Commercial Invoice Email Notification
@@ -756,7 +757,7 @@ export class SubscriptionService {
           idempotencyKey: `transactional-email:subscription-invoice:${invoice._id}`,
         });
       } catch (emailErr) {
-        console.error("Failed to enqueue subscription invoice email:", emailErr);
+        console.error("Failed to enqueue subscription invoice email:", safeError(emailErr));
       }
     }
 
@@ -862,7 +863,7 @@ export class SubscriptionService {
           idempotencyKey: `transactional-email:subscription-cancelled:${sub._id}:${sub.cancelledAt!.getTime()}`,
         });
       } catch (emailErr) {
-        console.error("Failed to enqueue cancellation email:", emailErr);
+        console.error("Failed to enqueue cancellation email:", safeError(emailErr));
       }
     }
 

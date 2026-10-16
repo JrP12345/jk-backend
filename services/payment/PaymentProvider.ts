@@ -1,3 +1,4 @@
+import { safeError } from "../../utilities/safeError.ts";
 import { razorpayService } from "../billing/RazorpayService.ts";
 
 export interface PaymentLinkRequest {
@@ -94,9 +95,7 @@ class LiveRazorpayPaymentProvider implements PaymentProvider {
         throw new Error(`Razorpay API responded with status ${response.status}`);
       }
     } catch (err: any) {
-      console.error("[PaymentProvider] Live Razorpay payment link generation failed", {
-        reason: err?.name === "TimeoutError" ? "timeout" : "gateway_error",
-      });
+      console.error("[PaymentProvider] Live Razorpay payment link generation failed", safeError(err));
       if (process.env.NODE_ENV === "production") {
         throw new Error("Failed to generate online payment link: Payment gateway unavailable");
       }
@@ -133,7 +132,7 @@ class LiveRazorpayPaymentProvider implements PaymentProvider {
         amount: request.amount,
       };
     } catch (err: any) {
-      console.error("[PaymentProvider] Refund processing failed:", err.message || err);
+      console.error("[PaymentProvider] Refund processing failed:", safeError(err));
       return {
         refundId: "",
         status: "failed",

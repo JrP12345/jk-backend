@@ -5,6 +5,9 @@ import { CommandError } from './CommandReceiptService.ts';
 // Share the caller's transaction. Writing the role serializes assignment with
 // permission edits/deletion, so a preflight lookup cannot create a dangling grant.
 export async function pinAssignableRole(name: string, organizationId?: string) {
+  if (organizationId && ["root", "patient", "family_member", "guest"].includes(name)) {
+    throw new CommandError(403, 'Consumer and platform identities cannot be assigned as staff workspace roles');
+  }
   const role = await Role.findOne({ name, ...(organizationId
     ? { $or: [{ organizationId }, { organizationId: null }] }
     : { organizationId: null }) }).sort({ organizationId: -1 }).select('_id').lean();

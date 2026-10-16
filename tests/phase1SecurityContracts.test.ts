@@ -5,6 +5,7 @@ import { app } from '../index.ts';
 import { s3Client, getObjectBuffer, storeVerifiedObject, generatePresignedUrl } from '../utilities/r2.ts';
 import { validateUploadBytes, isVerifiedClinicalAttachment } from '../utilities/uploadPolicy.ts';
 import { Organization } from '../models/Organization.ts';
+import { OrgMember } from '../models/OrgMember.ts';
 import { Location } from '../models/Location.ts';
 import { Patient } from '../models/Patient.ts';
 import { User } from '../models/User.ts';
@@ -130,6 +131,7 @@ describe('Phase 1 file and clinical authority', () => {
     const org = await Organization.create({ name: 'Search fixture', city: 'Pune' });
     const foreign = await Organization.create({ name: 'Search foreign', city: 'Pune' });
     const operator = await User.create({ name: 'Search doctor', role: 'doctor', email: 'search-doctor@example.test' });
+    await OrgMember.create({ userId: operator._id, organizationId: org._id, role: 'doctor', locationAccess: { mode: 'all', locationIds: [] } });
     const identity = await User.create({ name: 'Needle linked', role: 'patient', email: 'linked-needle@example.test' });
     await Patient.create([{ name: 'Existing tenant patient', userId: identity._id, organizationId: org._id },
       { name: 'Needle unlinked', organizationId: org._id }, { name: 'Needle foreign', organizationId: foreign._id }]);

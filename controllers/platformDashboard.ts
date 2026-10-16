@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { loadPlatformDashboard, type DashboardRange } from "../services/platformDashboard.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
@@ -12,7 +13,7 @@ export async function getPlatformDashboard(req: FastifyRequest, reply: FastifyRe
     const dashboard = await loadPlatformDashboard(range);
     return reply.header("Cache-Control", "private, no-store").send(successResponse(dashboard));
   } catch (error) {
-    req.log.error({ err: error }, "Platform dashboard could not be loaded");
+    req.log.error(safeError(error), "Platform dashboard could not be loaded");
     return reply.code(500).send(errorResponse("Platform overview could not be loaded"));
   }
 }

@@ -39,8 +39,9 @@ export default async function onboardingRoutes(app: FastifyInstance) {
   app.get("/api/onboarding/draft", getDraft);
 
   // 2FA Google Authenticator (TOTP)
-  app.post("/api/onboarding/totp/setup", { preHandler: [authenticate] }, setupOnboardingTOTP);
-  app.post("/api/onboarding/totp/verify", { preHandler: [authenticate] }, verifyOnboardingTOTP);
+  const totpAccess = { preHandler: [authenticate], config: { rateLimit: { max: process.env.NODE_ENV === "test" ? 1000 : 5, timeWindow: "1 minute" } } };
+  app.post("/api/onboarding/totp/setup", totpAccess, setupOnboardingTOTP);
+  app.post("/api/onboarding/totp/verify", totpAccess, verifyOnboardingTOTP);
 
   // Platform Organization Admin Management
   const platformRoot = { preHandler: [authenticate, requirePlatformRoot()] };

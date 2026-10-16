@@ -1,7 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { ClinicalSearchService } from "../services/ClinicalSearchService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { checkPatientAccess, checkOperationalRecordAccess } from '../utilities/tenant.ts';
+import { checkPatientAccess, checkOperationalRecordAccess, getRequestLocationIds } from '../utilities/tenant.ts';
 import { Encounter } from '../models/Encounter.ts';
 import mongoose from 'mongoose';
 
@@ -36,7 +36,11 @@ export async function searchPatientRecordController(req: FastifyRequest, reply: 
       cursor,
     };
 
-    const results = await ClinicalSearchService.searchPatientRecord(patientId, options);
+    const consumer = ["patient", "family_member"].includes(req.user!.role);
+    const root = req.user!.role === "root";
+    const scope = consumer || root ? undefined : { organizationId: req.user!.organization_id!, locationIds: ((await getRequestLocationIds(req)) || []).map(String) };
+    const results = await ClinicalSearchService.searchPatientRecord(patientId, options, scope);
+    if (consumer) for (const item of results.items) item.resourceRef.link = "/dashboard/patient-portal";
     return reply.code(200).send(successResponse(results));
   } catch (err: any) {
     return reply.code(500).send(errorResponse("Clinical search failed"));
@@ -83,7 +87,8 @@ export async function getOrganizationQualityMetricsController(req: FastifyReques
       return reply.code(403).send(errorResponse("Organization context is required"));
     }
 
-    const metrics = await ClinicalSearchService.getQualityMetrics(orgId);
+    const granted = await getRequestLocationIds(req);
+    const metrics = await ClinicalSearchService.getQualityMetrics(orgId, granted?.map(String));
     return reply.code(200).send(successResponse(metrics));
   } catch (err: any) {
     return reply.code(500).send(errorResponse('Quality metrics failed'));

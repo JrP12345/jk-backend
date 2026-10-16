@@ -8,7 +8,7 @@
  * 3. Restores into an isolated temporary drill database (ekavyu_restore_drill_<timestamp>)
  * 4. Audits collection counts, indexes, and document integrity
  * 5. Drops the temporary drill database
- * 6. Emits a signed DR drill report
+ * 6. Emits an archive-verification report (application recovery remains separate)
  *
  * Usage:
  *   node --env-file=.env --experimental-strip-types scripts/mongoRestoreDrill.ts [options]
@@ -21,7 +21,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import zlib from "node:zlib";
+import { decryptBackup } from "../utilities/backupArchive.ts";
+import { safeError } from "../utilities/safeError.ts";
 import mongoose from "mongoose";
 const MAX_ARCHIVE_BYTES = 128 * 1024 * 1024;
 
@@ -36,7 +37,7 @@ function getBackupKey(): Buffer {
   return crypto.createHash("sha256").update(rawBackupKey).digest();
 }
 
-import { S3Client, ListObjectsV2Command, GetObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, GetObjectCommand, paginateListObjectsV2 } from "@aws-sdk/client-s3";
 
 async function fetchLatestFromRemoteStorage(): Promise<{ buffer: Buffer; fileName: string }> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
@@ -62,21 +63,19 @@ async function fetchLatestFromRemoteStorage(): Promise<{ buffer: Buffer; fileNam
   });
 
   console.log(`☁️  Scanning remote storage (s3://${bucket}/backups/mongodb/) for latest backup...`);
-  const listResp = await s3.send(
-    new ListObjectsV2Command({
-      Bucket: bucket,
-      Prefix: "backups/mongodb/ekavyu-backup-",
-    })
-  );
-
-  const objects = listResp.Contents || [];
-  if (objects.length === 0) {
+  let latestObj: { Key?: string; Size?: number; LastModified?: Date } | undefined;
+  let pages = 0;
+  for await (const page of paginateListObjectsV2({ client: s3 }, { Bucket: bucket, Prefix: "backups/mongodb/ekavyu-backup-" })) {
+    if (++pages > 100) throw new Error("Backup listing budget exceeded; use an explicit downloaded archive");
+    for (const object of page.Contents || []) {
+      if (!object.Key?.endsWith(".enc.gz")) continue;
+      if (!latestObj || (object.LastModified?.getTime() || 0) > (latestObj.LastModified?.getTime() || 0)) latestObj = object;
+    }
+  }
+  if (!latestObj) {
     throw new Error(`No backup archives found in s3://${bucket}/backups/mongodb/`);
   }
 
-  // Sort descending by LastModified
-  objects.sort((a, b) => ((b.LastModified?.getTime() || 0) - (a.LastModified?.getTime() || 0)));
-  const latestObj = objects[0];
   if ((latestObj.Size || 0) > MAX_ARCHIVE_BYTES) throw new Error("Supplemental archive exceeds restore memory budget; use provider recovery");
   if (!latestObj.Key) throw new Error("Remote backup object key missing.");
 
@@ -143,34 +142,7 @@ async function runRestoreDrill() {
   console.log(`⏱  Timestamp   : ${new Date().toISOString()}`);
   console.log(`📦 Target File : ${targetFileLabel}`);
 
-  // 1. Parse encrypted archive header
-  console.log("📖 Parsing encrypted archive stream...");
-
-  // Find newline separating header from binary
-  const newlineIdx = rawFileBuffer.indexOf(0x0a); // '\n'
-  if (newlineIdx === -1) {
-    throw new Error("Corrupted backup file: Missing versioned encryption header.");
-  }
-
-  const headerStr = rawFileBuffer.subarray(0, newlineIdx).toString("utf8");
-  const [version, ivHex, authTagHex] = headerStr.split(":");
-  if (version !== "v1" || !ivHex || !authTagHex) {
-    throw new Error(`Unsupported backup format header: '${headerStr}'`);
-  }
-
-  const encryptedData = rawFileBuffer.subarray(newlineIdx + 1);
-
-  // 2. Decrypt
-  console.log("🔐 Decrypting archive using AES-256-GCM authenticated cipher...");
-  const key = getBackupKey();
-  const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(ivHex, "hex"));
-  decipher.setAuthTag(Buffer.from(authTagHex, "hex"));
-
-  const decryptedGzip = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
-
-  // 3. Decompress
-  console.log("🗜  Decompressing gzip data stream...");
-  const jsonBuffer = zlib.gunzipSync(decryptedGzip, { maxOutputLength: MAX_ARCHIVE_BYTES });
+  const jsonBuffer = decryptBackup(rawFileBuffer, getBackupKey(), MAX_ARCHIVE_BYTES);
   const data = mongoose.mongo.BSON.EJSON.parse(jsonBuffer.toString("utf8"), { relaxed: false });
   if (data._metadata?.bsonEncoding !== "canonical-ejson" || !data._indexes || data._metadata?.consistency !== "operator-confirmed-writes-paused") throw new Error("Legacy/uncoordinated JSON archives are not application recovery evidence. Use a BSON-preserving provider recovery.");
 
@@ -179,7 +151,7 @@ async function runRestoreDrill() {
   console.log(`   • Original Database : ${metadata.databaseName || "Unknown"}`);
 
   // 4. Connect to temporary drill database
-  const drillDbName = `ekavyu_restore_drill_${Date.now()}`;
+  const drillDbName = `ekavyu_restore_drill_${Date.now()}_${crypto.randomBytes(6).toString("hex")}`;
   console.log(`\n🧪 Connecting to isolated temporary drill database: '${drillDbName}'...`);
 
   // Connect strictly to the isolated temporary drill database via dbName option
@@ -191,6 +163,8 @@ async function runRestoreDrill() {
   console.log("📥 Restoring data collections into drill database...");
   const restoredCounts: Record<string, number> = {};
   let totalRestoredDocs = 0;
+  let collectionsFound: string[] = [];
+  try {
 
   for (const [keyName, documents] of Object.entries(data)) {
     if (keyName.startsWith("_") || !Array.isArray(documents)) continue;
@@ -219,7 +193,7 @@ async function runRestoreDrill() {
 
   // 6. Integrity validation assertions
   console.log("\n🔍 Running automated integrity validation checks...");
-  const collectionsFound = Object.keys(restoredCounts);
+  collectionsFound = Object.keys(restoredCounts);
   if (collectionsFound.length === 0) {
     throw new Error("Drill failed: Zero collections restored from backup.");
   }
@@ -235,7 +209,7 @@ async function runRestoreDrill() {
     console.log(`\n⚠️ Drill database retained as: ${drillDbName}`);
   }
 
-  await conn.close();
+  } finally { await conn.close(); }
 
   const durationMs = Date.now() - startTime;
   const drillReport = {
@@ -250,6 +224,7 @@ async function runRestoreDrill() {
   };
 
   const reportPath = path.join(backupsDir, ".drill-report.json");
+  fs.mkdirSync(backupsDir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(reportPath, JSON.stringify(drillReport, null, 2), "utf8");
 
   console.log("\n================================================================================");
@@ -259,6 +234,6 @@ async function runRestoreDrill() {
 }
 
 runRestoreDrill().catch((err) => {
-  console.error("\n❌ [RESTORE DRILL FAILED]:", err?.message || err);
+  console.error("\n❌ [RESTORE DRILL FAILED]:", safeError(err));
   process.exit(1);
 });

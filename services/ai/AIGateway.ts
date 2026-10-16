@@ -1,3 +1,4 @@
+import { safeError } from "../../utilities/safeError.ts";
 import type { AIRequest, AIResponse, AIUsage, AIProvider, SOAPGenerationInput, SOAPNoteDraft, HealthQueryInput, HealthQueryResponse } from "./AIProvider.ts";
 import { providerRegistry } from "./ProviderRegistry.ts";
 import { modelRegistry } from "./ModelRegistry.ts";
@@ -54,7 +55,7 @@ export class AIGateway {
       provider: provider.name, model, modelAlias: request.modelAlias, ...usage, status,
       privacyClassification: context.privacyClassification, dataCategoriesDisclosed: context.dataCategoriesDisclosed,
       purpose: context.purpose, retentionCategory: context.retentionCategory,
-    }).catch(error => console.error("[AIGateway] Telemetry record error:", error));
+    }).catch(error => console.error("[AIGateway] Telemetry record error:", safeError(error)));
     return response;
   }
 
@@ -75,7 +76,7 @@ export class AIGateway {
         latencyMs: Date.now() - started, status: error instanceof AIDataPrivacyError ? "blocked_privacy" : error instanceof AIServiceUnavailableError ? "blocked_killswitch" : "error",
         errorMessage: error.message, privacyClassification: request.dataClassification || "deidentified_clinical",
         purpose: request.purpose || "clinical_assistant", retentionCategory: request.retentionCategory || "operational_transient",
-      }).catch(metricError => console.error("[AIGateway] Block metric failed:", metricError));
+      }).catch(metricError => console.error("[AIGateway] Block metric failed:", safeError(metricError)));
       throw error;
     }
     const candidates = this.providers(context);

@@ -16,6 +16,8 @@
  */
 
 import crypto from "node:crypto";
+import { backupEncryptionKey, encryptBackup } from "../utilities/backupArchive.ts";
+import { safeError } from "../utilities/safeError.ts";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
@@ -23,11 +25,7 @@ import mongoose from "mongoose";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 // ─── Key Management ────────────────────────────────────────────────────────
-function getBackupKey(): Buffer {
-  const key = process.env.BACKUP_ENCRYPTION_KEY;
-  if (!key) throw new Error("BACKUP_ENCRYPTION_KEY is required for backups");
-  return /^[0-9a-fA-F]{64}$/.test(key) ? Buffer.from(key, "hex") : crypto.createHash("sha256").update(key).digest();
-}
+function getBackupKey(): Buffer { return backupEncryptionKey(process.env.BACKUP_ENCRYPTION_KEY); }
 
 // ─── Dead-Man's Switch Notification ────────────────────────────────────────
 async function pingHeartbeat(status: "success" | "failed", errorMessage?: string) {
@@ -49,7 +47,7 @@ async function pingHeartbeat(status: "success" | "failed", errorMessage?: string
     });
     console.log(`[Heartbeat] Successfully pinged dead-man's switch (${status}).`);
   } catch (err: any) {
-    console.warn("[Heartbeat Warning] Failed to ping dead-man's switch:", err?.message || err);
+    console.warn("[Heartbeat Warning] Failed to ping dead-man's switch:", safeError(err));
   }
 }
 
@@ -101,6 +99,8 @@ async function runBackup() {
   const startTime = Date.now();
   const args = process.argv.slice(2);
   const isDryRun = args.includes("--dry-run");
+  // Validate the key before reading/exporting any patient records.
+  const key = isDryRun ? undefined : getBackupKey();
   const skipUpload = args.includes("--no-upload");
   const outDirIdx = args.indexOf("--out-dir");
   const outDir = outDirIdx !== -1 && args[outDirIdx + 1] ? args[outDirIdx + 1] : path.join(process.cwd(), "backups");
@@ -182,30 +182,21 @@ async function runBackup() {
 
   // 3. Encrypt archive with AES-256-GCM
   console.log("🔐 Encrypting backup with AES-256-GCM authenticated cipher...");
-  const key = getBackupKey();
-  const iv = crypto.randomBytes(12); // 96-bit IV
-  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-
-  const encryptedData = Buffer.concat([cipher.update(compressedGzip), cipher.final()]);
-  const authTag = cipher.getAuthTag();
-
-  // Versioned binary payload: "v1:<iv_hex>:<authTag_hex>:\n" + encryptedBytes
-  const header = `v1:${iv.toString("hex")}:${authTag.toString("hex")}:\n`;
-  const finalFileBuffer = Buffer.concat([Buffer.from(header, "utf8"), encryptedData]);
+  const finalFileBuffer = encryptBackup(compressedGzip, key!);
 
   // Compute SHA-256 hash of final encrypted archive
   const fileHash = crypto.createHash("sha256").update(finalFileBuffer).digest("hex");
 
   // 4. Write local archive
   if (!fs.existsSync(outDir)) {
-    fs.mkdirSync(outDir, { recursive: true });
+    fs.mkdirSync(outDir, { recursive: true, mode: 0o700 });
   }
 
   const dateStr = new Date().toISOString().replace(/[:.]/g, "-");
   const fileName = `ekavyu-backup-${dateStr}.enc.gz`;
   const targetFilePath = path.join(outDir, fileName);
 
-  fs.writeFileSync(targetFilePath, finalFileBuffer);
+  fs.writeFileSync(targetFilePath, finalFileBuffer, { mode: 0o600, flag: "wx" });
   const sizeMb = (finalFileBuffer.length / (1024 * 1024)).toFixed(2);
   console.log(`💾 Saved encrypted local archive:`);
   console.log(`   • Path     : ${targetFilePath}`);
@@ -224,7 +215,7 @@ async function runBackup() {
         console.log("   ℹ️  Remote storage not configured. Set CLOUDFLARE_ACCOUNT_ID and R2_* env vars for off-site backups.");
       }
     } catch (uploadErr: any) {
-      console.error("   ❌ Remote storage upload failed:", uploadErr?.message || uploadErr);
+      console.error("   ❌ Remote storage upload failed:", safeError(uploadErr));
       throw uploadErr;
     }
   }
@@ -259,7 +250,7 @@ async function runBackup() {
 }
 
 runBackup().catch(async (err) => {
-  console.error("\n❌ [FATAL BACKUP FAILURE]:", err?.message || err);
-  await pingHeartbeat("failed", err?.message || String(err));
+  console.error("\n❌ [FATAL BACKUP FAILURE]:", safeError(err));
+  await pingHeartbeat("failed", safeError(err).errorType);
   process.exit(1);
 });

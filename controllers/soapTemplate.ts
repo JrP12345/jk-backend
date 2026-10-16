@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { SoapTemplate } from "../models/SoapTemplate.ts";
@@ -28,7 +29,7 @@ export async function getSoapTemplates(req: FastifyRequest, reply: FastifyReply)
     const templates = await SoapTemplate.find(filter).sort({ title: 1 });
     return reply.code(200).send(successResponse(templates));
   } catch (err) {
-    console.error("getSoapTemplates error:", err);
+    console.error("getSoapTemplates error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -62,7 +63,7 @@ export async function createSoapTemplate(req: FastifyRequest, reply: FastifyRepl
 
     return reply.code(201).send(successResponse(template, "SOAP template created successfully"));
   } catch (err) {
-    console.error("createSoapTemplate error:", err);
+    console.error("createSoapTemplate error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -107,7 +108,7 @@ export async function seedDefaultSoapTemplates(req: FastifyRequest, reply: Fasti
     const inserted = await SoapTemplate.insertMany(defaults);
     return reply.code(201).send(successResponse(inserted, `Seeded ${inserted.length} default SOAP templates`));
   } catch (err) {
-    console.error("seedDefaultSoapTemplates error:", err);
+    console.error("seedDefaultSoapTemplates error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

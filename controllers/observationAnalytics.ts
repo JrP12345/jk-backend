@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { Encounter } from "../models/Encounter.ts";
@@ -41,7 +42,7 @@ export async function evaluateEncounterScoreController(req: FastifyRequest, repl
       successResponse({ score: scoreDoc, alert: alertDoc }, "Clinical deterioration score evaluated and persisted")
     );
   } catch (err: any) {
-    console.error("evaluateEncounterScoreController error:", err);
+    console.error("evaluateEncounterScoreController error:", safeError(err));
     return reply.code(500).send(errorResponse(err.message || "Internal server error"));
   }
 }
@@ -61,7 +62,7 @@ export async function getEncounterScoresController(req: FastifyRequest, reply: F
     const scores = await ObservationScore.find({ encounterId, organizationId: encounter.organizationId, patientId: encounter.patientId }).sort({ evaluatedAt: -1 }).lean();
     return reply.code(200).send(successResponse(scores));
   } catch (err) {
-    console.error("getEncounterScoresController error:", err);
+    console.error("getEncounterScoresController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -96,7 +97,7 @@ export async function acknowledgeAlertController(req: FastifyRequest, reply: Fas
     await alertDoc.save();
     return reply.code(200).send(successResponse(alertDoc, `Alert status updated to '${alertDoc.status}'`));
   } catch (err) {
-    console.error("acknowledgeAlertController error:", err);
+    console.error("acknowledgeAlertController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -128,7 +129,7 @@ export async function getPatientVitalTrendsController(req: FastifyRequest, reply
     const trends = await ObservationAnalyticsService.getPatientVitalTrends(patientId, daysNum, staffScope);
     return reply.code(200).send(successResponse(trends));
   } catch (err) {
-    console.error("getPatientVitalTrendsController error:", err);
+    console.error("getPatientVitalTrendsController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { SiteVisit } from "../models/SiteVisit.ts";
 import { Location } from "../models/Location.ts";
@@ -180,7 +181,7 @@ export async function getSiteTrafficAnalytics(req: FastifyRequest, reply: Fastif
       )
     );
   } catch (err: any) {
-    console.error("getSiteTrafficAnalytics error:", err);
+    console.error("getSiteTrafficAnalytics error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to fetch traffic analytics"));
   }
 }

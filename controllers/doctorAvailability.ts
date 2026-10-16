@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
@@ -185,7 +186,7 @@ export async function setDoctorDayOverride(req: FastifyRequest, reply: FastifyRe
       )
     );
   } catch (err) {
-    console.error("setDoctorDayOverride error:", err);
+    console.error("setDoctorDayOverride error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -241,7 +242,7 @@ export async function getDoctorDayOverrides(req: FastifyRequest, reply: FastifyR
 
     return reply.code(200).send(successResponse(overrides));
   } catch (err) {
-    console.error("getDoctorDayOverrides error:", err);
+    console.error("getDoctorDayOverrides error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -294,7 +295,7 @@ export async function deleteDoctorDayOverride(req: FastifyRequest, reply: Fastif
 
     return reply.code(200).send(successResponse(null, "Doctor availability override removed successfully"));
   } catch (err) {
-    console.error("deleteDoctorDayOverride error:", err);
+    console.error("deleteDoctorDayOverride error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -342,7 +343,7 @@ export async function getTriageAppointments(req: FastifyRequest, reply: FastifyR
 
     return reply.code(200).send(successResponse(appointments));
   } catch (err) {
-    console.error("getTriageAppointments error:", err);
+    console.error("getTriageAppointments error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -372,7 +373,7 @@ export async function getEligibleReplacements(req: FastifyRequest, reply: Fastif
 
     return reply.code(200).send(successResponse(eligible));
   } catch (err) {
-    console.error("getEligibleReplacements error:", err);
+    console.error("getEligibleReplacements error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -409,7 +410,7 @@ export async function triageTransferAppointment(req: FastifyRequest, reply: Fast
 
     return reply.code(200).send(successResponse(updated, "Patient transferred to replacement doctor successfully"));
   } catch (err: any) {
-    console.error("triageTransferAppointment error:", err);
+    console.error("triageTransferAppointment error:", safeError(err));
     return reply.code(err instanceof AppointmentDomainError ? err.statusCode : err.code === 11000 ? 409 : 500).send(errorResponse(err instanceof AppointmentDomainError ? err.message : err.code === 11000 ? "The selected appointment slot is no longer available" : "Internal server error"));
   }
 }
@@ -444,7 +445,7 @@ export async function triageCancelAppointment(req: FastifyRequest, reply: Fastif
 
     return reply.code(200).send(successResponse(updated, "Appointment cancelled successfully"));
   } catch (err: any) {
-    console.error("triageCancelAppointment error:", err);
+    console.error("triageCancelAppointment error:", safeError(err));
     return reply.code(err instanceof AppointmentDomainError ? err.statusCode : err.code === 11000 ? 409 : 500).send(errorResponse(err instanceof AppointmentDomainError ? err.message : err.code === 11000 ? "The selected appointment slot is no longer available" : "Internal server error"));
   }
 }
@@ -485,7 +486,7 @@ export async function triageRescheduleAppointment(req: FastifyRequest, reply: Fa
 
     return reply.code(200).send(successResponse(result, "Appointment rescheduled successfully with high priority"));
   } catch (err: any) {
-    console.error("triageRescheduleAppointment error:", err);
+    console.error("triageRescheduleAppointment error:", safeError(err));
     return reply.code(err instanceof AppointmentDomainError ? err.statusCode : err.code === 11000 ? 409 : 500).send(errorResponse(err instanceof AppointmentDomainError ? err.message : err.code === 11000 ? "The selected appointment slot is no longer available" : "Internal server error"));
   }
 }
@@ -544,7 +545,7 @@ export async function triageBatchAction(req: FastifyRequest, reply: FastifyReply
 
     return reply.code(200).send(successResponse(result, "Batch triage action completed"));
   } catch (err: any) {
-    console.error("triageBatchAction error:", err);
+    console.error("triageBatchAction error:", safeError(err));
     return reply.code(err instanceof AppointmentDomainError ? err.statusCode : err.code === 11000 ? 409 : 500).send(errorResponse(err instanceof AppointmentDomainError ? err.message : err.code === 11000 ? "The selected appointment slot is no longer available" : "Internal server error"));
   }
 }
@@ -605,7 +606,7 @@ export async function patientDisruptionAction(req: FastifyRequest, reply: Fastif
       return reply.code(400).send(errorResponse("Invalid action. Must be 'reschedule' or 'cancel'"));
     }
   } catch (err: any) {
-    console.error("patientDisruptionAction error:", err);
+    console.error("patientDisruptionAction error:", safeError(err));
     return reply.code(err instanceof AppointmentDomainError ? err.statusCode : err.code === 11000 ? 409 : 500).send(errorResponse(err instanceof AppointmentDomainError ? err.message : err.code === 11000 ? "The selected appointment slot is no longer available" : "Internal server error"));
   }
 }

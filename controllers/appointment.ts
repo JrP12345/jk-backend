@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import { queuePrescriptionCommunication } from '../services/PrescriptionCommunicationService.ts';
 import { CommandError, executeRecordedCommand } from '../services/CommandReceiptService.ts';
 import { OperationReceipt } from '../models/OperationReceipt.ts';
@@ -197,7 +198,7 @@ export async function bookAppointment(req: FastifyRequest, reply: FastifyReply) 
     if (err?.code === 11000) {
       return reply.code(409).send(errorResponse("This consultation time slot has already been booked. Please choose another slot."));
     }
-    console.error("bookAppointment error:", err);
+    console.error("bookAppointment error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -311,7 +312,7 @@ export async function getAppointments(req: FastifyRequest, reply: FastifyReply) 
 
     return reply.code(200).send(successResponse(appointments));
   } catch (err) {
-    console.error("getAppointments error:", err);
+    console.error("getAppointments error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -739,7 +740,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
             timestamp: new Date().toISOString(),
           });
         } catch (wsErr) {
-          console.warn("Real-time pharmacy PRESCRIPTION_ISSUED broadcast warning:", wsErr);
+          console.warn("Real-time pharmacy PRESCRIPTION_ISSUED broadcast warning:", safeError(wsErr));
         }
       }
       });
@@ -768,7 +769,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
     });
     appointment.$session(null);
     for (const dispatch of afterCommit) {
-      try { await dispatch(); } catch (err) { req.log.error({ err }, "Clinical records committed; notification delivery failed"); }
+      try { await dispatch(); } catch (err) { req.log.error(safeError(err), "Clinical records committed; notification delivery failed"); }
     }
 
     // Real-time queue broadcast
@@ -791,13 +792,13 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
     if (["in-consultation", "completed", "cancelled", "no-show"].includes(status)) {
       const { triggerTurnApproachingPacing } = await import("./queue.ts");
       triggerTurnApproachingPacing(appointment.locationId, appointment.doctorId).catch((err) =>
-        console.error("Background turn approaching pacing error on appointment status update:", err)
+        console.error("Background turn approaching pacing error on appointment status update:", safeError(err))
       );
     }
 
     return reply.code(200).send(successResponse(appointment, "Appointment status updated successfully"));
   } catch (err) {
-    console.error("updateAppointmentStatus error:", err);
+    console.error("updateAppointmentStatus error:", safeError(err));
     if (err instanceof AppointmentDomainError) return reply.code(err.statusCode).send(errorResponse(err.message));
     if ((err as any)?.statusCode === 409) return reply.code(409).send(errorResponse((err as Error).message));
     if (isActiveConsultationLockConflict(err)) {
@@ -838,7 +839,7 @@ export async function resendPrescriptionNotification(req: FastifyRequest, reply:
   } catch (err: any) {
     if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
     if (err instanceof CommunicationPolicyError) return reply.code(409).send(errorResponse('Prescription message blocked: review current recipient, consent and preferences', { reason: err.reason }));
-    req.log.error({ err }, 'Prescription communication queue failed');
+    req.log.error(safeError(err), 'Prescription communication queue failed');
     return reply.code(503).send(errorResponse('Prescription message could not be confirmed. Retry the same submitted request.'));
   }
 }
@@ -963,7 +964,7 @@ export async function rescheduleAppointment(req: FastifyRequest, reply: FastifyR
       return reply.code(409).send(errorResponse("This consultation time slot has already been booked. Please choose another slot."));
     }
     if (err instanceof AppointmentDomainError) return reply.code(err.statusCode).send(errorResponse(err.message));
-    console.error("rescheduleAppointment error:", err);
+    console.error("rescheduleAppointment error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -993,7 +994,7 @@ export async function getDoctorSlots(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(200).send(successResponse(result));
   } catch (err: any) {
     if (err instanceof DoctorBookingUnavailableError) return reply.code(409).send(errorResponse(err.message));
-    console.error("getDoctorSlots error:", err);
+    console.error("getDoctorSlots error:", safeError(err));
     if (err instanceof RangeError && err.message.startsWith("Invalid date format")) {
       return reply.code(400).send(errorResponse(err.message));
     }
@@ -1044,7 +1045,7 @@ export async function cancelAppointment(req: FastifyRequest, reply: FastifyReply
 
     return reply.code(200).send(successResponse(appointment, "Appointment cancelled successfully"));
   } catch (err) {
-    console.error("cancelAppointment error:", err);
+    console.error("cancelAppointment error:", safeError(err));
     if (err instanceof AppointmentDomainError) return reply.code(err.statusCode).send(errorResponse(err.message));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
@@ -1084,7 +1085,7 @@ export async function getAppointmentById(req: FastifyRequest, reply: FastifyRepl
     const { appointmentReviewState } = await import("../utilities/appointmentReview.ts");
     return reply.code(200).send(successResponse({ ...appointment.toJSON(), reviewState: appointmentReviewState(appointment) }));
   } catch (err) {
-    console.error("getAppointmentById error:", err);
+    console.error("getAppointmentById error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1122,7 +1123,7 @@ export async function lockSlot(req: FastifyRequest, reply: FastifyReply) {
       )
     );
   } catch (err) {
-    console.error("lockSlot error:", err);
+    console.error("lockSlot error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1152,7 +1153,7 @@ export async function unlockSlot(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(null, result.message));
   } catch (err) {
-    console.error("unlockSlot error:", err);
+    console.error("unlockSlot error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1182,7 +1183,7 @@ export async function getSlotLockStatus(req: FastifyRequest, reply: FastifyReply
       })
     );
   } catch (err) {
-    console.error("getSlotLockStatus error:", err);
+    console.error("getSlotLockStatus error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1329,7 +1330,7 @@ export async function getFollowUpRegister(req: FastifyRequest, reply: FastifyRep
       )
     );
   } catch (err: any) {
-    req.log.error(err, "Failed to get follow-up register");
+    req.log.error(safeError(err), "Failed to get follow-up register");
     return reply.code(500).send(errorResponse(err.message || "Failed to retrieve follow-up register"));
   }
 }
@@ -1379,7 +1380,7 @@ export async function sendFollowUpReminder(req: FastifyRequest, reply: FastifyRe
         channel,
       });
     } catch (msgErr) {
-      console.warn("Follow-up reminder dispatch warning:", msgErr);
+      console.warn("Follow-up reminder dispatch warning:", safeError(msgErr));
     }
 
     (appointment as any).lastRecallSentAt = new Date();
@@ -1412,7 +1413,7 @@ export async function sendFollowUpReminder(req: FastifyRequest, reply: FastifyRe
       )
     );
   } catch (err: any) {
-    req.log.error(err, "Failed to send follow-up reminder");
+    req.log.error(safeError(err), "Failed to send follow-up reminder");
     return reply.code(500).send(errorResponse(err.message || "Failed to send follow-up reminder"));
   }
 }

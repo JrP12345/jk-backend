@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import { NotificationLog } from "../models/NotificationLog.ts";
 import crypto from "node:crypto";
 import { Organization } from "../models/Organization.ts";
@@ -178,7 +179,7 @@ async function dispatchBounded(options: SendMessageOptions): Promise<any> {
         errorReason: isSuccess ? undefined : "SMS_PROVIDER_DECLINED",
       });
     } catch (err: any) {
-      console.error("[MSG91 SMS Error]:", err);
+      console.error("[MSG91 SMS Error]:", safeError(err));
       return await NotificationLog.create({
         organizationId: options.organizationId,
         recipientPhone: phone,

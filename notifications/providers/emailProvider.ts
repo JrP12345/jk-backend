@@ -1,3 +1,4 @@
+import { safeError } from "../../utilities/safeError.ts";
 import nodemailer, { type Transporter } from "nodemailer";
 import { withConcurrencyBudget } from "../../utilities/concurrencyBudget.ts";
 import { MAX_PROVIDER_CONCURRENCY } from "../../utilities/scalability.ts";
@@ -104,9 +105,7 @@ export class EmailProvider {
         console.log("[EmailProvider] Sent via org SMTP");
         return true;
       } catch (err: any) {
-        console.error("[EmailProvider] Org SMTP delivery failed", {
-          code: typeof err?.code === "string" && /^[A-Z_]{1,32}$/.test(err.code) ? err.code : "SMTP_FAILED",
-        });
+        console.error("[EmailProvider] Org SMTP delivery failed", safeError(err));
         return false;
       }
     }
@@ -135,9 +134,7 @@ export class EmailProvider {
         console.log("[EmailProvider] Email sent");
         return true;
       } catch (err: any) {
-        console.error("[EmailProvider] Email delivery failed", {
-          code: typeof err?.code === "string" && /^[A-Z_]{1,32}$/.test(err.code) ? err.code : "SMTP_FAILED",
-        });
+        console.error("[EmailProvider] Email delivery failed", safeError(err));
         return false;
       }
     }

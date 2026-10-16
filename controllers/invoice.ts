@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import { claimMutation, mutationKey } from "../services/IdempotentMutationService.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
@@ -198,7 +199,7 @@ export async function createInvoice(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(201).send(successResponse(invoice, "Invoice created successfully"));
   } catch (err) {
-    console.error("createInvoice error:", err);
+    console.error("createInvoice error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -288,7 +289,7 @@ export async function getInvoices(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(invoices));
   } catch (err) {
-    console.error("getInvoices error:", err);
+    console.error("getInvoices error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -349,7 +350,7 @@ export async function getInvoiceDetails(req: FastifyRequest, reply: FastifyReply
 
     return reply.code(200).send(successResponse(invoice));
   } catch (err) {
-    console.error("getInvoiceDetails error:", err);
+    console.error("getInvoiceDetails error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -443,7 +444,7 @@ export async function collectPayment(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(invoice, "Invoice payment recorded successfully"));
   } catch (err) {
-    console.error("collectPayment error:", err);
+    console.error("collectPayment error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -477,7 +478,7 @@ export async function getEncounterChargesPreview(req: FastifyRequest, reply: Fas
 
     return reply.code(200).send(successResponse(preview, "Encounter charges compiled successfully"));
   } catch (err: any) {
-    console.error("getEncounterChargesPreview error:", err);
+    console.error("getEncounterChargesPreview error:", safeError(err));
     return reply.code(500).send(errorResponse(err.message || "Internal server error"));
   }
 }
@@ -516,7 +517,7 @@ export async function autoGenerateInvoiceForEncounter(req: FastifyRequest, reply
 
     return reply.code(201).send(successResponse(invoice, "Invoice auto-generated from encounter successfully"));
   } catch (err: any) {
-    console.error("autoGenerateInvoiceForEncounter error:", err);
+    console.error("autoGenerateInvoiceForEncounter error:", safeError(err));
     return reply.code(500).send(errorResponse(err.message || "Internal server error"));
   }
 }
@@ -672,7 +673,7 @@ export async function recordPartialPayment(req: FastifyRequest, reply: FastifyRe
     if (msg.startsWith("ALREADY_PAID:") || msg.startsWith("OVERPAYMENT:")) {
       return reply.code(400).send(errorResponse(msg.split(":")[1]));
     }
-    console.error("recordPartialPayment error:", err);
+    console.error("recordPartialPayment error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -726,7 +727,7 @@ export async function getConsolidatedCheckoutPreview(req: FastifyRequest, reply:
       )
     );
   } catch (err: any) {
-    console.error("getConsolidatedCheckoutPreview error:", err);
+    console.error("getConsolidatedCheckoutPreview error:", safeError(err));
     return reply.code(500).send(errorResponse(err.message || "Internal server error"));
   }
 }

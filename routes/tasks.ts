@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyInstance } from "fastify";
 import mongoose from "mongoose";
 import { authenticate, checkAnyPermission } from "../middleware/auth.ts";
@@ -68,7 +69,7 @@ export default async function taskRoutes(app: FastifyInstance) {
 
       return reply.code(201).send(successResponse(task, "Task created and assigned successfully"));
     } catch (err) {
-      console.error("createTask error:", err);
+      console.error("createTask error:", safeError(err));
       return reply.code(500).send(errorResponse("Internal server error"));
     }
   });
@@ -92,7 +93,7 @@ export default async function taskRoutes(app: FastifyInstance) {
 
       return reply.code(200).send(successResponse(tasks));
     } catch (err) {
-      console.error("getTasks error:", err);
+      console.error("getTasks error:", safeError(err));
       return reply.code(500).send(errorResponse("Internal server error"));
     }
   });
@@ -147,7 +148,7 @@ export default async function taskRoutes(app: FastifyInstance) {
 
       return reply.code(200).send(successResponse(task, "Task status updated successfully"));
     } catch (err) {
-      console.error("updateTaskStatus error:", err);
+      console.error("updateTaskStatus error:", safeError(err));
       return reply.code(500).send(errorResponse("Internal server error"));
     }
   });

@@ -65,12 +65,29 @@ describe("Bounded request lifecycle measurements", () => {
     const { recentAppointments, ...fullTotals } = full.json().data;
     const { recentAppointments: omitted, ...summaryTotals } = summary.json().data;
     expect(recentAppointments).toHaveLength(100); expect(omitted).toEqual([]);
+    expect(recentAppointments[0]).not.toHaveProperty("notes");
     expect(summaryTotals).toEqual(fullTotals); expect(reads).not.toHaveBeenCalled();
     expect(summaryTotals.moneyByCurrency).toContainEqual({ currency: "INR", collections: 350, outstanding: 400 });
     process.stdout.write(`PERF_DAILY_SUMMARY ${JSON.stringify({ fixtureVisits: 100, before: { appointmentFinds: fullFinds, responseBytes: Buffer.byteLength(full.body) }, after: { appointmentFinds: reads.mock.calls.length, responseBytes: Buffer.byteLength(summary.body) } })}\n`);
     reads.mockRestore();
     expect((await app.inject({ method: "GET", url: summaryUrl("&includeAppointments=invalid"), headers })).statusCode).toBe(400);
     expect((await app.inject({ method: "GET", url: summaryUrl("&includeAppointments=false").replace(locationId, otherLocationId), headers })).statusCode).toBe(403);
+  });
+
+  it("aggregates complete dashboard trends beyond list limits without returning historical patient records", async () => {
+    await Appointment.collection.insertMany(Array.from({ length: 130 }, (_, index) => ({
+      organizationId: new mongoose.Types.ObjectId(organizationId), locationId: new mongoose.Types.ObjectId(locationId),
+      patientId: patient._id, doctorId: new mongoose.Types.ObjectId(doctorId), status: "completed", appointmentType: "walk-in",
+      tokenNumber: index + 1, appointmentTime: new Date(now.getTime() - 2 * 86400000),
+    })));
+    const response = await app.inject({ method: "GET", url: summaryUrl("&includeAppointments=false&trendDays=7&timezone=Asia%2FKolkata"), headers });
+    expect(response.statusCode, response.body).toBe(200);
+    const data = response.json().data;
+    expect(data.recentAppointments).toEqual([]);
+    expect(data.trends.days.reduce((sum: number, row: any) => sum + row.count, 0)).toBe(230);
+    expect(data.trends.locations.reduce((sum: number, row: any) => sum + row.count, 0)).toBe(100);
+    expect((await app.inject({ method: "GET", url: summaryUrl("&trendDays=365"), headers })).statusCode).toBe(400);
+    expect((await app.inject({ method: "GET", url: summaryUrl("&trendDays=7&timezone=Invalid"), headers })).statusCode).toBe(400);
   });
 
   it("avoids patient and user population when no booked patients need delay alerts", async () => {

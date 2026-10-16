@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { Patient } from "../models/Patient.ts";
@@ -50,7 +51,7 @@ export async function evaluatePrescriptionSafetyController(req: FastifyRequest, 
     const evaluationResult = await cdsEngine.evaluate(cdsContext);
     return reply.code(200).send(successResponse(evaluationResult));
   } catch (err) {
-    console.error("evaluatePrescriptionSafetyController error:", err);
+    console.error("evaluatePrescriptionSafetyController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -129,7 +130,7 @@ export async function recordSafetyDecisionController(req: FastifyRequest, reply:
 
     return reply.code(201).send(successResponse(evaluationDoc, "CDS Evaluation snapshot persisted successfully"));
   } catch (err) {
-    console.error("overrideCDSEvaluationController error:", err);
+    console.error("overrideCDSEvaluationController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -156,7 +157,7 @@ export async function verifyPrescriptionIntegrityController(req: FastifyRequest,
     const result = await PrescriptionSealingService.verifyPrescriptionIntegrity(id);
     return reply.code(200).send(successResponse(result, "Prescription integrity verified"));
   } catch (err: any) {
-    console.error("verifyPrescriptionIntegrityController error:", err);
+    console.error("verifyPrescriptionIntegrityController error:", safeError(err));
     return reply.code(500).send(errorResponse(err.message || "Failed to verify prescription integrity"));
   }
 }
@@ -211,7 +212,7 @@ export async function amendPrescriptionController(req: FastifyRequest, reply: Fa
 
     return reply.code(201).send(successResponse(newSealed, "Prescription successfully amended and cryptographically sealed"));
   } catch (err: any) {
-    console.error("amendPrescriptionController error:", err);
+    console.error("amendPrescriptionController error:", safeError(err));
     return reply.code(500).send(errorResponse(err.message || "Failed to amend prescription"));
   }
 }

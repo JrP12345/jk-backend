@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import { SearchEngine } from '../platform/search/SearchEngine.ts';
 import { revokeUserSessions } from '../utilities/sessionResolver.ts';
 import type { FastifyRequest, FastifyReply } from "fastify";
@@ -347,7 +348,7 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
     });
     return reply.code(201).send(successResponse(created, "Organization created and admin registered"));
   } catch (err: any) {
-    console.error("createOrganization error:", err);
+    console.error("createOrganization error:", safeError(err));
     if (err instanceof WorkspaceError) return reply.code(err.statusCode).send(errorResponse(err.message));
     if (err instanceof BrandingValidationError) return reply.code(400).send(errorResponse(err.message));
     return reply.code(500).send(errorResponse(err.message || "Internal server error"));
@@ -398,7 +399,7 @@ export async function getAllOrganizations(req: FastifyRequest, reply: FastifyRep
 
     return reply.send(successResponse(formattedOrgs, "Organizations fetched successfully"));
   } catch (err: any) {
-    console.error("getAllOrganizations error:", err);
+    console.error("getAllOrganizations error:", safeError(err));
     return reply.code(500).send(errorResponse(err.message || "Failed to fetch organizations"));
   }
 }
@@ -513,7 +514,7 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
 
     return reply.send(successResponse({ ...updatedOrg, id: (updatedOrg as any)._id.toString() }, "Organization updated successfully"));
   } catch (err: any) {
-    console.error("updateOrganizationById error:", err);
+    console.error("updateOrganizationById error:", safeError(err));
     if (err instanceof BrandingValidationError) return reply.code(400).send(errorResponse(err.message));
     return reply.code(500).send(errorResponse(err.message || "Failed to update organization"));
   }
@@ -623,7 +624,7 @@ export async function addDoctor(req: FastifyRequest, reply: FastifyReply) {
     });
     return reply.code(201).send(successResponse(created, "Doctor registered successfully"));
   } catch (err) {
-    console.error("addDoctor error:", err);
+    console.error("addDoctor error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -702,7 +703,7 @@ export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) 
     });
     return reply.code(201).send(successResponse(created, "Receptionist registered successfully"));
   } catch (err) {
-    console.error("addReceptionist error:", err);
+    console.error("addReceptionist error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -808,7 +809,7 @@ export async function getOrgStaff(req: FastifyRequest, reply: FastifyReply) {
       ]
     }));
   } catch (err) {
-    console.error("getOrgStaff error:", err);
+    console.error("getOrgStaff error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -891,7 +892,7 @@ export async function addStaff(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(201).send(successResponse(created, `${role.replace("_", " ").toUpperCase()} registered successfully`));
   } catch (err) {
     if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
-    console.error("addStaff error:", err);
+    console.error("addStaff error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -941,7 +942,7 @@ export async function inviteStaff(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(201).send(successResponse({ email, role, expiresAt }, "Invitation delivery queued successfully"));
   } catch (err: any) {
-    console.error("inviteStaff error:", err);
+    console.error("inviteStaff error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to send staff invitation"));
   }
 }
@@ -1022,7 +1023,7 @@ export async function acceptInvitation(req: FastifyRequest, reply: FastifyReply)
     return reply.code(201).send(successResponse({ user: activated.user }, "Invitation accepted and account activated successfully"));
   } catch (err: any) {
     if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
-    console.error("acceptInvitation error:", err);
+    console.error("acceptInvitation error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to accept invitation"));
   }
 }
@@ -1078,7 +1079,7 @@ export async function updateDoctor(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(null, "Doctor updated successfully"));
   } catch (err) {
-    console.error("updateDoctor error:", err);
+    console.error("updateDoctor error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1115,7 +1116,7 @@ export async function updateReceptionist(req: FastifyRequest, reply: FastifyRepl
 
     return reply.code(200).send(successResponse(null, "Receptionist updated successfully"));
   } catch (err) {
-    console.error("updateReceptionist error:", err);
+    console.error("updateReceptionist error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1179,7 +1180,7 @@ export async function updateStaff(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(null, "Staff member updated successfully"));
   } catch (err) {
-    console.error("updateStaff error:", err);
+    console.error("updateStaff error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1223,7 +1224,7 @@ export async function enableAdminDoctorProfile(req: FastifyRequest, reply: Fasti
 
     return reply.code(200).send(successResponse(doctor, "Clinical Doctor Profile linked to Admin Account successfully!"));
   } catch (err: any) {
-    console.error("enableAdminDoctorProfile error:", err);
+    console.error("enableAdminDoctorProfile error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to link Doctor Profile to Admin Account"));
   }
 }
@@ -1262,7 +1263,7 @@ export async function deleteStaff(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(200).send(successResponse(null, "Staff member deactivated successfully"));
   } catch (err) {
     if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
-    console.error("deleteStaff error:", err);
+    console.error("deleteStaff error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1295,7 +1296,7 @@ export async function getOrganizationSettings(req: FastifyRequest, reply: Fastif
 
     return reply.send(successResponse(org, "Organization fetched successfully"));
   } catch (error) {
-    console.error("getOrganizationSettings error:", error);
+    console.error("getOrganizationSettings error:", safeError(error));
     return reply.code(500).send(errorResponse("Failed to fetch organization settings"));
   }
 }
@@ -1337,7 +1338,7 @@ export async function getOrganizationSmtp(req: FastifyRequest, reply: FastifyRep
       fromName: smtp.fromName || "",
     }, "SMTP config fetched"));
   } catch (error) {
-    console.error("getOrganizationSmtp error:", error);
+    console.error("getOrganizationSmtp error:", safeError(error));
     return reply.code(500).send(errorResponse("Failed to fetch SMTP configuration"));
   }
 }
@@ -1386,7 +1387,7 @@ export async function updateOrganizationSmtp(req: FastifyRequest, reply: Fastify
       fromName: (result as any)?.smtp?.fromName || "",
     }, "SMTP configuration updated successfully"));
   } catch (error) {
-    console.error("updateOrganizationSmtp error:", error);
+    console.error("updateOrganizationSmtp error:", safeError(error));
     return reply.code(500).send(errorResponse("Failed to update SMTP configuration"));
   }
 }
@@ -1405,7 +1406,7 @@ export async function saveDraft(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.send(successResponse(draft, "Draft saved successfully"));
   } catch (err) {
-    console.error("saveDraft error:", err);
+    console.error("saveDraft error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to save onboarding draft"));
   }
 }
@@ -1420,7 +1421,7 @@ export async function getDraft(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.send(successResponse(draft, "Draft retrieved successfully"));
   } catch (err) {
-    console.error("getDraft error:", err);
+    console.error("getDraft error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to fetch onboarding draft"));
   }
 }
@@ -1428,7 +1429,11 @@ export async function getDraft(req: FastifyRequest, reply: FastifyReply) {
 // ─── 2FA Google Authenticator OTP Onboarding Endpoints ──────────
 export async function setupOnboardingTOTP(req: FastifyRequest, reply: FastifyReply) {
   try {
+    if (req.user?.impersonatedBy || ["guest", "patient", "family_member"].includes(req.user!.role)) return reply.code(403).send(errorResponse("Sign in to your own staff account to enroll"));
     const userId = req.user!.id;
+    const cutoff = new Date(Date.now() - 10 * 60_000);
+    const recent = await RefreshToken.exists({ _id: req.user!.sessionId, userId, revoked: false, authenticatedAt: { $gt: cutoff } });
+    if (!recent) return reply.code(401).send(errorResponse("Sign in again before setting up an authenticator"));
     const user = await User.findById(userId);
     if (!user) return reply.code(404).send(errorResponse("User not found"));
 
@@ -1443,11 +1448,12 @@ export async function setupOnboardingTOTP(req: FastifyRequest, reply: FastifyRep
     await PendingTwoFactorSetup.create({
       userId: user._id,
       secret: base32,
+      sessionId: req.user!.sessionId,
       expiresAt,
     });
 
     // Update Organization onboarding status
-    if (req.user!.organization_id) {
+    if (req.user!.organization_id && req.user!.role === "admin") {
       await Organization.findByIdAndUpdate(req.user!.organization_id, {
         onboardingStatus: "TWO_FACTOR_PENDING",
       });
@@ -1465,18 +1471,19 @@ export async function setupOnboardingTOTP(req: FastifyRequest, reply: FastifyRep
       )
     );
   } catch (err) {
-    console.error("setupOnboardingTOTP error:", err);
+    console.error("setupOnboardingTOTP error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to initialize 2FA Google Authenticator setup"));
   }
 }
 
 export async function verifyOnboardingTOTP(req: FastifyRequest, reply: FastifyReply) {
   try {
+    if (req.user?.impersonatedBy || ["guest", "patient", "family_member"].includes(req.user!.role)) return reply.code(403).send(errorResponse("Sign in to your own staff account to enroll"));
     const userId = req.user!.id;
     const orgId = req.user!.organization_id;
     const { token } = (req.body as any) || {};
 
-    if (!token) {
+    if (typeof token !== "string" || !/^\d{6}$/.test(token.trim().replace(/\s+/g, ""))) {
       return reply.code(400).send(errorResponse("6-digit authenticator code is required"));
     }
 
@@ -1485,7 +1492,7 @@ export async function verifyOnboardingTOTP(req: FastifyRequest, reply: FastifyRe
     // Look up pending 2FA setup record
     const user = await User.findById(userId);
     if (!user || user.twoFactorEnabled) return reply.code(409).send(errorResponse("Two-factor setup is unavailable"));
-    const pendingSetup = await PendingTwoFactorSetup.findOne({ userId, expiresAt: { $gt: new Date() } });
+    const pendingSetup = await PendingTwoFactorSetup.findOne({ userId, sessionId: req.user!.sessionId, expiresAt: { $gt: new Date() } });
     const activeSecret = pendingSetup?.secret;
     if (!activeSecret) {
       return reply.code(400).send(errorResponse("No active 2FA secret found. Please scan the QR code first."));
@@ -1498,16 +1505,16 @@ export async function verifyOnboardingTOTP(req: FastifyRequest, reply: FastifyRe
       return reply.code(400).send(errorResponse("Invalid 6-digit Google Authenticator code. Please check your app."));
     }
 
-    const consumed = await PendingTwoFactorSetup.findOneAndDelete({ _id: pendingSetup!._id, userId, expiresAt: { $gt: new Date() } });
-    if (!consumed) return reply.code(409).send(errorResponse("Two-factor setup has expired or was already used"));
-
-    // 1. Mark User 2FA as enabled and save verified secret (encrypted at rest)
-    await User.findByIdAndUpdate(userId, {
-      twoFactorEnabled: true,
-      twoFactorSecret: encryptField(activeSecret),
+    await withTransaction(async () => {
+      const consumed = await PendingTwoFactorSetup.findOneAndDelete({ _id: pendingSetup!._id, userId, sessionId: req.user!.sessionId, expiresAt: { $gt: new Date() } });
+      if (!consumed) throw new CommandError(409, "Two-factor setup has expired or was already used");
+      const changed = await User.updateOne({ _id: userId, twoFactorEnabled: { $ne: true } }, { $set: {
+        twoFactorEnabled: true, twoFactorEnrollmentRequired: false, twoFactorSecret: encryptField(activeSecret),
+      }, $inc: { authVersion: 1 } });
+      if (changed.modifiedCount !== 1) throw new CommandError(409, "Two-factor configuration changed; sign in again");
     });
     await revokeUserSessions(userId, 'two_factor_enabled');
-    const auth = await createAuthSession({ id: userId, email: user.email || '', role: user.role, organization_id: orgId }, {
+    const auth = await createAuthSession({ id: userId, email: user.email || '', role: req.user!.role, organization_id: orgId }, {
       ipAddress: req.ip, userAgent: req.headers['user-agent'],
     });
     setAuthCookies(reply, auth.accessToken, auth.refreshToken);
@@ -1516,7 +1523,7 @@ export async function verifyOnboardingTOTP(req: FastifyRequest, reply: FastifyRe
     await PendingTwoFactorSetup.deleteMany({ userId });
 
     // 3. Mark Organization onboardingStatus as COMPLETED and isOnboarded as true
-    if (orgId) {
+    if (orgId && req.user!.role === "admin") {
       await Organization.findByIdAndUpdate(orgId, {
         onboardingStatus: "COMPLETED",
         isOnboarded: true,
@@ -1524,16 +1531,18 @@ export async function verifyOnboardingTOTP(req: FastifyRequest, reply: FastifyRe
     }
 
     // 4. Emit domain event ORG_CREATED
-    await eventBus.publishDurable({
-      eventType: EVENT_TYPES.ORG_CREATED,
-      category: "organization",
-      targetUserId: userId,
-      title: "Organization Onboarding Complete",
-      message: "Ekavyu Workspace onboarding and 2FA Google Authenticator verification completed!",
-      severity: "success",
-      organizationId: orgId,
-      actionUrl: "/dashboard",
-    });
+    if (orgId && req.user!.role === "admin") {
+      await eventBus.publishDurable({
+        eventType: EVENT_TYPES.ORG_CREATED,
+        category: "organization",
+        targetUserId: userId,
+        title: "Organization Onboarding Complete",
+        message: "Workspace onboarding and authenticator enrollment completed.",
+        severity: "success",
+        organizationId: orgId,
+        actionUrl: "/dashboard",
+      });
+    }
 
     return reply.send(
       successResponse(
@@ -1546,7 +1555,8 @@ export async function verifyOnboardingTOTP(req: FastifyRequest, reply: FastifyRe
       )
     );
   } catch (err) {
-    console.error("verifyOnboardingTOTP error:", err);
+    if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
+    console.error("verifyOnboardingTOTP error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to verify 2FA authenticator token"));
   }
 }
@@ -1584,7 +1594,7 @@ export async function createDepartment(req: FastifyRequest, reply: FastifyReply)
     return reply.code(201).send(successResponse(dept, "Department created successfully"));
   } catch (err: any) {
     if (err.code === 11000) return reply.code(409).send(errorResponse("Department code already exists in this organization"));
-    console.error("createDepartment error:", err);
+    console.error("createDepartment error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to create department"));
   }
 }
@@ -1607,7 +1617,7 @@ export async function getDepartments(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(departments));
   } catch (err) {
-    console.error("getDepartments error:", err);
+    console.error("getDepartments error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to fetch departments"));
   }
 }
@@ -1743,7 +1753,7 @@ export async function getOrganizationMembers(req: FastifyRequest, reply: Fastify
       count: members.length,
     }));
   } catch (err: any) {
-    console.error("getOrganizationMembers error:", err);
+    console.error("getOrganizationMembers error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to fetch organization members"));
   }
 }
@@ -1951,7 +1961,7 @@ export async function getGlobalUsers(req: FastifyRequest, reply: FastifyReply) {
       })
     );
   } catch (err: any) {
-    console.error("getGlobalUsers error:", err);
+    console.error("getGlobalUsers error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to fetch global users"));
   }
 }
@@ -2156,7 +2166,7 @@ export async function getPlatformHierarchy(req: FastifyRequest, reply: FastifyRe
       })
     );
   } catch (err: any) {
-    console.error("getPlatformHierarchy error:", err);
+    console.error("getPlatformHierarchy error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to fetch platform hierarchy"));
   }
 }

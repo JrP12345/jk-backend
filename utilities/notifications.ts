@@ -1,3 +1,4 @@
+import { safeError } from "./safeError.ts";
 import { getFrontendBaseUrl } from "./config.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { eventBus } from "../events/eventBus.ts";
@@ -110,10 +111,10 @@ export async function sendBookingNotification(appointmentId: any, actionType: "b
           tokenNumber: String(token),
           trackingUrl,
         },
-      }).catch((err) => console.error("SMS/WhatsApp dispatch failed:", err));
+      }).catch((err) => console.error("SMS/WhatsApp dispatch failed:", safeError(err)));
     }
   } catch (err) {
-    console.error("sendBookingNotification error:", err);
+    console.error("sendBookingNotification error:", safeError(err));
   }
 }
 
@@ -176,7 +177,7 @@ export async function sendTurnApproachingNotification(appointmentId: any, people
       });
     }
   } catch (err) {
-    console.error("sendTurnApproachingNotification error:", err);
+    console.error("sendTurnApproachingNotification error:", safeError(err));
     throw err;
   }
 }
@@ -264,7 +265,7 @@ export async function sendConsultationCompletedNotification(
           medicinesSummary: rxSummaryList,
           diagnosis: appt.diagnosis || "Consultation Completed",
         },
-      }).catch((err) => console.error("SMS/WhatsApp consultation completion dispatch failed:", err));
+      }).catch((err) => console.error("SMS/WhatsApp consultation completion dispatch failed:", safeError(err)));
 
       // Direct WhatsApp PDF Prescription Document Attachment Dispatch
       const { enqueueWhatsAppDocument } = await import("../services/CommunicationOutbox.ts");
@@ -283,7 +284,7 @@ export async function sendConsultationCompletedNotification(
       });
     }
   } catch (err) {
-    console.error("sendConsultationCompletedNotification error:", err);
+    console.error("sendConsultationCompletedNotification error:", safeError(err));
   }
 }
 
@@ -349,7 +350,7 @@ export async function sendPaymentReceiptNotification(params: {
           receiptUrl,
           trackingUrl,
         },
-      }).catch((err) => console.error("SMS/WhatsApp payment receipt dispatch notice:", err));
+      }).catch((err) => console.error("SMS/WhatsApp payment receipt dispatch notice:", safeError(err)));
     }
 
     if (patientEmail) {
@@ -363,10 +364,10 @@ export async function sendPaymentReceiptNotification(params: {
         html: `<div style="font-family: sans-serif; padding: 20px; line-height: 1.6;">${body.replace(/\n/g, "<br/>")}</div>`,
         idempotencyKey: `transactional-email:payment-receipt:${invoice?._id || params.invoiceId || appt._id}:${params.paymentMethod}:${params.amount}`,
         communicationContext: { organizationId: String(appt.organizationId), appointmentId: String(appt._id), purpose: 'care_operations' },
-      }).catch((err) => console.error("Email payment receipt outbox enqueue failed:", err));
+      }).catch((err) => console.error("Email payment receipt outbox enqueue failed:", safeError(err)));
     }
   } catch (err) {
-    console.error("sendPaymentReceiptNotification error:", err);
+    console.error("sendPaymentReceiptNotification error:", safeError(err));
   }
 }
 
@@ -423,9 +424,9 @@ export async function sendFollowUpRecallNotification(params: {
         tokenNumber: String(token),
         trackingUrl,
       },
-    }).catch((err) => console.error("Follow-up recall SMS/WhatsApp notice:", err));
+    }).catch((err) => console.error("Follow-up recall SMS/WhatsApp notice:", safeError(err)));
   } catch (err) {
-    console.error("sendFollowUpRecallNotification error:", err);
+    console.error("sendFollowUpRecallNotification error:", safeError(err));
   }
 }
 
@@ -476,8 +477,8 @@ export async function sendDoorwaySummonNotification(params: {
         estimatedWaitTime: "0 mins - Please proceed inside to the Doctor Cabin",
         trackingUrl,
       },
-    }).catch((err) => console.error("Doorway summon SMS/WhatsApp notice:", err));
+    }).catch((err) => console.error("Doorway summon SMS/WhatsApp notice:", safeError(err)));
   } catch (err) {
-    console.error("sendDoorwaySummonNotification error:", err);
+    console.error("sendDoorwaySummonNotification error:", safeError(err));
   }
 }

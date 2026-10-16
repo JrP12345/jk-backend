@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { User } from "../models/User.ts";
@@ -58,7 +59,7 @@ export async function generateSOAPNoteController(req: FastifyRequest, reply: Fas
 
     return reply.code(200).send(successResponse(draft, "SOAP note draft generated successfully"));
   } catch (err: any) {
-    console.error("generateSOAPNoteController error:", err);
+    console.error("generateSOAPNoteController error:", safeError(err));
     if (err instanceof AIServiceUnavailableError) {
       return reply.code(503).send(errorResponse(err.message));
     }
@@ -232,7 +233,7 @@ export async function listChatSessionsController(req: FastifyRequest, reply: Fas
 
     return reply.code(200).send(successResponse(formattedSessions));
   } catch (err) {
-    console.error("listChatSessionsController error:", err);
+    console.error("listChatSessionsController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -282,7 +283,7 @@ export async function createChatSessionController(req: FastifyRequest, reply: Fa
 
     return reply.code(201).send(successResponse({ ...session.toJSON(), messages: [welcomeMsg] }, "Chat session initialized"));
   } catch (err) {
-    console.error("createChatSessionController error:", err);
+    console.error("createChatSessionController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -353,7 +354,7 @@ export async function getChatSessionController(req: FastifyRequest, reply: Fasti
 
     return reply.code(200).send(successResponse(formattedSession));
   } catch (err) {
-    console.error("getChatSessionController error:", err);
+    console.error("getChatSessionController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -413,7 +414,7 @@ export async function listChatSessionMessagesController(req: FastifyRequest, rep
       limit: paginatedResult.limit,
     }));
   } catch (err) {
-    console.error("listChatSessionMessagesController error:", err);
+    console.error("listChatSessionMessagesController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -574,7 +575,7 @@ async function sendChatMessage(req: FastifyRequest, reply: FastifyReply) {
       incremental: true
     }));
   } catch (err: any) {
-    console.error("sendChatMessageController error:", err);
+    console.error("sendChatMessageController error:", safeError(err));
     return reply.code(500).send(errorResponse(err.message || "Internal server error"));
   }
 }
@@ -614,7 +615,7 @@ export async function deleteChatSessionController(req: FastifyRequest, reply: Fa
 
     return reply.code(200).send(successResponse({ sessionId }, "Chat session archived"));
   } catch (err) {
-    console.error("deleteChatSessionController error:", err);
+    console.error("deleteChatSessionController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -648,7 +649,7 @@ export async function queryHealthAssistantController(req: FastifyRequest, reply:
 
     return reply.code(200).send(successResponse(response));
   } catch (err: any) {
-    console.error("queryHealthAssistantController error:", err);
+    console.error("queryHealthAssistantController error:", safeError(err));
     if (err instanceof AIServiceUnavailableError) {
       return reply.code(503).send(errorResponse(err.message));
     }
@@ -698,7 +699,7 @@ export async function predictNoShowRiskController(req: FastifyRequest, reply: Fa
       })
     );
   } catch (err) {
-    console.error("predictNoShowRiskController error:", err);
+    console.error("predictNoShowRiskController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -736,7 +737,7 @@ export async function auditBillingAnomaliesController(req: FastifyRequest, reply
       })
     );
   } catch (err) {
-    console.error("auditBillingAnomaliesController error:", err);
+    console.error("auditBillingAnomaliesController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -780,7 +781,7 @@ export async function forecastInventorySupplyController(req: FastifyRequest, rep
       })
     );
   } catch (err) {
-    console.error("forecastInventorySupplyController error:", err);
+    console.error("forecastInventorySupplyController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -821,7 +822,7 @@ export async function extractNlpIcd10CodesController(req: FastifyRequest, reply:
       })
     );
   } catch (err) {
-    console.error("extractNlpIcd10CodesController error:", err);
+    console.error("extractNlpIcd10CodesController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

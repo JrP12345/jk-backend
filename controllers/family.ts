@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { FamilyRelationship } from "../models/FamilyRelationship.ts";
@@ -33,7 +34,7 @@ export async function getFamilyMembers(req: FastifyRequest, reply: FastifyReply)
 
     return reply.code(200).send(successResponse(formatted));
   } catch (err) {
-    console.error("getFamilyMembers error:", err);
+    console.error("getFamilyMembers error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -107,7 +108,7 @@ export async function addFamilyMember(req: FastifyRequest, reply: FastifyReply) 
       )
     );
   } catch (err: any) {
-    console.error("addFamilyMember error:", err);
+    console.error("addFamilyMember error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -140,7 +141,7 @@ export async function updateFamilyMember(req: FastifyRequest, reply: FastifyRepl
 
     return reply.code(200).send(successResponse(null, "Family member updated successfully"));
   } catch (err) {
-    console.error("updateFamilyMember error:", err);
+    console.error("updateFamilyMember error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -165,7 +166,7 @@ export async function removeFamilyMember(req: FastifyRequest, reply: FastifyRepl
 
     return reply.code(200).send(successResponse(null, "Family member relationship removed"));
   } catch (err) {
-    console.error("removeFamilyMember error:", err);
+    console.error("removeFamilyMember error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -188,7 +189,7 @@ export async function claimPatientRecord(req: FastifyRequest, reply: FastifyRepl
       { upsert: true, returnDocument: "after", runValidators: true });
     return reply.code(202).send(successResponse({ status: "pending", relationshipId: relationship.id }, "Identity review requested. The organization must verify the person before medical access is granted."));
   } catch (err) {
-    req.log.error({ err }, "Identity claim failed");
+    req.log.error(safeError(err), "Identity claim failed");
     return reply.code(503).send(errorResponse("The identity claim could not be saved. Retry your request."));
   }
 }

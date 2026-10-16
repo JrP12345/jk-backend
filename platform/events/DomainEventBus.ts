@@ -1,3 +1,4 @@
+import { safeError } from "../../utilities/safeError.ts";
 import { createDomainEvent, type DomainEvent } from "./DomainEvent.ts";
 
 export type EventSubscriber<T = any> = (event: DomainEvent<T>) => Promise<void> | void;
@@ -48,7 +49,7 @@ export class DomainEventBus {
         await handler(event);
       } catch (err) {
         failures.push(err);
-        console.error(`[DomainEventBus] Error executing subscriber for '${event.eventType}' (eventId: ${event.eventId}):`, err);
+        console.error(`[DomainEventBus] Error executing subscriber for '${event.eventType}' (eventId: ${event.eventId}):`, safeError(err));
       }
     }
     if (strict && failures.length) throw failures[0];

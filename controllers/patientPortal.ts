@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import crypto from 'node:crypto';
 import { Appointment } from '../models/Appointment.ts';
 import { AuditLog } from '../models/AuditLog.ts';
@@ -81,7 +82,7 @@ export async function getCurrentPatientProfile(req: FastifyRequest, reply: Fasti
 
     return reply.code(200).send(successResponse({ user, patient, familyMembers }));
   } catch (err) {
-    console.error("getCurrentPatientProfile error:", err);
+    console.error("getCurrentPatientProfile error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -155,7 +156,7 @@ export async function updateCurrentPatientProfile(req: FastifyRequest, reply: Fa
 
     return reply.code(200).send(successResponse(updatedPatient, "Patient profile updated successfully"));
   } catch (err) {
-    console.error("updateCurrentPatientProfile error:", err);
+    console.error("updateCurrentPatientProfile error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -242,7 +243,7 @@ export async function createPrescriptionRefillRequest(req: FastifyRequest, reply
 
     return reply.code(201).send(successResponse(refill, "Prescription refill request submitted successfully"));
   } catch (err) {
-    console.error("createPrescriptionRefillRequest error:", err);
+    console.error("createPrescriptionRefillRequest error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -294,7 +295,7 @@ export async function getPrescriptionRefillRequests(req: FastifyRequest, reply: 
     setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
     return reply.code(200).send(successResponse(refills));
   } catch (err) {
-    console.error("getPrescriptionRefillRequests error:", err);
+    console.error("getPrescriptionRefillRequests error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -333,7 +334,7 @@ export async function updatePrescriptionRefillRequestStatus(req: FastifyRequest,
 
     return reply.code(200).send(successResponse(refill, `Refill request ${status} successfully`));
   } catch (err) {
-    console.error("updatePrescriptionRefillRequestStatus error:", err);
+    console.error("updatePrescriptionRefillRequestStatus error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -368,12 +369,12 @@ export async function patientSelfBookAppointment(req: FastifyRequest, reply: Fas
     const recorded = JSON.parse(decryptField(receipt.responseCiphertext));
     const owner = await Patient.exists({ _id: appointment.patientId, userId: req.user!.id }).setOptions({ bypassTenantFilter: true });
     const trackerToken = owner && recorded.trackerToken && appointment.trackerTokenExpiresAt && appointment.trackerTokenExpiresAt > new Date() && hashTrackerCapability(recorded.trackerToken) === appointment.trackerTokenHash ? recorded.trackerToken : undefined;
-    for (const effect of effects) await effect().catch(error => req.log.warn({ err: error }, 'Booking broadcast could not be refreshed'));
+    for (const effect of effects) await effect().catch(error => req.log.warn(safeError(error), 'Booking broadcast could not be refreshed'));
     return reply.code(command.replayed ? 200 : 201).send(successResponse({ appointment: { id: appointment.id, patientId: String(appointment.patientId), doctorId: String(appointment.doctorId), locationId: String(appointment.locationId), appointmentTime: appointment.appointmentTime, status: appointment.status, paymentStatus: appointment.paymentStatus, tokenNumber: appointment.tokenNumber, queuePosition: appointment.queuePosition, trackerToken }, tokenNumber: appointment.tokenNumber, queuePosition: appointment.queuePosition,
       paymentRequired: appointment.paymentStatus === 'pending', fees: appointment.paymentAmount, replayed: command.replayed }, 'Your visit was recorded. Review its current booking and payment status.'));
   } catch (error) {
     if (error instanceof AppointmentDomainError || error instanceof CommandError) return reply.code(error.statusCode).send(errorResponse(error.message));
-    req.log.error({ err: error }, 'Portal booking could not be confirmed');
+    req.log.error(safeError(error), 'Portal booking could not be confirmed');
     return reply.code(503).send(errorResponse('The booking result could not be confirmed. Retry the submitted request.'));
   }
 }
@@ -404,7 +405,7 @@ export async function getPatientAppointmentsHistory(req: FastifyRequest, reply: 
 
     return reply.code(200).send(successResponse(appointments));
   } catch (err) {
-    console.error("getPatientAppointmentsHistory error:", err);
+    console.error("getPatientAppointmentsHistory error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -453,7 +454,7 @@ export async function getPatientMedicalRecords(req: FastifyRequest, reply: Fasti
 
     return reply.code(200).send(successResponse(medicalRecordSummary, "Patient longitudinal medical records retrieved"));
   } catch (err) {
-    console.error("getPatientMedicalRecords error:", err);
+    console.error("getPatientMedicalRecords error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

@@ -11,17 +11,16 @@ import { getOrganizationQualityMetricsController } from "../controllers/search.t
 
 export default async function analyticsRoutes(app: FastifyInstance) {
   const viewAnalytics = { preHandler: [authenticate, checkPermission("VIEW_ANALYTICS")] };
-  const auth = { preHandler: [authenticate] };
   app.get("/api/analytics/daily-summary", { preHandler: [authenticate, checkAnyPermissionOrRoles([], "VIEW_APPOINTMENTS", "MANAGE_APPOINTMENTS", "VIEW_EHR", "VIEW_BILLING", "MANAGE_BILLING")] }, getDailyDashboard);
 
   // Executive & Quality Metrics Dashboard
   app.get("/api/analytics/executive", viewAnalytics, getExecutiveAnalytics);
   app.get("/api/analytics/quality-metrics", viewAnalytics, getOrganizationQualityMetricsController);
-  app.get("/api/analytics/nabh-kpis", auth, getNabhKpis);
+  app.get("/api/analytics/nabh-kpis", viewAnalytics, getNabhKpis);
 
   // Clinical Summary & Throughput Analytics
-  app.get("/api/analytics/clinical-summary", auth, getClinicalSummaryAnalyticsController);
+  app.get("/api/analytics/clinical-summary", viewAnalytics, getClinicalSummaryAnalyticsController);
 
   // Report Export (JSON / CSV)
-  app.get("/api/analytics/export", auth, exportAnalyticsReportController);
+  app.get("/api/analytics/export", viewAnalytics, exportAnalyticsReportController);
 }

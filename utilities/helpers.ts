@@ -65,6 +65,7 @@ export async function createRefreshTokenDetails(
     familyId?: string;
     generation?: number;
     authVersion?: number;
+    authenticatedAt?: Date;
     impersonatedBy?: { id: string; email: string; name: string; originalRole: string };
   }
 ): Promise<{ rawToken: string; sessionId: string; familyId: string; generation: number; authVersion: number }> {
@@ -140,6 +141,7 @@ export async function createRefreshTokenDetails(
     bookingPatientId: meta?.bookingPatientId,
     impersonatedBy: meta?.impersonatedBy || undefined,
     lastActiveAt: new Date(),
+    authenticatedAt: meta?.authenticatedAt || new Date(),
   });
 
   const sessionId = sessionRecord._id.toString();

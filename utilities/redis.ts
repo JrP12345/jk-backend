@@ -1,3 +1,4 @@
+import { safeError } from "./safeError.ts";
 import { Redis } from "ioredis";
 import { getRedisConfiguration } from "./redisConfiguration.ts";
 
@@ -31,7 +32,7 @@ function createRedisClient(): Redis | null {
         });
 
     client.on("error", (err: Error) => {
-      console.warn("[Redis Warning] Connection error:", err.message);
+      console.warn("[Redis Warning] Connection error:", safeError(err));
     });
 
     client.on("connect", () => {
@@ -40,7 +41,7 @@ function createRedisClient(): Redis | null {
 
     return client;
   } catch (err: any) {
-    console.warn("[Redis Error] Failed to initialize Redis client:", err.message);
+    console.warn("[Redis Error] Failed to initialize Redis client:", safeError(err));
     return null;
   }
 }
@@ -62,7 +63,7 @@ export async function publishRedisEvent(channel: string, payload: any): Promise<
   try {
     return await redisClient.publish(channel, typeof payload === "string" ? payload : JSON.stringify(payload));
   } catch (err: any) {
-    console.warn(`[Redis PubSub] Failed to publish on channel '${channel}':`, err.message);
+    console.warn(`[Redis PubSub] Failed to publish on channel '${channel}':`, safeError(err));
     return 0;
   }
 }

@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { Role } from "../models/Role.ts";
 import { User } from "../models/User.ts";
@@ -138,7 +139,7 @@ export async function getRoles(req: FastifyRequest, reply: FastifyReply) {
       : roles;
     return reply.code(200).send(successResponse(effectiveRoles));
   } catch (err) {
-    console.error("getRoles error:", err);
+    console.error("getRoles error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -150,7 +151,7 @@ export async function getPermissionCatalog(req: FastifyRequest, reply: FastifyRe
     }
     return reply.code(200).send(successResponse(SYSTEM_PERMISSIONS_CATALOG));
   } catch (err) {
-    console.error("getPermissionCatalog error:", err);
+    console.error("getPermissionCatalog error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -202,7 +203,7 @@ export async function createRole(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(201).send(successResponse(role, "Role created successfully"));
   } catch (err) {
-    console.error("createRole error:", err);
+    console.error("createRole error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -232,6 +233,8 @@ export async function updateRolePermissions(req: FastifyRequest, reply: FastifyR
       description?: string;
       permissions: string[];
     };
+
+    if (["patient", "family_member", "guest"].includes(name) && userRole !== "root") return reply.code(403).send(errorResponse("Consumer permission presets are managed at platform level"));
 
     if (!Array.isArray(permissions)) {
       return reply.code(400).send(errorResponse("Permissions must be an array of permission codes"));
@@ -292,7 +295,7 @@ export async function updateRolePermissions(req: FastifyRequest, reply: FastifyR
     return reply.code(200).send(successResponse(role, `Permissions updated for role '${name}'`));
   } catch (err) {
     if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
-    console.error("updateRolePermissions error:", err);
+    console.error("updateRolePermissions error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -337,7 +340,7 @@ export async function deleteRole(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(200).send(successResponse(null, `Role '${name}' deleted successfully`));
   } catch (err) {
     if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
-    console.error("deleteRole error:", err);
+    console.error("deleteRole error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -359,6 +362,7 @@ export async function updateUserRole(req: FastifyRequest, reply: FastifyReply) {
     if (!newRole) {
       return reply.code(400).send(errorResponse("Target role is required"));
     }
+    if (requesterOrgId && ["root", "patient", "family_member", "guest"].includes(newRole)) return reply.code(403).send(errorResponse("Select a staff workspace role"));
     if (newRole === "root" && !isRoot) {
       return reply.code(403).send(errorResponse("Forbidden: Only Root Super-Admin can assign the Root role"));
     }
@@ -424,7 +428,7 @@ export async function updateUserRole(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(200).send(successResponse({ id: user.id, name: user.name, role: newRole, organizationId: requesterOrgId || null }, `Role updated successfully`));
   } catch (err) {
     if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
-    console.error("updateUserRole error:", err);
+    console.error("updateUserRole error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

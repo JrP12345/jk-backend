@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import crypto from 'node:crypto';
 import { executeRecordedCommand, CommandError } from '../services/CommandReceiptService.ts';
 import { OutboundMessage } from '../models/OutboundMessage.ts';
@@ -80,7 +81,7 @@ export async function getAdaptiveConsultationDuration(
       }
     }
   } catch (err) {
-    console.error("getAdaptiveConsultationDuration error (fallback used):", err);
+    console.error("getAdaptiveConsultationDuration error (fallback used):", safeError(err));
   }
 
   return { duration: fallbackDuration, isAdaptive: false, sampleCount: 0 };
@@ -162,7 +163,7 @@ export async function getQueue(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(queueList));
   } catch (err) {
-    console.error("getQueue error:", err);
+    console.error("getQueue error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -282,7 +283,7 @@ export async function getQueueStatus(req: FastifyRequest, reply: FastifyReply) {
       })
     );
   } catch (err) {
-    console.error("getQueueStatus error:", err);
+    console.error("getQueueStatus error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -364,7 +365,7 @@ export async function reorderQueue(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(200).send(successResponse(null, "Queue reordered successfully"));
     });
   } catch (err) {
-    console.error("reorderQueue error:", err);
+    console.error("reorderQueue error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -457,7 +458,7 @@ export async function getAuditLogs(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(logs));
   } catch (err) {
-    console.error("getAuditLogs error:", err);
+    console.error("getAuditLogs error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -477,7 +478,7 @@ export async function verifyAuditLogsIntegrity(req: FastifyRequest, reply: Fasti
     const verification = await verifyAuditChainIntegrity(orgId);
     return reply.code(200).send(successResponse(verification));
   } catch (err: any) {
-    console.error("verifyAuditLogsIntegrity error:", err);
+    console.error("verifyAuditLogsIntegrity error:", safeError(err));
     return reply.code(500).send(errorResponse(err?.message || "Internal server error"));
   }
 }
@@ -581,7 +582,7 @@ export async function checkInAppointment(req: FastifyRequest, reply: FastifyRepl
 
     return reply.code(200).send(successResponse(appointment, `Checked in successfully! Token #${appointment.tokenNumber}`));
   } catch (err) {
-    console.error("checkInAppointment error:", err);
+    console.error("checkInAppointment error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -638,7 +639,7 @@ export async function triggerTurnApproachingPacing(locationId: any, doctorId: an
       });
     }
   } catch (err) {
-    console.error("triggerTurnApproachingPacing error:", err);
+    console.error("triggerTurnApproachingPacing error:", safeError(err));
   }
 }
 
@@ -853,7 +854,7 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
         message: `Please proceed to consultation room. Token #${nextAppt.tokenNumber}`,
         severity: "info",
         actionUrl: "/dashboard/appointments"
-      }).catch(err => req.log.error({ err }, "Queue advance committed; notification delivery failed"));
+      }).catch(err => req.log.error(safeError(err), "Queue advance committed; notification delivery failed"));
     }
 
     // Instant WhatsApp Cabin Doorway Summon Notification to Patient Phone
@@ -886,12 +887,12 @@ export async function callNextPatient(req: FastifyRequest, reply: FastifyReply) 
 
     // Autonomous Queue Pacing (P2): Dispatch turn approaching notifications to next in line
     triggerTurnApproachingPacing(nextAppt.locationId, targetDoctorId).catch((err) =>
-      console.error("Background turn approaching pacing error on call next:", err)
+      console.error("Background turn approaching pacing error on call next:", safeError(err))
     );
 
     return reply.code(200).send(successResponse(nextAppt, `Calling Token #${nextAppt.tokenNumber}`));
   } catch (err) {
-    console.error("callNextPatient error:", err);
+    console.error("callNextPatient error:", safeError(err));
     if ((err as any)?.statusCode === 409) return reply.code(409).send(errorResponse((err as Error).message, "CONCURRENT_QUEUE_CALL"));
     if (isActiveConsultationLockConflict(err)) {
       return reply.code(409).send(errorResponse("Doctor already has an active consultation. Refresh the queue before calling the next patient.", "ACTIVE_CONSULTATION_IN_PROGRESS"));
@@ -972,7 +973,7 @@ export async function bumpQueuePatient(req: FastifyRequest, reply: FastifyReply)
 
     // Autonomous Queue Pacing (P2): Dispatch turn approaching notifications if queue order shifted
     triggerTurnApproachingPacing(appointment.locationId, appointment.doctorId).catch((err) =>
-      console.error("Background turn approaching pacing error on bump:", err)
+      console.error("Background turn approaching pacing error on bump:", safeError(err))
     );
 
     return reply.code(200).send(
@@ -982,7 +983,7 @@ export async function bumpQueuePatient(req: FastifyRequest, reply: FastifyReply)
       )
     );
   } catch (err) {
-    console.error("bumpQueuePatient error:", err);
+    console.error("bumpQueuePatient error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1072,12 +1073,12 @@ export async function parkQueuePatient(req: FastifyRequest, reply: FastifyReply)
 
     // Autonomous Queue Pacing (P2): Update pacing for remaining waiting queue
     triggerTurnApproachingPacing(appointment.locationId, appointment.doctorId).catch((err) =>
-      console.error("Background turn approaching pacing error on park:", err)
+      console.error("Background turn approaching pacing error on park:", safeError(err))
     );
 
     return reply.code(200).send(successResponse(appointment, `Patient Token #${appointment.tokenNumber} moved to standby`));
   } catch (err) {
-    console.error("parkQueuePatient error:", err);
+    console.error("parkQueuePatient error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1159,12 +1160,12 @@ export async function resumeQueuePatient(req: FastifyRequest, reply: FastifyRepl
 
     // Autonomous Queue Pacing (P2): Dispatch turn approaching notifications for newly resumed queue order
     triggerTurnApproachingPacing(appointment.locationId, appointment.doctorId).catch((err) =>
-      console.error("Background turn approaching pacing error on resume:", err)
+      console.error("Background turn approaching pacing error on resume:", safeError(err))
     );
 
     return reply.code(200).send(successResponse(appointment, `Patient Token #${appointment.tokenNumber} resumed as Next Up`));
   } catch (err) {
-    console.error("resumeQueuePatient error:", err);
+    console.error("resumeQueuePatient error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1262,7 +1263,7 @@ export async function getQueueDelayStatus(req: FastifyRequest, reply: FastifyRep
       delayedPatients,
     }));
   } catch (err) {
-    console.error("getQueueDelayStatus error:", err);
+    console.error("getQueueDelayStatus error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1352,7 +1353,7 @@ export async function triggerQueueDelayAlerts(req: FastifyRequest, reply: Fastif
               });
               if (prepared) notifiedCount++;
             } catch (notifyErr) {
-              console.error(`[QueueDelay] Failed to notify appointment ${appt._id}:`, notifyErr);
+              console.error(`[QueueDelay] Failed to notify appointment ${appt._id}:`, safeError(notifyErr));
             }
           }
         }
@@ -1362,7 +1363,7 @@ export async function triggerQueueDelayAlerts(req: FastifyRequest, reply: Fastif
 
     return reply.code(200).send(successResponse({ notifiedCount, queuedCount: notifiedCount }, `Prepared queue updates for ${notifiedCount} patient(s); delivery remains subject to current consent`));
   } catch (err) {
-    console.error("triggerQueueDelayAlerts error:", err);
+    console.error("triggerQueueDelayAlerts error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1571,7 +1572,7 @@ export async function sendPatientForInvestigation(req: FastifyRequest, reply: Fa
       successResponse(appointment, `Patient Token #${appointment.tokenNumber} sent for diagnostic tests (${createdOrders.length} orders created). Room unblocked.`)
     );
   } catch (err) {
-    console.error("sendPatientForInvestigation error:", err);
+    console.error("sendPatientForInvestigation error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1689,7 +1690,7 @@ export async function resumeForReportReview(req: FastifyRequest, reply: FastifyR
       successResponse(appointment, `Patient Token #${appointment.tokenNumber} recalled to ${cabinNum} for Report Review as Next Up`)
     );
   } catch (err) {
-    console.error("resumeForReportReview error:", err);
+    console.error("resumeForReportReview error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1748,7 +1749,7 @@ export async function startOpdSession(req: FastifyRequest, reply: FastifyReply) 
 
     return reply.code(200).send(successResponse(session, "OPD session started successfully"));
   } catch (err) {
-    console.error("startOpdSession error:", err);
+    console.error("startOpdSession error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1843,7 +1844,7 @@ export async function toggleDoctorBreak(req: FastifyRequest, reply: FastifyReply
       successResponse(session, isOnBreak ? "Doctor break started successfully" : "Doctor break ended successfully")
     );
   } catch (err) {
-    console.error("toggleDoctorBreak error:", err);
+    console.error("toggleDoctorBreak error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1918,7 +1919,7 @@ export async function getOpdSessionSummary(req: FastifyRequest, reply: FastifyRe
       })
     );
   } catch (err) {
-    console.error("getOpdSessionSummary error:", err);
+    console.error("getOpdSessionSummary error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -2069,7 +2070,7 @@ export async function endOpdSessionAndReconcile(req: FastifyRequest, reply: Fast
       )
     );
   } catch (err) {
-    console.error("endOpdSessionAndReconcile error:", err);
+    console.error("endOpdSessionAndReconcile error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -2272,7 +2273,7 @@ export async function recordPatientVitals(req: FastifyRequest, reply: FastifyRep
         await Observation.insertMany(observationsToCreate);
       }
     } catch (obsErr) {
-      console.warn("Observation persistence notice:", obsErr);
+      console.warn("Observation persistence notice:", safeError(obsErr));
     }
 
     // Audit log
@@ -2307,7 +2308,7 @@ export async function recordPatientVitals(req: FastifyRequest, reply: FastifyRep
       successResponse(appointment, `Vitals recorded successfully for Token #${appointment.tokenNumber}`)
     );
   } catch (err) {
-    console.error("recordPatientVitals error:", err);
+    console.error("recordPatientVitals error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -2397,7 +2398,7 @@ export async function triggerStatEmergency(req: FastifyRequest, reply: FastifyRe
       successResponse(appointment, `Token #${appointment.tokenNumber} marked as STAT Emergency and placed at top of line`)
     );
   } catch (err) {
-    console.error("triggerStatEmergency error:", err);
+    console.error("triggerStatEmergency error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -2440,7 +2441,7 @@ export async function resendQueueTrackerNotification(req: FastifyRequest, reply:
   } catch (error) {
     if (error instanceof CommunicationPolicyError) return reply.code(409).send(errorResponse('Message blocked: ' + error.reason + '. Review current consent and recipient.'));
     if (error instanceof CommandError) return reply.code(error.statusCode).send(errorResponse(error.message));
-    req.log.error({ err: error }, 'Tracker queue preparation failed');
+    req.log.error(safeError(error), 'Tracker queue preparation failed');
     return reply.code(503).send(errorResponse('Tracker result could not be confirmed. Retry the same request.'));
   }
 }

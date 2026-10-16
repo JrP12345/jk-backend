@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getRedisConfiguration } from "./redisConfiguration.ts";
+import { productionTransportErrors } from "./transportConfiguration.ts";
 
 const baseRequiredEnv = [
   "MONGODB_URI",
@@ -41,6 +42,7 @@ export function validateConfig(): { valid: boolean; errors: string[] } {
   }
 
   if (isProd) {
+    missing.push(...productionTransportErrors(process.env));
     const hasBase64Keys = !!(process.env.JWT_PRIVATE_KEY_BASE64 && process.env.JWT_PUBLIC_KEY_BASE64);
     const hasPemKeys = !!(process.env.JWT_PRIVATE_KEY && process.env.JWT_PUBLIC_KEY);
     const keysDir = path.join(process.cwd(), "keys");

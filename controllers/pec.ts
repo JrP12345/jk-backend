@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { evaluatePecCondition } from "../services/PecAdjudicationService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
@@ -24,7 +25,7 @@ export async function evaluatePecClaim(req: FastifyRequest, reply: FastifyReply)
 
     return reply.code(200).send(successResponse(evaluation, evaluation.isCovered ? "Claim covered under policy" : "Claim subject to PEC waiting period exclusion"));
   } catch (err) {
-    console.error("evaluatePecClaim error:", err);
+    console.error("evaluatePecClaim error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

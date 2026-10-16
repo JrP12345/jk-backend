@@ -3,6 +3,9 @@ name: ekavyu-production
 x-backend-env: &backend-env
   NODE_ENV: production
   PORT: 5000
+  # Caddy is the single directly connected proxy; API ports stay private.
+  TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-1}
+  STAFF_MFA_ENFORCE_AFTER: ${STAFF_MFA_ENFORCE_AFTER:-}
   APP_URL: ${APP_URL:?Set APP_URL in .env}
   FRONTEND_URL: ${FRONTEND_URL:-${APP_URL}}
   PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:?Set PUBLIC_API_BASE_URL in .env}

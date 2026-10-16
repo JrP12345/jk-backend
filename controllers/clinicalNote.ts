@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import { withClinicalTransaction } from "../utilities/transaction.ts";
 import { publishAppointmentCommunication } from '../services/AppointmentCommunicationEvents.ts';
 import type { FastifyRequest, FastifyReply } from "fastify";
@@ -128,7 +129,7 @@ export async function createEncounterController(req: FastifyRequest, reply: Fast
 
     return reply.code(201).send(successResponse(encounter, "Encounter started successfully"));
   } catch (err) {
-    console.error("createEncounterController error:", err);
+    console.error("createEncounterController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -299,7 +300,7 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
     });
     return reply.code(200).send(successResponse(savedNote, "Draft clinical note saved"));
   } catch (err: any) {
-    console.error("saveDraftClinicalNoteController error:", err);
+    console.error("saveDraftClinicalNoteController error:", safeError(err));
     return reply.code(err.statusCode || 500).send(errorResponse(err.statusCode ? err.message : "Internal server error"));
   }
 }
@@ -418,7 +419,7 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
           const { autoGenerateEncounterInvoice } = await import("../services/ChargeCaptureService.ts");
           await autoGenerateEncounterInvoice(updatedEncounter._id.toString(), userId);
         } catch (billingErr) {
-          console.error("Auto encounter invoice on sign failed:", billingErr);
+          console.error("Auto encounter invoice on sign failed:", safeError(billingErr));
         }
       }
     }
@@ -456,7 +457,7 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
           });
         }
       } catch (followUpErr) {
-        console.error("Auto follow-up creation failed:", followUpErr);
+        console.error("Auto follow-up creation failed:", safeError(followUpErr));
         followUpCreationFailed = true;
       }
     }
@@ -466,7 +467,7 @@ export async function signClinicalNoteController(req: FastifyRequest, reply: Fas
       : note.plan?.followUpDate ? "Clinical note signed and locked (follow-up scheduled)" : "Clinical note signed and locked";
     return reply.code(200).send(successResponse(note, message));
   } catch (err) {
-    console.error("signClinicalNoteController error:", err);
+    console.error("signClinicalNoteController error:", safeError(err));
     if ((err as any)?.statusCode === 409) return reply.code(409).send(errorResponse((err as Error).message));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
@@ -529,7 +530,7 @@ export async function amendClinicalNoteController(req: FastifyRequest, reply: Fa
 
     return reply.code(201).send(successResponse(amendedNote, `Clinical note amended to version ${newVersion}`));
   } catch (err) {
-    console.error("amendClinicalNoteController error:", err);
+    console.error("amendClinicalNoteController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -598,7 +599,7 @@ export async function getClinicalNoteHistoryController(req: FastifyRequest, repl
 
     return reply.code(200).send(successResponse(result.items));
   } catch (err) {
-    console.error("getClinicalNoteHistoryController error:", err);
+    console.error("getClinicalNoteHistoryController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

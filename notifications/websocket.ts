@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import type { WebSocket } from "ws";
 import crypto from "node:crypto";
@@ -62,7 +63,7 @@ function bindPrivateConnection(user: RealtimeIdentity, connection: object, close
     if (user.exp && user.exp * 1000 <= Date.now()) return false;
     if (!user.sessionId) return false;
     const result = await resolveSession(user.sessionId, user.authVersion);
-    return result.valid && result.session?.userId === user.id && result.session?.role === user.role &&
+    return result.valid && !result.session?.mfaEnrollmentRequired && result.session?.userId === user.id && result.session?.role === user.role &&
       result.session?.organizationId === user.organization_id && (!extra || await extra());
   };
   privateGuards.set(connection, () => {
@@ -140,7 +141,7 @@ export async function bufferCriticalAlert(channelKey: string, payload: RealtimeM
     await redisClient.ltrim(key, -MAX_BUFFERED_ALERTS, -1);
     await redisClient.expire(key, ALERT_BUFFER_TTL_SECONDS);
   } catch (err: any) {
-    console.warn("[Redis Alert Buffer Warning] Failed to buffer critical alert:", err?.message || err);
+    console.warn("[Redis Alert Buffer Warning] Failed to buffer critical alert:", safeError(err));
   }
 }
 
@@ -161,7 +162,7 @@ export async function getBufferedCriticalAlerts(channelKey: string): Promise<Rea
       })
       .filter(Boolean) as RealtimeMessage[];
   } catch (err: any) {
-    console.warn("[Redis Alert Buffer Warning] Failed to retrieve buffered alerts:", err?.message || err);
+    console.warn("[Redis Alert Buffer Warning] Failed to retrieve buffered alerts:", safeError(err));
     return [];
   }
 }
@@ -250,7 +251,7 @@ export function sendToUserLocally(userId: string, payload: RealtimeMessage) {
           sendPrivate(reply, () => { if (!reply.raw.writableEnded) safeSseWrite(reply, dataString); });
         }
       } catch (err) {
-        console.error(`[SSE Stream Error] Failed writing to user ${userId} stream:`, err);
+        console.error(`[SSE Stream Error] Failed writing to user ${userId} stream:`, safeError(err));
       }
     });
   }
@@ -265,7 +266,7 @@ export function sendToUserLocally(userId: string, payload: RealtimeMessage) {
           sendPrivate(socket, () => { if (socket.readyState === 1) safeSocketSend(socket, wsString); });
         }
       } catch (err) {
-        console.error(`[WebSocket Error] Failed writing to user ${userId} websocket:`, err);
+        console.error(`[WebSocket Error] Failed writing to user ${userId} websocket:`, safeError(err));
       }
     });
   }
@@ -315,7 +316,7 @@ export function sendToLocationQueueLocally(locationId: string, payload: Realtime
           safeSocketSend(socket, wsString);
         }
       } catch (err) {
-        console.error(`[Queue WebSocket Error] Failed writing to location ${locationId} queue websocket:`, err);
+        console.error(`[Queue WebSocket Error] Failed writing to location ${locationId} queue websocket:`, safeError(err));
       }
     });
   }
@@ -334,7 +335,7 @@ export function sendToLocationClinicalLocally(locationId: string, payload: Realt
           sendPrivate(socket, () => { if (socket.readyState === 1) safeSocketSend(socket, wsString); });
         }
       } catch (err) {
-        console.error(`[Clinical WebSocket Error] Failed writing to location ${locationId} clinical websocket:`, err);
+        console.error(`[Clinical WebSocket Error] Failed writing to location ${locationId} clinical websocket:`, safeError(err));
       }
     });
   }
@@ -351,13 +352,13 @@ export function initRedisSubscriber() {
 
     redisSubscriber = redisClient.duplicate();
     redisSubscriber.on("error", (err: Error) => {
-      console.warn("[Redis Subscriber Warning] Redis subscriber error:", err.message);
+      console.warn("[Redis Subscriber Warning] Redis subscriber error:", safeError(err));
     });
 
     const subscribeChannels = () => {
       redisSubscriber!.psubscribe("user_notifications:*", "location_queue:*", "location_clinical:*", (err) => {
         if (err) {
-          console.warn("[Redis Subscriber Warning] Failed psubscribe:", err);
+          console.warn("[Redis Subscriber Warning] Failed psubscribe:", safeError(err));
         } else {
           console.log("[Redis Cluster Listener] Subscribed to multi-instance notification, queue, clinical & broadcast channels.");
         }
@@ -395,13 +396,13 @@ export function initRedisSubscriber() {
           sendToLocationClinicalLocally(locationId, payload);
         }
       } catch (err) {
-        console.error("[Redis Cluster Listener Error] Failed parsing PubSub message:", err);
+        console.error("[Redis Cluster Listener Error] Failed parsing PubSub message:", safeError(err));
       }
     });
 
     return redisSubscriber;
   } catch (err: any) {
-    console.warn("[Redis Subscriber Error] Failed to initialize subscriber:", err.message);
+    console.warn("[Redis Subscriber Error] Failed to initialize subscriber:", safeError(err));
     return null;
   }
 }
@@ -441,7 +442,7 @@ export function broadcastRealtimeNotification(userId: string, payload: RealtimeM
       payload,
     };
     redisClient.publish(`user_notifications:${userId}`, JSON.stringify(envelope)).catch((err) => {
-      console.warn("[Redis PubSub Warning] Failed to publish notification to Redis:", err?.message || err);
+      console.warn("[Redis PubSub Warning] Failed to publish notification to Redis:", safeError(err));
     });
   }
 }
@@ -499,7 +500,7 @@ export function broadcastQueueUpdate(locationId: string, rawPayload: RealtimeMes
       payload,
     };
     redisClient.publish(`location_queue:${locationId}`, JSON.stringify(envelope)).catch((err) => {
-      console.warn("[Redis PubSub Warning] Failed to publish queue event to Redis:", err?.message || err);
+      console.warn("[Redis PubSub Warning] Failed to publish queue event to Redis:", safeError(err));
     });
   }
 }
@@ -518,7 +519,7 @@ export function broadcastClinicalRealtime(locationId: string, payload: RealtimeM
       payload,
     };
     redisClient.publish(`location_clinical:${locationId}`, JSON.stringify(envelope)).catch((err) => {
-      console.warn("[Redis PubSub Warning] Failed to publish clinical broadcast to Redis:", err?.message || err);
+      console.warn("[Redis PubSub Warning] Failed to publish clinical broadcast to Redis:", safeError(err));
     });
   }
 }
@@ -564,7 +565,7 @@ export async function resolveWebSocketAuth(req: FastifyRequest): Promise<Realtim
       if (!payload.sessionId) return null;
       if (payload.sessionId) {
         const resolution = await resolveSession(payload.sessionId, payload.authVersion);
-        if (!resolution.valid || resolution.session?.userId !== payload.id || resolution.session?.role !== payload.role || resolution.session?.organizationId !== payload.organization_id) {
+        if (!resolution.valid || resolution.session?.mfaEnrollmentRequired || resolution.session?.userId !== payload.id || resolution.session?.role !== payload.role || resolution.session?.organizationId !== payload.organization_id) {
           return null;
         }
       }

@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { publicSlug } from "../utilities/publicLinks.ts";
@@ -73,7 +74,7 @@ export async function createLocation(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(201).send(successResponse(location, "Location created successfully"));
   } catch (err) {
     if (err instanceof BrandingValidationError) return reply.code(400).send(errorResponse(err.message));
-    console.error("createLocation error:", err);
+    console.error("createLocation error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -124,7 +125,7 @@ export async function getLocations(req: FastifyRequest, reply: FastifyReply) {
     const locations = await Location.find(filter).sort({ name: 1 });
     return reply.code(200).send(successResponse(await withTimezone(locations)));
   } catch (err) {
-    console.error("getLocations error:", err);
+    console.error("getLocations error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -206,7 +207,7 @@ export async function updateLocation(req: FastifyRequest, reply: FastifyReply) {
     return reply.code(200).send(successResponse(updated, "Location updated successfully"));
   } catch (err) {
     if (err instanceof BrandingValidationError) return reply.code(400).send(errorResponse(err.message));
-    console.error("updateLocation error:", err);
+    console.error("updateLocation error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -246,7 +247,7 @@ export async function deleteLocation(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(null, "Location deactivated successfully"));
   } catch (err) {
-    console.error("deleteLocation error:", err);
+    console.error("deleteLocation error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -320,7 +321,7 @@ export async function reactivateLocation(req: FastifyRequest, reply: FastifyRepl
 
     return reply.code(200).send(successResponse(location, "Location reactivated successfully"));
   } catch (err) {
-    console.error("reactivateLocation error:", err);
+    console.error("reactivateLocation error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

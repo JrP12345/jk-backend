@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
@@ -5,7 +6,7 @@ import { Location } from "../models/Location.ts";
 import { User } from "../models/User.ts";
 import { OrgMember } from "../models/OrgMember.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { isRootRequest, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+import { getRequestLocationIds, isRootRequest, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { withTransaction } from '../utilities/transaction.ts';
 import { publishDoctorAssignmentRemoval } from '../services/DoctorAssignmentRecoveryEvents.ts';
 import { unassignRevokedCrmWork } from '../services/CrmRevocationService.ts';
@@ -59,7 +60,7 @@ export async function assignDoctor(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(201).send(successResponse(assignment, "Doctor assigned to location successfully"));
   } catch (err) {
-    console.error("assignDoctor error:", err);
+    console.error("assignDoctor error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -68,11 +69,16 @@ export async function getDoctorAssignments(req: FastifyRequest, reply: FastifyRe
   try {
     const userRole = req.user?.role;
     const scope = resolveAuthorizedOrganizationScope(req);
-    if (!scope.allowed && userRole !== "patient") return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+    if (["patient", "family_member", "guest"].includes(userRole || "")) return reply.code(403).send(errorResponse("Staff access required"));
     const orgId = scope.allowed ? scope.organizationId : req.user?.organization_id;
     const { doctorId, locationId } = req.query as { doctorId?: string; locationId?: string };
+    if ((doctorId && !mongoose.Types.ObjectId.isValid(doctorId)) || (locationId && !mongoose.Types.ObjectId.isValid(locationId))) return reply.code(400).send(errorResponse("Invalid doctor or location ID"));
+    const allowedLocations = await getRequestLocationIds(req);
+    if (locationId && allowedLocations && !allowedLocations.some(id => String(id) === locationId)) return reply.code(403).send(errorResponse("Location access denied"));
 
     const query: any = { isActive: true };
+    if (allowedLocations) query.locationId = { $in: allowedLocations };
 
     if (orgId && userRole !== "patient") {
       query.organizationId = orgId;
@@ -94,7 +100,7 @@ export async function getDoctorAssignments(req: FastifyRequest, reply: FastifyRe
 
     return reply.code(200).send(successResponse(assignments));
   } catch (err) {
-    console.error("getDoctorAssignments error:", err);
+    console.error("getDoctorAssignments error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -134,7 +140,7 @@ export async function updateAssignment(req: FastifyRequest, reply: FastifyReply)
 
     return reply.code(200).send(successResponse(updated, "Doctor assignment updated successfully"));
   } catch (err) {
-    console.error("updateAssignment error:", err);
+    console.error("updateAssignment error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -173,7 +179,7 @@ export async function removeAssignment(req: FastifyRequest, reply: FastifyReply)
     return reply.code(200).send(successResponse(null, "Doctor assignment removed successfully"));
   } catch (err) {
     if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
-    console.error("removeAssignment error:", err);
+    console.error("removeAssignment error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

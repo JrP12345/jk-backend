@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { safeError } from "./utilities/safeError.ts";
 import { databaseLatency, databasePoolMetrics } from "./utilities/latencyHistogram.ts";
 import { auditPlugin } from "./utilities/auditPlugin.ts";
 import {
@@ -33,7 +34,7 @@ export const connectDB = async () => {
     client.on("connectionCheckOutFailed", () => databasePoolMetrics.checkoutFailures++);
     console.log(`Connected to MongoDB with connection pool (min: ${minPoolSize}, max: ${maxPoolSize})`);
   } catch (err) {
-    console.error("MongoDB connection error:", err);
+    console.error("MongoDB connection error:", safeError(err));
     throw err;
   }
 };

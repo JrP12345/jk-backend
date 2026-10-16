@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 ﻿import type { FastifyRequest, FastifyReply } from 'fastify';
 import { TaskModel } from '../models/Task.ts';
 import { Appointment } from '../models/Appointment.ts';
@@ -47,7 +48,7 @@ export async function convertPatientTask(req: FastifyRequest, reply: FastifyRepl
   } catch (error: any) {
     if (error instanceof CommandError || error instanceof AppointmentDomainError) return reply.code(error.statusCode).send(errorResponse(error.message));
     if (error?.code === 11000) return reply.code(409).send(errorResponse('Booking slot or task changed. Reload before retrying.'));
-    req.log.error({ err: error }, 'Patient task conversion failed');
+    req.log.error(safeError(error), 'Patient task conversion failed');
     return reply.code(503).send(errorResponse('The booking result could not be confirmed. Retry the same submitted command.'));
   }
 }

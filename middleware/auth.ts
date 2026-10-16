@@ -8,12 +8,14 @@ import {
   isPrivilegedRole,
 } from "../utilities/permissions.ts";
 import { tenantRateLimiter } from "./tenantRateLimiter.ts";
+import { MFA_ENROLLMENT_ROUTES } from "../services/StaffMfaPolicy.ts";
 
 // Extend FastifyRequest to carry the decoded user
 declare module "fastify" {
   interface FastifyContextConfig { allowGuest?: boolean }
   interface FastifyRequest {
     user?: JwtPayload;
+    primaryAuthenticatedAt?: Date;
   }
 }
 
@@ -52,6 +54,10 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
       if (resolution.session?.userId !== decoded.id || resolution.session?.role !== decoded.role ||
         resolution.session?.organizationId !== decoded.organization_id) {
         return reply.code(401).send({ error: "Session identity mismatch" });
+      }
+      req.primaryAuthenticatedAt = resolution.session?.authenticatedAt;
+      if (resolution.session?.mfaEnrollmentRequired && !MFA_ENROLLMENT_ROUTES.has(req.routeOptions.url || "")) {
+        return reply.header("Cache-Control", "no-store").code(403).send({ success: false, code: "MFA_ENROLLMENT_REQUIRED", message: "Set up an authenticator to access your workspace", mfaEnrollmentRequired: true });
       }
     }
 

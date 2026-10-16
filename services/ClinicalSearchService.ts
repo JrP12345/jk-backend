@@ -59,15 +59,17 @@ export class ClinicalSearchService {
    */
   static async searchPatientRecord(
     patientId: string,
-    options: SearchQueryOptions = {}
+    options: SearchQueryOptions,
+    scope: { organizationId: string; locationIds: string[] } | undefined,
   ): Promise<SearchQueryResponse> {
 
     const queryTokens = SearchEngine.tokenize(options.q || "");
     const rawTerm = options.q ? options.q.trim() : "";
     const items: SearchResultItem[] = [];
+    const filter = { patientId, deletedAt: null, ...(scope ? { organizationId: scope.organizationId, locationId: { $in: scope.locationIds } } : {}) };
 
     // 1. Search ClinicalNotes
-    const notes = options.category && !['all', 'notes'].includes(options.category) ? [] : await ClinicalNote.find({ patientId, isLatest: true })
+    const notes = options.category && !['all', 'notes'].includes(options.category) ? [] : await ClinicalNote.find({ ...filter, isLatest: true }).setOptions({ bypassTenantFilter: !scope })
       .select('subjective.chiefComplaint subjective.historyOfPresentIllness objective.physicalExamination assessment.diagnoses plan.treatmentPlan createdAt')
       .sort({ createdAt: -1 })
       .lean() as any[];
@@ -93,14 +95,14 @@ export class ClinicalSearchService {
           occurredAt: note.createdAt,
           resourceRef: {
             resourceId: note._id.toString(),
-            link: `/dashboard/notes?id=${note._id.toString()}`,
+            link: `/dashboard/patients/${patientId}/timeline`,
           },
         });
       }
     }
 
     // 2. Search Observations
-    const obsList = options.category && !['all', 'observation'].includes(options.category) ? [] : await Observation.find({ patientId })
+    const obsList = options.category && !['all', 'observation'].includes(options.category) ? [] : await Observation.find(filter)
       .select('name code value unit recordedAt createdAt')
       .sort({ recordedAt: -1 })
       .lean() as any[];
@@ -119,14 +121,14 @@ export class ClinicalSearchService {
           occurredAt: obs.recordedAt || obs.createdAt,
           resourceRef: {
             resourceId: obs._id.toString(),
-            link: `/dashboard/vitals?id=${obs._id.toString()}`,
+            link: `/dashboard/patients/${patientId}/timeline`,
           },
         });
       }
     }
 
     // 3. Search Diagnostic Lab Orders
-    const labList = options.category && !['all', 'lab'].includes(options.category) ? [] : await LabOrder.find({ patientId })
+    const labList = options.category && !['all', 'lab'].includes(options.category) ? [] : await LabOrder.find(filter).setOptions({ bypassTenantFilter: !scope })
       .select('testId result clinicalReason resultedAt orderDate createdAt status')
       .populate("testId", "name code department")
       .sort({ orderDate: -1 })
@@ -251,7 +253,7 @@ export class ClinicalSearchService {
    * Generates organization-wide quality metrics grouped by clinical domains.
    * Always reads directly from MongoDB (single source of truth).
    */
-  static async getQualityMetrics(organizationId: string): Promise<GroupedQualityMetrics> {
+  static async getQualityMetrics(organizationId: string, locationIds?: string[]): Promise<GroupedQualityMetrics> {
 
     // Group 1: Medication Quality Metrics
     const totalScheduled = 0;
@@ -262,13 +264,14 @@ export class ClinicalSearchService {
 
     // Return counters rather than materializing every historical clinical document.
     const organization = new mongoose.Types.ObjectId(organizationId);
+    const match = { organizationId: organization, deletedAt: null, ...(locationIds ? { locationId: { $in: locationIds.map(id => new mongoose.Types.ObjectId(id)) } } : {}) };
     const [diagnostics, scores] = await Promise.all([
-      LabOrder.aggregate([{ $match: { organizationId: organization } }, { $group: { _id: null,
+      LabOrder.aggregate([{ $match: match }, { $group: { _id: null,
         totalOrders: { $sum: 1 },
         completedResults: { $sum: { $cond: [{ $eq: ['$status', 'result-uploaded'] }, 1, 0] } },
         abnormalResults: { $sum: { $cond: ['$result.isAbnormal', 1, 0] } },
       } }]),
-      ObservationScore.aggregate([{ $match: { organizationId: organization } }, { $group: { _id: null,
+      ObservationScore.aggregate([{ $match: match }, { $group: { _id: null,
         total: { $sum: 1 }, sum: { $sum: { $ifNull: ['$totalScore', 0] } },
         high: { $sum: { $cond: [{ $or: [{ $eq: ['$riskCategory', 'High'] }, { $gte: ['$totalScore', 7] }] }, 1, 0] } },
       } }]),

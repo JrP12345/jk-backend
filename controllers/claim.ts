@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { Claim } from "../models/Claim.ts";
 import { Invoice } from "../models/Invoice.ts";
@@ -85,7 +86,7 @@ export async function createClaimController(req: FastifyRequest, reply: FastifyR
 
     return reply.code(201).send(successResponse(claim, "Insurance claim submitted successfully"));
   } catch (err) {
-    console.error("createClaimController error:", err);
+    console.error("createClaimController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -140,7 +141,7 @@ export async function adjudicateClaimController(req: FastifyRequest, reply: Fast
 
     return reply.code(200).send(successResponse(claim, "Insurance claim adjudicated successfully"));
   } catch (err) {
-    console.error("adjudicateClaimController error:", err);
+    console.error("adjudicateClaimController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -172,7 +173,7 @@ export async function getClaimsController(req: FastifyRequest, reply: FastifyRep
     const claims = await Claim.find(filter).sort({ createdAt: -1 }).lean();
     return reply.code(200).send(successResponse(claims));
   } catch (err) {
-    console.error("getClaimsController error:", err);
+    console.error("getClaimsController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -215,7 +216,7 @@ export async function createPaymentLinkController(req: FastifyRequest, reply: Fa
 
     return reply.code(200).send(successResponse(result, "Online payment link generated successfully"));
   } catch (err) {
-    console.error("createPaymentLinkController error:", err);
+    console.error("createPaymentLinkController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

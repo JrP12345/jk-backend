@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { InsuranceTariff } from "../models/InsuranceTariff.ts";
 import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
@@ -48,7 +49,7 @@ export async function upsertTariff(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(tariff, "Insurance tariff rate updated successfully"));
   } catch (err) {
-    console.error("upsertTariff error:", err);
+    console.error("upsertTariff error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -84,7 +85,7 @@ export async function getTariffs(req: FastifyRequest, reply: FastifyReply) {
     setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
     return reply.code(200).send(successResponse(tariffs));
   } catch (err) {
-    console.error("getTariffs error:", err);
+    console.error("getTariffs error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -182,7 +183,7 @@ export async function evaluateTariff(req: FastifyRequest, reply: FastifyReply) {
       })
     );
   } catch (err) {
-    console.error("evaluateTariff error:", err);
+    console.error("evaluateTariff error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

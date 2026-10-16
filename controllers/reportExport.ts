@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { generateCsvReport } from "../services/ReportExportService.ts";
 import { errorResponse } from "../utilities/helpers.ts";
@@ -65,7 +66,7 @@ export async function exportReport(req: FastifyRequest, reply: FastifyReply) {
     reply.header("Content-Disposition", `attachment; filename="${filename}"`);
     return reply.code(200).send(csvContent);
   } catch (err) {
-    console.error("exportReport error:", err);
+    console.error("exportReport error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

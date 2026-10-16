@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { Invoice } from "../models/Invoice.ts";
@@ -88,7 +89,7 @@ export async function getTillSummary(req: FastifyRequest, reply: FastifyReply) {
       })
     );
   } catch (err) {
-    console.error("getTillSummary error:", err);
+    console.error("getTillSummary error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -204,7 +205,7 @@ export async function closeTill(req: FastifyRequest, reply: FastifyReply) {
       )
     );
   } catch (err) {
-    console.error("closeTill error:", err);
+    console.error("closeTill error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -231,7 +232,7 @@ export async function getTillHistory(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(history));
   } catch (err) {
-    console.error("getTillHistory error:", err);
+    console.error("getTillHistory error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

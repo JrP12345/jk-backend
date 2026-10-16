@@ -28,6 +28,9 @@ const RefreshTokenSchema = new Schema({
   bookingPatientId: { type: Schema.Types.ObjectId, ref: "Patient" },
   impersonatedBy: { type: ImpersonationSchema, default: undefined, required: false },
   lastActiveAt: { type: Date, default: Date.now },
+  // Only the credential issuer sets this. Hydrating a legacy session must not
+  // manufacture fresh authentication proof through a schema default.
+  authenticatedAt: { type: Date },
   createdAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 

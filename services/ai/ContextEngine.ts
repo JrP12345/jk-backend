@@ -1,3 +1,4 @@
+import { safeError } from "../../utilities/safeError.ts";
 import mongoose from "mongoose";
 import { Patient } from "../../models/Patient.ts";
 import { User } from "../../models/User.ts";
@@ -108,7 +109,7 @@ export class ContextEngine {
           const orgObj = await Organization.findById(orgId).select("name city").lean();
           if (orgObj) orgName = orgObj.name;
         } catch (e: any) {
-          console.warn(`[ContextEngine] Organization lookup warning for ${orgId}:`, e.message);
+          console.warn(`[ContextEngine] Organization lookup warning for ${orgId}:`, safeError(e));
         }
       }
       organizationContext = `Facility / Organization: ${orgName}`;
@@ -205,7 +206,7 @@ export class ContextEngine {
           expiresAt: Date.now() + this.CACHE_TTL_MS
         });
       } catch (err: any) {
-        console.warn("[ContextEngine] Failed to build live organization context:", err.message);
+        console.warn("[ContextEngine] Failed to build live organization context:", safeError(err));
       }
     }
 
@@ -235,7 +236,7 @@ export class ContextEngine {
           encounterContext = `Encounter History: ${lastAppt}.`;
         }
       } catch (err) {
-        console.warn("[ContextEngine] Failed to build patient EHR context:", err);
+        console.warn("[ContextEngine] Failed to build patient EHR context:", safeError(err));
       }
     }
 

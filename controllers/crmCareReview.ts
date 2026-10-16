@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { TaskModel } from '../models/Task.ts';
 import { Appointment } from '../models/Appointment.ts';
@@ -53,7 +54,7 @@ export async function reviewCareFollowUp(req: FastifyRequest, reply: FastifyRepl
     return reply.send(successResponse({ ...crmTaskDTO(task), replayed: result.replayed }, 'Follow-up review saved or restored'));
   } catch (error: any) {
     if (error instanceof CommandError || error instanceof AppointmentDomainError) return reply.code(error.statusCode).send(errorResponse(error.message));
-    req.log.error({ err: error }, 'Care follow-up review failed');
+    req.log.error(safeError(error), 'Care follow-up review failed');
     return reply.code(503).send(errorResponse('The review result could not be confirmed. Retry the same command.'));
   }
 }

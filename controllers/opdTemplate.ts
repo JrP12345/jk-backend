@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { OpdTemplate } from "../models/OpdTemplate.ts";
@@ -184,7 +185,7 @@ export async function getOpdTemplates(req: FastifyRequest, reply: FastifyReply) 
       )
     );
   } catch (err: any) {
-    req.log.error(err, "Failed to retrieve OPD templates");
+    req.log.error(safeError(err), "Failed to retrieve OPD templates");
     return reply.code(500).send(errorResponse(err.message || "Failed to retrieve OPD presets"));
   }
 }
@@ -259,7 +260,7 @@ export async function createOpdTemplate(req: FastifyRequest, reply: FastifyReply
       )
     );
   } catch (err: any) {
-    req.log.error(err, "Failed to create OPD template");
+    req.log.error(safeError(err), "Failed to create OPD template");
     return reply.code(500).send(errorResponse(err.message || "Failed to save custom OPD preset"));
   }
 }
@@ -297,7 +298,7 @@ export async function deleteOpdTemplate(req: FastifyRequest, reply: FastifyReply
 
     return reply.code(200).send(successResponse(null, "Custom OPD Preset deleted successfully"));
   } catch (err: any) {
-    req.log.error(err, "Failed to delete OPD template");
+    req.log.error(safeError(err), "Failed to delete OPD template");
     return reply.code(500).send(errorResponse(err.message || "Failed to delete custom OPD preset"));
   }
 }

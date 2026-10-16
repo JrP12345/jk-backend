@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { Medicine } from "../models/Medicine.ts";
@@ -59,7 +60,7 @@ export async function createMedicine(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(201).send(successResponse(medicine, "Medicine registered successfully"));
   } catch (err) {
-    console.error("createMedicine error:", err);
+    console.error("createMedicine error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -101,7 +102,7 @@ export async function getMedicines(req: FastifyRequest, reply: FastifyReply) {
     setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
     return reply.code(200).send(successResponse(medicines));
   } catch (err) {
-    console.error("getMedicines error:", err);
+    console.error("getMedicines error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -136,7 +137,7 @@ export async function updateMedicine(req: FastifyRequest, reply: FastifyReply) {
     await medicine.save();
     return reply.code(200).send(successResponse(medicine, "Medicine updated successfully"));
   } catch (err) {
-    console.error("updateMedicine error:", err);
+    console.error("updateMedicine error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -160,7 +161,7 @@ export async function deleteMedicine(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(null, "Medicine deleted successfully"));
   } catch (err) {
-    console.error("deleteMedicine error:", err);
+    console.error("deleteMedicine error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -277,7 +278,7 @@ export async function getPendingPrescriptionsController(req: FastifyRequest, rep
 
     return reply.code(200).send(successResponse(Array.from(grouped.values())));
   } catch (err) {
-    console.error("getPendingPrescriptionsController error:", err);
+    console.error("getPendingPrescriptionsController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -520,12 +521,12 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
         timestamp: new Date().toISOString(),
       });
     } catch (wsErr) {
-      console.warn("Real-time pharmacy PRESCRIPTION_DISPENSED broadcast warning:", wsErr);
+      console.warn("Real-time pharmacy PRESCRIPTION_DISPENSED broadcast warning:", safeError(wsErr));
     }
 
     return reply.code(201).send(successResponse(invoice, "Medications dispensed and billed successfully"));
   } catch (err) {
-    console.error("dispensePrescription error:", err);
+    console.error("dispensePrescription error:", safeError(err));
     const message = err instanceof Error ? err.message : "";
     if (message.startsWith("Insufficient") || message.includes("expired") || message.includes("allocate")) {
       return reply.code(400).send(errorResponse(message));
@@ -574,7 +575,7 @@ export async function createMedicineBatch(req: FastifyRequest, reply: FastifyRep
 
     return reply.code(201).send(successResponse(batch, "Medicine batch stock added successfully"));
   } catch (err: any) {
-    console.error("createMedicineBatch error:", err);
+    console.error("createMedicineBatch error:", safeError(err));
     return reply.code(500).send(errorResponse(err.message || "Internal server error"));
   }
 }
@@ -595,7 +596,7 @@ export async function getMedicineBatches(req: FastifyRequest, reply: FastifyRepl
 
     return reply.code(200).send(successResponse(batches));
   } catch (err) {
-    console.error("getMedicineBatches error:", err);
+    console.error("getMedicineBatches error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -620,7 +621,7 @@ export async function getExpiringMedicinesController(req: FastifyRequest, reply:
 
     return reply.code(200).send(successResponse(expiring));
   } catch (err) {
-    console.error("getExpiringMedicinesController error:", err);
+    console.error("getExpiringMedicinesController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -679,7 +680,7 @@ export async function adjustStock(req: FastifyRequest, reply: FastifyReply) {
       )
     );
   } catch (err: any) {
-    console.error("adjustStock error:", err);
+    console.error("adjustStock error:", safeError(err));
     return reply.code(500).send(errorResponse(err.message || "Internal server error"));
   }
 }

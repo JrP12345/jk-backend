@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import mongoose from 'mongoose';
 import { Inquiry } from '../models/Inquiry.ts';
@@ -81,6 +82,6 @@ export async function getCrmAnalytics(req: FastifyRequest, reply: FastifyReply) 
     } }));
   } catch (error) {
     if (error instanceof CommandError) return reply.code(error.statusCode).send(errorResponse(error.message));
-    req.log.error({ err: error }, 'CRM analytics unavailable'); return reply.code(503).send(errorResponse('The report could not be loaded. Retry or select a smaller range.'));
+    req.log.error(safeError(error), 'CRM analytics unavailable'); return reply.code(503).send(errorResponse('The report could not be loaded. Retry or select a smaller range.'));
   }
 }

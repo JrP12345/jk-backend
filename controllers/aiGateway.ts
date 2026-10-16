@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { aiGateway } from "../services/ai/AIGateway.ts";
 import { StreamingService } from "../services/ai/StreamingService.ts";
@@ -49,7 +50,7 @@ export async function queryAIGatewayController(req: FastifyRequest, reply: Fasti
 
     return reply.code(200).send(successResponse(response));
   } catch (err: any) {
-    console.error("queryAIGatewayController error:", err);
+    console.error("queryAIGatewayController error:", safeError(err));
     return reply.code(err.statusCode || 500).send(errorResponse(err.message || "Internal AI Gateway error"));
   }
 }

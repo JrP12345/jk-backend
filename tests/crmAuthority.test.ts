@@ -59,12 +59,12 @@ describe("CRM branch and permission authority", () => {
     await Role.updateOne({ organizationId: f.org.id, name: 'crm_reader' }, { permissions: [] });
     expect((await app.inject({ method: 'GET', url: '/api/crm/locations', cookies })).statusCode).toBe(403);
   });
-  it("fails closed for an unreviewed staff grant while preserving legacy module behavior", async () => {
+  it("fails closed for an unreviewed staff grant in CRM and other operational modules", async () => {
     const f = await fixture();
     expect(await resolveStaffLocationGrant(f.user.id, f.org.id, "nurse", true)).toEqual([]);
     expect(await getRequestLocationIds(f.req, { requireExplicitScope: true })).toEqual([]);
     expect((await checkLocationAccess(f.req, f.a.id, { requireExplicitScope: true })).allowed).toBe(false);
-    expect((await checkLocationAccess(f.req, f.a.id)).allowed).toBe(true);
+    expect((await checkLocationAccess(f.req, f.a.id)).allowed).toBe(false);
   });
   it("honors reviewed selected and empty grants in both CRM and existing location helpers", async () => {
     const f = await fixture();

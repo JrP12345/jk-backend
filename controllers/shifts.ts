@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { ShiftRoster } from "../models/ShiftRoster.ts";
@@ -77,7 +78,7 @@ export async function getShifts(req: FastifyRequest, reply: FastifyReply) {
       })
     );
   } catch (err) {
-    console.error("getShifts error:", err);
+    console.error("getShifts error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error fetching shift roster"));
   }
 }
@@ -138,7 +139,7 @@ export async function createShift(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(201).send(successResponse(shift, "Shift roster created successfully"));
   } catch (err) {
-    console.error("createShift error:", err);
+    console.error("createShift error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error creating shift roster"));
   }
 }
@@ -183,7 +184,7 @@ export async function updateShiftStatus(req: FastifyRequest, reply: FastifyReply
 
     return reply.code(200).send(successResponse(shift, `Shift status updated to ${status}`));
   } catch (err) {
-    console.error("updateShiftStatus error:", err);
+    console.error("updateShiftStatus error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error updating shift status"));
   }
 }
@@ -218,7 +219,7 @@ export async function updateHandoverNotes(req: FastifyRequest, reply: FastifyRep
 
     return reply.code(200).send(successResponse(shift, "Shift handover notes updated successfully"));
   } catch (err) {
-    console.error("updateHandoverNotes error:", err);
+    console.error("updateHandoverNotes error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error updating handover notes"));
   }
 }
@@ -251,7 +252,7 @@ export async function deleteShift(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(shift, "Shift roster entry deleted successfully"));
   } catch (err) {
-    console.error("deleteShift error:", err);
+    console.error("deleteShift error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error deleting shift roster"));
   }
 }

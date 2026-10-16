@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { DocumentUpload } from "../models/DocumentUpload.ts";
@@ -61,7 +62,7 @@ export const uploadDocument = async (req: FastifyRequest, reply: FastifyReply) =
 
     return reply.code(201).send(successResponse(doc, "Document uploaded successfully"));
   } catch (err: any) {
-    logger.error("Failed to upload medical document", { errMessage: err.message } as any);
+    logger.error("Failed to upload medical document", {}, safeError(err));
     return reply.code(err.statusCode === 409 ? 409 : 500).send(errorResponse(err.statusCode === 409 ? "Verified upload is unavailable or already registered" : "Internal server error uploading document"));
   }
 };
@@ -115,7 +116,7 @@ export const getPatientDocuments = async (req: FastifyRequest, reply: FastifyRep
 
     return reply.code(200).send(successResponse(result.items));
   } catch (err: any) {
-    logger.error("Failed to fetch patient documents", { errMessage: err.message } as any);
+    logger.error("Failed to fetch patient documents", {}, safeError(err));
     return reply.code(500).send(errorResponse("Internal server error fetching documents"));
   }
 };

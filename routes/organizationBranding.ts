@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyInstance } from "fastify";
 import mongoose from "mongoose";
 import { authenticate, checkAnyPermission } from "../middleware/auth.ts";
@@ -35,7 +36,7 @@ export default async function organizationBrandingRoutes(app: FastifyInstance) {
       return reply.code(201).send(successResponse({ id: asset.id, reference: brandingReference(asset.id) }));
     } catch (error) {
       if (key) await deleteObjectFromStorage(key).catch(() => undefined);
-      req.log.error({ error }, "Organization branding upload failed");
+      req.log.error(safeError(error), "Organization branding upload failed");
       return reply.code(503).send(errorResponse("Image upload failed. Please retry."));
     }
   });
@@ -48,7 +49,7 @@ export default async function organizationBrandingRoutes(app: FastifyInstance) {
     try {
       await deleteObjectFromStorage(asset.objectKey);
       await asset.deleteOne();
-    } catch (error) { req.log.warn({ error }, "Branding cleanup will be retried"); }
+    } catch (error) { req.log.warn(safeError(error), "Branding cleanup will be retried"); }
     return reply.send(successResponse(null));
   });
 

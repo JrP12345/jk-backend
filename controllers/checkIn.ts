@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import { withClinicalTransaction } from "../utilities/transaction.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
@@ -83,7 +84,7 @@ export async function processSelfCheckInQr(req: FastifyRequest, reply: FastifyRe
       severity: "info",
       actionUrl: "/dashboard/queue",
       metadata: { appointmentId: appointment._id, tokenNumber: appointment.tokenNumber },
-    }).catch(err => req.log.error({ err }, "Check-in committed; notification delivery failed"));
+    }).catch(err => req.log.error(safeError(err), "Check-in committed; notification delivery failed"));
 
     return reply.code(200).send(
       successResponse(
@@ -92,7 +93,7 @@ export async function processSelfCheckInQr(req: FastifyRequest, reply: FastifyRe
       )
     );
   } catch (err) {
-    console.error("processSelfCheckInQr error:", err);
+    console.error("processSelfCheckInQr error:", safeError(err));
     if ((err as any)?.statusCode === 409) return reply.code(409).send(errorResponse((err as Error).message));
     return reply.code(500).send(errorResponse("Internal server error"));
   }

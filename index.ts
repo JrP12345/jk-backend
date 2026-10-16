@@ -1,4 +1,5 @@
 import "./utilities/startupEnvironment.ts";
+import { safeError } from "./utilities/safeError.ts";
 import { getServerPort } from "./utilities/serverPort.ts";
 
 import "./db.ts";
@@ -8,6 +9,7 @@ import { requestContextStore } from "./utilities/context.ts";
 import { requestCancellationSignal } from "./utilities/requestCancellation.ts";
 import { redisClient } from "./utilities/redis.ts";
 import { reportCriticalError } from "./utilities/telemetry.ts";
+import { publicServerFailureMessage } from "./utilities/publicServerError.ts";
 import {
   markBootstrapComplete,
   markShuttingDown,
@@ -95,6 +97,8 @@ const app = fastify({
   logger: {
     level: process.env.LOG_LEVEL || "info",
     serializers: {
+      err: (error: unknown) => ({ ...safeError(error), type: safeError(error).errorType, message: "Operation failed", stack: "" }),
+      error: safeError,
       req: (req: any) => ({ method: req.method, url: String(req.url || '').split('?')[0].replace(/[a-f\d]{24}/gi, ':id'), remoteAddress: req.ip }),
     },
     redact: [
@@ -110,7 +114,7 @@ const app = fastify({
     ? (_address: string, hop: number) => hop < Number(process.env.TRUSTED_PROXY_HOPS)
     : (process.env.TRUSTED_PROXY_CIDRS
         ? process.env.TRUSTED_PROXY_CIDRS.split(",").map(c => c.trim())
-        : ["127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]),
+        : (process.env.NODE_ENV === "production" ? false : ["127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"])),
   connectionTimeout: 30000, // 30s socket timeout
   keepAliveTimeout: 5000,   // 5s keep-alive timeout
 });
@@ -213,6 +217,20 @@ app.addHook("onSend", async (request, reply, payload) => {
     "Content-Security-Policy",
     "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; img-src 'self' data: blob: https:; script-src 'self'; style-src 'self'; font-src 'self' data: https:; connect-src 'self' ws: wss: https:;"
   );
+  // Some legacy handlers pass driver exceptions into errorResponse. Never emit
+  // their messages/details for server failures, including handled exceptions.
+  if (process.env.NODE_ENV === "production" && reply.statusCode >= 500 && typeof payload === "string") {
+    try {
+      const body = JSON.parse(payload);
+      if (body?.success === false) {
+        body.message = publicServerFailureMessage(body.message);
+        delete body.details;
+        delete body.error;
+        delete body.stack;
+        return JSON.stringify(body);
+      }
+    } catch { /* Non-JSON health/stream responses keep their existing contract. */ }
+  }
   return payload;
 });
 
@@ -251,6 +269,10 @@ app.setErrorHandler(async (error: any, request, reply) => {
       : (error.message || "Internal server error")
   });
 });
+
+// Fastify's default not-found log interpolates the raw URL, including query
+// credentials and arbitrary path values. Keep unknown-route output static.
+app.setNotFoundHandler((_request, reply) => reply.code(404).send({ success: false, message: "Route not found" }));
 
 // ─── Plugins ────────────────────────────────────────────────────
 app.register(cookie);

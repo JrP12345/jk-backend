@@ -3,6 +3,8 @@ name: ekavyu-dev
 x-backend-env: &backend-env
   NODE_ENV: production
   PORT: 5000
+  TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-1}
+  STAFF_MFA_ENFORCE_AFTER: ${STAFF_MFA_ENFORCE_AFTER:-}
   APP_URL: ${APP_URL:-https://dev.ekavyu.com}
   FRONTEND_URL: ${FRONTEND_URL:-https://dev.ekavyu.com}
   PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-https://dev.ekavyu.com}

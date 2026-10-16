@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { LabTest } from "../models/LabTest.ts";
@@ -82,7 +83,7 @@ export async function createLabTest(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(201).send(successResponse(test, "Lab test catalog entry created successfully"));
   } catch (err) {
-    console.error("createLabTest error:", err);
+    console.error("createLabTest error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -116,7 +117,7 @@ export async function getLabTests(req: FastifyRequest, reply: FastifyReply) {
     setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
     return reply.code(200).send(successResponse(tests));
   } catch (err) {
-    console.error("getLabTests error:", err);
+    console.error("getLabTests error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -159,7 +160,7 @@ export async function updateLabTest(req: FastifyRequest, reply: FastifyReply) {
     await test.save();
     return reply.code(200).send(successResponse(test, "Lab test updated successfully"));
   } catch (err) {
-    console.error("updateLabTest error:", err);
+    console.error("updateLabTest error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -234,7 +235,7 @@ export async function getLabTatMetrics(req: FastifyRequest, reply: FastifyReply)
       })
     );
   } catch (err) {
-    console.error("getLabTatMetrics error:", err);
+    console.error("getLabTatMetrics error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -261,7 +262,7 @@ export async function deleteLabTest(req: FastifyRequest, reply: FastifyReply) {
     await LabTest.findByIdAndDelete(id);
     return reply.code(200).send(successResponse(null, "Lab test catalog entry deleted successfully"));
   } catch (err) {
-    console.error("deleteLabTest error:", err);
+    console.error("deleteLabTest error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -376,7 +377,7 @@ export async function createLabOrder(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(201).send(successResponse(labOrder, "Diagnostic laboratory order created successfully"));
   } catch (err) {
-    console.error("createLabOrder error:", err);
+    console.error("createLabOrder error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -451,7 +452,7 @@ export async function getLabOrders(req: FastifyRequest, reply: FastifyReply) {
     setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
     return reply.code(200).send(successResponse(orders));
   } catch (err) {
-    console.error("getLabOrders error:", err);
+    console.error("getLabOrders error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -488,7 +489,7 @@ export async function collectSample(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(updated, "Sample collection recorded successfully"));
   } catch (err) {
-    console.error("collectSample error:", err);
+    console.error("collectSample error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -543,7 +544,7 @@ export async function uploadLabResult(req: FastifyRequest, reply: FastifyReply) 
 
     return reply.code(200).send(successResponse(updated, "Lab test results successfully saved and finalized"));
   } catch (err) {
-    console.error("uploadLabResult error:", err);
+    console.error("uploadLabResult error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -778,7 +779,7 @@ export async function updateLabOrderStatus(req: FastifyRequest, reply: FastifyRe
     return reply.code(200).send(successResponse(updated, "Laboratory order status updated"));
   } catch (err) {
     if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
-    console.error("updateLabOrderStatus error:", err);
+    console.error("updateLabOrderStatus error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1241,7 +1242,7 @@ export async function getPatientLabComparison(req: FastifyRequest, reply: Fastif
       })
     );
   } catch (err) {
-    console.error("getPatientLabComparison error:", err);
+    console.error("getPatientLabComparison error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

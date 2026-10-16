@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest } from "fastify";
 import type { ClientSession } from "mongoose";
 import { Organization } from "../models/Organization.ts";
@@ -76,7 +77,7 @@ export async function cleanupBrandingAssets(now = new Date()) {
       await deleteObjectFromStorage(asset.objectKey);
       await OrganizationBrandingAsset.deleteOne({ _id: asset._id, state: "deleting" });
     } catch (error) {
-      console.error("organization.branding.cleanup.failed", { assetId: asset._id.toString(), error });
+      console.error("organization.branding.cleanup.failed", safeError(error));
     }
   }
 }

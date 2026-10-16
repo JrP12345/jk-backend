@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { ServiceCatalog } from "../models/ServiceCatalog.ts";
@@ -73,7 +74,7 @@ export async function createService(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(201).send(successResponse(service, "Service catalog item created successfully"));
   } catch (err) {
-    console.error("createService error:", err);
+    console.error("createService error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -135,7 +136,7 @@ export async function getServices(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(services));
   } catch (err) {
-    console.error("getServices error:", err);
+    console.error("getServices error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -161,7 +162,7 @@ export async function getServiceById(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(service));
   } catch (err) {
-    console.error("getServiceById error:", err);
+    console.error("getServiceById error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -214,7 +215,7 @@ export async function updateService(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(service, "Service catalog item updated successfully"));
   } catch (err) {
-    console.error("updateService error:", err);
+    console.error("updateService error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -244,7 +245,7 @@ export async function deleteService(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(null, "Service deactivated successfully"));
   } catch (err) {
-    console.error("deleteService error:", err);
+    console.error("deleteService error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -283,7 +284,7 @@ export async function seedDefaultServices(req: FastifyRequest, reply: FastifyRep
 
     return reply.code(201).send(successResponse(inserted, `Seeded ${inserted.length} default service catalog items`));
   } catch (err) {
-    console.error("seedDefaultServices error:", err);
+    console.error("seedDefaultServices error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

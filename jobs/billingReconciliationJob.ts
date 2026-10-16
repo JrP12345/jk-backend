@@ -1,4 +1,5 @@
 import { WorkerLoop } from "../utilities/workerLoop.ts";
+import { safeError } from "../utilities/safeError.ts";
 import { reconcileAppointmentOrderIntents } from "../services/AppointmentOrderReconciliationService.ts";
 import { releaseWorkerLease } from "../utilities/workerLease.ts";
 import crypto from "node:crypto";
@@ -33,7 +34,7 @@ export async function runBillingReconciliation() {
       const missingOrder = (err as { status?: number } | null)?.status === 404;
       const details = {
         paymentId: payment._id.toString(), organizationId: payment.organizationId.toString(),
-        orderId: payment.razorpayOrderId, error: err instanceof Error ? err.message : String(err),
+        orderId: payment.razorpayOrderId, ...safeError(err),
       };
       const checkedAt = new Date();
       if (missingOrder) {

@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import crypto from "node:crypto";
@@ -377,7 +378,7 @@ export async function handleInboundUpiWebhook(req: FastifyRequest, reply: Fastif
     if (err?.code === 11000) {
       return reply.code(409).send(errorResponse("Gateway transaction has already been used"));
     }
-    console.error("handleInboundUpiWebhook error:", err);
+    console.error("handleInboundUpiWebhook error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to process inbound UPI webhook"));
   }
 }

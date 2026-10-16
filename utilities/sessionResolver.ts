@@ -1,3 +1,5 @@
+import { safeError } from "./safeError.ts";
+import { staffMfaEnrollmentRequired } from "../services/StaffMfaPolicy.ts";
 import mongoose from "mongoose";
 import { RefreshToken } from "../models/RefreshToken.ts";
 import { User } from "../models/User.ts";
@@ -8,6 +10,8 @@ import { disconnectUserWebSockets } from "../notifications/websocket.ts";
 import { logger } from "./logger.ts";
 
 export interface SessionState {
+  authenticatedAt?: Date;
+  mfaEnrollmentRequired?: boolean;
   sessionId: string;
   userId: string;
   organizationId?: string;
@@ -30,7 +34,7 @@ const sessionSubClient = createRedisSubscriber();
 if (sessionSubClient) {
   sessionSubClient.subscribe("session:events", (err) => {
     if (err) {
-      console.warn("[SessionResolver] Failed to subscribe to session:events:", err.message);
+      console.warn("[SessionResolver] Failed to subscribe to session:events:", safeError(err));
     }
   });
 
@@ -63,14 +67,14 @@ export async function resolveSession(sessionId: string, expectedAuthVersion?: nu
     const [session] = await RefreshToken.aggregate([
       { $match: { _id: new mongoose.Types.ObjectId(sessionId) } },
       { $lookup: { from: User.collection.name, localField: "userId", foreignField: "_id",
-        pipeline: [{ $project: { isActive: 1, authVersion: 1, role: 1, twoFactorEnabled: 1 } }], as: "owner" } },
+        pipeline: [{ $project: { isActive: 1, authVersion: 1, role: 1, twoFactorEnabled: 1, twoFactorEnrollmentRequired: 1 } }], as: "owner" } },
       { $lookup: { from: Organization.collection.name, localField: "organizationId", foreignField: "_id",
         pipeline: [{ $project: { isActive: 1, status: 1 } }], as: "organization" } },
       { $lookup: { from: OrgMember.collection.name, let: { uid: "$userId", oid: "$organizationId" },
         pipeline: [{ $match: { $expr: { $and: [{ $eq: ["$userId", "$$uid"] }, { $eq: ["$organizationId", "$$oid"] }] } } },
           { $project: { role: 1, accessRevision: 1 } }], as: "membership" } },
       { $project: { userId: 1, organizationId: 1, workspaceRole: 1, workspaceAccessRevision: 1, membership: 1, isGuest: 1, authVersion: 1, revoked: 1,
-        revocationReason: 1, expiresAt: 1, owner: 1, organization: 1 } },
+        revocationReason: 1, expiresAt: 1, authenticatedAt: 1, owner: 1, organization: 1 } },
     ]);
     if (!session) return { valid: false, reason: "Session not found" };
     if (session.revoked) return { valid: false, reason: "Session revoked" };
@@ -92,6 +96,8 @@ export async function resolveSession(sessionId: string, expectedAuthVersion?: nu
       return { valid: false, reason: "Session invalidated by role or credential change" };
     }
     return { valid: true, session: { sessionId, userId: String(session.userId),
+      authenticatedAt: session.authenticatedAt ? new Date(session.authenticatedAt) : undefined,
+      mfaEnrollmentRequired: staffMfaEnrollmentRequired(session.workspaceRole || owner.role, !!owner.twoFactorEnabled, process.env, Date.now(), !!owner.twoFactorEnrollmentRequired),
       organizationId: session.organizationId?.toString(), role: session.isGuest ? "guest" : session.workspaceRole || owner.role,
       authVersion: version, status: "active", expiresAt: new Date(session.expiresAt).getTime() } };
   } catch {
@@ -144,7 +150,7 @@ export async function revokeSession(sessionId: string, reason: string = "logout"
           );
         }
       } catch (err: any) {
-        console.warn("[SessionResolver Warning] Failed to update Redis revoked state:", err.message);
+        console.warn("[SessionResolver Warning] Failed to update Redis revoked state:", safeError(err));
       }
     }
 

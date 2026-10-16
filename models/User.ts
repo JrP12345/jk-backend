@@ -11,6 +11,7 @@ const UserSchema = new Schema({
   authMethod: { type: String, enum: AUTH_METHOD_OPTIONS, default: AUTH_METHOD_OPTIONS[0] },
   role: { type: String, required: true, index: true }, // "root" | "admin" | "doctor" | "receptionist" | "nurse" | "lab_tech" | "pharmacist" | "cashier" | "patient" | "family_member"
   twoFactorEnabled: { type: Boolean, default: false },
+  twoFactorEnrollmentRequired: { type: Boolean, default: false },
   twoFactorSecret: { type: String },
   isEmailVerified: { type: Boolean, default: true }, // Defaults to true for admin/staff created by org; patient self-reg sets false
   emailVerificationToken: { type: String, sparse: true, index: true },

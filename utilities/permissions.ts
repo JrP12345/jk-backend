@@ -1,3 +1,4 @@
+import { safeError } from "./safeError.ts";
 import type { FastifyRequest } from "fastify";
 import mongoose from "mongoose";
 import { Role } from "../models/Role.ts";
@@ -175,7 +176,7 @@ const roleSubClient = createRedisSubscriber();
 if (roleSubClient) {
   roleSubClient.subscribe("auth:role:invalidate", (err) => {
     if (err) {
-      console.warn("[RoleCache] Failed to subscribe to auth:role:invalidate channel:", err.message);
+      console.warn("[RoleCache] Failed to subscribe to auth:role:invalidate channel:", safeError(err));
     }
   });
 
@@ -221,7 +222,7 @@ export async function invalidateRoleCache(roleName?: string, organizationId?: st
     }
     await publishRedisEvent("auth:role:invalidate", { roleName, organizationId });
   } catch (err: any) {
-    console.warn("[RoleCache] Failed to publish Redis cache invalidation:", err.message);
+    console.warn("[RoleCache] Failed to publish Redis cache invalidation:", safeError(err));
   }
 }
 (globalThis as any).__invalidateRoleCache = invalidateRoleCache;

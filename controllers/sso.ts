@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import crypto from "node:crypto";
 import { processSsoLogin } from "../services/SsoAuthService.ts";
@@ -26,7 +27,7 @@ export async function initiateSsoRedirect(req: FastifyRequest, reply: FastifyRep
       }, "Enterprise SSO Auth URL generated")
     );
   } catch (err) {
-    console.error("initiateSsoRedirect error:", err);
+    console.error("initiateSsoRedirect error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -83,7 +84,7 @@ export async function handleSsoCallback(req: FastifyRequest, reply: FastifyReply
 
     return await completeVerifiedLogin(req, reply, authResult.userRecord);
   } catch (err) {
-    console.error("handleSsoCallback error:", err);
+    console.error("handleSsoCallback error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

@@ -61,7 +61,7 @@ export class DPDPService {
     // Critical or High severity triggers on-call pager immediately
     if (data.severity === "CRITICAL" || data.severity === "HIGH") {
       await reportCriticalError(
-        `[DPDP Security Breach] ${data.severity}: ${data.title}`,
+        `DPDP_SECURITY_BREACH_${data.severity}`,
         new Error(`Exposed categories: ${data.dataCategoriesExposed.join(", ")}. Est subjects: ${data.affectedSubjectsCount}`),
         {
           component: "DPDPCompliance",

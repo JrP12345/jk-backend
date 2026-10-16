@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { ImagingStudy } from "../models/ImagingStudy.ts";
@@ -27,7 +28,7 @@ export async function imagingPreview(req: FastifyRequest, reply: FastifyReply) {
     return reply.send(successResponse(manifest));
   } catch (error) {
     if (error instanceof DicomWebError) return reply.code(error.statusCode).send(errorResponse(error.message));
-    console.error("Imaging preview failed", error instanceof Error ? error.name : "Unknown error");
+    console.error("Imaging preview failed", safeError(error));
     return reply.code(500).send(errorResponse("Imaging preview could not be loaded"));
   }
 }

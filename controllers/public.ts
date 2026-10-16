@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import { appointmentService, AppointmentDomainError } from '../services/AppointmentService.ts';
 import { executeRecordedCommand, CommandError } from '../services/CommandReceiptService.ts';
 import { OperationReceipt } from '../models/OperationReceipt.ts';
@@ -81,7 +82,7 @@ export async function getPublicDoctorProfile(req: FastifyRequest, reply: Fastify
     const organization = organizationMap.get(selectedAssignment.organizationId.toString())!;
     const organizationAssignments = publicAssignments.filter((item) => item.organizationId.toString() === organization._id.toString());
     const bookingAccess = await getOrganizationBookingAccess([organization._id.toString()]).catch((error) => {
-      req.log.warn({ error }, "Could not verify online booking availability");
+      req.log.warn(safeError(error), "Could not verify online booking availability");
       return new Map<string, boolean>();
     });
     const slugs = await publicSlugs([
@@ -113,7 +114,7 @@ export async function getPublicDoctorProfile(req: FastifyRequest, reply: Fastify
       currency: organization.currency || "INR", locations: publicLocations,
     }));
   } catch (error) {
-    req.log.error({ error }, "Failed to load public doctor profile");
+    req.log.error(safeError(error), "Failed to load public doctor profile");
     return reply.code(500).send(errorResponse("Doctor profile could not be loaded"));
   }
 }
@@ -148,7 +149,7 @@ export async function getOrganizations(req: FastifyRequest, reply: FastifyReply)
 
     return reply.code(200).send(successResponse(formatted));
   } catch (err) {
-    console.error("getOrganizations error:", err);
+    console.error("getOrganizations error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -195,7 +196,7 @@ export async function getOrganizationDetails(req: FastifyRequest, reply: Fastify
       toPublicOrganizationDetail(org, formattedDoctors)
     ));
   } catch (err) {
-    console.error("getOrganizationDetails error:", err);
+    console.error("getOrganizationDetails error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -339,7 +340,7 @@ export async function getPublicLocations(req: FastifyRequest, reply: FastifyRepl
       : [];
     const orgMap = new Map<string, any>(orgs.map((o) => [String(o._id), o]));
     const bookingAccess = await getOrganizationBookingAccess(orgIds).catch((error) => {
-      req.log.warn({ error }, "Could not verify public booking access");
+      req.log.warn(safeError(error), "Could not verify public booking access");
       return new Map<string, boolean>();
     });
 
@@ -411,7 +412,7 @@ export async function getPublicLocations(req: FastifyRequest, reply: FastifyRepl
 
     return reply.code(200).send({ ...successResponse(formattedLocations), ...(facets ? { filters: facets } : {}) });
   } catch (err) {
-    console.error("getPublicLocations error:", err);
+    console.error("getPublicLocations error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -438,7 +439,7 @@ export async function getPublicLocationDetails(req: FastifyRequest, reply: Fasti
     }
     const timezone = location.timezone || org?.timezone || "Asia/Kolkata";
     const onlineBookingAvailable = await canCreateLocationBooking(id).catch((err) => {
-      req.log.warn({ err }, "Could not verify online booking availability");
+      req.log.warn(safeError(err), "Could not verify online booking availability");
       return false;
     });
     const now = new Date();
@@ -644,7 +645,7 @@ export async function getPublicLocationDetails(req: FastifyRequest, reply: Fasti
       doctors: cleanDoctors
     }));
   } catch (err) {
-    console.error("getPublicLocationDetails error:", err);
+    console.error("getPublicLocationDetails error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -750,7 +751,7 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
     if (!receipt?.responseCiphertext || !appointment) throw new CommandError(409, 'Reception must review the recorded visit before its link can be restored');
     const recorded = JSON.parse(decryptField(receipt.responseCiphertext));
     if (!recorded.trackerToken || !appointment.trackerTokenExpiresAt || appointment.trackerTokenExpiresAt <= new Date() || hashTrackerCapability(recorded.trackerToken) !== appointment.trackerTokenHash) throw new CommandError(409, 'The recorded visit link is no longer available. Please contact reception.');
-    for (const effect of effects) await effect().catch(error => req.log.warn({ err: error }, 'Walk-in queue broadcast could not be refreshed'));
+    for (const effect of effects) await effect().catch(error => req.log.warn(safeError(error), 'Walk-in queue broadcast could not be refreshed'));
     const queueCount = await Appointment.countDocuments({ organizationId: org.id, locationId, doctorId, status: { $in: ['confirmed', 'checked-in'] }, appointmentTime: { $gte: startOfDay, $lte: endOfDay }, _id: { $ne: appointment._id } });
     const estimatedWaitMinutes = queueCount * (appointment.duration || 15);
     const statusMessage = appointment.status === 'pending_payment' ? 'Payment is required before confirmation. Contact reception.' : appointment.status === 'checked-in' ? 'Your walk-in visit is checked in. Please wait for your turn.' : 'Your visit was recorded. Review its current status.';
@@ -759,7 +760,7 @@ export async function joinPublicQueue(req: FastifyRequest, reply: FastifyReply) 
       trackingUrl: '/track/' + appointment.id + '#t=' + encodeURIComponent(recorded.trackerToken), trackerToken: recorded.trackerToken }, statusMessage));
   } catch (error) {
     if (error instanceof CommandError || error instanceof AppointmentDomainError) return reply.code(error.statusCode).send(errorResponse(error.message));
-    req.log.error({ err: error }, 'Walk-in booking could not be confirmed');
+    req.log.error(safeError(error), 'Walk-in booking could not be confirmed');
     return reply.code(503).send(errorResponse('The walk-in result could not be confirmed. Retry the submitted request.'));
   }
 }
@@ -826,7 +827,7 @@ export async function issuePublicTrackerCheckInCapability(req: FastifyRequest, r
       expiresAt: expiresAt.toISOString(),
     }));
   } catch (err) {
-    console.error("issuePublicTrackerCheckInCapability error:", err);
+    console.error("issuePublicTrackerCheckInCapability error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1154,7 +1155,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
       })
     );
   } catch (err) {
-    console.error("getPublicAppointmentTracker error:", err);
+    console.error("getPublicAppointmentTracker error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1274,7 +1275,7 @@ export async function processPublicTrackerCheckIn(req: FastifyRequest, reply: Fa
       )
     );
   } catch (err) {
-    console.error("processPublicTrackerCheckIn error:", err);
+    console.error("processPublicTrackerCheckIn error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1333,7 +1334,7 @@ export async function processPublicTrackerReturn(req: FastifyRequest, reply: Fas
         type: "QUEUE_UPDATED",
       });
     } catch (wsErr) {
-      console.warn("WebSocket PATIENT_RETURNED broadcast failed:", wsErr);
+      console.warn("WebSocket PATIENT_RETURNED broadcast failed:", safeError(wsErr));
     }
 
     return reply.code(200).send(
@@ -1349,7 +1350,7 @@ export async function processPublicTrackerReturn(req: FastifyRequest, reply: Fas
       )
     );
   } catch (err) {
-    console.error("processPublicTrackerReturn error:", err);
+    console.error("processPublicTrackerReturn error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1574,7 +1575,7 @@ export async function getPublicQueueTv(req: FastifyRequest, reply: FastifyReply)
       })
     );
   } catch (err) {
-    console.error("getPublicQueueTv error:", err);
+    console.error("getPublicQueueTv error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1692,7 +1693,7 @@ export async function printPublicTrackerPrescription(req: FastifyRequest, reply:
 
     return reply.type("text/html").send(html);
   } catch (err) {
-    console.error("printPublicTrackerPrescription error:", err);
+    console.error("printPublicTrackerPrescription error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -1750,7 +1751,7 @@ export async function trackSiteVisitController(req: FastifyRequest, reply: Fasti
 
     return reply.code(200).send(successResponse({ recorded: true }));
   } catch (err: any) {
-    console.error("trackSiteVisitController error:", err);
+    console.error("trackSiteVisitController error:", safeError(err));
     return reply.code(200).send(successResponse({ recorded: false }));
   }
 }

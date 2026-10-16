@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { randomUUID } from "node:crypto";
@@ -77,7 +78,7 @@ export async function createTeleSession(req: FastifyRequest, reply: FastifyReply
 
     return reply.code(201).send(successResponse(session, "Teleconsultation video room created successfully"));
   } catch (err) {
-    console.error("createTeleSession error:", err);
+    console.error("createTeleSession error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -109,7 +110,7 @@ export async function getTeleSession(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(session));
   } catch (err) {
-    console.error("getTeleSession error:", err);
+    console.error("getTeleSession error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -174,7 +175,7 @@ export async function startTeleSession(req: FastifyRequest, reply: FastifyReply)
 
     return reply.code(200).send(successResponse(session, "Teleconsultation session active"));
   } catch (err) {
-    console.error("startTeleSession error:", err);
+    console.error("startTeleSession error:", safeError(err));
     if (isActiveConsultationLockConflict(err)) {
       return reply.code(409).send(errorResponse("Doctor already has an active consultation. Complete it before starting another.", "ACTIVE_CONSULTATION_IN_PROGRESS"));
     }
@@ -220,7 +221,7 @@ export async function updateTeleSessionNotes(req: FastifyRequest, reply: Fastify
 
     return reply.code(200).send(successResponse(session, "Clinical notes and vitals updated"));
   } catch (err) {
-    console.error("updateTeleSessionNotes error:", err);
+    console.error("updateTeleSessionNotes error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -266,7 +267,7 @@ export async function endTeleSession(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.code(200).send(successResponse(session, `Teleconsultation room ended. Session duration: ${durationMinutes} minutes`));
   } catch (err) {
-    console.error("endTeleSession error:", err);
+    console.error("endTeleSession error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -312,7 +313,7 @@ export async function getTeleSessions(req: FastifyRequest, reply: FastifyReply) 
 
     return reply.code(200).send(successResponse(sessions));
   } catch (err) {
-    console.error("getTeleSessions error:", err);
+    console.error("getTeleSessions error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -350,7 +351,7 @@ export async function postSessionSignal(req: FastifyRequest, reply: FastifyReply
     await session.save();
     return reply.code(200).send(successResponse({ received: true }, "WebRTC signal logged"));
   } catch (err) {
-    console.error("postSessionSignal error:", err);
+    console.error("postSessionSignal error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -376,7 +377,7 @@ export async function getSessionSignals(req: FastifyRequest, reply: FastifyReply
 
     return reply.code(200).send(successResponse(session.signals || []));
   } catch (err) {
-    console.error("getSessionSignals error:", err);
+    console.error("getSessionSignals error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }

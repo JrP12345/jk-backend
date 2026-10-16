@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { SaaSPlan } from "../models/SaaSPlan.ts";
 import { Subscription } from "../models/Subscription.ts";
@@ -209,7 +210,7 @@ export async function getCheckoutStatusController(req: FastifyRequest, reply: Fa
     const result = await subscriptionService.reconcileCheckout(orgId, orderId);
     return reply.code(200).send(successResponse(result));
   } catch (err: any) {
-    req.log.error({ err }, "billing.checkout.reconcile.failed");
+    req.log.error(safeError(err), "billing.checkout.reconcile.failed");
     return reply.code(503).send(errorResponse("Payment status could not be confirmed. Please try again."));
   }
 }
@@ -242,7 +243,7 @@ export async function razorpayWebhookController(req: FastifyRequest, reply: Fast
     req.log.info({ event: (req.body as any)?.event, eventId: req.headers["x-razorpay-event-id"] }, "billing.webhook.verified");
     return reply.code(200).send(result);
   } catch (err: any) {
-    req.log.error(`Razorpay webhook error: ${err.message}`);
+    req.log.error(safeError(err));
     return reply.code(400).send({ error: err.message || "Webhook processing failed" });
   }
 }
@@ -461,7 +462,7 @@ export async function adminExtendTrial(req: FastifyRequest, reply: FastifyReply)
           idempotencyKey: `transactional-email:trial-extended:${subscription._id}:${subscription.trialEndsAt.getTime()}`,
         });
       } catch (e) {
-        console.error("Failed to enqueue trial extension email:", e);
+        console.error("Failed to enqueue trial extension email:", safeError(e));
       }
     }
 

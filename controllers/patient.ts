@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import crypto from "node:crypto";
@@ -58,7 +59,7 @@ export async function searchPatients(req: FastifyRequest, reply: FastifyReply) {
     setPaginationHeaders(reply, { totalCount, totalPages: Math.ceil(totalCount / pageSize), currentPage, pageSize });
     return reply.send(successResponse(patients));
   } catch (err) {
-    req.log.error({ err }, "Patient directory failed");
+    req.log.error(safeError(err), "Patient directory failed");
     return reply.code(503).send(errorResponse("Patient search could not be completed. Retry before creating a new record."));
   }
 }
@@ -137,7 +138,7 @@ export async function getPatientDetails(req: FastifyRequest, reply: FastifyReply
       appointments
     }));
   } catch (err) {
-    console.error("getPatientDetails error:", err);
+    console.error("getPatientDetails error:", safeError(err));
     if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
@@ -198,7 +199,7 @@ export async function submitDoctorReview(req: FastifyRequest, reply: FastifyRepl
 
     return reply.code(200).send(successResponse({ rating: newRating, reviewsCount: newReviewsCount }, "Review submitted successfully"));
   } catch (err) {
-    console.error("submitDoctorReview error:", err);
+    console.error("submitDoctorReview error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -279,7 +280,7 @@ export async function getPatientTimelineController(req: FastifyRequest, reply: F
 
     return reply.code(200).send(successResponse(timelineData));
   } catch (err) {
-    console.error("getPatientTimelineController error:", err);
+    console.error("getPatientTimelineController error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -413,7 +414,7 @@ export async function updatePatientProfile(req: FastifyRequest, reply: FastifyRe
     if (!["patient", "family_member"].includes(requesterRole || "") && !await requestHasAnyPermission(req, "VIEW_EHR")) return reply.send(successResponse(patientAdministrativeDTO(updatedPatient?.toObject()), "Patient demographics saved"));
     return reply.code(200).send(successResponse(updatedPatient, "Patient profile updated successfully"));
   } catch (err) {
-    console.error("updatePatientProfile error:", err);
+    console.error("updatePatientProfile error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -440,7 +441,7 @@ export async function createPatient(req: FastifyRequest, reply: FastifyReply) {
     const { CommandError } = await import("../services/CommandReceiptService.ts");
     if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message, err.details));
     if (err?.name === "ValidationError") return reply.code(400).send(errorResponse("Invalid patient registration details"));
-    req.log.error({ err }, "Patient registration failed");
+    req.log.error(safeError(err), "Patient registration failed");
     return reply.code(503).send(errorResponse("Registration could not be confirmed. Retry with the same request identifier."));
   }
 }

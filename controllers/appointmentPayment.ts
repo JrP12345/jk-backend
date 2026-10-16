@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import crypto from "node:crypto";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
@@ -31,7 +32,7 @@ export async function reconcileRefund(req: FastifyRequest, reply: FastifyReply) 
     return reply.send(successResponse(await reconcileAppointmentRefund(appointmentId, req.user!.id)));
   } catch (error) {
     if (error instanceof AppointmentDomainError) return reply.code(error.statusCode).send(errorResponse(error.message));
-    req.log.error({ err: error }, "Refund reconciliation failed");
+    req.log.error(safeError(error), "Refund reconciliation failed");
     return reply.code(502).send(errorResponse("Could not confirm the provider refund. Payment remains pending review."));
   }
 }
@@ -233,7 +234,7 @@ export async function createAppointmentPaymentOrder(req: FastifyRequest, reply: 
       })
     );
   } catch (err: any) {
-    console.error("createAppointmentPaymentOrder error:", err);
+    console.error("createAppointmentPaymentOrder error:", safeError(err));
     return reply.code(err.statusCode || 500).send(errorResponse(err.statusCode ? err.message : "Failed to create payment order"));
   }
 }
@@ -300,7 +301,7 @@ export async function verifyAppointmentPayment(req: FastifyRequest, reply: Fasti
 
     return reply.code(200).send(successResponse(null, "Appointment payment verified and confirmed successfully!"));
   } catch (err: any) {
-    console.error("verifyAppointmentPayment error:", err);
+    console.error("verifyAppointmentPayment error:", safeError(err));
     return reply.code(err instanceof AppointmentDomainError ? err.statusCode : 500).send(errorResponse(err instanceof AppointmentDomainError ? err.message : "Payment verification failed"));
   }
 }
@@ -343,7 +344,7 @@ export async function selectPayAtLocation(req: FastifyRequest, reply: FastifyRep
 
     return reply.code(200).send(successResponse(selected, "Pay at location option selected. Appointment confirmed!"));
   } catch (err: any) {
-    console.error("selectPayAtLocation error:", err);
+    console.error("selectPayAtLocation error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -477,7 +478,7 @@ export async function collectCounterPayment(req: FastifyRequest, reply: FastifyR
       )
     );
   } catch (err: any) {
-    console.error("collectCounterPayment error:", err);
+    console.error("collectCounterPayment error:", safeError(err));
     return reply.code(err instanceof AppointmentDomainError ? err.statusCode : 500).send(errorResponse(err instanceof AppointmentDomainError ? err.message : "Failed to collect counter payment"));
   }
 }
@@ -556,7 +557,7 @@ export async function reconcileAppointmentPayment(req: FastifyRequest, reply: Fa
       ),
     );
   } catch (err: any) {
-    console.error("reconcileAppointmentPayment error:", err);
+    console.error("reconcileAppointmentPayment error:", safeError(err));
     return reply.code(err instanceof AppointmentDomainError ? err.statusCode : 500).send(errorResponse(err instanceof AppointmentDomainError ? err.message : "Reconciliation failed"));
   }
 }

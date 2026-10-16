@@ -5,6 +5,9 @@ import path from "node:path";
 import { User } from "../models/User.ts";
 import { TwoFactorService } from "../services/TwoFactorService.ts";
 import { encryptField } from "../utilities/cryptoEnvelope.ts";
+import { RefreshToken } from "../models/RefreshToken.ts";
+import { withTransaction } from "../utilities/transaction.ts";
+import { safeError } from "../utilities/safeError.ts";
 
 /**
  * Generates a replacement TOTP secret for one platform-root account.
@@ -58,9 +61,12 @@ async function setupRootTwoFactor(): Promise<void> {
   }
   try {
     // Rotating the secret invalidates every previously provisioned authenticator.
-    user.twoFactorEnabled = true;
-    user.twoFactorSecret = encryptField(secret.base32);
-    await user.save();
+    await withTransaction(async () => {
+      await User.updateOne({ _id: user._id }, { $set: {
+        twoFactorEnabled: true, twoFactorSecret: encryptField(secret.base32),
+      }, $inc: { authVersion: 1 } });
+      await RefreshToken.updateMany({ userId: user._id, revoked: false }, { $set: { revoked: true, revocationReason: "terminated" } });
+    });
   } catch (error) {
     if (qrPath) await rm(qrPath, { force: true });
     throw error;
@@ -77,7 +83,7 @@ async function setupRootTwoFactor(): Promise<void> {
 
 setupRootTwoFactor()
   .catch((error) => {
-    console.error("Root 2FA setup failed:", error instanceof Error ? error.message : error);
+    console.error("Root 2FA setup failed:", safeError(error));
     process.exitCode = 1;
   })
   .finally(async () => {

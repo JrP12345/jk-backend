@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { ModuleRegistry } from "../models/ModuleRegistry.ts";
 import { MODULE_KEYS, getAlwaysOnModules } from "../data/moduleKeys.ts";
@@ -52,7 +53,7 @@ export async function getModules(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.send(successResponse(enriched, "Modules retrieved"));
   } catch (err: any) {
-    console.error("getModules error:", err);
+    console.error("getModules error:", safeError(err));
     return reply.code(500).send(errorResponse(err.message || "Internal server error"));
   }
 }
@@ -94,7 +95,7 @@ export async function toggleModule(req: FastifyRequest, reply: FastifyReply) {
 
     return reply.send(successResponse(updated, `Module '${moduleKey}' ${enabled ? "enabled" : "disabled"}`));
   } catch (err: any) {
-    console.error("toggleModule error:", err);
+    console.error("toggleModule error:", safeError(err));
     return reply.code(500).send(errorResponse(err.message || "Internal server error"));
   }
 }
@@ -158,7 +159,7 @@ export async function bulkToggleModules(req: FastifyRequest, reply: FastifyReply
       )
     );
   } catch (err: any) {
-    console.error("bulkToggleModules error:", err);
+    console.error("bulkToggleModules error:", safeError(err));
     return reply.code(500).send(errorResponse(err.message || "Internal server error"));
   }
 }
@@ -177,7 +178,7 @@ export async function seedModulesEndpoint(req: FastifyRequest, reply: FastifyRep
 
     return reply.send(successResponse(result, "Modules seeded successfully"));
   } catch (err: any) {
-    console.error("seedModules error:", err);
+    console.error("seedModules error:", safeError(err));
     return reply.code(500).send(errorResponse(err.message || "Internal server error"));
   }
 }

@@ -1,3 +1,4 @@
+import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import { ImagingStudy } from "../models/ImagingStudy.ts";
@@ -80,7 +81,7 @@ export async function createImagingStudy(req: FastifyRequest, reply: FastifyRepl
 
     return reply.code(201).send(successResponse(study, "PACS DICOM imaging study registered successfully"));
   } catch (err) {
-    console.error("createImagingStudy error:", err);
+    console.error("createImagingStudy error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -125,7 +126,7 @@ export async function getImagingStudies(req: FastifyRequest, reply: FastifyReply
     setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
     return reply.code(200).send(successResponse(studies));
   } catch (err) {
-    console.error("getImagingStudies error:", err);
+    console.error("getImagingStudies error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -169,7 +170,7 @@ export async function signRadiologyReport(req: FastifyRequest, reply: FastifyRep
 
     return reply.code(200).send(successResponse(study, "Radiology report signed and attached to study"));
   } catch (err) {
-    console.error("signRadiologyReport error:", err);
+    console.error("signRadiologyReport error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
@@ -219,7 +220,7 @@ export async function updateImagingStudyStatus(req: FastifyRequest, reply: Fasti
 
     return reply.code(200).send(successResponse(study, `Imaging study status updated to ${status}`));
   } catch (err) {
-    console.error("updateImagingStudyStatus error:", err);
+    console.error("updateImagingStudyStatus error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
 }
