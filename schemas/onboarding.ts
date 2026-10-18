@@ -67,6 +67,8 @@ export const updateOrganizationSchema = {
         properties: {
           registration: { type: "string", enum: ["full", "essential"] },
           consultation: { type: "string", enum: ["full", "focused"] },
+          queueChime: { type: "string", enum: ["bell", "ding-dong", "synth", "elevator", "gong", "beep", "marimba", "mute"] },
+          queueVoiceLanguage: { type: "string", enum: ["off", "en", "hi", "both"] },
         },
       },
       name: { type: "string", minLength: 1 },

@@ -29,6 +29,8 @@ const OrganizationSchema = new Schema({
   workflowPreferences: {
     registration: { type: String, enum: ["full", "essential"], default: "full" },
     consultation: { type: String, enum: ["full", "focused"], default: "full" },
+    queueChime: { type: String, enum: ["bell", "ding-dong", "synth", "elevator", "gong", "beep", "marimba", "mute"], default: "bell" },
+    queueVoiceLanguage: { type: String, enum: ["off", "en", "hi", "both"], default: "en" },
   },
   crmSettings: {
     automationEnabled: { type: Boolean, default: false },

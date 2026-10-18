@@ -66,7 +66,7 @@ describe("Existing clinic workflow with opt-in experience preferences", () => {
 
   it("retains full defaults, merges individual preferences, scopes reads and denies receptionist settings writes", async () => {
     const original = await app.inject({ method: "GET", url: "/api/onboarding/organization/preferences", headers: doctorHeaders });
-    expect(original.json().data).toMatchObject({ registration: "full", consultation: "full", currency: "INR" });
+    expect(original.json().data).toMatchObject({ registration: "full", consultation: "full", currency: "INR", queueChime: "bell", queueVoiceLanguage: "en" });
     expect(original.body).not.toContain("whatsappConfig");
     await preferences({ registration: "essential" });
     expect((await Organization.findById(org.id))?.workflowPreferences).toMatchObject({ registration: "essential", consultation: "full" });
@@ -74,6 +74,35 @@ describe("Existing clinic workflow with opt-in experience preferences", () => {
     expect(forbidden.statusCode).toBe(403);
     const crossTenant = await app.inject({ method: "GET", url: `/api/onboarding/organization/preferences?organizationId=${location.id}`, headers: doctorHeaders });
     expect(crossTenant.statusCode).toBe(403);
+  });
+
+  it("stores shared announcement preferences, merges partial updates and enforces organization authority", async () => {
+    await preferences({ queueChime: "mute", queueVoiceLanguage: "hi" });
+    const read = await app.inject({ method: "GET", url: "/api/onboarding/organization/preferences", headers: receptionHeaders });
+    expect(read.statusCode).toBe(200);
+    expect(read.json().data).toMatchObject({ registration: "essential", consultation: "full", queueChime: "mute", queueVoiceLanguage: "hi" });
+    await preferences({ queueChime: "gong" });
+    expect((await Organization.findById(org.id))?.workflowPreferences).toMatchObject({ queueChime: "gong", queueVoiceLanguage: "hi", registration: "essential" });
+    const forbidden = await app.inject({ method: "PUT", url: "/api/onboarding/organization/me", headers: receptionHeaders, payload: { workflowPreferences: { queueChime: "bell" } } });
+    expect(forbidden.statusCode).toBe(403);
+    const otherOrg = await Organization.create({ name: "Other clinic", city: "Surat" });
+    const crossTenant = await app.inject({ method: "PUT", url: `/api/onboarding/organization/me?organizationId=${otherOrg.id}`, headers: adminHeaders, payload: { workflowPreferences: { queueChime: "mute" } } });
+    expect(crossTenant.statusCode).toBe(403);
+    expect((await Organization.findById(otherOrg.id))?.workflowPreferences?.queueChime).toBe("bell");
+    const root = await User.create({ name: "Root", email: "workflow-root@test.com", role: "root" });
+    const rootHeaders = await session(root, org.id);
+    const scoped = await app.inject({ method: "PUT", url: `/api/onboarding/organization/me?organizationId=${otherOrg.id}`, headers: rootHeaders, payload: { workflowPreferences: { queueVoiceLanguage: "both" } } });
+    expect(scoped.statusCode, scoped.body).toBe(200);
+    expect((await Organization.findById(otherOrg.id))?.workflowPreferences?.queueVoiceLanguage).toBe("both");
+    expect((await Organization.findById(org.id))?.workflowPreferences?.queueVoiceLanguage).toBe("hi");
+  });
+
+  it("rejects unsupported announcement choices without changing saved preferences", async () => {
+    for (const value of [{ queueChime: "unknown" }, { queueVoiceLanguage: "fr" }, { queueChime: null }]) {
+      const response = await app.inject({ method: "PUT", url: "/api/onboarding/organization/me", headers: adminHeaders, payload: { workflowPreferences: value } });
+      expect(response.statusCode, response.body).toBe(400);
+    }
+    expect((await Organization.findById(org.id))?.workflowPreferences).toMatchObject({ queueChime: "gong", queueVoiceLanguage: "hi" });
   });
 
   it("requires opt-in before no-note completion and preserves the active visit", async () => {

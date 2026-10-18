@@ -450,7 +450,7 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
     }
 
     const updateData: any = {};
-    for (const key of ["registration", "consultation"] as const) {
+    for (const key of ["registration", "consultation", "queueChime", "queueVoiceLanguage"] as const) {
       if (workflowPreferences?.[key] !== undefined) updateData[`workflowPreferences.${key}`] = workflowPreferences[key];
     }
     if (name) updateData.name = name;
@@ -1279,6 +1279,8 @@ export async function getOrganizationWorkflowPreferences(req: FastifyRequest, re
   return reply.send(successResponse({
     registration: org.workflowPreferences?.registration || "full",
     consultation: org.workflowPreferences?.consultation || "full",
+    queueChime: org.workflowPreferences?.queueChime || "bell",
+    queueVoiceLanguage: org.workflowPreferences?.queueVoiceLanguage || "en",
     currency: org.currency || "INR",
   }));
 }
