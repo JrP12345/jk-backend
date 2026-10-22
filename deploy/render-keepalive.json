@@ -1,0 +1,33 @@
+{
+  "job": {
+    "title": "Ekavyu Render development keepalive",
+    "url": "https://anant-backend-80y3.onrender.com/api/health",
+    "enabled": true,
+    "saveResponses": false,
+    "requestMethod": 0,
+    "requestTimeout": 30,
+    "redirectSuccess": false,
+    "auth": { "enable": false, "user": "", "password": "" },
+    "extendedData": {
+      "headers": { "Accept": "application/json", "Cache-Control": "no-cache" },
+      "body": ""
+    },
+    "notification": {
+      "onFailure": true,
+      "onFailureCount": 2,
+      "onSuccess": true,
+      "onDisable": true,
+      "mode": 2,
+      "selectedChannels": [0]
+    },
+    "schedule": {
+      "timezone": "UTC",
+      "expiresAt": 0,
+      "hours": [-1],
+      "mdays": [-1],
+      "minutes": [3, 13, 23, 33, 43, 53],
+      "months": [-1],
+      "wdays": [-1]
+    }
+  }
+}

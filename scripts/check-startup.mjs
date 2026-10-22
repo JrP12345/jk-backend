@@ -4,6 +4,7 @@ import net from "node:net";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
+import { checkStartupTraffic } from "./check-startup-traffic.mjs";
 
 process.chdir(fileURLToPath(new URL("../", import.meta.url)));
 const baseEnv = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, NODE_ENV: "production" };
@@ -11,6 +12,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const entryPoint = process.argv.includes("--source") ? "index.ts" : "dist/index.js";
 const runtime = entryPoint === "index.ts" ? "native TypeScript API" : "built API";
 console.log(`Checking ${runtime}; only isolated synthetic configuration and data are used.`);
+await checkStartupTraffic();
 
 function launch(env, signalBridge = false) {
   const args = signalBridge

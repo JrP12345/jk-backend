@@ -1,6 +1,7 @@
 import "./utilities/startupEnvironment.ts";
 import { safeError } from "./utilities/safeError.ts";
 import { getServerPort } from "./utilities/serverPort.ts";
+import { registerStartupTrafficGuard } from "./utilities/startupTraffic.ts";
 
 import "./db.ts";
 import mongoose from "mongoose";
@@ -121,14 +122,7 @@ const app = fastify({
 });
 
 let acceptingTraffic = process.env.NODE_ENV === "test";
-const probePaths = new Set(["/api/health", "/api/health/liveness", "/api/health/readiness"]);
-app.addHook("onRequest", (request, reply, done) => {
-  if (!acceptingTraffic && !probePaths.has(request.url.split("?")[0])) {
-    reply.header("Retry-After", "2").code(503).send({ success: false, message: "The service is starting or shutting down. Please try again shortly." });
-    return;
-  }
-  done();
-});
+registerStartupTrafficGuard(app, () => acceptingTraffic);
 
 // Enforce edge proxy origin protection & Referrer-Policy
 app.addHook("onRequest", (req, reply, done) => {
