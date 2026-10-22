@@ -4,6 +4,10 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Prescription } from "../models/Prescription.ts";
 import { Encounter } from "../models/Encounter.ts";
+import { OrgMember } from "../models/OrgMember.ts";
+import { pharmacyTaxFixture } from "./helpers/pharmacyTaxFixture.ts";
+import { User } from "../models/User.ts";
+import { createAuthSession } from "../utilities/helpers.ts";
 import { setupCeOrgFixture, bookWalkInAppointment, cookieHeader } from "./helpers/locationEssentialsSetup.ts";
 
 describe("Clinic Essentials Cycle 2 — Prescription Handoff", () => {
@@ -14,6 +18,8 @@ describe("Clinic Essentials Cycle 2 — Prescription Handoff", () => {
   let encounterId: string;
   let prescriptionId: string;
   let medicineId: string;
+  let noteId: string;
+  let doctorHeaders: { authorization: string };
 
   beforeAll(async () => {
     await app.ready();
@@ -22,6 +28,9 @@ describe("Clinic Essentials Cycle 2 — Prescription Handoff", () => {
     adminCookies = fixture.adminCookies;
     locationId = fixture.locationId;
     doctorUserId = fixture.doctorId;
+    const doctor = await User.findById(doctorUserId);
+    const session = await createAuthSession({ id: doctorUserId, role: "doctor", email: doctor!.email!, organization_id: fixture.orgId });
+    doctorHeaders = { authorization: `Bearer ${session.accessToken}` };
 
     const appt = await bookWalkInAppointment(app, adminCookies, {
       locationId,
@@ -54,6 +63,7 @@ describe("Clinic Essentials Cycle 2 — Prescription Handoff", () => {
       },
     });
     medicineId = JSON.parse(medRes.body).data.id;
+    await pharmacyTaxFixture(locationId, [medicineId], doctorUserId);
 
     const encounterRes = await app.inject({
       method: "POST",
@@ -63,10 +73,10 @@ describe("Clinic Essentials Cycle 2 — Prescription Handoff", () => {
     });
     encounterId = JSON.parse(encounterRes.body).data.id;
 
-    await app.inject({
+    const draft = await app.inject({
       method: "POST",
       url: "/api/clinical-notes",
-      headers: { cookie: adminCookies.join("; ") },
+      headers: doctorHeaders,
       payload: {
         locationId,
         encounterId,
@@ -77,13 +87,18 @@ describe("Clinic Essentials Cycle 2 — Prescription Handoff", () => {
         ],
       },
     });
-
+    expect(draft.statusCode, draft.body).toBe(200);
+    noteId = draft.json().data.id;
     const rxDoc = await Prescription.findOne({ encounterId, status: "active" });
     expect(rxDoc).toBeTruthy();
     prescriptionId = rxDoc!._id.toString();
   });
 
-  it("should expose active prescriptions on pending-prescriptions after clinical note draft", async () => {
+  it("should exclude draft prescriptions and expose them only after the assigned doctor signs", async () => {
+    const pendingDraft = await app.inject({ method: "GET", url: `/api/pharmacy/pending-prescriptions?locationId=${locationId}`, headers: cookieHeader(adminCookies) });
+    expect(pendingDraft.json().data.some((group: { encounterId: string }) => group.encounterId === encounterId)).toBe(false);
+    const signed = await app.inject({ method: "PUT", url: `/api/clinical-notes/${noteId}/sign`, headers: doctorHeaders });
+    expect(signed.statusCode, signed.body).toBe(200);
     const res = await app.inject({
       method: "GET",
       url: `/api/pharmacy/pending-prescriptions?locationId=${locationId}`,
@@ -102,7 +117,7 @@ describe("Clinic Essentials Cycle 2 — Prescription Handoff", () => {
     const dispenseRes = await app.inject({
       method: "POST",
       url: "/api/pharmacy/dispense",
-      headers: { cookie: adminCookies.join("; ") },
+      headers: { cookie: adminCookies.join("; "), "idempotency-key": "recorded-dispense-fixture" },
       payload: {
         patientId,
         locationId,
@@ -180,6 +195,11 @@ describe("Clinic Essentials Cycle 2 — location_manager RBAC", () => {
       },
     });
     expect(staffRes.statusCode).toBe(201);
+    // Role permissions do not assign branch access to custom operational staff.
+    const staff = staffRes.json().data;
+    const grant = await OrgMember.updateOne({ userId: staff.id, organizationId: staff.organization_id },
+      { $set: { locationAccess: { mode: "selected", locationIds: [locationId] } } });
+    expect(grant.matchedCount).toBe(1);
 
     const loginRes = await app.inject({
       method: "POST",

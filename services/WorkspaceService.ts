@@ -34,10 +34,10 @@ export async function authorizeWorkspace(userId: string, organizationId: string)
   if (!membership || membership.role === "root" || isConsumerRole(membership.role)) {
     throw new WorkspaceError(403, "Organization workspace is unavailable");
   }
-  const organization = await Organization.exists({ _id: organizationId,
-    isActive: { $ne: false }, status: { $ne: "inactive" } });
+  const organization = await Organization.findOne({ _id: organizationId,
+    isActive: { $ne: false }, status: { $ne: "inactive" } }).select("workspaceProfile staffMfaRequired").lean();
   if (!organization) throw new WorkspaceError(403, "Organization workspace is inactive or suspended");
-  return { organizationId, role: membership.role };
+  return { organizationId, role: membership.role, workspaceProfile: organization.workspaceProfile || "clinic", staffMfaRequired: organization.staffMfaRequired === true };
 }
 
 /** Opaque, single-use proof issued only after credentials and any configured MFA succeed. */

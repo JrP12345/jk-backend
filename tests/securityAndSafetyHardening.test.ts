@@ -7,6 +7,8 @@ import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
 import { Location } from "../models/Location.ts";
 import { Organization } from "../models/Organization.ts";
+import { OrgMember } from "../models/OrgMember.ts";
+import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { AppointmentPayment } from "../models/AppointmentPayment.ts";
@@ -50,6 +52,8 @@ describe("Security & Safety Hardening Verification Suite", () => {
       role: "doctor",
     });
 
+    await OrgMember.create({ userId: doctorUser._id, organizationId: orgId, role: "doctor", locationAccess: { mode: "selected", locationIds: [locationId] } });
+    await DoctorAssignment.create({ doctorId: doctorUser._id, organizationId: orgId, locationId, workingHours: "[]" });
     const docToken = (await fixtureAccessToken({
       id: doctorUser._id.toString(),
       email: doctorUser.email,

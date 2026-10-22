@@ -29,10 +29,15 @@ describe("Phase 1 authentication authority", () => {
     const guest = await createAuthSession({ id: user.id, role: 'guest', email: user.email! });
     const call = (path: string, token: string, payload: object = {}) => app.inject({ method: 'POST', url: path, cookies: { access_token: token }, payload });
     expect((await call('/api/onboarding/totp/setup', guest.accessToken)).statusCode).toBe(403);
-    const auth = await createAuthSession({ id: user.id, role: 'patient', email: user.email! });
-    await PendingTwoFactorSetup.create({ userId: user._id, secret: 'JBSWY3DPEHPK3PXP', expiresAt: new Date(Date.now() - 1000) });
+    const personal = await createAuthSession({ id: user.id, role: 'patient', email: user.email! });
+    expect((await call('/api/onboarding/totp/setup', personal.accessToken)).statusCode).toBe(403);
+    const organization = await Organization.create({ name: "Staff MFA fixture", city: "Pune" });
+    const staff = await User.create({ name: "Actual staff MFA", role: "admin", email: "staff-mfa-enrol@example.test" });
+    await OrgMember.create({ userId: staff._id, organizationId: organization._id, role: "admin" });
+    const auth = await createAuthSession({ id: staff.id, role: 'admin', email: staff.email!, organization_id: organization.id });
+    await PendingTwoFactorSetup.create({ userId: staff._id, sessionId: auth.sessionId, secret: 'JBSWY3DPEHPK3PXP', expiresAt: new Date(Date.now() - 1000) });
     expect((await call('/api/onboarding/totp/verify', auth.accessToken, { secret: 'JBSWY3DPEHPK3PXP', token: '123456' })).statusCode).toBe(400);
-    expect((await User.findById(user._id))?.twoFactorEnabled).toBe(false);
+    expect((await User.findById(staff._id))?.twoFactorEnabled).toBe(false);
   });
   it("requires local MFA after Google identity proof without creating a login session", async () => {
     const user = await User.create({ name: "Google MFA", email: "phase1-mfa@example.test", role: "root",

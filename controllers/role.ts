@@ -7,6 +7,7 @@ import { AuditLog } from "../models/AuditLog.ts";
 import { successResponse, errorResponse, revokeAllRefreshTokens } from "../utilities/helpers.ts";
 import { invalidateRoleCache, BUILTIN_ROLE_PERMISSIONS, getEffectivePermissions } from "../utilities/permissions.ts";
 import { CRM_PERMISSION_CATALOG } from "../utilities/crmPermissions.ts";
+import { PHARMACY_PERMISSION_CATALOG } from "../utilities/pharmacyPermissions.ts";
 import { isRootRequest, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { broadcastRealtimeNotification } from "../notifications/websocket.ts";
 import { withTransaction } from '../utilities/transaction.ts';
@@ -20,6 +21,7 @@ import { pinAssignableRole } from '../services/RoleAssignmentService.ts';
 // Standard System Permissions Catalog with Human-Readable Labels & Categories
 export const SYSTEM_PERMISSIONS_CATALOG = [
   ...CRM_PERMISSION_CATALOG,
+  ...PHARMACY_PERMISSION_CATALOG,
   { code: "VIEW_APPOINTMENTS", name: "View appointments", category: "Front Desk & Operations", description: "View permitted appointment information" },
   { code: "VIEW_BILLING", name: "View billing", category: "Billing & Finance", description: "View permitted billing information" },
   { code: "VIEW_STAFF", name: "View staff", category: "Administration", description: "View the permitted staff directory" },

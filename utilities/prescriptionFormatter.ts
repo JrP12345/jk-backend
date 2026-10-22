@@ -19,6 +19,8 @@ export interface PrintPrescriptionData {
     frequency: string;
     duration: string;
     instructions?: string;
+    authorizedQuantity?: number;
+    authorizedBaseUnit?: string;
   }>;
   investigations?: Array<{
     testName: string;
@@ -76,7 +78,7 @@ export function generatePrintablePrescriptionHtml(data: PrintPrescriptionData): 
       (m, i) => `
     <tr>
       <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${i + 1}</td>
-      <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${escapeHtml(m.medicineName)}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-weight: bold;">${escapeHtml(m.medicineName)}${m.authorizedQuantity != null ? `<br><small>Authorized quantity: ${escapeHtml(m.authorizedQuantity)} ${escapeHtml(m.authorizedBaseUnit)}</small>` : ""}</td>
       <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${escapeHtml(m.dosage)}</td>
       <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${escapeHtml(m.frequency)}</td>
       <td style="padding: 8px; border-bottom: 1px solid #e5e7eb;">${escapeHtml(m.duration)}</td>

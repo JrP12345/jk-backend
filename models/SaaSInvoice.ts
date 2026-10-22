@@ -1,4 +1,5 @@
 import mongoose, { Schema } from "mongoose";
+import { commercialQuoteSchema } from "./commercialQuoteSchema.ts";
 
 const SaaSInvoiceSchema = new Schema({
   invoiceNumber: { type: String, required: true, unique: true, index: true },
@@ -6,6 +7,7 @@ const SaaSInvoiceSchema = new Schema({
   subscriptionId: { type: Schema.Types.ObjectId, ref: "Subscription", required: true, index: true },
   paymentId: { type: Schema.Types.ObjectId, ref: "SubscriptionPayment", unique: true, sparse: true, index: true },
   planName: { type: String, required: true },
+  commercialQuote: { type: commercialQuoteSchema, default: undefined },
   billingCycle: { type: String, enum: ["monthly", "annual"], default: "monthly" },
   subtotal: { type: Number, required: true },
   taxAmount: { type: Number, default: 0 },

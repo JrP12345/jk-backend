@@ -224,7 +224,7 @@ describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite"
   });
 
   // ─── Test 2: Consolidated OPD Checkout Preview ───────────────────────────
-  it("should compile doctor consultation, lab tests, and prescriptions in checkout preview", async () => {
+  it("should compile consultation and labs without charging unsupplied prescriptions", async () => {
     const previewRes = await app.inject({
       method: "GET",
       url: `/api/billing/checkout/preview/${appointmentId}`,
@@ -234,7 +234,7 @@ describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite"
     const preview = JSON.parse(previewRes.body).data;
 
     expect(preview.items).toBeDefined();
-    expect(preview.items.length).toBeGreaterThanOrEqual(3); // Consult + Lab + at least 1 Rx
+    expect(preview.items.length).toBeGreaterThanOrEqual(2);
 
     const consultItem = preview.items.find((i: any) => i.category === "consultation");
     expect(consultItem).toBeDefined();
@@ -245,7 +245,7 @@ describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite"
     expect(labItem.amount).toBe(450);
 
     const rxItems = preview.items.filter((i: any) => i.category === "pharmacy");
-    expect(rxItems.length).toBeGreaterThanOrEqual(1);
+    expect(rxItems).toHaveLength(0);
 
     expect(preview.subtotal).toBeGreaterThanOrEqual(750 + 450);
     expect(preview.totalAmount).toBeGreaterThanOrEqual(preview.subtotal);
@@ -268,11 +268,11 @@ describe("Doctor Break TV Sync & 1-Click Consolidated Outpatient Checkout Suite"
     expect(settleRes.statusCode).toBe(200);
     const invoice = JSON.parse(settleRes.body).data;
 
-    expect(invoice.invoiceNumber).toMatch(/^INV-/);
+    expect(invoice.invoiceNumber).toMatch(/^I[0-9A-Z]{4}[0-9]{4}\/[0-9]{6}$/);
     expect(invoice.status).toBe("paid");
     expect(invoice.discount).toBe(50);
     expect(invoice.paymentMethod).toBe("upi");
-    expect(invoice.items.length).toBeGreaterThanOrEqual(3);
+    expect(invoice.items.length).toBeGreaterThanOrEqual(2);
     expect(invoice.payments.length).toBe(1);
     expect(invoice.payments[0].paymentMethod).toBe("upi");
 

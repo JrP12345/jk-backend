@@ -50,7 +50,7 @@ describe("Clinical Modules API Integration Tests (Pharmacy, Lab)", () => {
   });
 
   // ─── Pharmacy Module ──────────────────────────────────────────
-  it("should add stock and dispense medicines", async () => {
+  it("should add stock and reject connected dispensing without prescription authority", async () => {
     // 1. Add Medicine
     const medRes = await app.inject({
       method: "POST",
@@ -76,7 +76,7 @@ describe("Clinical Modules API Integration Tests (Pharmacy, Lab)", () => {
     const dispenseRes = await app.inject({
       method: "POST",
       url: "/api/pharmacy/dispense",
-      headers: { cookie: adminCookies.join("; ") },
+      headers: { cookie: adminCookies.join("; "), "idempotency-key": "recorded-dispense-fixture" },
       payload: {
         locationId: locationId,
         patientId: patientId,
@@ -84,13 +84,13 @@ describe("Clinical Modules API Integration Tests (Pharmacy, Lab)", () => {
       },
     });
 
-    expect(dispenseRes.statusCode).toBe(201);
+    expect(dispenseRes.statusCode).toBe(409);
     const body = JSON.parse(dispenseRes.body);
-    expect(body.success).toBe(true);
+    expect(body.success).toBe(false);
 
     // Verify stock deduction
     const medObj = await Medicine.findById(medicineId);
-    expect(medObj!.stockQuantity).toBe(90);
+    expect(medObj!.stockQuantity).toBe(100);
   });
 
   // ─── Laboratory Module ────────────────────────────────────────

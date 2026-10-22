@@ -1,5 +1,9 @@
 # Verification for coding agents
 
+## Project stage
+
+This entire project is in development, with no production customers or legacy production data (user clarification, 20 October 2026). Skip migration/backfill and compatibility layers solely for hypothetical legacy deployments. Use current intended contracts while preserving and verifying current clinical, financial, security and inventory flows when shared code changes. Synthetic fixtures are development coverage, not legacy production obligations.
+
 Classify the highest risk of the change before running checks. Use the smallest meaningful validation set, then broaden only for a real dependency or failure. Never run every script merely to prove work was done. The frontend sibling repository has a detailed `docs/verification-workflow.md`; the rules here stand alone when this repository is checked out separately.
 
 - Level 1 (docs or isolated nonfunctional change): inspect the diff; no database suite or build by default.

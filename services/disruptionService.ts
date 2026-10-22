@@ -621,20 +621,29 @@ export const disruptionService = {
 
         refundId = refundResult?.refundId || "";
         if (refundResult?.status === "processed") {
-          appt.paymentStatus = "refunded";
-          appt.triageAction = "refunded";
-
-          if (invoice) {
-            invoice.status = "refunded";
-          }
-          await withClinicalTransaction(async () => {
-            if (invoice) await invoice.save();
-            await appt!.save();
-            await AuditLog.create({ userId: auditUserId, organizationId: appt!.organizationId, action: 'APPOINTMENT_REFUNDED', targetId: invoice?._id || appt!._id, targetModel: 'Invoice', category: 'BILLING', details: { appointmentId: appt!.id, invoiceId: invoice?.id, amount: refundAmount, refundId, staffId: cancelledByUserId } });
-            await publishAppointmentCommunication(appt, { action: 'refund', actorId: await communicationActor(cancelledByUserId) });
+          const appointmentKey = appt._id;
+          // Reload and mutate inside every retry. Documents saved through ALS
+          // but loaded outside the transaction can lose dirty paths on abort.
+          appt = await withClinicalTransaction(async () => {
+            const current = await Appointment.findById(appointmentKey)
+              .populate("locationId", "name phone organizationId").populate("doctorId", "name email")
+              .populate({ path: "patientId", populate: { path: "userId", select: "name email phone" } });
+            const currentInvoice = invoice && await Invoice.findById(invoice._id);
+            const currentSource = current && await onlineRefundSource(current, currentInvoice);
+            if (!current || current.status !== "cancelled" || current.paymentStatus !== "refund_pending" ||
+                !currentInvoice || !currentSource || currentSource.paymentId !== source.paymentId || currentSource.amount !== source.amount) {
+              throw new AppointmentDomainError("Payment records changed during refund confirmation; reconcile the provider result", 409);
+            }
+            currentInvoice.status = "refunded";
+            current.paymentStatus = "refunded";
+            current.triageAction = "refunded";
+            await currentInvoice.save();
+            await current.save();
+            await AuditLog.create({ userId: auditUserId, organizationId: current.organizationId, action: 'APPOINTMENT_REFUNDED', targetId: currentInvoice._id, targetModel: 'Invoice', category: 'BILLING', details: { appointmentId: current.id, invoiceId: currentInvoice.id, amount: refundAmount, refundId, staffId: cancelledByUserId } });
+            await publishAppointmentCommunication(current, { action: 'refund', actorId: await communicationActor(cancelledByUserId) });
+            return current;
           });
           appt.$session(null);
-          invoice?.$session(null);
         } else {
           await AuditLog.create({ userId: auditUserId, organizationId: appt.organizationId, action: 'REFUND_PROVIDER_RESULT', targetId: appt._id, targetModel: 'Appointment', category: 'BILLING', details: { appointmentId: appt.id, paymentId: source.paymentId, refundId, providerStatus: refundResult?.status || 'unknown', refundProcessed: false, amount: refundAmount } });
         }

@@ -8,17 +8,34 @@ import { Organization } from "../models/Organization.ts";
 import { subscriptionService, addBillingPeriod } from "../services/billing/SubscriptionService.ts";
 import { razorpayService } from "../services/billing/RazorpayService.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
-import { resolveTargetOrganizationId } from "../utilities/tenant.ts";
+import { resolveTargetOrganizationId, checkLocationAccess } from "../utilities/tenant.ts";
 import { enqueueTransactionalEmail } from "../services/CommunicationOutbox.ts";
 import { summarizeSubscription } from "../services/billing/subscriptionSummary.ts";
 import { withTransaction } from "../utilities/transaction.ts";
+import { createProductQuote, type ProductQuoteInput } from "../services/billing/ProductQuoteService.ts";
+import { getOrganizationProductEntitlements } from "../services/billing/ProductEntitlementService.ts";
+import { commercialFingerprint, isProductPlan, validateCommercialPlan } from "../utilities/commercialQuote.ts";
+import { CommandError } from "../services/CommandReceiptService.ts";
+import { openProductQuote, validateFreshProductQuote, validateProductFootprint, assertProductChangeAllowed } from "../services/billing/ProductActivationService.ts";
+
+async function authorizeProductQuote(req: FastifyRequest, organizationId: string, planId: string, cycle: string, token: unknown) {
+  if (token === undefined) return;
+  if (!req.user || ["patient", "family_member", "guest"].includes(req.user.role)) throw new CommandError(403, "Staff authority is required for product checkout");
+  const quote = openProductQuote(token, organizationId, planId, cycle);
+  for (const location of quote.entitlements.locations) {
+    const access = await checkLocationAccess(req, location.locationId);
+    if (!access.allowed || access.organizationId !== organizationId) throw new CommandError(404, "Product location not found");
+  }
+}
 
 /**
  * Get active commercial SaaS plans
  */
 export async function getSaaSPlans(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const plans = await SaaSPlan.find({ status: "active" }).sort({ displayOrder: 1 }).lean();
+    const kind = (req.query as { kind?: string }).kind;
+    if (kind !== undefined && kind !== "location_products") return reply.code(400).send(errorResponse("Unknown commercial catalogue kind"));
+    const plans = await SaaSPlan.find({ status: "active", commercialFamily: kind === "location_products" ? "location_products" : { $exists: false } }).sort({ displayOrder: 1 }).lean();
     const formatted = plans.map((p: any) => ({ ...p, id: p._id.toString() }));
     return reply.code(200).send(successResponse(formatted, "SaaS plans fetched successfully"));
   } catch (err: any) {
@@ -30,6 +47,7 @@ export async function getSaaSPlans(req: FastifyRequest, reply: FastifyReply) {
  * Get subscription details for authenticated user's organization
  */
 export async function getSubscriptionDetails(req: FastifyRequest, reply: FastifyReply) {
+  reply.header("Cache-Control", "no-store");
   try {
     const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) {
@@ -45,10 +63,22 @@ export async function getSubscriptionDetails(req: FastifyRequest, reply: Fastify
     if (!organization) return reply.code(404).send(errorResponse("Organization not found"));
     return reply.code(200).send(successResponse({
       ...subscription.toJSON(),
+      productEntitlements: await getOrganizationProductEntitlements(orgId),
       summary: summarizeSubscription(organization, subscription.toObject() as any, !!paidPayment, new Date(), latestPayment?.status || null),
     }));
   } catch (err: any) {
     return reply.code(500).send(errorResponse("Failed to fetch subscription details", err.message));
+  }
+}
+
+export async function quoteProductsController(req: FastifyRequest, reply: FastifyReply) {
+  reply.header("Cache-Control", "no-store");
+  try {
+    const organizationId = await resolveTargetOrganizationId(req);
+    if (!organizationId) throw new CommandError(400, "Select an organization before quoting products");
+    return reply.send(successResponse(await createProductQuote(req, organizationId, req.body as ProductQuoteInput)));
+  } catch (error) {
+    return reply.code(error instanceof CommandError ? error.statusCode : 500).send(errorResponse(error instanceof CommandError ? error.message : "Unable to calculate product quote"));
   }
 }
 
@@ -73,24 +103,33 @@ export async function getOrganizationUsageMetrics(req: FastifyRequest, reply: Fa
  * Create Razorpay Order for Checkout
  */
 export async function createCheckoutOrderController(req: FastifyRequest, reply: FastifyReply) {
+  reply.header("Cache-Control", "no-store");
   try {
     const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) {
       return reply.code(400).send(errorResponse("No organization linked to account"));
     }
 
-    const { planId, billingCycle, checkoutIntentId } = req.body as { planId: string; billingCycle?: "monthly" | "annual"; checkoutIntentId?: string };
+    const { orderId } = (req.body || {}) as { orderId?: string };
+    if (orderId !== undefined) {
+      if (typeof orderId !== "string" || !/^order_[a-zA-Z0-9_-]{1,100}$/.test(orderId)) throw new CommandError(400, "Invalid checkout order reference");
+      return reply.send(successResponse(await subscriptionService.resumeCheckoutOrder(orgId, orderId)));
+    }
+
+    const { planId, billingCycle, checkoutIntentId, quoteToken } = req.body as { planId: string; billingCycle?: "monthly" | "annual"; checkoutIntentId?: string; quoteToken?: string };
     if (!planId) {
       return reply.code(400).send(errorResponse("planId is required"));
     }
 
     req.log.info({ organizationId: orgId, planId, billingCycle: billingCycle || "monthly" }, "billing.create.started");
+    await authorizeProductQuote(req, orgId, planId, billingCycle || "monthly", quoteToken);
 
     const checkoutData = await subscriptionService.createCheckoutOrder(
       orgId,
       planId,
       billingCycle || "monthly",
       checkoutIntentId,
+      quoteToken,
     );
 
     req.log.info({ organizationId: orgId, paymentId: checkoutData.paymentId,
@@ -99,7 +138,7 @@ export async function createCheckoutOrderController(req: FastifyRequest, reply: 
 
     return reply.code(200).send(successResponse(checkoutData, "Checkout order created successfully"));
   } catch (err: any) {
-    if (err.name === "PlanDowngradeViolationError" || err.statusCode === 409) {
+    if (err.name === "PlanDowngradeViolationError") {
       return reply.code(409).send(errorResponse(err.message, {
         code: "PLAN_DOWNGRADE_LIMIT_EXCEEDED",
         violations: err.violations,
@@ -108,7 +147,7 @@ export async function createCheckoutOrderController(req: FastifyRequest, reply: 
         activeLocations: err.activeLocations,
       }));
     }
-    return reply.code(400).send(errorResponse(err.message || "Failed to create checkout order"));
+    return reply.code(err instanceof CommandError ? err.statusCode : 400).send(errorResponse(err.message || "Failed to create checkout order"));
   }
 }
 
@@ -138,21 +177,23 @@ export async function validatePlanDowngradeController(req: FastifyRequest, reply
  * Direct Switch Plan (for free plans or immediate switches without gateway order)
  */
 export async function directSwitchPlanController(req: FastifyRequest, reply: FastifyReply) {
+  reply.header("Cache-Control", "no-store");
   try {
     const orgId = await resolveTargetOrganizationId(req);
     if (!orgId) {
       return reply.code(400).send(errorResponse("No organization linked to account"));
     }
 
-    const { planId, billingCycle } = req.body as { planId: string; billingCycle?: "monthly" | "annual" };
+    const { planId, billingCycle, quoteToken } = req.body as { planId: string; billingCycle?: "monthly" | "annual"; quoteToken?: string };
     if (!planId) {
       return reply.code(400).send(errorResponse("planId is required"));
     }
 
-    const result = await subscriptionService.directSwitchPlan(orgId, planId, billingCycle || "monthly");
+    await authorizeProductQuote(req, orgId, planId, billingCycle || "monthly", quoteToken);
+    const result = await subscriptionService.directSwitchPlan(orgId, planId, billingCycle || "monthly", quoteToken);
     return reply.code(200).send(successResponse(result, "Plan switched successfully"));
   } catch (err: any) {
-    if (err.name === "PlanDowngradeViolationError" || err.statusCode === 409) {
+    if (err.name === "PlanDowngradeViolationError") {
       return reply.code(409).send(errorResponse(err.message, {
         code: "PLAN_DOWNGRADE_LIMIT_EXCEEDED",
         violations: err.violations,
@@ -161,7 +202,7 @@ export async function directSwitchPlanController(req: FastifyRequest, reply: Fas
         activeLocations: err.activeLocations,
       }));
     }
-    return reply.code(400).send(errorResponse(err.message || "Failed to switch plan"));
+    return reply.code(err instanceof CommandError ? err.statusCode : 400).send(errorResponse(err.message || "Failed to switch plan"));
   }
 }
 
@@ -370,15 +411,30 @@ export async function adminUpsertPlan(req: FastifyRequest, reply: FastifyReply) 
       return reply.code(400).send(errorResponse("Name and slug are required"));
     }
 
-    const plan = await SaaSPlan.findOneAndUpdate(
-      { slug: body.slug },
-      { $set: body },
-      { upsert: true, returnDocument: "after" }
-    );
+    const existing = await SaaSPlan.findOne({ slug: body.slug });
+    if (existing?.commercialFamily && Object.hasOwn(body, "commercialFamily") && body.commercialFamily !== existing.commercialFamily) throw new CommandError(409, "Archive the catalogue instead of changing its commercial family");
+    if (existing && !existing.commercialFamily && body.commercialFamily) throw new CommandError(409, "Create a separate product catalogue to preserve existing subscriptions");
+    const previousData = existing?.toObject();
+    const effective = { ...previousData, ...body, limits: { ...previousData?.limits, ...body.limits } };
+    if (isProductPlan(effective)) {
+      if (["starter", "professional", "enterprise"].includes(body.slug)) throw new CommandError(409, "Product catalogues need a separate slug from legacy tiers");
+      validateCommercialPlan(effective);
+      const previous = existing?.commercialPricing?.revision;
+      const changed = existing && commercialFingerprint({ pricing: previousData?.commercialPricing, limits: previousData?.limits, legacyTier: previousData?.legacyTier, currency: previousData?.currency }) !==
+        commercialFingerprint({ pricing: effective.commercialPricing, limits: effective.limits, legacyTier: effective.legacyTier, currency: effective.currency });
+      if (previous && (effective.commercialPricing.revision < previous || changed && effective.commercialPricing.revision <= previous)) throw new CommandError(409, "Price changes require a higher pricing revision");
+    } else if (body.commercialPricing) throw new CommandError(400, "Product prices require an explicit commercial family");
+    if (effective.selfServicePharmacy === true && (!isProductPlan(effective) || !Number.isSafeInteger(effective.trialDays) || effective.trialDays < 1 || effective.trialDays > 365 || effective.limits?.maxStaff < 1 || effective.limits?.maxLocations < 1)) throw new CommandError(400, "Published pharmacy signup requires a configured product catalogue, trial duration and usable branch/staff limits");
+    const allowed = ["name", "slug", "description", "monthlyPrice", "annualPrice", "currency", "trialDays", "selfServicePharmacy", "status", "displayOrder", "isPopular", "limits", "features", "legacyTier", "commercialFamily", "commercialPricing"];
+    const values = Object.fromEntries(allowed.filter(key => Object.hasOwn(body, key)).map(key => [key, body[key]]));
+    if (Object.hasOwn(body, "limits")) values.limits = effective.limits;
+    const plan = await SaaSPlan.findOneAndUpdate({ slug: body.slug, ...(existing?.commercialPricing ? { "commercialPricing.revision": existing.commercialPricing.revision } : {}) },
+      { $set: values }, { upsert: !existing, returnDocument: "after", runValidators: true });
+    if (!plan) throw new CommandError(409, "Catalogue changed; reload before saving");
 
     return reply.code(200).send(successResponse(plan, "SaaS Plan saved successfully"));
   } catch (err: any) {
-    return reply.code(500).send(errorResponse("Failed to save SaaS plan", err.message));
+    return reply.code(err instanceof CommandError ? err.statusCode : err.name === "ValidationError" ? 400 : 500).send(errorResponse(err instanceof CommandError ? err.message : "Failed to save SaaS plan", err.message));
   }
 }
 
@@ -476,15 +532,18 @@ export async function adminExtendTrial(req: FastifyRequest, reply: FastifyReply)
  * Platform Admin: Explicit, attributed manual entitlement grant.
  */
 export async function adminActivateSubscription(req: FastifyRequest, reply: FastifyReply) {
+  reply.header("Cache-Control", "no-store");
   try {
     const { id } = req.params as { id: string };
-    const { planSlug, billingCycle = "monthly", reason } = (req.body || {}) as { planSlug?: string; billingCycle?: "monthly" | "annual"; reason?: string };
+    const { planSlug, billingCycle = "monthly", reason, quoteToken, grantKind = "manual" } = (req.body || {}) as { planSlug?: string; billingCycle?: "monthly" | "annual"; reason?: string; quoteToken?: string; grantKind?: "manual" | "trial" };
     if (!planSlug || !reason?.trim() || reason.trim().length < 10) {
       return reply.code(400).send(errorResponse("An active plan and a reason of at least 10 characters are required for a manual grant"));
     }
 
     const plan = await SaaSPlan.findOne({ slug: planSlug, status: "active" });
     if (!plan) return reply.code(400).send(errorResponse("Selected plan is not active"));
+    if (isProductPlan(plan) && !quoteToken) return reply.code(409).send(errorResponse("Product subscriptions require a reviewed location selection and activation workflow"));
+    if (!["manual", "trial"].includes(grantKind) || grantKind === "trial" && (!isProductPlan(plan) || !Number.isSafeInteger(plan.trialDays) || plan.trialDays < 1 || plan.trialDays > 365)) throw new CommandError(400, "A configured product trial duration is required");
 
     const now = new Date();
     if (billingCycle !== "monthly" && billingCycle !== "annual") return reply.code(400).send(errorResponse("Invalid billing cycle"));
@@ -494,9 +553,17 @@ export async function adminActivateSubscription(req: FastifyRequest, reply: Fast
       const target = await Subscription.findById(id).session(session);
       if (!target) return null;
       if (target.pendingCheckout?.paymentId) throw new Error("A checkout is in progress for this organization");
+      const quote = isProductPlan(plan) ? openProductQuote(quoteToken, String(target.organizationId), plan.id, billingCycle) : undefined;
+      if (target.commercialQuote && !quote) throw new CommandError(409, "A product subscription requires a reviewed product selection");
+      if (quote) {
+        await validateFreshProductQuote(quote, plan, session);
+        await validateProductFootprint(quote, session, true);
+        assertProductChangeAllowed(target, quote, now);
+      }
       target.planId = plan._id;
-      target.status = "active";
-      target.entitlementSource = "manual";
+      target.set("commercialQuote", quote);
+      target.status = grantKind === "trial" ? "trialing" : "active";
+      target.entitlementSource = grantKind;
       target.manualGrantReason = reason.trim();
       target.manualGrantedBy = req.user!.id as any;
       target.manualGrantedAt = now;
@@ -504,13 +571,18 @@ export async function adminActivateSubscription(req: FastifyRequest, reply: Fast
       target.billingCycle = billingCycle;
       target.currentPeriodStart = now;
       target.currentPeriodEnd = periodEnd;
+      if (grantKind === "trial") {
+        target.trialStartedAt = now;
+        target.trialEndsAt = new Date(now.getTime() + plan.trialDays * 86400000);
+        target.currentPeriodEnd = target.trialEndsAt;
+      }
       target.lastBillingChangeAt = now;
       await target.save({ session });
       const organization = await Organization.findByIdAndUpdate(target.organizationId, {
-        plan: plan.slug,
-        maxLocations: plan.limits?.maxLocations ?? 1,
-        maxDoctors: plan.limits?.maxDoctors ?? 2,
-        maxStaff: plan.limits?.maxStaff ?? 5,
+        plan: plan.legacyTier || plan.slug,
+        maxLocations: quote?.entitlements.maxLocations ?? plan.limits?.maxLocations ?? 1,
+        maxDoctors: quote?.entitlements.maxDoctors ?? plan.limits?.maxDoctors ?? 2,
+        maxStaff: quote?.entitlements.maxStaff ?? plan.limits?.maxStaff ?? 5,
       }, { session });
       if (!organization) throw new Error("Subscription organization not found");
       return target;
@@ -519,7 +591,7 @@ export async function adminActivateSubscription(req: FastifyRequest, reply: Fast
 
     return reply.code(200).send(successResponse(subscription, "Manual subscription access granted"));
   } catch (err: any) {
-    return reply.code(500).send(errorResponse("Failed to activate subscription", err.message));
+    return reply.code(err instanceof CommandError ? err.statusCode : 500).send(errorResponse("Failed to activate subscription", err.message));
   }
 }
 
@@ -542,13 +614,15 @@ export async function adminRefundPayment(req: FastifyRequest, reply: FastifyRepl
       amount: payment.amount,
     });
 
-    payment.status = "refunded";
-    await payment.save();
-
-    await SaaSInvoice.findOneAndUpdate(
-      { paymentId: payment._id },
-      { status: "refunded" }
-    );
+    await withTransaction(async session => {
+      const current = await SubscriptionPayment.findById(payment._id).session(session);
+      if (!current) throw new Error("Refunded payment needs reconciliation");
+      current.status = "refunded";
+      await current.save({ session });
+      await SaaSInvoice.findOneAndUpdate({ paymentId: payment._id }, { status: "refunded" }, { session });
+      // Serialize revocation with product new-business transactions and activation.
+      await Subscription.findOneAndUpdate({ _id: payment.subscriptionId }, { $inc: { __v: 1 } }, { session });
+    });
 
     return reply.code(200).send(successResponse(refund, "Refund processed successfully"));
   } catch (err: any) {

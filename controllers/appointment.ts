@@ -340,7 +340,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
       notes?: string;
       symptoms?: string;
       diagnosis?: string;
-      prescriptions?: Array<{ name: string; dosage?: string; duration?: string; frequency?: string; instructions?: string }>;
+      prescriptions?: Array<{ name: string; dosage?: string; duration?: string; frequency?: string; instructions?: string; authorizedQuantity?: number; authorizedBaseUnit?: string }>;
       followUpRecommended?: boolean;
       followUpTimeline?: string;
       followUpDueAt?: string;
@@ -567,6 +567,7 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
         for (const p of prescriptions) {
           if (!p.name || !p.name.trim()) continue;
           const rxDoc = await Prescription.create({
+            ...(await import("../services/PrescriptionQuantityService.ts")).prescriptionQuantityInput(p),
             organizationId: (appointment as any).organizationId,
             locationId: appointment.locationId,
             encounterId: encounter._id,
@@ -580,10 +581,8 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
             status: "active",
           });
           createdPrescriptionIds.push((rxDoc as any)._id);
-          if (optionalDocumentation) {
-            const { PrescriptionSealingService } = await import("../services/PrescriptionSealingService.ts");
-            await PrescriptionSealingService.sealPrescription(String(rxDoc._id), req.user!.id, { diagnosisDescription: diagnosis });
-          }
+          const { PrescriptionSealingService } = await import("../services/PrescriptionSealingService.ts");
+          await PrescriptionSealingService.sealPrescription(String(rxDoc._id), String(appointment.doctorId), { diagnosisDescription: diagnosis });
         }
       }
 
@@ -694,6 +693,12 @@ export async function updateAppointmentStatus(req: FastifyRequest, reply: Fastif
           if (followUpDate) (note as any).plan.followUpDate = followUpDate;
           if (followUpNotes) (note as any).plan.followUpInstructions = followUpNotes;
           note.status = "signed";
+          note.signature = { signerId: appointment.doctorId, signerName: docName, signedAt: now, signingMethod: "RS256_JWT" };
+          const { PrescriptionSealingService } = await import("../services/PrescriptionSealingService.ts");
+          const { Prescription } = await import("../models/Prescription.ts");
+          const unsealed = await Prescription.find({ _id: { $in: note.plan?.prescriptionIds || [] },
+            encounterId: encounter._id, organizationId: appointment.organizationId, status: "active", isSealed: false, deletedAt: null });
+          for (const rx of unsealed) await PrescriptionSealingService.sealPrescription(String(rx._id), String(appointment.doctorId));
           await note.save();
         }
       } catch (noteErr) {

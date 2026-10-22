@@ -44,8 +44,8 @@ export function escapeCsv(val: any): string {
   if (val === null || val === undefined) return "";
   // Spreadsheet applications interpret these leading characters as formulas.
   const raw = String(val);
-  const str = /^[\s]*[=+@-]|^[\t\r\n]/.test(raw) ? `'${raw}` : raw;
-  if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+  const str = /^[\s\p{Cc}\p{Cf}]*[=+@-]|^[\p{Cc}\p{Cf}]/u.test(raw) ? `'${raw}` : raw;
+  if (str.includes(",") || str.includes('"') || str.includes("\n") || str.includes("\r")) {
     return `"${str.replace(/"/g, '""')}"`;
   }
   return str;
@@ -82,7 +82,7 @@ export async function generateCsvReport(
 
   // 1. BILLING REPORT
   if (reportType === "billing") {
-    const invoices = await Invoice.find(filter)
+    const invoices = await Invoice.find({ ...filter, kind: { $ne: "pharmacy" } })
       .populate("patientId", "name")
       .sort({ createdAt: -1 })
       .limit(boundedLimit)

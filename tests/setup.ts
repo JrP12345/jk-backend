@@ -50,6 +50,10 @@ beforeAll(async () => {
     await mongoose.disconnect();
   }
   await mongoose.connect(uri);
+  // Connection readiness does not await model index builds. Fresh fixture DBs
+  // need their declared unique indexes before concurrent commands/transactions;
+  // otherwise tests race schema DDL instead of exercising the intended contract.
+  await Promise.all(Object.values(mongoose.models).map(model => model.init()));
 });
 
 afterAll(async () => {

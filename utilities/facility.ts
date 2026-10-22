@@ -1,5 +1,5 @@
 /** Facility classification for physical healthcare Locations. */
-export const FACILITY_TYPES = ["clinic", "hospital", "diagnostic_center", "medical_center", "specialty_center", "other"] as const;
+export const FACILITY_TYPES = ["clinic", "hospital", "diagnostic_center", "medical_center", "specialty_center", "pharmacy", "other"] as const;
 export type FacilityType = typeof FACILITY_TYPES[number];
 
 export function isFacilityType(value: unknown): value is FacilityType {

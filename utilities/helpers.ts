@@ -26,18 +26,19 @@ export function verifyAccessToken(token: string): JwtPayload {
   return jwt.verify(token, SERVICE_PUBLIC_KEY, { algorithms: ["RS256"] }) as JwtPayload;
 }
 
-export function generateTwoFactorChallenge(userId: string, authVersion = 1): string {
-  return jwt.sign({ userId, authVersion, purpose: "login_2fa" }, SERVICE_PRIVATE_KEY, {
+export function generateTwoFactorChallenge(userId: string, authVersion = 1, organizationId?: string): string {
+  return jwt.sign({ userId, authVersion, purpose: "login_2fa", ...(organizationId ? { organizationId } : {}) }, SERVICE_PRIVATE_KEY, {
     algorithm: "RS256",
     expiresIn: "10m",
     keyid: KEY_ID,
   });
 }
 
-export function verifyTwoFactorChallenge(token: string): { userId: string; authVersion: number; purpose: "login_2fa" } {
-  const payload = jwt.verify(token, SERVICE_PUBLIC_KEY, { algorithms: ["RS256"] }) as { userId?: string; authVersion?: number; purpose?: string };
+export function verifyTwoFactorChallenge(token: string): { userId: string; authVersion: number; purpose: "login_2fa"; organizationId?: string } {
+  const payload = jwt.verify(token, SERVICE_PUBLIC_KEY, { algorithms: ["RS256"] }) as { userId?: string; authVersion?: number; purpose?: string; organizationId?: string };
   if (!payload.userId || payload.purpose !== "login_2fa" || !Number.isInteger(payload.authVersion) || payload.authVersion! < 1) throw new Error("Invalid two-factor challenge");
-  return { userId: payload.userId, authVersion: payload.authVersion!, purpose: "login_2fa" };
+  if (payload.organizationId !== undefined && (typeof payload.organizationId !== "string" || !/^[a-f\d]{24}$/i.test(payload.organizationId))) throw new Error("Invalid two-factor workspace challenge");
+  return { userId: payload.userId, authVersion: payload.authVersion!, purpose: "login_2fa", ...(payload.organizationId ? { organizationId: payload.organizationId } : {}) };
 }
 
 

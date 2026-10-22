@@ -1,13 +1,18 @@
 import mongoose, { Schema } from "mongoose";
+import { commercialPricingSchema } from "./commercialQuoteSchema.ts";
 
 const SaaSPlanSchema = new Schema({
   name: { type: String, required: true },
   slug: { type: String, required: true, unique: true, index: true },
+  legacyTier: { type: String, enum: ["starter", "professional", "enterprise"] },
+  commercialFamily: { type: String, enum: ["location_products"] },
+  commercialPricing: { type: commercialPricingSchema, default: undefined },
   description: { type: String, required: true },
   monthlyPrice: { type: Number, required: true, default: 0 },
   annualPrice: { type: Number, required: true, default: 0 },
   currency: { type: String, default: "INR" },
   trialDays: { type: Number, default: 15 },
+  selfServicePharmacy: { type: Boolean, default: false },
   status: { type: String, enum: ["active", "inactive", "archived"], default: "active", index: true },
   displayOrder: { type: Number, default: 0 },
   isPopular: { type: Boolean, default: false },

@@ -1,5 +1,6 @@
 import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/provisioningFixture.ts";
 import { trackerFixtureHeaders } from "./helpers/trackerFixture.ts";
+import { pharmacyTaxFixture } from "./helpers/pharmacyTaxFixture.ts";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
@@ -131,6 +132,7 @@ describe("In-House Pharmacy Dispensing & Prescription Fulfillment Loop Test Suit
     });
     expect(medRes.statusCode).toBe(201);
     medicineId = JSON.parse(medRes.body).data.id;
+    await pharmacyTaxFixture(locationId, [medicineId], doctorUserId);
 
     // 6. Create active Appointment for Consultation
     const appt = await Appointment.create({
@@ -235,7 +237,7 @@ describe("In-House Pharmacy Dispensing & Prescription Fulfillment Loop Test Suit
     const dispenseRes = await app.inject({
       method: "POST",
       url: "/api/pharmacy/dispense",
-      headers: { cookie: adminCookies.join("; ") },
+      headers: { cookie: adminCookies.join("; "), "idempotency-key": "recorded-dispense-fixture" },
       payload: {
         patientId: patient._id.toString(),
         locationId,

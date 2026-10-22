@@ -3,6 +3,7 @@ import { beforeAll, beforeEach, afterEach, describe, expect, it, vi } from "vite
 import mongoose from "mongoose";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
+import { OrgMember } from "../models/OrgMember.ts";
 import { Location } from "../models/Location.ts";
 import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
@@ -40,6 +41,8 @@ beforeAll(async () => {
     { name: "Family", email: "family@disruption.test", role: "family_member" },
     { name: "Doctor A", email: "doctor@disruption.test", phone: "919999999999", role: "doctor" },
   ]);
+  await OrgMember.create(users.slice(0, 2).map(user => ({ userId: user._id, organizationId: a._id, role: user.role,
+    locationAccess: { mode: "selected" as const, locationIds: [ca._id] } })));
   const cookie = async (index: number, organization_id?: string) => `access_token=${(await fixtureAccessToken({ id: users[index].id, email: users[index].email || "", role: users[index].role, organization_id }))}`;
   staffCookie = (await cookie(0, orgA)); restrictedCookie = (await cookie(1, orgA));
   patientCookie = (await cookie(2)); noProfileCookie = (await cookie(3)); familyCookie = (await cookie(4));

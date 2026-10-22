@@ -2,6 +2,10 @@ import crypto from "node:crypto";
 import { Prescription } from "../models/Prescription.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { AuditLog } from "../models/AuditLog.ts";
+import { Encounter } from "../models/Encounter.ts";
+import { withClinicalTransaction } from "../utilities/transaction.ts";
+import { prescriptionQuantityInput } from "./PrescriptionQuantityService.ts";
+import { CommandError } from "./CommandReceiptService.ts";
 
 export interface PrescriptionVerificationResult {
   intact: boolean;
@@ -28,6 +32,9 @@ export function computePrescriptionHash(data: {
   duration: string;
   instructions?: string;
   doctorRegistrationNumber?: string;
+  medicineId?: string;
+  authorizedQuantity?: number | null;
+  authorizedBaseUnit?: string | null;
 }): string {
   const payload = [
     String(data.prescriptionId),
@@ -41,6 +48,9 @@ export function computePrescriptionHash(data: {
     data.duration.trim().toLowerCase(),
     (data.instructions || "").trim().toLowerCase(),
     (data.doctorRegistrationNumber || "").trim().toUpperCase(),
+    data.medicineId ? String(data.medicineId) : "",
+    data.authorizedQuantity == null ? "" : String(data.authorizedQuantity),
+    data.authorizedBaseUnit || "",
   ].join("|");
 
   return crypto.createHash("sha256").update(payload, "utf8").digest("hex");
@@ -107,6 +117,9 @@ export class PrescriptionSealingService {
       duration: prescription.duration,
       instructions: prescription.instructions,
       doctorRegistrationNumber: prescription.doctorRegistrationNumber,
+      medicineId: prescription.medicineId ? String(prescription.medicineId) : undefined,
+      authorizedQuantity: prescription.authorizedQuantity,
+      authorizedBaseUnit: prescription.authorizedBaseUnit,
     });
 
     const signature = computePrescriptionSignature(hash);
@@ -174,6 +187,9 @@ export class PrescriptionSealingService {
       duration: prescription.duration,
       instructions: prescription.instructions,
       doctorRegistrationNumber: prescription.doctorRegistrationNumber,
+      medicineId: prescription.medicineId ? String(prescription.medicineId) : undefined,
+      authorizedQuantity: prescription.authorizedQuantity,
+      authorizedBaseUnit: prescription.authorizedBaseUnit,
     });
 
     if (computedHash !== prescription.prescriptionHash) {
@@ -226,12 +242,15 @@ export class PrescriptionSealingService {
       council?: string;
       diagnosisCode?: string;
       diagnosisDescription?: string;
+      authorizedQuantity?: number;
+      authorizedBaseUnit?: string;
     }
   ): Promise<any> {
     if (!amendment.amendmentReason || !amendment.amendmentReason.trim()) {
       throw new Error("amendmentReason is required to amend a sealed prescription");
     }
 
+    return withClinicalTransaction(async () => {
     const original = await Prescription.findById(originalPrescriptionId);
     if (!original) {
       throw new Error(`Prescription ${originalPrescriptionId} not found`);
@@ -244,9 +263,14 @@ export class PrescriptionSealingService {
     if (original.status === "superseded") {
       throw new Error("Prescription has already been superseded by another revision");
     }
+    if (String(original.doctorId) !== doctorUserId) throw new CommandError(403, "Only the prescribing doctor can amend this prescription");
+    if (!await Encounter.findOneAndUpdate({ _id: original.encounterId, organizationId: original.organizationId, locationId: original.locationId, status: "completed" }, { $inc: { __v: 1 } })) throw new CommandError(409, "Reload the finalized encounter before amending");
+    if ((original.suppliedQuantity || 0) > 0 && amendment.authorizedQuantity == null) throw new CommandError(409, "A supplied prescription requires an explicit new quantity for any further supply; prior supplies remain recorded");
+    const quantity = prescriptionQuantityInput(amendment);
 
     // Create the superseding prescription
     const newPrescription = new Prescription({
+      ...quantity,
       organizationId: original.organizationId,
       locationId: original.locationId,
       encounterId: original.encounterId,
@@ -281,9 +305,9 @@ export class PrescriptionSealingService {
     );
 
     // Transition original prescription status to superseded
-    original.status = "superseded";
-    original.supersededByPrescriptionId = newPrescription._id;
-    await original.save();
+    const updated = await Prescription.updateOne({ _id: original._id, status: original.status, supersededByPrescriptionId: null, fulfillmentRevision: original.fulfillmentRevision ?? 0 },
+      { $set: { status: "superseded", supersededByPrescriptionId: newPrescription._id }, $inc: { fulfillmentRevision: 1 } });
+    if (updated.modifiedCount !== 1) throw new CommandError(409, "Prescription changed during amendment; reload the source");
 
     await AuditLog.create({
       userId: doctorUserId,
@@ -300,5 +324,6 @@ export class PrescriptionSealingService {
     });
 
     return sealedNew;
+    });
   }
 }

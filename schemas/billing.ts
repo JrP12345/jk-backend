@@ -1,6 +1,14 @@
 const objectIdPattern = "^[0-9a-fA-F]{24}$";
 const paymentMethod = { type: "string", enum: ["cash", "card", "upi", "net-banking", "insurance", "online"] };
 const money = { type: "number", minimum: 0, maximum: 1e9 };
+export const productQuoteSchema = { body: {
+  type: "object", additionalProperties: false, required: ["planId", "priceRevision", "billingCycle", "doctorSeats", "locations"],
+  properties: { planId: { type: "string", pattern: objectIdPattern }, priceRevision: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+    organizationId: { type: "string", pattern: objectIdPattern }, organization_id: { type: "string", pattern: objectIdPattern },
+    billingCycle: { type: "string", enum: ["monthly", "annual"] }, doctorSeats: { type: "integer", minimum: 0, maximum: 1000 },
+    locations: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: false, required: ["locationId", "clinic", "pharmacy"],
+      properties: { locationId: { type: "string", pattern: objectIdPattern }, clinic: { type: "boolean" }, pharmacy: { type: "boolean" } } } } },
+} };
 export const installmentSchema = {
   body: { type: "object", required: ["amount", "paymentMethod"], properties: {
     amount: { ...money, exclusiveMinimum: 0 }, paymentMethod,

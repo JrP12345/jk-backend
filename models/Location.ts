@@ -6,6 +6,8 @@ const LocationSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
   name: { type: String, required: true },
   facilityType: { type: String, enum: [...FACILITY_TYPES], default: null },
+  pharmacyCapability: { type: new Schema({ enabled: { type: Boolean, required: true }, revision: { type: Number, required: true, min: 0, validate: Number.isSafeInteger },
+    reviewReference: String, confirmedBy: { type: Schema.Types.ObjectId, ref: "User" }, confirmedAt: Date }, { _id: false }), default: undefined },
   logo: { type: String },
   images: [{ type: String }],
   description: { type: String },
@@ -36,6 +38,7 @@ LocationSchema.set("toJSON", {
   virtuals: true,
   transform: (doc, ret: any) => {
     ret.id = ret._id.toString();
+    if (ret.pharmacyCapability) ret.pharmacyCapability = { enabled: ret.pharmacyCapability.enabled, revision: ret.pharmacyCapability.revision };
     delete ret._id;
     delete ret.__v;
     return ret;

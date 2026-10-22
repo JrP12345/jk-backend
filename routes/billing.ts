@@ -1,8 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import { authenticate, checkAnyPermission, checkAnyPermissionOrRoles, requirePlatformRoot } from "../middleware/auth.ts";
+import { readCashierDrawer, postCashierDrawer, getCashierDrawerOperation } from "../controllers/cashierDrawer.ts";
+import { authenticate, checkAnyPermission, checkAnyPermissionOrRoles, requirePlatformRoot, denyRoles } from "../middleware/auth.ts";
 import { requireModule } from "../middleware/moduleGuard.ts";
 import { resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
-import { createInvoiceSchema, collectPaymentSchema, installmentSchema, consolidatedCheckoutSchema } from "../schemas/billing.ts";
+import { createInvoiceSchema, collectPaymentSchema, installmentSchema, consolidatedCheckoutSchema, productQuoteSchema } from "../schemas/billing.ts";
 import {
   createInvoice,
   getInvoices,
@@ -22,6 +23,7 @@ import {
 } from "../controllers/claim.ts";
 import {
   getSaaSPlans,
+  quoteProductsController,
   getSubscriptionDetails,
   getOrganizationUsageMetrics,
   createCheckoutOrderController,
@@ -54,7 +56,7 @@ import {
 
 export default async function billingRoutes(app: FastifyInstance) {
   const checkSaaSPermission = checkAnyPermission("MANAGE_ORGANIZATION");
-  const manageSaaS = { preHandler: [authenticate,
+  const manageSaaS = { preHandler: [authenticate, denyRoles("patient", "family_member", "guest"),
     async (req: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => {
       if (req.user?.impersonatedBy?.originalRole === "root" && req.user.organization_id) return;
       return checkSaaSPermission(req, reply);
@@ -78,10 +80,18 @@ export default async function billingRoutes(app: FastifyInstance) {
       checkAnyPermission("MANAGE_BILLING"),
     ],
   };
+  app.get("/api/billing/till/drawers", manageInvoices, readCashierDrawer(false, "billing"));
+  app.get("/api/billing/till/drawers/history", manageInvoices, readCashierDrawer(true, "billing"));
+  app.get("/api/billing/till/drawers/:id", manageInvoices, readCashierDrawer(false, "billing"));
+  app.post("/api/billing/till/drawers/open", manageInvoices, postCashierDrawer("open", "billing"));
+  app.post("/api/billing/till/drawers/:id/close", manageInvoices, postCashierDrawer("close", "billing"));
+  app.post("/api/billing/till/drawers/:id/movements", manageInvoices, postCashierDrawer("movement", "billing"));
+  app.get("/api/billing/till/drawer-operations/:key", manageInvoices, getCashierDrawerOperation("billing"));
 
   // ─── Commercial SaaS Plans & Subscriptions ─────────────────────
   // Public Plans Listing
   app.get("/api/billing/plans", getSaaSPlans);
+  app.post("/api/billing/quote", { preHandler: [...manageSaaS.preHandler, denyRoles("patient", "family_member", "guest")], schema: productQuoteSchema }, quoteProductsController);
 
   // Authenticated Organization Subscription & Usage
   app.get("/api/billing/subscription", manageSaaS, getSubscriptionDetails);

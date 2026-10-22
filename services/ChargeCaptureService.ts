@@ -1,11 +1,10 @@
 import { withTransaction } from "../utilities/transaction.ts";
+import { visitInvoicePaymentStatus } from "./VisitInvoiceBalance.ts";
 import { Encounter } from "../models/Encounter.ts";
-import { ClinicalNote } from "../models/ClinicalNote.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { LabOrder } from "../models/LabOrder.ts";
 import { LabTest } from "../models/LabTest.ts";
-import { Prescription } from "../models/Prescription.ts";
-import { Medicine } from "../models/Medicine.ts";
+import { compilePharmacySupplyCharges } from "./PharmacyChargeSource.ts";
 import { ServiceCatalog } from "../models/ServiceCatalog.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { User } from "../models/User.ts";
@@ -14,6 +13,8 @@ import { generateLocationInvoiceNumber } from "../utilities/invoiceNumber.ts";
 import { isModuleEnabledForOrganization } from "../utilities/moduleAccess.ts";
 
 export interface CapturedChargeItem {
+  pharmacyDispenseId?: string;
+  pharmacyDispenseLineId?: string;
   serviceCatalogId?: string;
   description: string;
   amount: number;
@@ -22,11 +23,15 @@ export interface CapturedChargeItem {
   gstRate: number;
   category: string;
 }
+interface PharmacyPreview {
+  pharmacyInvoices: Array<{ invoiceId: string; dispenseId: string; totalAmount: number }>;
+  unfilledPrescriptions: Array<{ prescriptionId: string; medicineName: string }>;
+}
 
 export async function compileEncounterCharges(
   encounterId: string,
   customConsultFee?: number
-): Promise<{
+): Promise<PharmacyPreview & {
   encounter: any;
   items: CapturedChargeItem[];
   subtotal: number;
@@ -128,22 +133,10 @@ export async function compileEncounterCharges(
     }
   }
 
-  // 3. Prescriptions linked to Encounter (P1 pharmacy — always compiled when present)
-  const currentNote = await ClinicalNote.findOne({ encounterId, organizationId, isLatest: true, deletedAt: null }).select("plan.prescriptionIds").lean();
-  const prescriptions = await Prescription.find({ encounterId, organizationId, ...(currentNote ? { _id: { $in: currentNote.plan?.prescriptionIds || [] } } : {}), status: { $in: ["active", "dispensed"] }, deletedAt: null }).populate("medicineId");
-  for (const rx of prescriptions) {
-    const med = rx.medicineId as any;
-    if (med) {
-      items.push({
-        description: `Pharmacy: ${med.name} (${rx.dosage})`,
-        amount: med.price || 0,
-        quantity: 1,
-        hsnSacCode: med.hsnCode || "3004",
-        gstRate: med.gstRate ?? 5,
-        category: "pharmacy",
-      });
-    }
-  }
+  const targetInvoice = await Invoice.findOne({ organizationId, locationId, patientId, deletedAt: null, documentVersion: { $ne: 1 },
+    $or: [{ encounterId }, ...(appointmentId ? [{ appointmentId }] : [])] }).sort({ createdAt: 1 });
+  const pharmacy = await compilePharmacySupplyCharges(encounter, targetInvoice ? String(targetInvoice._id) : undefined);
+  items.push(...pharmacy.items);
 
   // Compute GST & Totals
   let subtotal = 0;
@@ -167,6 +160,8 @@ export async function compileEncounterCharges(
 
   return {
     encounter,
+    pharmacyInvoices: pharmacy.pharmacyInvoices,
+    unfilledPrescriptions: pharmacy.unfilledPrescriptions,
     items,
     subtotal,
     cgstTotal,
@@ -190,7 +185,7 @@ async function generateEncounterInvoice(encounterId: string, createdByUserId?: s
   // Serialize generation with the encounter itself; database uniqueness remains the final boundary.
   await Encounter.findOneAndUpdate({ _id: encounterId }, { $inc: { __v: 1 } });
   // Check if invoice already exists for this encounter
-  const existing = await Invoice.findOne({ encounterId });
+  const existing = await Invoice.findOne({ encounterId, documentVersion: { $ne: 1 } });
   if (existing) {
     return existing;
   }
@@ -224,6 +219,8 @@ async function generateEncounterInvoice(encounterId: string, createdByUserId?: s
     const sgstAmount = i.gstRate > 0 ? Number((lineBase * (i.gstRate / 200)).toFixed(2)) : 0;
     return {
       serviceCatalogId: i.serviceCatalogId,
+      pharmacyDispenseId: i.pharmacyDispenseId,
+      pharmacyDispenseLineId: i.pharmacyDispenseLineId,
       description: i.description,
       amount: i.amount,
       quantity: i.quantity,
@@ -238,6 +235,7 @@ async function generateEncounterInvoice(encounterId: string, createdByUserId?: s
 
   const invoice = await Invoice.create({
     generationKey: "encounter:" + encounterId,
+    clinicalChargeVersion: 1,
     invoiceNumber,
     organizationId: encounter.organizationId || null,
     patientId: encounter.patientId,
@@ -256,13 +254,21 @@ async function generateEncounterInvoice(encounterId: string, createdByUserId?: s
     status: "unpaid",
   });
 
+  if (encounter.appointmentId) {
+    const linked = await Appointment.findById(encounter.appointmentId);
+    if (linked) {
+      linked.paymentStatus = await visitInvoicePaymentStatus(linked);
+      await linked.save();
+    }
+  }
   return invoice;
 }
 
 export async function compileAppointmentCharges(
   appointmentId: string,
-  customConsultFee?: number
-): Promise<{
+  customConsultFee?: number,
+  targetInvoiceId?: string,
+): Promise<PharmacyPreview & {
   appointment: any;
   items: CapturedChargeItem[];
   subtotal: number;
@@ -349,43 +355,12 @@ export async function compileAppointmentCharges(
     }
   }
 
-  // 3. Pharmacy Prescriptions
-  const addedRxNames = new Set<string>();
-  const currentNote = encounter ? await ClinicalNote.findOne({ encounterId: encounter._id, organizationId: appointment.organizationId, isLatest: true, deletedAt: null }).select("plan.prescriptionIds").lean() : null;
-
-  if (encounter) {
-    const prescriptions = await Prescription.find({ encounterId: encounter._id, organizationId: appointment.organizationId, ...(currentNote ? { _id: { $in: currentNote.plan?.prescriptionIds || [] } } : {}), status: { $in: ["active", "dispensed"] }, deletedAt: null }).populate("medicineId");
-    for (const rx of prescriptions) {
-      const med = rx.medicineId as any;
-      const name = med?.name || rx.medicineName;
-      addedRxNames.add(name.toLowerCase());
-      items.push({
-        description: `Pharmacy: ${name} (${rx.dosage})`,
-        amount: med?.price || 60,
-        quantity: 1,
-        hsnSacCode: med?.hsnCode || "3004",
-        gstRate: med?.gstRate ?? 5,
-        category: "pharmacy",
-      });
-    }
-  }
-
-  // Also include prescriptions stored directly on Appointment document
-  if (!currentNote && Array.isArray(appointment.prescriptions)) {
-    for (const p of appointment.prescriptions) {
-      if (p.name && !addedRxNames.has(p.name.toLowerCase())) {
-        addedRxNames.add(p.name.toLowerCase());
-        items.push({
-          description: `Pharmacy: ${p.name} (${p.dosage})`,
-          amount: 60,
-          quantity: 1,
-          hsnSacCode: "3004",
-          gstRate: 5,
-          category: "pharmacy",
-        });
-      }
-    }
-  }
+  const targetInvoice = targetInvoiceId ? await Invoice.findById(targetInvoiceId) : (appointment.invoiceId ||
+    (encounter ? await Invoice.findOne({ organizationId: appointment.organizationId, patientId: appointment.patientId,
+      locationId: appointment.locationId, deletedAt: null, documentVersion: { $ne: 1 }, $or: [{ appointmentId }, { encounterId: encounter._id }] }).sort({ createdAt: 1 }) : null));
+  const pharmacy = encounter ? await compilePharmacySupplyCharges(encounter, targetInvoice ? String(targetInvoice._id || targetInvoice) : undefined)
+    : { items: [], pharmacyInvoices: [], unfilledPrescriptions: [] };
+  items.push(...pharmacy.items);
 
   // Calculate GST & Totals
   let subtotal = 0;
@@ -409,15 +384,18 @@ export async function compileAppointmentCharges(
 
   return {
     appointment,
+    pharmacyInvoices: pharmacy.pharmacyInvoices,
+    unfilledPrescriptions: pharmacy.unfilledPrescriptions,
     items,
     subtotal,
     cgstTotal,
     sgstTotal,
     igstTotal,
     totalAmount,
-    existingInvoice,
+    existingInvoice: targetInvoice || existingInvoice,
     feeType,
     consultationFee: consultFee,
-    isFeeEditable: feeType === "post_consultation" || (appointment as any)?.paymentStatus !== "paid",
+    isFeeEditable: feeType === "post_consultation" || (targetInvoice ? targetInvoice.status !== "paid"
+      : (appointment as any)?.paymentStatus !== "paid" || pharmacy.pharmacyInvoices.length > 0),
   };
 }

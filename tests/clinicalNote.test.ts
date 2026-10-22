@@ -5,6 +5,7 @@ import { User } from "../models/User.ts";
 import { Patient } from "../models/Patient.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { ClinicalNote } from "../models/ClinicalNote.ts";
+import { Prescription } from "../models/Prescription.ts";
 
 describe("Outpatient Consultation & Clinical Note Integration Tests", () => {
   let adminCookies: string[] = [];
@@ -129,7 +130,7 @@ describe("Outpatient Consultation & Clinical Note Integration Tests", () => {
           temperatureF: 99.2,
         },
         prescriptions: [
-          { name: "Paracetamol 500mg", dosage: "1 tablet", frequency: "1-0-1", duration: "5 days" },
+          { name: "Paracetamol 500mg", dosage: "1 tablet", frequency: "1-0-1", duration: "5 days", authorizedQuantity: 10, authorizedBaseUnit: "tablet" },
         ],
         followUpDate: new Date(Date.now() + 7 * 86400000).toISOString(),
         followUpInstructions: "Return if fever persists beyond 3 days.",
@@ -142,8 +143,19 @@ describe("Outpatient Consultation & Clinical Note Integration Tests", () => {
     expect(body.data.subjective.chiefComplaint).toContain("Persistent dry cough");
     expect(body.data.status).toBe("draft");
     noteId = body.data._id || body.data.id;
+    expect(await Prescription.findOne({ encounterId, deletedAt: null })).toMatchObject({ authorizedQuantity: 10, authorizedBaseUnit: "tablet", suppliedQuantity: 0 });
   });
 
+  it("rejects a quantity without its unit and preserves the previous draft", async () => {
+    const note = await ClinicalNote.findById(noteId);
+    const response = await app.inject({ method: "POST", url: "/api/clinical-notes", headers: { cookie: adminCookies.join("; ") }, payload: {
+      locationId, encounterId, patientId, chiefComplaint: "Changed complaint", expectedRevision: note!.revision,
+      prescriptions: [{ name: "Paracetamol 500mg", dosage: "1 tablet", frequency: "1-0-1", duration: "5 days", authorizedQuantity: 30 }],
+    } });
+    expect(response.statusCode, response.body).toBe(400);
+    expect((await ClinicalNote.findById(noteId))!.revision).toBe(note!.revision);
+    expect(await Prescription.findOne({ encounterId, deletedAt: null })).toMatchObject({ authorizedQuantity: 10, authorizedBaseUnit: "tablet" });
+  });
   it("should sign and lock clinical note via PUT /api/clinical-notes/:id/sign", async () => {
     const res = await app.inject({
       method: "PUT",

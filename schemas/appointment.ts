@@ -82,7 +82,9 @@ export const updateAppointmentStatusSchema = {
             dosage: { type: "string", minLength: 1 },
             frequency: { type: "string" },
             duration: { type: "string", minLength: 1 },
-            instructions: { type: "string" }
+            instructions: { type: "string" },
+            authorizedQuantity: { type: "integer", minimum: 1, maximum: 1000000 },
+            authorizedBaseUnit: { type: "string", enum: ["tablet", "capsule", "ml", "g", "piece", "dose"] },
           },
           additionalProperties: false
         }

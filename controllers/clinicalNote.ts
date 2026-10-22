@@ -7,6 +7,7 @@ import { Encounter } from "../models/Encounter.ts";
 import { ClinicalNote } from "../models/ClinicalNote.ts";
 import { Observation } from "../models/Observation.ts";
 import { Prescription } from "../models/Prescription.ts";
+import { prescriptionQuantityInput } from "../services/PrescriptionQuantityService.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { Patient } from "../models/Patient.ts";
 import { getOrganizationPatient, hasPatientRecordAccess } from "../services/PatientRecordAccessService.ts";
@@ -246,13 +247,15 @@ export async function saveDraftClinicalNoteController(req: FastifyRequest, reply
           frequency: rx.frequency || "1-0-1",
           duration: rx.duration,
           instructions: rx.instructions || "",
+          ...prescriptionQuantityInput(rx),
         }));
 
       if (rxToInsert.length > 0) {
         const used = new Set<string>();
         for (const value of rxToInsert) {
           const previous = previousPrescriptions.find((item: any) => !used.has(String(item._id)) && item.medicineName.toLowerCase() === value.medicineName.toLowerCase());
-          const saved = previous ? await Prescription.findOneAndUpdate({ _id: previous._id, organizationId: orgId, encounterId, isSealed: false }, { $set: value }, { returnDocument: "after", runValidators: true }) : await Prescription.create(value);
+          const update = value.authorizedQuantity === undefined ? { $set: value, $unset: { authorizedQuantity: 1, authorizedBaseUnit: 1 } } : { $set: value };
+          const saved = previous ? await Prescription.findOneAndUpdate({ _id: previous._id, organizationId: orgId, encounterId, isSealed: false }, update, { returnDocument: "after", runValidators: true }) : await Prescription.create(value);
           used.add(String(saved._id));
           prescriptionIds.push(saved._id as mongoose.Types.ObjectId);
         }

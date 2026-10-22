@@ -7,7 +7,8 @@ type SubscriptionLike = {
   cancelledAt?: Date | string | null;
   billingCycle?: string;
   entitlementSource?: "trial" | "free" | "paid" | "manual" | null;
-  planId?: { name?: string; slug?: string; monthlyPrice?: number; annualPrice?: number } | null;
+  planId?: { name?: string; slug?: string; legacyTier?: string; commercialFamily?: string; monthlyPrice?: number; annualPrice?: number } | null;
+  commercialQuote?: { commercialFamily?: string } | null;
 };
 
 type OrganizationLike = { isActive?: boolean; status?: string; plan?: string };
@@ -43,7 +44,7 @@ export function summarizeSubscription(
   else status = trial ? "trial" : "active";
 
   const bookingAvailable = !disabled && endTime > now.getTime() &&
-    (subscription.status === "trialing" || subscription.status === "active");
+    (subscription.status === "trialing" || subscription.status === "active" || subscription.status === "cancelled") && subscription.commercialQuote?.commercialFamily !== "pharmacy";
   const isFreePlan = subscription.planId?.monthlyPrice === 0 && subscription.planId?.annualPrice === 0;
   const basis = subscription.entitlementSource || (trial ? "trial" : isFreePlan ? "free" : hasCapturedPayment ? "paid" : "manual");
   const nextAction = disabled ? "review" : status === "payment_failed" ? "resolve_payment" :
@@ -53,6 +54,8 @@ export function summarizeSubscription(
   return {
     planName: subscription.planId?.name || organization.plan || "Unknown",
     planSlug: subscription.planId?.slug || organization.plan || null,
+    legacyTier: subscription.planId?.legacyTier || organization.plan || null,
+    commercialFamily: subscription.commercialQuote?.commercialFamily || null,
     status, basis, startedAt: startedAt || null, expiresAt: expiresAt || null,
     daysRemaining, bookingAvailable, nextAction,
     paymentStatus: latestPaymentStatus,

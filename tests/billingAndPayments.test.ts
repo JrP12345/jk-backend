@@ -108,7 +108,7 @@ describe("Milestone 7: Billing & Payments Platform Integration Tests", () => {
       method: "PUT",
       url: `/api/invoices/${invoice.id}/pay`,
       cookies: { access_token: accessToken },
-      headers: { authorization: `Bearer ${accessToken}` },
+      headers: { authorization: `Bearer ${accessToken}`, "idempotency-key": "test-full-billing-payment" },
       payload: {
         paymentMethod: "upi",
       },

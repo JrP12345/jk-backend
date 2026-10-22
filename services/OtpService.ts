@@ -7,7 +7,7 @@ import { normalizePhone } from "../utilities/helpers.ts";
 
 export type OtpTarget = string | { phone?: string; email?: string };
 
-export type OtpPurpose = "authentication" | "phone_verification" | "email_verification" | "record_claim" | "record_access";
+export type OtpPurpose = "authentication" | "phone_verification" | "email_verification" | "record_claim" | "record_access" | "business_onboarding";
 
 export interface RequestOtpResult {
   success: boolean;
@@ -110,8 +110,8 @@ export class OtpService {
       }
       const accepted = await emailProvider.sendEmail({
         to: email,
-        subject: purpose === "record_access" ? "Approve access to your full patient history" : "Ekavyu Security Verification OTP Code",
-        text: purpose === "record_access" ? `Share this code only to approve viewing your records from all organizations for 10 minutes: ${otpCode}. Code valid for 5 minutes.` : `Your Ekavyu verification code is: ${otpCode}. Valid for 5 minutes.`,
+        subject: purpose === "record_access" ? "Approve access to your full patient history" : purpose === "business_onboarding" ? "Verify your pharmacy business setup" : "Ekavyu Security Verification OTP Code",
+        text: purpose === "record_access" ? `Share this code only to approve viewing your records from all organizations for 10 minutes: ${otpCode}. Code valid for 5 minutes.` : purpose === "business_onboarding" ? `Your pharmacy business setup code is: ${otpCode}. Use it only to verify your own business setup. Valid for 5 minutes.` : `Your Ekavyu verification code is: ${otpCode}. Valid for 5 minutes.`,
         html: `
           <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff;">
             <div style="margin-bottom: 20px;">
@@ -119,7 +119,7 @@ export class OtpService {
               <p style="color: #475569; font-size: 14px; margin: 0;">Security Verification Code</p>
             </div>
             <p style="color: #334155; font-size: 14px; line-height: 1.5; margin-bottom: 16px;">
-              ${purpose === "record_access" ? "Share this code only if you approve the requesting organization viewing your full history from all organizations for 10 minutes:" : "Use the one-time verification code below to sign in to your patient portal:"}
+              ${purpose === "record_access" ? "Share this code only if you approve the requesting organization viewing your full history from all organizations for 10 minutes:" : purpose === "business_onboarding" ? "Use this code only to verify your own pharmacy business setup:" : "Use the one-time verification code below to sign in to your patient portal:"}
             </p>
             <div style="background-color: #f0fdfa; border: 1.5px dashed #0d9488; border-radius: 12px; padding: 16px; text-align: center; margin-bottom: 20px;">
               <span style="font-size: 32px; font-weight: 800; letter-spacing: 6px; color: #0f766e; font-family: monospace;">${otpCode}</span>
@@ -192,7 +192,7 @@ export class OtpService {
       ? { email, purpose, verified: false, expiresAt: { $gt: new Date() } }
       : { phone, purpose, verified: false, expiresAt: { $gt: new Date() } };
 
-    const record = await OtpVerification.findOne({ ...query, ...(purpose === "record_access" ? { context } : {}) }).sort({ createdAt: -1 });
+    const record = await OtpVerification.findOne({ ...query, ...(["record_access", "business_onboarding"].includes(purpose) ? { context } : {}) }).sort({ createdAt: -1 });
 
     if (!record) {
       return { success: false, message: "Expired or invalid OTP code. Please request a new code.", phone, email, verified: false };

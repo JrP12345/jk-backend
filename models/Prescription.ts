@@ -1,7 +1,14 @@
 import mongoose, { Schema } from "mongoose";
 import { tenantPlugin } from "../utilities/tenantPlugin.ts";
+import { MEDICINE_BASE_UNITS } from "../utilities/medicineCatalogue.ts";
 
 const PrescriptionSchema = new Schema({
+  fulfillmentRevision: { type: Number, default: 0, min: 0, validate: Number.isSafeInteger },
+  pharmacyDispenseId: { type: Schema.Types.ObjectId, ref: "PharmacyDispense", default: null },
+  authorizedQuantity: { type: Number, min: 1, max: 1_000_000, validate: Number.isSafeInteger },
+  authorizedBaseUnit: { type: String, enum: MEDICINE_BASE_UNITS },
+  suppliedQuantity: { type: Number, default: 0, min: 0, validate: Number.isSafeInteger },
+  fulfillmentMedicineId: { type: Schema.Types.ObjectId, ref: "Medicine", default: null },
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
   locationId: { type: Schema.Types.ObjectId, ref: "Location", required: true },
   encounterId: { type: Schema.Types.ObjectId, ref: "Encounter", required: true },
@@ -41,6 +48,9 @@ const PrescriptionSchema = new Schema({
 PrescriptionSchema.index({ patientId: 1, createdAt: -1 });
 PrescriptionSchema.index({ locationId: 1, status: 1 });
 PrescriptionSchema.index({ encounterId: 1, createdAt: -1 });
+PrescriptionSchema.pre("validate", function () {
+  if ((this.authorizedQuantity != null) !== (this.authorizedBaseUnit != null)) throw new Error("Authorized quantity requires its explicit base unit");
+});
 
 // Apply automatic multi-tenant scoping
 PrescriptionSchema.plugin(tenantPlugin);
@@ -65,6 +75,10 @@ PrescriptionSchema.pre("save", async function () {
       "doctorRegistrationNumber",
       "doctorCouncil",
       "status",
+      "fulfillmentRevision",
+      "pharmacyDispenseId",
+      "suppliedQuantity",
+      "fulfillmentMedicineId",
       "supersededByPrescriptionId",
       "amendmentReason",
       "updatedAt",
@@ -99,6 +113,7 @@ PrescriptionSchema.pre(["findOneAndUpdate", "updateOne", "updateMany"], async fu
   extractKeys(update);
 
   const protectedFields = [
+    "organizationId", "locationId", "encounterId", "patientId", "doctorId", "medicineId", "isSealed", "authorizedQuantity", "authorizedBaseUnit",
     "medicineName",
     "genericName",
     "dosage",

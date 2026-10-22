@@ -2,6 +2,8 @@ import mongoose, { Schema } from "mongoose";
 
 const OrganizationSchema = new Schema({
   name: { type: String, required: true },
+  workspaceProfile: { type: String, enum: ["clinic", "pharmacy"], default: "clinic" },
+  staffMfaRequired: { type: Boolean, default: false },
   address: { type: String },
   city: { type: String, required: true },
   phone: { type: String },

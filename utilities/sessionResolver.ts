@@ -69,7 +69,7 @@ export async function resolveSession(sessionId: string, expectedAuthVersion?: nu
       { $lookup: { from: User.collection.name, localField: "userId", foreignField: "_id",
         pipeline: [{ $project: { isActive: 1, authVersion: 1, role: 1, twoFactorEnabled: 1, twoFactorEnrollmentRequired: 1 } }], as: "owner" } },
       { $lookup: { from: Organization.collection.name, localField: "organizationId", foreignField: "_id",
-        pipeline: [{ $project: { isActive: 1, status: 1 } }], as: "organization" } },
+        pipeline: [{ $project: { isActive: 1, status: 1, staffMfaRequired: 1 } }], as: "organization" } },
       { $lookup: { from: OrgMember.collection.name, let: { uid: "$userId", oid: "$organizationId" },
         pipeline: [{ $match: { $expr: { $and: [{ $eq: ["$userId", "$$uid"] }, { $eq: ["$organizationId", "$$oid"] }] } } },
           { $project: { role: 1, accessRevision: 1 } }], as: "membership" } },
@@ -97,7 +97,7 @@ export async function resolveSession(sessionId: string, expectedAuthVersion?: nu
     }
     return { valid: true, session: { sessionId, userId: String(session.userId),
       authenticatedAt: session.authenticatedAt ? new Date(session.authenticatedAt) : undefined,
-      mfaEnrollmentRequired: staffMfaEnrollmentRequired(session.workspaceRole || owner.role, !!owner.twoFactorEnabled, process.env, Date.now(), !!owner.twoFactorEnrollmentRequired),
+      mfaEnrollmentRequired: staffMfaEnrollmentRequired(session.workspaceRole || owner.role, !!owner.twoFactorEnabled, process.env, Date.now(), !!owner.twoFactorEnrollmentRequired || session.organization[0]?.staffMfaRequired === true),
       organizationId: session.organizationId?.toString(), role: session.isGuest ? "guest" : session.workspaceRole || owner.role,
       authVersion: version, status: "active", expiresAt: new Date(session.expiresAt).getTime() } };
   } catch {

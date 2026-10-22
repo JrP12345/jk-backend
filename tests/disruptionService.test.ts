@@ -15,6 +15,8 @@ import { createTrackerCapability } from "../utilities/publicTracker.ts";
 import { TaskModel } from "../models/Task.ts";
 import { locationDateKey } from "../utilities/locationTime.ts";
 import { onlineRefundSource } from '../services/AppointmentRefundService.ts';
+import mongoose from "mongoose";
+import { paymentProvider } from "../services/payment/PaymentProvider.ts";
 
 describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () => {
   let adminCookies: string[] = [];
@@ -430,7 +432,24 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
     });
 
     expect(await onlineRefundSource(apptConfirmed, invoice)).not.toBeNull();
-    const cancelRes = await app.inject({
+    // A real transaction must retry without losing the invoice's modified state
+    // or issuing the external refund again after an aborted save.
+    const originalSave = Invoice.prototype.save;
+    let finalizationAttempts = 0;
+    const save = vi.spyOn(Invoice.prototype, "save").mockImplementation(async function (this: any, ...args: any[]) {
+      const result = await originalSave.apply(this, args as any);
+      if (String(this._id) === String(invoice._id) && this.status === "refunded" && finalizationAttempts++ === 0) {
+        const error = new mongoose.mongo.MongoServerError({ message: "Synthetic refund finalization conflict" });
+        error.addErrorLabel("TransientTransactionError");
+        throw error;
+      }
+      return result;
+    });
+    const provider = vi.spyOn(paymentProvider, "processRefund");
+    let refundCalls = 0;
+    let cancelRes;
+    try {
+      cancelRes = await app.inject({
       method: "POST",
       url: "/api/doctor-overrides/triage/cancel",
       headers: { cookie: adminCookies.join("; ") },
@@ -438,9 +457,17 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
         appointmentId: apptConfirmed._id.toString(),
         reason: "Patient requested refund due to disruption",
       },
-    });
+      });
+    } finally {
+      refundCalls = provider.mock.calls.length;
+      save.mockRestore();
+      provider.mockRestore();
+    }
 
     expect(cancelRes.statusCode).toBe(200);
+    expect(finalizationAttempts).toBe(2);
+    expect(refundCalls).toBe(1);
+    expect(cancelRes.json().data.doctorId.name).toBe("Dr. Arvind Swamy");
 
     const cancelledAppt = await Appointment.findById(apptConfirmed._id);
     expect(cancelledAppt?.status).toBe("cancelled");
@@ -466,6 +493,34 @@ describe("Doctor Availability Disruption & Patient Triage End-to-End Tests", () 
     });
     expect(auditRefund).toBeDefined();
     expect(auditRefund?.details.amount).toBe(600);
+  });
+
+  it("preserves changed payment records for review after the provider confirms a refund", async () => {
+    const appointment = await Appointment.create({
+      organizationId: orgId, locationId, doctorId: doc1Id, patientId: patient3._id,
+      appointmentTime: new Date(), appointmentType: "online", status: "disruption_triage",
+      triageAction: "pending", paymentStatus: "paid", tokenNumber: 49,
+    });
+    const invoice = await Invoice.create({
+      organizationId: orgId, locationId, doctorId: doc1Id, patientId: patient3._id, appointmentId: appointment._id,
+      invoiceNumber: "INV-REFUND-REVIEW", items: [{ description: "Consultation fee", quantity: 1, amount: 600 }],
+      subtotal: 600, totalAmount: 600, amountPaid: 600, balanceDue: 0, status: "paid", paymentMethod: "online",
+      payments: [{ amount: 600, paymentMethod: "online", referenceNumber: "pay_reviewfixture", paidAt: new Date() }],
+    });
+    const provider = vi.spyOn(paymentProvider, "processRefund").mockImplementationOnce(async () => {
+      await Invoice.updateOne({ _id: invoice._id }, { $set: { status: "partially_paid", amountPaid: 500, balanceDue: 100 } });
+      return { refundId: "rfnd_reviewfixture", amount: 600, status: "processed" };
+    });
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/doctor-overrides/triage/cancel",
+        headers: { cookie: adminCookies.join("; ") }, payload: { appointmentId: String(appointment._id), reason: "Review changed receipt evidence" } });
+      expect(response.statusCode).toBe(409);
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(await Appointment.findById(appointment._id)).toMatchObject({ status: "cancelled", paymentStatus: "refund_pending" });
+      expect(await Invoice.findById(invoice._id)).toMatchObject({ status: "partially_paid", amountPaid: 500, balanceDue: 100 });
+      expect(await AuditLog.countDocuments({ action: "REFUND_REQUESTED", targetId: appointment._id })).toBe(1);
+      expect(await AuditLog.countDocuments({ action: "APPOINTMENT_REFUNDED", targetId: invoice._id })).toBe(0);
+    } finally { provider.mockRestore(); }
   });
 
   it("Scenario G: Priority reschedules disrupted appointment, carrying over payments and persisting AuditLog", async () => {

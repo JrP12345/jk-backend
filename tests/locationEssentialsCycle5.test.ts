@@ -2,6 +2,9 @@ import { provisioningFixtureHeaders, provisionedAdminCookies } from "./helpers/p
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../index.ts";
 import { Role } from "../models/Role.ts";
+import { User } from "../models/User.ts";
+import { OrgMember } from "../models/OrgMember.ts";
+import { Location } from "../models/Location.ts";
 
 describe("Clinic Essentials Cycle 5 — location_manager Clinic Access", () => {
   let managerCookies: string[];
@@ -30,7 +33,7 @@ describe("Clinic Essentials Cycle 5 — location_manager Clinic Access", () => {
     });
 
     const managerEmail = `cm-clinic-mgr-${Date.now()}@test.com`;
-    await app.inject({
+    const createdManager = await app.inject({
       method: "POST",
       url: "/api/onboarding/staff",
       headers: { cookie: adminCookies.join("; ") },
@@ -41,6 +44,11 @@ describe("Clinic Essentials Cycle 5 — location_manager Clinic Access", () => {
         role: "location_manager",
       },
     });
+    expect(createdManager.statusCode, createdManager.body).toBe(201);
+    const organizationId = orgRes.json().data.organization.id;
+    const manager = await User.findOne({ email: managerEmail }), branch = await Location.findOne({ organizationId });
+    expect(manager).toBeTruthy(); expect(branch).toBeTruthy();
+    await OrgMember.updateOne({ userId: manager!._id, organizationId }, { $set: { locationAccess: { mode: "selected", locationIds: [branch!._id] } } });
 
     await Role.updateOne(
       { name: "location_manager" },

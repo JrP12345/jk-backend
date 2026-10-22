@@ -27,6 +27,15 @@ describe("ACID Session Transaction Helper Tests", () => {
     ).rejects.toThrow("Simulated transaction failure");
   });
 
+  it("forwards explicitly requested commit durability without changing default callers", async () => {
+    const transaction = vi.spyOn(mongoose.connection, "transaction");
+    await withTransaction(async session => { expect(session?.inTransaction()).toBe(true); }, { writeConcern: { w: "majority" } });
+    expect(transaction.mock.calls[0][1]).toMatchObject({ writeConcern: { w: "majority" } });
+    transaction.mockClear();
+    await withTransaction(async () => undefined);
+    expect(transaction.mock.calls[0][1]).toBeUndefined();
+  });
+
   it("fails closed when production lacks a transaction-capable MongoDB topology", async () => {
     process.env.NODE_ENV = "production";
     vi.spyOn((mongoose.connection as any).client.topology, "description", "get").mockReturnValue({ type: "Single" });

@@ -17,15 +17,13 @@ import { EVENT_TYPES } from "../../events/types.ts";
 import { enqueueTransactionalEmail } from "../CommunicationOutbox.ts";
 import { withTransaction, createWithSession } from "../../utilities/transaction.ts";
 import { logger } from "../../utilities/logger.ts";
+import { isProductPlan, quoteFingerprint, type CommercialQuote } from "../../utilities/commercialQuote.ts";
+import { openProductQuote, validateFreshProductQuote, validateProductFootprint, assertProductChangeAllowed, subscriptionBillingIdentity } from "./ProductActivationService.ts";
+import { CommandError } from "../CommandReceiptService.ts";
+import { getOrganizationProductEntitlements } from "./ProductEntitlementService.ts";
+export { addBillingPeriod } from "../../utilities/billingPeriod.ts";
+import { addBillingPeriod } from "../../utilities/billingPeriod.ts";
 
-export function addBillingPeriod(start: Date, billingCycle: "monthly" | "annual") {
-  const months = billingCycle === "annual" ? 12 : 1;
-  const result = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + months, 1,
-    start.getUTCHours(), start.getUTCMinutes(), start.getUTCSeconds(), start.getUTCMilliseconds()));
-  const lastDay = new Date(Date.UTC(result.getUTCFullYear(), result.getUTCMonth() + 1, 0)).getUTCDate();
-  result.setUTCDate(Math.min(start.getUTCDate(), lastDay));
-  return result;
-}
 
 export class PlanDowngradeViolationError extends Error {
   statusCode: number;
@@ -85,6 +83,7 @@ export class SubscriptionService {
       }, session);
     }
     if (!chosenPlan) throw new Error("Failed to initialize a subscription plan");
+    if (isProductPlan(chosenPlan)) throw new CommandError(409, "Product subscriptions require a reviewed location selection and activation workflow");
 
     const now = new Date();
     const trialDays = customTrialDays ?? chosenPlan.trialDays ?? 15;
@@ -165,7 +164,7 @@ export class SubscriptionService {
     // Fetch active locations count (only operating, non-deactivated branches)
     const locationsCount = await Location.countDocuments({ organizationId: orgObjId, isActive: { $ne: false } });
     // Fetch active doctors count
-    const doctorsCount = await Doctor.countDocuments({ organizationId: orgObjId, status: { $ne: "inactive" } });
+    const doctorsCount = await Doctor.countDocuments({ organizationId: orgObjId, isActive: { $ne: false } });
     // Fetch active staff count (receptionists)
     const staffCount = await Receptionist.countDocuments({ organizationId: orgObjId, status: { $ne: "inactive" } });
 
@@ -192,10 +191,11 @@ export class SubscriptionService {
 
     const subscription = await this.getOrInitializeSubscription(organizationId);
     const plan = subscription.planId as any;
+    const products = await getOrganizationProductEntitlements(organizationId);
 
     return {
       usage,
-      limits: plan ? plan.limits : {},
+      limits: { ...(plan?.limits?.toObject?.() || plan?.limits || {}), ...products.limits },
       features: plan ? plan.features : {},
       subscriptionStatus: subscription.status,
       planName: plan ? plan.name : "N/A",
@@ -215,9 +215,10 @@ export class SubscriptionService {
     if (!targetPlan || targetPlan.status !== "active") {
       throw new Error("Target plan not found or not active");
     }
+    if (isProductPlan(targetPlan)) throw new CommandError(409, "Use a location-product quote; flat-plan changes cannot activate product selections");
 
     const activeLocationsCount = await Location.countDocuments({ organizationId: orgObjId, isActive: { $ne: false } });
-    const activeDoctorsCount = await Doctor.countDocuments({ organizationId: orgObjId, status: { $ne: "inactive" } });
+    const activeDoctorsCount = await Doctor.countDocuments({ organizationId: orgObjId, isActive: { $ne: false } });
     const activeStaffCount = await Receptionist.countDocuments({ organizationId: orgObjId, status: { $ne: "inactive" } });
 
     const activeLocations = await Location.find({ organizationId: orgObjId, isActive: { $ne: false } })
@@ -293,19 +294,22 @@ export class SubscriptionService {
   /**
    * Direct Switch Plan (for free tiers or direct plan adjustments without Razorpay gateway order)
    */
-  async directSwitchPlan(organizationId: string, planId: string, billingCycle: "monthly" | "annual" = "monthly") {
+  async directSwitchPlan(organizationId: string, planId: string, billingCycle: "monthly" | "annual" = "monthly", quoteToken?: string) {
     if (billingCycle !== "monthly" && billingCycle !== "annual") throw new Error("Invalid billing cycle");
     const plan = await SaaSPlan.findById(planId);
     if (!plan || plan.status !== "active") {
       throw new Error("Selected plan is not available");
     }
-    if (plan.monthlyPrice !== 0 || plan.annualPrice !== 0) {
+    const quote = isProductPlan(plan) ? openProductQuote(quoteToken, organizationId, planId, billingCycle) : undefined;
+    if (quote ? quote.totalPaise !== 0 : plan.monthlyPrice !== 0 || plan.annualPrice !== 0) {
       throw new Error("Paid plans require a verified checkout payment");
     }
 
-    const validation = await this.validatePlanDowngrade(organizationId, planId);
-    if (!validation.canDowngrade) {
-      throw new PlanDowngradeViolationError(validation);
+    if (quote) await validateFreshProductQuote(quote, plan);
+    else {
+      if (quoteToken) throw new CommandError(409, "This plan does not accept a product quote");
+      const validation = await this.validatePlanDowngrade(organizationId, planId);
+      if (!validation.canDowngrade) throw new PlanDowngradeViolationError(validation);
     }
 
     const existing = await this.getOrInitializeSubscription(organizationId);
@@ -319,7 +323,15 @@ export class SubscriptionService {
       if (target.pendingCheckout?.paymentId) {
         throw new Error("A checkout is already in progress. Complete that payment before changing plans.");
       }
+      if (target.commercialQuote && !quote) throw new CommandError(409, "A product subscription requires a reviewed product selection; flat plans cannot clear its pharmacy access contract");
+      if (quote) {
+        await validateFreshProductQuote(quote, plan, session);
+        await validateProductFootprint(quote, session, true);
+        assertProductChangeAllowed(target, quote, now);
+        if (target.entitlementSource === "free" && target.status === "active" && target.currentPeriodEnd > now && target.commercialQuote) return target;
+      }
       target.planId = plan._id;
+      target.set("commercialQuote", quote);
       target.status = "active";
       target.entitlementSource = "free";
       target.cancelledAt = null;
@@ -329,10 +341,10 @@ export class SubscriptionService {
       target.lastBillingChangeAt = now;
       await target.save({ session });
       await Organization.findByIdAndUpdate(organizationId, {
-        plan: plan.slug,
-        maxLocations: plan.limits?.maxLocations ?? 1,
-        maxDoctors: plan.limits?.maxDoctors ?? 2,
-        maxStaff: plan.limits?.maxStaff ?? 5,
+        plan: quote?.legacyTier || plan.legacyTier || plan.slug,
+        maxLocations: quote?.entitlements.maxLocations ?? plan.limits?.maxLocations ?? 1,
+        maxDoctors: quote?.entitlements.maxDoctors ?? plan.limits?.maxDoctors ?? 2,
+        maxStaff: quote?.entitlements.maxStaff ?? plan.limits?.maxStaff ?? 5,
       }, session ? { session } : {});
       return target;
     });
@@ -357,7 +369,7 @@ export class SubscriptionService {
   /**
    * Create Razorpay Checkout Order for upgrade or renewal
    */
-  async createCheckoutOrder(organizationId: string, planId: string, billingCycle: "monthly" | "annual", checkoutIntentId?: string): Promise<{
+  async createCheckoutOrder(organizationId: string, planId: string, billingCycle: "monthly" | "annual", checkoutIntentId?: string, quoteToken?: string): Promise<{
     orderId: string; amount: number; currency: string; keyId: string; planName: string; planSlug: string;
     billingCycle: "monthly" | "annual"; paymentId: string; alreadyCompleted?: boolean; reused?: boolean;
   }> {
@@ -368,18 +380,15 @@ export class SubscriptionService {
       throw new Error("Selected plan is not available");
     }
 
-    // Pre-flight check: Ensure active resource footprint fits within plan limits
-    const validation = await this.validatePlanDowngrade(organizationId, planId);
-    if (!validation.canDowngrade) {
-      throw new PlanDowngradeViolationError(validation);
-    }
-
+    const productQuote = isProductPlan(plan) ? openProductQuote(quoteToken, organizationId, planId, billingCycle) : undefined;
+    if (!productQuote && quoteToken) throw new CommandError(409, "This plan does not accept a product quote");
+    if (productQuote && !checkoutIntentId) throw new CommandError(428, "A stable checkout intent ID is required for product checkout");
     const subscription = await this.getOrInitializeSubscription(organizationId);
     const intentKey = checkoutIntentId ? `${organizationId}:${checkoutIntentId}` : null;
     if (intentKey) {
       const previous = await SubscriptionPayment.findOne({ organizationId, idempotencyKey: intentKey });
       if (previous) {
-        if (previous.planId.toString() !== planId || previous.billingCycle !== billingCycle) {
+        if (previous.planId.toString() !== planId || previous.billingCycle !== billingCycle || previous.commercialQuote?.fingerprint !== productQuote?.fingerprint) {
           throw new Error("Checkout intent belongs to another plan or billing cycle");
         }
         if (previous.status === "captured") return {
@@ -405,17 +414,25 @@ export class SubscriptionService {
         }
       }
     }
+    if (productQuote) {
+      await validateFreshProductQuote(productQuote, plan);
+      assertProductChangeAllowed(subscription, productQuote);
+    } else {
+      if (subscription.commercialQuote) throw new CommandError(409, "A product subscription requires a reviewed product selection; flat checkout is unavailable");
+      const validation = await this.validatePlanDowngrade(organizationId, planId);
+      if (!validation.canDowngrade) throw new PlanDowngradeViolationError(validation);
+    }
     if (plan.currency !== "INR") throw new Error("Online checkout currently supports INR plans only");
     const basePrice = billingCycle === "annual" ? plan.annualPrice : plan.monthlyPrice;
     const basePricePaise = Math.round(basePrice * 100);
-    if (basePrice === 0) throw new Error("This plan has no payable checkout amount; use the free plan switch instead");
+    if (!productQuote && basePrice === 0 || productQuote?.totalPaise === 0) throw new Error("This plan has no payable checkout amount; use the free plan switch instead");
     if (!Number.isFinite(basePrice) || basePrice < 0 || !Number.isSafeInteger(basePricePaise) ||
       Math.abs(basePrice * 100 - basePricePaise) > 0.000001) {
       throw new Error("Plan price must be a positive INR amount with at most two decimal places");
     }
     const taxRate = 0.18; // GST 18%
-    const taxAmount = Math.round(basePricePaise * taxRate / 100); // existing whole-rupee GST rule
-    const totalPaise = basePricePaise + taxAmount * 100;
+    const taxAmount = productQuote ? productQuote.taxPaise / 100 : Math.round(basePricePaise * taxRate / 100); // existing flat-plan whole-rupee GST rule
+    const totalPaise = productQuote?.totalPaise ?? basePricePaise + taxAmount * 100;
     if (!Number.isSafeInteger(totalPaise)) throw new Error("Invalid checkout amount");
     const totalAmount = totalPaise / 100;
 
@@ -428,7 +445,7 @@ export class SubscriptionService {
       if (pendingId) {
         const pending = await SubscriptionPayment.findById(pendingId);
         if (pending?.status === "created" || pending?.status === "failed") {
-          if (pending.planId.toString() !== planId || pending.billingCycle !== billingCycle) {
+          if (pending.planId.toString() !== planId || pending.billingCycle !== billingCycle || pending.commercialQuote?.fingerprint !== productQuote?.fingerprint) {
             throw new Error("Another checkout is in progress. Complete it before selecting a different plan.");
           }
           const reconciled = await this.reconcileCheckout(organizationId, pending.razorpayOrderId);
@@ -483,9 +500,11 @@ export class SubscriptionService {
         organizationId,
         subscriptionId: subscription._id,
         planId: plan._id,
+        commercialQuote: productQuote,
+        checkoutSubscriptionFingerprint: productQuote ? subscriptionBillingIdentity(claim) : undefined,
         razorpayOrderId: order.id,
         amount: totalAmount,
-        subtotal: basePricePaise / 100,
+        subtotal: (productQuote?.subtotalPaise ?? basePricePaise) / 100,
         taxAmount,
         currency: "INR",
         status: "created",
@@ -519,6 +538,18 @@ export class SubscriptionService {
   /**
    * Verify Razorpay Payment Signature & Activate Subscription
    */
+  async resumeCheckoutOrder(organizationId: string, orderId: string) {
+    const payment = await SubscriptionPayment.findOne({ organizationId, razorpayOrderId: orderId });
+    if (!payment) throw new CommandError(404, "Checkout order not found");
+    const result = await this.reconcileCheckout(organizationId, orderId);
+    if (result.success) return { alreadyCompleted: true, orderId };
+    if (result.status !== "created") throw new CommandError(409, "This checkout is closed or requires review");
+    const params = await razorpayService.getPublicParams();
+    if (!params.keyId) throw new Error("Razorpay checkout key is unavailable");
+    return { orderId, amount: payment.amount, currency: payment.currency, keyId: params.keyId, paymentId: String(payment._id),
+      billingCycle: payment.billingCycle, reused: true };
+  }
+
   async verifyAndActivateSubscription(
     organizationId: string,
     razorpayOrderId: string,
@@ -619,15 +650,32 @@ export class SubscriptionService {
       if (!plan || !subscription || !org) throw new Error("Payment plan, subscription or organization not found");
 
       const now = new Date();
-      const requiresReview = Boolean(subscription.lastBillingChangeAt &&
-        subscription.lastBillingChangeAt.getTime() > currentPayment.createdAt.getTime());
-      const continuingSamePlan = subscription.status === "active" &&
+      const quote = currentPayment.toObject().commercialQuote as unknown as CommercialQuote | undefined;
+      let requiresReview = Boolean(subscription.lastBillingChangeAt &&
+        subscription.lastBillingChangeAt.getTime() > currentPayment.createdAt.getTime()) || String(subscription.organizationId) !== organizationId;
+      if (quote) {
+        const { fingerprint, ...body } = quote;
+        requiresReview ||= !isProductPlan(plan) || fingerprint !== quoteFingerprint(body) || quote.organizationId !== organizationId || quote.planId !== String(plan._id) ||
+          currentPayment.checkoutSubscriptionFingerprint !== subscriptionBillingIdentity(subscription) ||
+          quote.billingCycle !== currentPayment.billingCycle || quote.currency !== currentPayment.currency || quote.totalPaise !== Math.round(currentPayment.amount * 100) ||
+          quote.subtotalPaise !== Math.round((currentPayment.subtotal ?? -1) * 100) || quote.taxPaise !== Math.round((currentPayment.taxAmount ?? -1) * 100);
+        if (!requiresReview) try {
+          assertProductChangeAllowed(subscription, quote, now);
+          await validateProductFootprint(quote, session, true);
+        } catch (error) {
+          if (!(error instanceof CommandError)) throw error;
+          requiresReview = true;
+        }
+      } else requiresReview ||= isProductPlan(plan) || Boolean(subscription.commercialQuote);
+      const continuingSamePlan = ["active", "cancelled"].includes(subscription.status) &&
         subscription.planId.toString() === plan._id.toString() && subscription.currentPeriodEnd > now;
-      const periodStart = continuingSamePlan ? subscription.currentPeriodEnd : now;
-      const periodEnd = addBillingPeriod(periodStart, currentPayment.billingCycle);
+      const extensionStart = continuingSamePlan ? subscription.currentPeriodEnd : now;
+      const periodStart = quote && continuingSamePlan ? subscription.currentPeriodStart : extensionStart;
+      const periodEnd = addBillingPeriod(extensionStart, currentPayment.billingCycle);
 
       if (!requiresReview) {
         subscription.planId = plan._id;
+        subscription.set("commercialQuote", quote);
         subscription.status = "active";
         subscription.entitlementSource = "paid";
         subscription.cancelledAt = null;
@@ -637,10 +685,10 @@ export class SubscriptionService {
         subscription.lastBillingChangeAt = now;
         await subscription.save({ session });
         await Organization.findByIdAndUpdate(organizationId, {
-          plan: plan.slug,
-          maxLocations: plan.limits?.maxLocations ?? 1,
-          maxDoctors: plan.limits?.maxDoctors ?? 2,
-          maxStaff: plan.limits?.maxStaff ?? 5,
+          plan: quote?.legacyTier || plan.legacyTier || plan.slug,
+          maxLocations: quote?.entitlements.maxLocations ?? plan.limits?.maxLocations ?? 1,
+          maxDoctors: quote?.entitlements.maxDoctors ?? plan.limits?.maxDoctors ?? 2,
+          maxStaff: quote?.entitlements.maxStaff ?? plan.limits?.maxStaff ?? 5,
         }, session ? { session } : {});
       }
 
@@ -652,6 +700,7 @@ export class SubscriptionService {
       const invoice = await createWithSession(SaaSInvoice, {
         invoiceNumber, organizationId, subscriptionId: subscription._id, paymentId: currentPayment._id,
         planName: plan.name, billingCycle: currentPayment.billingCycle,
+        commercialQuote: currentPayment.commercialQuote,
         subtotal, taxAmount: currentPayment.taxAmount ?? currentPayment.amount - subtotal, totalAmount: currentPayment.amount,
         currency: "INR", status: "paid",
         billingDetails: {

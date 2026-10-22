@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import mongoose from "mongoose";
 import { Patient } from "../models/Patient.ts";
 import { Prescription } from "../models/Prescription.ts";
+import { Encounter } from "../models/Encounter.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { User } from "../models/User.ts";
 import { Organization } from "../models/Organization.ts";
@@ -201,10 +202,11 @@ describe("Automated ORM Tenant Isolation & Prescription Sealing Suite", () => {
     });
 
     it("allows regulated amendment and marks predecessor as superseded", async () => {
+      const completedEncounter = await Encounter.create({ organizationId: orgAId, locationId: new mongoose.Types.ObjectId(), patientId: patientA._id, doctorId: doctorUser._id, status: "completed" });
       const originalRx = await Prescription.create({
         organizationId: new mongoose.Types.ObjectId(orgAId),
-        locationId: new mongoose.Types.ObjectId(),
-        encounterId: new mongoose.Types.ObjectId(),
+        locationId: completedEncounter.locationId,
+        encounterId: completedEncounter._id,
         patientId: patientA._id,
         doctorId: doctorUser._id,
         medicineName: "Paracetamol",

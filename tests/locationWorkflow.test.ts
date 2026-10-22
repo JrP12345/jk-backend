@@ -10,6 +10,9 @@ import { Appointment } from "../models/Appointment.ts";
 import { Encounter } from "../models/Encounter.ts";
 import { ClinicalNote } from "../models/ClinicalNote.ts";
 import { Prescription } from "../models/Prescription.ts";
+import { Medicine } from "../models/Medicine.ts";
+import { PharmacyDispense } from "../models/PharmacyDispense.ts";
+import { pharmacyTaxFixture } from "./helpers/pharmacyTaxFixture.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { createRefreshTokenDetails, generateAccessToken } from "../utilities/helpers.ts";
@@ -160,6 +163,21 @@ describe("Existing clinic workflow with opt-in experience preferences", () => {
     expect(timeline.body).toContain("Patient requested a short visit record");
     const retry = await complete(visit.id); expect(retry.statusCode).toBe(200);
     expect(await Prescription.countDocuments({ encounterId: encounter!.id })).toBe(1);
+    const pending = await app.inject({ method: "GET", url: `/api/pharmacy/pending-prescriptions?locationId=${location.id}`, headers: adminHeaders });
+    expect(pending.json().data.some((group: any) => group.encounterId === encounter!.id)).toBe(true);
+    const medicine = await Medicine.create({ locationId: location.id, name: "Paracetamol", genericName: "Paracetamol", stockQuantity: 10,
+      price: 5, costPrice: 1, expiryDate: new Date("2099-12-31"), batchNumber: "FOCUSED" });
+    await pharmacyTaxFixture(location.id, [medicine.id], doctor.id);
+    const supply = await app.inject({ method: "POST", url: "/api/pharmacy/dispense",
+      headers: { ...adminHeaders, "idempotency-key": "focused-visit-pharmacy" }, payload: {
+        locationId: location.id, patientId: returning.id, doctorId: doctor.id, encounterId: encounter!.id, appointmentId: visit.id,
+        prescriptionIds: [prescription!.id], items: [{ medicineId: medicine.id, quantity: 2 }],
+        prescriptionAllocations: [{ prescriptionId: prescription!.id, medicineId: medicine.id, quantity: 2 }],
+      } });
+    expect(supply.statusCode, supply.body).toBe(201);
+    expect(supply.json().data.dispenseOperation.addedAmount).toBe(10);
+    expect(await PharmacyDispense.countDocuments({ encounterId: encounter!.id })).toBe(1);
+    expect(await ClinicalNote.countDocuments({ encounterId: encounter!.id })).toBe(0);
   });
 
   it("protects saved full SOAP work, its required complaint and the signing lifecycle", async () => {

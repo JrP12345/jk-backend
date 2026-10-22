@@ -568,6 +568,7 @@ export class AppointmentService {
 
         if (is7DayCourtesyFollowUp) {
           await createWithSession(Invoice, {
+            clinicalChargeVersion: 1,
             invoiceNumber,
             organizationId: orgId || null,
             patientId: finalPatientId,
@@ -596,6 +597,7 @@ export class AppointmentService {
           await appointment.save(option);
         } else {
           await createWithSession(Invoice, {
+            clinicalChargeVersion: 1,
             invoiceNumber,
             organizationId: orgId || null,
             patientId: finalPatientId,

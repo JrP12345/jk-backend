@@ -1,9 +1,12 @@
 import mongoose, { Schema } from "mongoose";
+import { commercialQuoteSchema } from "./commercialQuoteSchema.ts";
 
 const SubscriptionPaymentSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
   subscriptionId: { type: Schema.Types.ObjectId, ref: "Subscription", required: true, index: true },
   planId: { type: Schema.Types.ObjectId, ref: "SaaSPlan", required: true },
+  commercialQuote: { type: commercialQuoteSchema, default: undefined },
+  checkoutSubscriptionFingerprint: { type: String, match: /^[a-f\d]{64}$/, default: undefined },
   razorpayOrderId: { type: String, required: true, unique: true, index: true },
   razorpayPaymentId: { type: String, default: null, sparse: true, index: true },
   razorpaySignature: { type: String, default: null },

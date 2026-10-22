@@ -198,6 +198,8 @@ export async function amendPrescriptionController(req: FastifyRequest, reply: Fa
 
     const { PrescriptionSealingService } = await import("../services/PrescriptionSealingService.ts");
     const newSealed = await PrescriptionSealingService.amendPrescription(id, userId, {
+      authorizedQuantity: (req.body as any).authorizedQuantity,
+      authorizedBaseUnit: (req.body as any).authorizedBaseUnit,
       medicineName,
       dosage,
       frequency,
@@ -213,6 +215,6 @@ export async function amendPrescriptionController(req: FastifyRequest, reply: Fa
     return reply.code(201).send(successResponse(newSealed, "Prescription successfully amended and cryptographically sealed"));
   } catch (err: any) {
     console.error("amendPrescriptionController error:", safeError(err));
-    return reply.code(500).send(errorResponse(err.message || "Failed to amend prescription"));
+    return reply.code(err.statusCode || 500).send(errorResponse(err.message || "Failed to amend prescription"));
   }
 }

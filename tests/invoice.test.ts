@@ -112,7 +112,7 @@ describe("Invoice & Payment API Integration Tests", () => {
     const response = await app.inject({
       method: "PUT",
       url: `/api/invoices/${invoiceId}/pay`,
-      headers: { cookie: adminCookies.join("; ") },
+      headers: { cookie: adminCookies.join("; "), "idempotency-key": "test-full-invoice-payment" },
       payload: {
         paymentMethod: "cash",
       },

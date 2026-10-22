@@ -21,7 +21,7 @@ export function commandHash(payload: unknown) {
   return crypto.createHash("sha256").update(JSON.stringify(canonical(payload))).digest("hex");
 }
 /** Reserve, write and persist the resulting reference in the same transaction. */
-export async function executeRecordedCommand(scope: string, key: string, payload: unknown, write: () => Promise<string>) {
+export async function executeRecordedCommand(scope: string, key: string, payload: unknown, write: () => Promise<string>, transactionOptions?: mongoose.mongo.TransactionOptions) {
   if (!/^[a-zA-Z0-9_-]{8,100}$/.test(key)) throw new CommandError(400, "A valid request identifier is required");
   const requestHash = commandHash(payload);
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -39,7 +39,7 @@ export async function executeRecordedCommand(scope: string, key: string, payload
         const id = await write();
         await OperationReceipt.updateOne({ scope, key, requestHash }, { $set: { resultId: id } });
         return id;
-      });
+      }, transactionOptions);
       return { resultId, replayed: false };
     } catch (error: any) {
       if (error?.code === 11000 && attempt < 2) continue;

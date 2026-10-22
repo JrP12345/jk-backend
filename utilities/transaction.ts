@@ -26,7 +26,8 @@ export async function withClinicalTransaction<T>(fn: () => Promise<T>): Promise<
  * service is available.
  */
 export async function withTransaction<T>(
-  fn: (session: mongoose.ClientSession | null) => Promise<T>
+  fn: (session: mongoose.ClientSession | null) => Promise<T>,
+  options?: mongoose.mongo.TransactionOptions,
 ): Promise<T> {
   const inherited = (mongoose as any).transactionAsyncLocalStorage?.getStore()?.session;
   if (inherited?.inTransaction()) return fn(inherited);
@@ -42,7 +43,7 @@ export async function withTransaction<T>(
 
   // Driver-managed retry/commit handling and Mongoose session propagation.
   // Callers must keep irreversible external effects outside this callback.
-  return mongoose.connection.transaction(async (session) => fn(session));
+  return mongoose.connection.transaction(async (session) => fn(session), options);
 }
 
 /** Create a document with an optional transaction session. */

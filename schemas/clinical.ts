@@ -14,19 +14,56 @@ export const objectIdParamSchema = {
 export const createMedicineSchema = {
   body: {
     type: "object",
-    required: ["locationId", "name", "genericName", "stockQuantity", "price", "costPrice", "expiryDate", "batchNumber"],
+    required: ["locationId", "name", "genericName", "price"],
     properties: {
       locationId: { type: "string", pattern: objectIdPattern },
+      organizationId: { type: "string", pattern: objectIdPattern },
+      organization_id: { type: "string", pattern: objectIdPattern },
       name: { type: "string", minLength: 1 },
       genericName: { type: "string", minLength: 1 },
-      stockQuantity: { type: "number", minimum: 0 },
+      stockQuantity: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
       price: { type: "number", minimum: 0 },
       costPrice: { type: "number", minimum: 0 },
       expiryDate: { type: "string", minLength: 1 },
-      batchNumber: { type: "string", minLength: 1 }
+      batchNumber: { type: "string", minLength: 1 },
+      manufacturer: { type: "string", maxLength: 200 }, strength: { type: "string", maxLength: 80 },
+      category: { type: "string", enum: ["tablet", "capsule", "syrup", "injection", "ointment", "drops", "inhaler", "other"] },
+      scheduleType: { type: "string", enum: ["general", "schedule_h", "schedule_h1", "schedule_x", "narcotic"] },
+      reorderLevel: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+      hsnCode: { type: "string", pattern: "^\\d{4}(\\d{2})?(\\d{2})?$" }, gstRate: { type: "number", minimum: 0, maximum: 100 },
+      barcodes: { type: "array", maxItems: 20, items: { type: "string", minLength: 1, maxLength: 64 } },
+      unitDefinition: { type: "object", additionalProperties: false, required: ["baseUnit", "packUnit", "unitsPerPack"], properties: {
+        baseUnit: { type: "string", enum: ["tablet", "capsule", "ml", "g", "piece", "dose"] }, packUnit: { type: "string", enum: ["strip", "box", "bottle", "vial", "tube", "ampoule", "sachet", "pack", "piece"] },
+        unitsPerPack: { type: "integer", minimum: 1, maximum: 1000000 } } },
     },
     additionalProperties: false
   }
+};
+export const updateMedicineSchema = { body: { ...createMedicineSchema.body, required: [], properties: {
+  ...createMedicineSchema.body.properties, expectedUnitVersion: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER - 1 },
+} } };
+export const medicineListSchema = { querystring: { type: "object", additionalProperties: false, properties: {
+  locationId: { type: "string", pattern: objectIdPattern }, organizationId: { type: "string", pattern: objectIdPattern }, organization_id: { type: "string", pattern: objectIdPattern },
+  search: { type: "string", maxLength: 100 }, barcode: { type: "string", minLength: 1, maxLength: 64 },
+  medicineIds: { type: "string", pattern: "^[a-fA-F0-9]{24}(,[a-fA-F0-9]{24}){0,99}$", maxLength: 2499 },
+  page: { type: "integer", minimum: 1, maximum: 100000 }, limit: { type: "integer", minimum: 1, maximum: 100 },
+  stockFilter: { type: "string", enum: ["all", "low", "out", "expired"] },
+} } };
+
+export const stockAdjustmentSchema = {
+  body: {
+    type: "object", additionalProperties: false, required: ["medicineId", "newQuantity", "reason"],
+    properties: {
+      medicineId: { type: "string", pattern: objectIdPattern },
+      batchId: { type: "string", pattern: objectIdPattern },
+      newQuantity: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+      expectedQuantity: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+      expectedRevision: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER - 1 },
+      clientRequestId: { type: "string", pattern: "^[a-zA-Z0-9_-]{8,100}$" },
+      reason: { type: "string", enum: ["physical_audit", "damaged", "expired", "restock", "other"] },
+      notes: { type: "string", maxLength: 500 },
+    },
+  },
 };
 
 export const dispensePrescriptionSchema = {
@@ -41,17 +78,32 @@ export const dispensePrescriptionSchema = {
       appointmentId: { type: "string", pattern: objectIdPattern },
       prescriptionIds: {
         type: "array",
+        maxItems: 200,
         items: { type: "string", pattern: objectIdPattern },
+      },
+      prescriptionAllocations: {
+        type: "array", minItems: 1, maxItems: 200,
+        items: {
+          type: "object", required: ["prescriptionId", "medicineId", "quantity"], additionalProperties: false,
+          properties: {
+            prescriptionId: { type: "string", pattern: objectIdPattern },
+            medicineId: { type: "string", pattern: objectIdPattern },
+            quantity: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+            expectedFulfillmentRevision: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER - 1 },
+            expectedRemainingQuantity: { type: "integer", minimum: 0, maximum: 1_000_000 },
+          },
+        },
       },
       items: {
         type: "array",
         minItems: 1,
+        maxItems: 100,
         items: {
           type: "object",
           required: ["medicineId", "quantity"],
           properties: {
             medicineId: { type: "string", pattern: objectIdPattern },
-            quantity: { type: "number", minimum: 1 }
+            quantity: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }
           },
           additionalProperties: false
         }

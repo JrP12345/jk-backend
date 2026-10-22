@@ -14,6 +14,14 @@ import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
 import { checkLocationAccess, checkOperationalRecordAccess, getRequestLocationIds, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
+import { claimCashierDrawer } from "../services/CashierDrawerService.ts";
+import { appendInvoiceCollection, invoiceBalancePaise } from "../services/InvoicePaymentService.ts";
+import { collectionPaise } from "../services/TillCollectionService.ts";
+import { CommandError, executeRecordedCommand } from "../services/CommandReceiptService.ts";
+import { OperationReceipt } from "../models/OperationReceipt.ts";
+import { decryptField } from "../utilities/cryptoEnvelope.ts";
+import { requireStockTransaction } from "../utilities/pharmacyInventory.ts";
+import { requireKnownClinicalCharges } from "../services/PharmacyChargeSource.ts";
 
 const INDIA_BILLING_ONLY = "Manual billing and GST calculations are not configured for this organization's country";
 
@@ -217,7 +225,7 @@ export async function getInvoices(req: FastifyRequest, reply: FastifyReply) {
 
     const { page: currentPage, limit: pageSize, skip } = getPaginationParams({ page, limit });
 
-    const filter: any = {};
+    const filter: any = { kind: { $ne: "pharmacy" } };
 
     if (userRole === "patient" || userRole === "family_member") {
       const patient = await Patient.findOne({ userId });
@@ -309,7 +317,7 @@ export async function getInvoiceDetails(req: FastifyRequest, reply: FastifyReply
       return reply.code(400).send(errorResponse("Invalid invoice ID"));
     }
 
-    const invoice: any = await Invoice.findById(id)
+    const invoice: any = await Invoice.findOne({ _id: id, kind: { $ne: "pharmacy" } })
       .populate("locationId", "name city address phone email organizationId")
       .populate("doctorId", "name specialization qualification")
       .populate({
@@ -356,30 +364,15 @@ export async function getInvoiceDetails(req: FastifyRequest, reply: FastifyReply
 }
 
 export async function collectPayment(req: FastifyRequest, reply: FastifyReply) {
+  reply.header("Cache-Control", "no-store");
   try {
-    const { id } = req.params as { id: string };
-    const { paymentMethod } = req.body as {
-      paymentMethod: "cash" | "card" | "upi" | "net-banking" | "insurance" | "online";
-      paymentToken?: string;
-    };
-
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return reply.code(400).send(errorResponse("Invalid invoice ID"));
-    }
-
-    const validMethods = ["cash", "card", "upi", "net-banking", "insurance", "online"];
-    if (!paymentMethod || !validMethods.includes(paymentMethod)) {
-      return reply.code(400).send(errorResponse("Invalid or missing payment method"));
-    }
-
-    const invoice = await Invoice.findById(id).populate("locationId", "organizationId");
+    const { id } = req.params as { id: string }, { paymentMethod } = req.body as { paymentMethod: string };
+    if (!mongoose.Types.ObjectId.isValid(id) || !["cash", "card", "upi", "net-banking", "insurance", "online"].includes(paymentMethod)) return reply.code(400).send(errorResponse("Valid invoice and payment method are required"));
+    const invoice = await Invoice.findOne({ _id: id, kind: { $ne: "pharmacy" } }).populate("locationId", "organizationId");
     if (!invoice) {
       return reply.code(404).send(errorResponse("Invoice not found"));
     }
 
-    if (invoice.status === "paid") {
-      return reply.code(400).send(errorResponse("Invoice has already been paid"));
-    }
 
     // Security check: Patients can pay their own online/UPI, staff can collect anything
     const userRole = req.user!.role;
@@ -409,44 +402,61 @@ export async function collectPayment(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(409).send(errorResponse("UPI collection is only configured for INR locations"));
     }
 
-    const remainingToPay = Number((invoice.totalAmount - (invoice.amountPaid || 0)).toFixed(2));
 
-    invoice.status = "paid";
-    invoice.amountPaid = invoice.totalAmount;
-    invoice.balanceDue = 0;
-    invoice.paymentMethod = paymentMethod;
-    invoice.paymentDate = new Date();
-
-    if (!invoice.payments) invoice.payments = [] as any;
-    if (remainingToPay > 0) {
-      invoice.payments.push({
-        amount: remainingToPay,
-        paymentMethod,
-        paidAt: new Date(),
-        notes: "Full payment collected",
-      });
-    }
-
-    await invoice.save();
-
-    // Create Audit Log with tokenized ID reference
-    await AuditLog.create({
-      userId,
-      action: "INVOICE_PAY",
-      targetId: invoice._id,
-      targetModel: "Invoice",
-      details: {
-        invoiceNumber: invoice.invoiceNumber,
-        totalAmount: invoice.totalAmount,
-        paymentMethod,
-      }
-    });
-
-    return reply.code(200).send(successResponse(invoice, "Invoice payment recorded successfully"));
-  } catch (err) {
-    console.error("collectPayment error:", safeError(err));
-    return reply.code(500).send(errorResponse("Internal server error"));
+    const key = mutationKey(req);
+    if (!/^[a-zA-Z0-9_-]{8,100}$/.test(key)) throw new CommandError(400, "Use a stable collection reference of 8 to 100 letters, digits, underscores or hyphens");
+    const commandScope = `clinical-full-payment:${invoice.organizationId}:${id}`;
+    await executeRecordedCommand(commandScope, key, { actorId: userId, payload: req.body }, () => withTransaction(async session => {
+      requireStockTransaction(session);
+      const current: any = await Invoice.findOne({ _id: id, kind: { $ne: "pharmacy" }, deletedAt: null }).session(session);
+      if (!current) throw new CommandError(404, "Invoice not found");
+      const currentAccess = await checkLocationAccess(req, current.locationId);
+      if (!currentAccess.allowed) throw new CommandError(404, "Invoice not found");
+      if (userRole === "patient" && !await Patient.exists({ _id: current.patientId, userId })) throw new CommandError(403, "Invoice does not belong to this account");
+      const balance = invoiceBalancePaise(current);
+      if (!balance.balancePaise) throw new CommandError(409, "Invoice has no remaining balance");
+      const drawer = await claimCashierDrawer({ organizationId: String(current.organizationId), locationId: String(current.locationId), actorId: userId }, current.currency, session, false);
+      appendInvoiceCollection(current, [{ componentId: "single", amountPaise: balance.balancePaise, paymentMethod }], { key, actorId: userId, shiftId: drawer?._id, paidAt: new Date() });
+      current.paymentRevision = (current.paymentRevision ?? 0) + 1;
+      await current.save({ session });
+      await synchronizeInvoiceVisit(current, session);
+      await createWithSession(AuditLog, { userId, organizationId: current.organizationId, action: "INVOICE_PAY", targetId: current._id, targetModel: "Invoice", details: { invoiceNumber: current.invoiceNumber, amountPaise: balance.balancePaise, paymentMethod } }, session);
+      const captured = await OperationReceipt.updateOne({ scope: commandScope, key }, { $set: { responseCiphertext: JSON.stringify({ actorId: userId, invoice: current.toJSON() }) } }).session(session);
+      if (captured.matchedCount !== 1) throw new CommandError(409, "Collection reservation changed; keep the same reference");
+      return String(current._id);
+    }), { writeConcern: { w: "majority" } });
+    const record = await OperationReceipt.findOne({ scope: commandScope, key }).select("+responseCiphertext");
+    if (!record?.responseCiphertext) throw new CommandError(409, "Collection result needs review");
+    const snapshot = JSON.parse(decryptField(record.responseCiphertext));
+    if (snapshot.actorId !== userId) throw new CommandError(404, "Collection not found");
+    return reply.send(successResponse(snapshot.invoice, "Invoice payment recorded successfully"));
+  } catch (error) {
+    if (error instanceof CommandError || (error as { statusCode?: number }).statusCode) return reply.code((error as CommandError).statusCode).send(errorResponse((error as Error).message));
+    return reply.code(500).send(errorResponse("Collection could not be confirmed. Retry the same reference."));
   }
+}
+
+async function synchronizeInvoiceVisit(invoice: any, session: mongoose.ClientSession | null) {
+      // Keep the existing visit projection consistent with canonical invoices.
+      // Include encounter invoices so post-consultation fees are not collected twice.
+      const { Encounter } = await import("../models/Encounter.ts");
+      const { Appointment } = await import("../models/Appointment.ts");
+      const encounter = invoice.encounterId ? await Encounter.findById(invoice.encounterId, null, (session ? { session } : undefined)) : null;
+      const linkedAppointmentId = invoice.appointmentId || encounter?.appointmentId;
+      if (linkedAppointmentId) {
+        const linkedEncounters = await Encounter.find({ appointmentId: linkedAppointmentId, organizationId: invoice.organizationId }, null, (session ? { session } : undefined)).select("_id").lean();
+        const visitInvoices = await Invoice.find({ organizationId: invoice.organizationId, deletedAt: null, status: { $nin: ["cancelled", "refunded"] },
+          $or: [{ appointmentId: linkedAppointmentId }, { encounterId: { $in: linkedEncounters.map(value => value._id) } }],
+        }, null, (session ? { session } : undefined)).lean();
+        const outstanding = visitInvoices.reduce((sum, value) => sum + Math.max(0, value.totalAmount - (value.amountPaid || 0)), 0);
+        const totalPaid = visitInvoices.reduce((sum, value) => sum + (value.amountPaid || 0), 0);
+        await Appointment.updateOne({ _id: linkedAppointmentId, organizationId: invoice.organizationId }, {
+          $set: { paymentStatus: outstanding <= 0 ? "paid" : totalPaid > 0 ? "partially_paid" : "unpaid" },
+        }, (session ? { session } : undefined));
+        if (outstanding <= 0) await Appointment.updateOne({ _id: linkedAppointmentId, organizationId: invoice.organizationId, status: "pending_payment" }, { $set: { status: "confirmed" } }, (session ? { session } : undefined));
+      }
+
+
 }
 
 // ─── Auto Charge Capture: Preview & Generate Invoice for Encounter ───
@@ -479,7 +489,7 @@ export async function getEncounterChargesPreview(req: FastifyRequest, reply: Fas
     return reply.code(200).send(successResponse(preview, "Encounter charges compiled successfully"));
   } catch (err: any) {
     console.error("getEncounterChargesPreview error:", safeError(err));
-    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+    return reply.code(err.statusCode || 500).send(errorResponse(err.message || "Internal server error"));
   }
 }
 
@@ -542,7 +552,7 @@ export async function recordPartialPayment(req: FastifyRequest, reply: FastifyRe
       return reply.code(400).send(errorResponse("Payment amount must be greater than 0"));
     }
 
-    const invoice: any = await Invoice.findById(id);
+    const invoice: any = await Invoice.findOne({ _id: id, kind: { $ne: "pharmacy" } });
     if (!invoice) {
       return reply.code(404).send(errorResponse("Invoice not found"));
     }
@@ -569,8 +579,9 @@ export async function recordPartialPayment(req: FastifyRequest, reply: FastifyRe
 
     const key = mutationKey(req);
     const { updatedInvoice, newBalanceDue } = await withTransaction(async (session) => {
+      requireStockTransaction(session);
       const option = session ? { session } : undefined;
-      const invoice: any = await Invoice.findById(id, null, option);
+      const invoice: any = await Invoice.findOne({ _id: id, kind: { $ne: "pharmacy" } }, null, option);
       if (!invoice) {
         throw new Error("NOT_FOUND:Invoice not found");
       }
@@ -587,60 +598,23 @@ export async function recordPartialPayment(req: FastifyRequest, reply: FastifyRe
         }
       }
 
-      const operation = await claimMutation('installment:' + invoice.organizationId + ':' + id, key, req.body);
+      const operation = await claimMutation('installment:' + invoice.organizationId + ':' + id, key, { actorId: userId, payload: req.body });
       if (operation.replay) return { updatedInvoice: invoice, newBalanceDue: invoice.balanceDue };
       if (["refunded", "cancelled"].includes(invoice.status)) throw Object.assign(new Error("Invoice cannot accept payments"), { statusCode: 409 });
       if (invoice.status === "paid") {
         throw new Error("ALREADY_PAID:Invoice has already been fully paid");
       }
 
-      const currentPaid = invoice.amountPaid || 0;
-      const currentBalance = invoice.balanceDue !== undefined ? invoice.balanceDue : invoice.totalAmount - currentPaid;
-
-      if (amount > currentBalance + 0.01) {
-        throw new Error(`OVERPAYMENT:Payment amount ₹${amount} exceeds current balance due ₹${currentBalance}`);
-      }
-
-      const newAmountPaid = Number((currentPaid + amount).toFixed(2));
-      const calculatedBalance = Math.max(0, Number((invoice.totalAmount - newAmountPaid).toFixed(2)));
-      const newStatus = calculatedBalance <= 0 ? "paid" : "partially_paid";
-
-      invoice.amountPaid = newAmountPaid;
-      invoice.balanceDue = calculatedBalance;
-      invoice.status = newStatus;
-      invoice.paymentMethod = paymentMethod || "cash";
-      invoice.paymentDate = new Date();
-
-      if (!invoice.payments) invoice.payments = [];
-      invoice.payments.push({
-        operationKey: key,
-        amount,
-        paymentMethod: paymentMethod || "cash",
-        referenceNumber: referenceNumber?.trim(),
-        paidAt: new Date(),
-        notes: notes?.trim(),
-      });
-
+      const amountPaise = collectionPaise(amount);
+      if (amountPaise === null || amountPaise <= 0) throw new CommandError(400, "Collection requires exact positive minor units");
+      if (amountPaise > invoiceBalancePaise(invoice).balancePaise) throw new CommandError(400, "Collection exceeds the exact remaining invoice balance");
+      const drawer = await claimCashierDrawer({ organizationId: String(invoice.organizationId), locationId: String(invoice.locationId), actorId: userId }, invoice.currency, session, false);
+      const result = appendInvoiceCollection(invoice, [{ componentId: "single", amountPaise, paymentMethod, referenceNumber: referenceNumber?.trim(), notes: notes?.trim() }], { key, actorId: userId, shiftId: drawer?._id, paidAt: new Date() });
+      const calculatedBalance = result.balancePaise / 100, newStatus = result.status;
+      invoice.paymentRevision = (invoice.paymentRevision ?? 0) + 1;
       await invoice.save(option);
 
-      // Keep the existing visit projection consistent with canonical invoices.
-      // Include encounter invoices so post-consultation fees are not collected twice.
-      const { Encounter } = await import("../models/Encounter.ts");
-      const { Appointment } = await import("../models/Appointment.ts");
-      const encounter = invoice.encounterId ? await Encounter.findById(invoice.encounterId, null, option) : null;
-      const linkedAppointmentId = invoice.appointmentId || encounter?.appointmentId;
-      if (linkedAppointmentId) {
-        const linkedEncounters = await Encounter.find({ appointmentId: linkedAppointmentId, organizationId: invoice.organizationId }, null, option).select("_id").lean();
-        const visitInvoices = await Invoice.find({ organizationId: invoice.organizationId, deletedAt: null, status: { $nin: ["cancelled", "refunded"] },
-          $or: [{ appointmentId: linkedAppointmentId }, { encounterId: { $in: linkedEncounters.map(value => value._id) } }],
-        }, null, option).lean();
-        const outstanding = visitInvoices.reduce((sum, value) => sum + Math.max(0, value.totalAmount - (value.amountPaid || 0)), 0);
-        const totalPaid = visitInvoices.reduce((sum, value) => sum + (value.amountPaid || 0), 0);
-        await Appointment.updateOne({ _id: linkedAppointmentId, organizationId: invoice.organizationId }, {
-          $set: { paymentStatus: outstanding <= 0 ? "paid" : totalPaid > 0 ? "partially_paid" : "unpaid" },
-        }, option);
-        if (outstanding <= 0) await Appointment.updateOne({ _id: linkedAppointmentId, organizationId: invoice.organizationId, status: "pending_payment" }, { $set: { status: "confirmed" } }, option);
-      }
+      await synchronizeInvoiceVisit(invoice, session);
 
       await createWithSession(AuditLog, {
         userId,
@@ -712,6 +686,8 @@ export async function getConsolidatedCheckoutPreview(req: FastifyRequest, reply:
         {
           appointment: compiled.appointment,
           items: compiled.items,
+          pharmacyInvoices: compiled.pharmacyInvoices,
+          unfilledPrescriptions: compiled.unfilledPrescriptions,
           subtotal: compiled.subtotal,
           cgstTotal: compiled.cgstTotal,
           sgstTotal: compiled.sgstTotal,
@@ -721,14 +697,14 @@ export async function getConsolidatedCheckoutPreview(req: FastifyRequest, reply:
           feeType: compiled.feeType,
           consultationFee: compiled.consultationFee,
           isFeeEditable: compiled.isFeeEditable,
-          isAlreadyPaid: (appointment as any).paymentStatus === "paid",
+          isAlreadyPaid: compiled.existingInvoice?.status === "paid" || (!compiled.pharmacyInvoices.length && (appointment as any).paymentStatus === "paid"),
         },
         "Consolidated checkout preview compiled successfully"
       )
     );
   } catch (err: any) {
     console.error("getConsolidatedCheckoutPreview error:", safeError(err));
-    return reply.code(500).send(errorResponse(err.message || "Internal server error"));
+    return reply.code(err.statusCode || 500).send(errorResponse(err.message || "Internal server error"));
   }
 }
 
@@ -748,18 +724,25 @@ export async function processConsolidatedCheckout(req: FastifyRequest, reply: Fa
     const access = await checkOperationalRecordAccess(req, original);
     if (!access.allowed) return reply.code(access.statusCode).send(errorResponse(access.message));
     if (!(await canUseIndianBilling(String(original.locationId)))) return reply.code(409).send(errorResponse(INDIA_BILLING_ONLY));
-    const invoice = await withTransaction(async () => {
+    const invoice = await withTransaction(async session => {
       // Serialize all checkout requests for this visit, including distinct keys.
       const appointment = await Appointment.findOneAndUpdate({ _id: appointmentId, organizationId: original.organizationId }, { $inc: { __v: 1 } }, { returnDocument: "after" });
       if (!appointment) throw Object.assign(new Error("Appointment not found"), { statusCode: 404 });
       const operation = await claimMutation('checkout:' + original.organizationId + ':' + appointmentId, key, body);
       if (operation.replay) return Invoice.findById(operation.receipt.resultId);
-      let invoice: any = appointment.invoiceId ? await Invoice.findById(appointment.invoiceId) : await Invoice.findOne({ appointmentId: appointment._id, organizationId: appointment.organizationId, deletedAt: null });
+      let invoice: any = appointment.invoiceId ? await Invoice.findById(appointment.invoiceId) : await Invoice.findOne({ appointmentId: appointment._id, organizationId: appointment.organizationId, deletedAt: null, documentVersion: { $ne: 1 } });
+      if (invoice?.documentVersion === 1) throw Object.assign(new Error("Settle the issued pharmacy bill through invoice payments; checkout cannot rebuild it."), { statusCode: 409 });
+      // Include encounter-generated bills so checkout preserves their committed supply lines.
+      const encounter = await Encounter.findOneAndUpdate({ appointmentId: appointment._id, organizationId: appointment.organizationId,
+        locationId: appointment.locationId, patientId: appointment.patientId, deletedAt: null }, { $inc: { __v: 1 } }, { returnDocument: "after" });
+      if (!invoice && encounter) invoice = await Invoice.findOne({ encounterId: encounter._id, organizationId: appointment.organizationId, deletedAt: null, documentVersion: { $ne: 1 } }).sort({ createdAt: 1 });
+      requireKnownClinicalCharges(invoice);
+      if (invoice?.issuedAt) throw Object.assign(new Error("An issued invoice cannot be recompiled. Use its settlement or linked supplement."), { statusCode: 409 });
       if (invoice && (invoice.amountPaid > 0 || ["paid", "refunded", "cancelled"].includes(invoice.status))) throw Object.assign(new Error("Existing payments cannot be rewritten. Use the installment or adjustment workflow."), { statusCode: 409 });
       if (fee !== undefined) { appointment.customConsultationFee = fee; appointment.paymentAmount = fee; await appointment.save(); }
       const { compileAppointmentCharges } = await import("../services/ChargeCaptureService.ts");
       const { generateLocationInvoiceNumber } = await import("../utilities/invoiceNumber.ts");
-      const compiled = await compileAppointmentCharges(appointmentId, fee);
+      const compiled = await compileAppointmentCharges(appointmentId, fee, invoice ? String(invoice._id) : undefined);
       const tax = compiled.cgstTotal + compiled.sgstTotal + compiled.igstTotal;
       if (![compiled.subtotal, tax].every(value => Number.isFinite(value) && value >= 0) || compiled.items.some(item => ![item.amount, item.quantity, item.gstRate].every(value => Number.isFinite(value) && value >= 0))) throw Object.assign(new Error("Invalid configured charges; review the service catalog"), { statusCode: 409 });
       if (discount > compiled.subtotal + tax) throw Object.assign(new Error("Discount exceeds invoice total"), { statusCode: 400 });
@@ -775,13 +758,20 @@ export async function processConsolidatedCheckout(req: FastifyRequest, reply: Fa
       });
       if (!invoice) invoice = new Invoice({ invoiceNumber: await generateLocationInvoiceNumber(String(appointment.locationId)), generationKey: 'appointment:' + appointmentId,
         organizationId: appointment.organizationId, locationId: appointment.locationId, patientId: appointment.patientId, doctorId: appointment.doctorId, appointmentId: appointment._id });
-      Object.assign(invoice, { items, subtotal: compiled.subtotal, taxableAmount: compiled.subtotal, tax, cgstTotal: compiled.cgstTotal, sgstTotal: compiled.sgstTotal, igstTotal: compiled.igstTotal,
+      Object.assign(invoice, { clinicalChargeVersion: 1, items, subtotal: compiled.subtotal, taxableAmount: compiled.subtotal, tax, cgstTotal: compiled.cgstTotal, sgstTotal: compiled.sgstTotal, igstTotal: compiled.igstTotal,
         discount, totalAmount: total, amountPaid: paid, balanceDue: balance, status: balance === 0 ? "paid" : paid > 0 ? "partially_paid" : "unpaid", paymentMethod, paymentDate: paid > 0 ? new Date() : undefined });
-      if (paid > 0) invoice.payments.push({ amount: paid, operationKey: key, paymentMethod, referenceNumber, notes, paidAt: new Date() });
+      if (paid > 0) {
+        const drawer = await claimCashierDrawer({ organizationId: String(appointment.organizationId), locationId: String(appointment.locationId), actorId: req.user!.id }, invoice.currency, session, false);
+        invoice.payments.push({ amount: paid, operationKey: key, paymentMethod, referenceNumber, notes, actorId: req.user!.id, shiftId: drawer?._id, paidAt: new Date() });
+      }
       await invoice.save();
       appointment.invoiceId = invoice._id;
       appointment.paymentAmount = total;
-      appointment.paymentStatus = balance === 0 ? "paid" : paid > 0 ? "partially_paid" : "unpaid";
+      const visitInvoices = await Invoice.find({ organizationId: appointment.organizationId, deletedAt: null, status: { $nin: ["cancelled", "refunded"] },
+        $or: [{ appointmentId: appointment._id }, ...(encounter ? [{ encounterId: encounter._id }] : [])] }).lean();
+      const outstanding = visitInvoices.reduce((sum, bill) => sum + Math.max(0, bill.totalAmount - (bill.amountPaid || 0)), 0);
+      const confirmedPaid = visitInvoices.reduce((sum, bill) => sum + (bill.amountPaid || 0), 0);
+      appointment.paymentStatus = outstanding <= 0 ? "paid" : confirmedPaid > 0 ? "partially_paid" : "unpaid";
       await appointment.save();
       await AuditLog.create({ organizationId: appointment.organizationId, userId: req.user!.id, category: "BILLING", action: "CONSOLIDATED_OPD_CHECKOUT", targetId: invoice._id, targetModel: "Invoice", details: { appointmentId, amountPaid: paid, grandTotal: total, operationKey: key } });
       operation.receipt.resultId = invoice._id;

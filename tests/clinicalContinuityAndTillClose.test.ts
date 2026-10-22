@@ -273,7 +273,7 @@ describe("Care Follow-Up Recommendations, Public Tracker Sync & Cashier Till Rec
     const closeRes = await app.inject({
       method: "POST",
       url: "/api/billing/till/close",
-      headers: { cookie: adminCookies.join("; ") },
+      headers: { cookie: adminCookies.join("; "), "idempotency-key": "synthetic-daily-report-key" },
       payload: {
         locationId,
         actualCashCounted: 1550,

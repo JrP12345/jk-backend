@@ -35,7 +35,7 @@ export async function createLocation(req: FastifyRequest, reply: FastifyReply) {
     const org = await Organization.findById(orgId);
     if (!org) return reply.code(404).send(errorResponse("Target organization not found"));
 
-    const allowedLocations = org.maxLocations || 1;
+    const allowedLocations = org.maxLocations ?? 1;
 
     const existingCount = await Location.countDocuments({ organizationId: orgId, isActive: true });
     if (existingCount >= allowedLocations && req.user?.role !== "root") {
@@ -55,6 +55,7 @@ export async function createLocation(req: FastifyRequest, reply: FastifyReply) {
       ...(isPublished !== undefined && { isPublished }),
       name,
       facilityType: facilityType || null,
+      ...(facilityType === "pharmacy" ? { pharmacyCapability: { enabled: false, revision: 0 } } : {}),
       logo: branding.logo_url,
       description: description || null,
       brandColor: brandColor || "#0F6F66",
@@ -280,7 +281,7 @@ export async function reactivateLocation(req: FastifyRequest, reply: FastifyRepl
       return reply.code(404).send(errorResponse("Target organization not found"));
     }
 
-    const allowedLocations = org.maxLocations || 1;
+    const allowedLocations = org.maxLocations ?? 1;
 
     const existingCount = await Location.countDocuments({
       organizationId: location.organizationId,

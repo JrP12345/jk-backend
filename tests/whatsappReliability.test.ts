@@ -27,6 +27,8 @@ describe("WhatsApp setup, isolation and durable delivery", () => {
   const wabaId = "100001";
   const phoneNumberId = "200001";
   beforeAll(async () => {
+    // The fresh fixture must finish the same unique index required at deployment.
+    await NotificationLog.init();
     const response = await app.inject({ headers: await provisioningFixtureHeaders(), method: "POST", url: "/api/onboarding/organization", payload: {
       org_name: "WhatsApp Reliability Clinic", city: "Mumbai", admin_name: "Admin",
       admin_email: `wa-reliability-${Date.now()}@example.com`, admin_password: "Password123", plan: "professional",
@@ -132,11 +134,14 @@ describe("WhatsApp setup, isolation and durable delivery", () => {
     expect((await NotificationLog.findOne({ metaMessageId: "wamid.orphan" }))?.status).toBe("delivered");
   });
   it("prevents duplicate sends and charges under concurrent dispatch", async () => {
+    expect(await NotificationLog.collection.indexes()).toContainEqual(expect.objectContaining({ key: { idempotencyKey: 1 }, unique: true }));
     await Organization.updateOne({ _id: organizationId }, { $set: { "whatsappConfig.mode": "shared", "whatsappConfig.creditsBalance": 10 } });
     const provider = vi.spyOn(whatsAppCloudApiService, "sendTemplateMessage").mockResolvedValue({ success: true, status: "accepted", providerMessageId: "wamid.concurrent" });
     const options = { communicationContext: communication.context, organizationId, phone, templateId: "BOOKING_CONFIRMATION" as const, variables: {}, idempotencyKey: "concurrent-send" };
-    await Promise.allSettled([dispatchSmsWhatsAppNotification(options), dispatchSmsWhatsAppNotification(options)]);
+    await Promise.allSettled(Array.from({ length: 8 }, () => dispatchSmsWhatsAppNotification(options)));
     expect(provider).toHaveBeenCalledTimes(1);
+    expect(await NotificationLog.countDocuments({ idempotencyKey: options.idempotencyKey })).toBe(1);
+    expect(await NotificationLog.findOne({ idempotencyKey: options.idempotencyKey })).toMatchObject({ status: "accepted", creditsDeducted: 1 });
     expect((await Organization.findById(organizationId))?.whatsappConfig?.creditsBalance).toBe(9);
   });
   it("never retries an ambiguous provider result, including manual job replay", async () => {

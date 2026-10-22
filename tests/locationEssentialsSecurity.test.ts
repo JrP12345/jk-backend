@@ -35,6 +35,7 @@ describe("Clinic Essentials — Patient Directory Tenant Isolation", () => {
       userId: staffA._id,
       organizationId: orgAId,
       role: "receptionist",
+      locationAccess: { mode: "all" },
     });
 
     staffAToken = (await fixtureAccessToken({

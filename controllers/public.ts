@@ -1,4 +1,5 @@
 import { safeError } from "../utilities/safeError.ts";
+import { finalizedPrescriptionSelection } from "../services/FinalizedPrescriptionSelection.ts";
 import { appointmentService, AppointmentDomainError } from '../services/AppointmentService.ts';
 import { executeRecordedCommand, CommandError } from '../services/CommandReceiptService.ts';
 import { OperationReceipt } from '../models/OperationReceipt.ts';
@@ -985,15 +986,10 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
         const note = (await ClinicalNote.findOne({ ...clinicalScope, encounterId: encounter._id, isLatest: true, status: { $in: ['signed', 'amended'] }, deletedAt: null })
           .select("subjective assessment plan signature")
           .lean()) as any;
-        let prescriptions = note ? (await Prescription.find({ ...clinicalScope, encounterId: encounter._id, deletedAt: null })
-          .select("medicineName dosage frequency duration instructions status")
-          .lean()) as any[] : [];
-
-        if (prescriptions.length === 0 && note?.plan?.prescriptionIds?.length > 0) {
-          prescriptions = (await Prescription.find({ ...clinicalScope, encounterId: encounter._id, _id: { $in: note.plan.prescriptionIds }, deletedAt: null })
-            .select("medicineName dosage frequency duration instructions status")
-            .lean()) as any[];
-        }
+        const prescriptions = (await Prescription.find({ ...await finalizedPrescriptionSelection(clinicalScope, encounter._id),
+          status: { $in: ["active", "dispensed"] } })
+          .select("medicineName dosage frequency duration instructions status authorizedQuantity authorizedBaseUnit suppliedQuantity")
+          .lean()) as any[];
 
         if (note || prescriptions.length > 0) {
           const rawDoctorAdvice = note?.plan?.treatmentPlan;
@@ -1022,6 +1018,8 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
               duration: p.duration,
               instructions: p.instructions || "",
               status: p.status,
+              fulfillment: { authorizedQuantity: p.authorizedQuantity ?? null, baseUnit: p.authorizedBaseUnit ?? null,
+                suppliedQuantity: p.suppliedQuantity || 0, remainingQuantity: p.authorizedQuantity == null ? null : Math.max(0, p.authorizedQuantity - (p.suppliedQuantity || 0)) },
             })),
             signedBy: note?.signature?.signerName || null,
             signedAt: note?.signature?.signedAt || null,
@@ -1072,7 +1070,7 @@ export async function getPublicAppointmentTracker(req: FastifyRequest, reply: Fa
       ? "none"
       : rxList.every((p: any) => p.status === "dispensed")
         ? "dispensed"
-        : "sent_to_pharmacy";
+        : rxList.some((p: any) => p.fulfillment?.suppliedQuantity > 0) ? "partially_dispensed" : "sent_to_pharmacy";
 
     // Only an explicit or reviewed booking can be presented as a booked follow-up.
     let followUpAppointment: any = null;
@@ -1617,14 +1615,12 @@ export async function printPublicTrackerPrescription(req: FastifyRequest, reply:
     const note = encounter
       ? (((await ClinicalNote.findOne({ ...clinicalScope, encounterId: encounter._id, isLatest: true, status: { $in: ['signed', 'amended'] }, deletedAt: null }).lean()) as any) || null)
       : null;
-    if (!encounter || !note) return reply.code(409).send(errorResponse('The finalized prescription requires clinical review'));
-    let prescriptions = encounter
-      ? (((await Prescription.find({ ...clinicalScope, encounterId: encounter._id, deletedAt: null }).lean()) as any[]) || [])
+    if (!encounter) return reply.code(409).send(errorResponse('The finalized prescription requires clinical review'));
+    const prescriptions = encounter
+      ? (((await Prescription.find({ ...await finalizedPrescriptionSelection(clinicalScope, encounter._id),
+        status: { $in: ["active", "dispensed"] } }).lean()) as any[]) || [])
       : [];
-
-    if (prescriptions.length === 0 && note?.plan?.prescriptionIds?.length > 0) {
-      prescriptions = (await Prescription.find({ ...clinicalScope, encounterId: encounter._id, _id: { $in: note.plan.prescriptionIds }, deletedAt: null }).lean()) as any[];
-    }
+    if (!note && !prescriptions.length) return reply.code(409).send(errorResponse('The finalized prescription requires clinical review'));
 
     const doctorUserId = (appointment.doctorId as any)?._id || appointment.doctorId;
     const doctorProfile = (await Doctor.findOne({ organizationId: appointment.organizationId, userId: doctorUserId }).lean()) as any;
@@ -1648,6 +1644,8 @@ export async function printPublicTrackerPrescription(req: FastifyRequest, reply:
     const apptPrescriptions = (prescriptions.length > 0
       ? prescriptions.map((p: any) => ({
           medicineName: p.medicineName,
+          authorizedQuantity: p.authorizedQuantity,
+          authorizedBaseUnit: p.authorizedBaseUnit,
           dosage: p.dosage,
           frequency: p.frequency,
           duration: p.duration,

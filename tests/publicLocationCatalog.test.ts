@@ -101,14 +101,18 @@ describe("Dynamic public clinic catalog", () => {
     expect(disabledDoctor.json().data.bookingStatus).toBe("no_doctors");
   });
 
-  it("shows contact status consistently when the organization cannot accept bookings", async () => {
+  it("keeps a cancelled current period bookable and shows contact status consistently after its access period expires", async () => {
     const location = await Location.findById(top).select("organizationId").lean();
     await app.inject({ method: "GET", url: `/api/public/locations/${await providerFixtureSlug("location", top)}` });
     const subscription = await Subscription.findOne({ organizationId: location!.organizationId });
     expect(subscription).toBeTruthy();
-    const previousStatus = subscription!.status;
+    const previousStatus = subscription!.status, previousEnd = subscription!.currentPeriodEnd;
     try {
       subscription!.status = "cancelled";
+      await subscription!.save();
+      const current = await app.inject({ method: "GET", url: "/api/public/locations?search=Highest%20Rating" });
+      expect(current.json().data[0]).toMatchObject({ id: top, onlineBookingAvailable: true });
+      subscription!.currentPeriodEnd = new Date(Date.now() - 1000);
       await subscription!.save();
       const list = await app.inject({ method: "GET", url: "/api/public/locations?search=Highest%20Rating" });
       expect(list.statusCode, list.body).toBe(200);
@@ -119,6 +123,7 @@ describe("Dynamic public clinic catalog", () => {
       expect(doctor.json().data.locations[0]).toMatchObject({ bookingStatus: "contact_location", onlineBookingAvailable: false });
     } finally {
       subscription!.status = previousStatus;
+      subscription!.currentPeriodEnd = previousEnd;
       await subscription!.save();
     }
   });

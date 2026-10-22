@@ -7,6 +7,7 @@ import { Patient } from "../models/Patient.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
+import { PrescriptionSealingService } from "../services/PrescriptionSealingService.ts";
 
 beforeAll(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-06T10:00:00Z")); });
 afterAll(() => vi.useRealTimers());
@@ -331,6 +332,8 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
       patientId: apptDoc?.patientId,
       doctorId: doctorUserId,
       medicineName: "Amoxicillin 500mg",
+      authorizedQuantity: 30,
+      authorizedBaseUnit: "capsule",
       dosage: "500mg",
       frequency: "1-0-1",
       duration: "5 days",
@@ -351,6 +354,11 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
       instructions: "If fever exceeds 100F",
       status: "active",
     });
+
+    await PrescriptionSealingService.sealPrescription(String(rx1._id), doctorUserId);
+    await PrescriptionSealingService.sealPrescription(String(rx2._id), doctorUserId);
+    await Prescription.create({ organizationId: orgId, locationId, encounterId: encounter._id, patientId: apptDoc?.patientId,
+      doctorId: doctorUserId, medicineName: "Unfinalized medicine", dosage: "1", frequency: "Daily", duration: "2 days" });
 
     // 4. Create Clinical Note
     const nextWeek = new Date();
@@ -437,6 +445,18 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     expect(trackerBody.billing.items.length).toBe(2);
   });
 
+  it("reports partial operational quantities without changing sealed instructions or exposing staff evidence", async () => {
+    const { Prescription } = await import("../models/Prescription.ts");
+    const rx = await Prescription.findOne({ organizationId: orgId, medicineName: "Amoxicillin 500mg" });
+    await Prescription.updateOne({ _id: rx._id }, { $set: { suppliedQuantity: 10 }, $inc: { fulfillmentRevision: 1 } });
+    const response = await app.inject({ method: "GET", url: `/api/public/track/${appointmentId}`, headers: await trackerFixtureHeaders(appointmentId) });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().data.pharmacyStatus).toBe("partially_dispensed");
+    expect(response.json().data.consultationSummary.prescriptions.find((row: any) => row.id === rx.id)).toMatchObject({ dosage: "500mg", duration: "5 days", status: "active",
+      fulfillment: { authorizedQuantity: 30, baseUnit: "capsule", suppliedQuantity: 10, remainingQuantity: 20 } });
+    expect(response.body).not.toContain("prescriptionHash");
+    expect((await PrescriptionSealingService.verifyPrescriptionIntegrity(rx.id)).intact).toBe(true);
+  });
   it("should generate printable prescription HTML via public print endpoint", async () => {
     const printRes = await app.inject({
       method: "GET",
@@ -450,6 +470,8 @@ describe("Public Live Queue Tracker & Quick Walk-In Tests", () => {
     expect(html).toContain("Dr. Vikram Seth");
     expect(html).toContain("Sanya Gupta");
     expect(html).toContain("Amoxicillin 500mg");
+    expect(html).toContain("Authorized quantity: 30 capsule");
+    expect(html).not.toContain("Unfinalized medicine");
     expect(html).toContain("Paracetamol 650mg");
     expect(html).toContain("Acute upper respiratory infection");
     expect(html).toContain("Doctor&#39;s Advice & Treatment Plan:");

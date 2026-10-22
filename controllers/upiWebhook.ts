@@ -1,4 +1,5 @@
 import { safeError } from "../utilities/safeError.ts";
+import { visitInvoicePaymentStatus } from "../services/VisitInvoiceBalance.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
 import crypto from "node:crypto";
@@ -314,9 +315,8 @@ export async function handleInboundUpiWebhook(req: FastifyRequest, reply: Fastif
         { _id: appointment._id },
         {
           $set: {
-            paymentStatus: "paid",
-            paymentAmount: capturedPayment.amount,
-            invoiceId: settledInvoice._id,
+            paymentStatus: await visitInvoicePaymentStatus(currentAppointment),
+            ...(settledInvoice.documentVersion !== 1 ? { paymentAmount: capturedPayment.amount, invoiceId: settledInvoice._id } : {}),
             ...(['pending_payment', 'pending'].includes(currentAppointment.status) ? { status: 'confirmed' } : {}),
           },
         },

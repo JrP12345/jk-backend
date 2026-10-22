@@ -1,3 +1,5 @@
+import { seedModulesForOrg } from "../services/OrganizationModuleDefaults.ts";
+export { seedModulesForOrg } from "../services/OrganizationModuleDefaults.ts";
 import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { ModuleRegistry } from "../models/ModuleRegistry.ts";
@@ -184,37 +186,3 @@ export async function seedModulesEndpoint(req: FastifyRequest, reply: FastifyRep
 }
 
 // ─── Shared Seeding Logic (used by controller + onboarding hook) ─
-export async function seedModulesForOrg(organizationId: string, updatedBy?: string, session?: any) {
-  const existing = await ModuleRegistry.find({ organizationId }).select("moduleKey").lean();
-  const existingKeys = new Set(existing.map((m: any) => m.moduleKey));
-
-  const toInsert = Object.entries(MODULE_KEYS)
-    .filter(([key]) => !existingKeys.has(key))
-    .map(([key, def]) => ({
-      organizationId,
-      moduleKey: key,
-      enabled: def.priority === "P1", // P1 enabled by default, P2/P3 disabled
-      priority: def.priority,
-      label: def.label,
-      updatedBy: updatedBy || null,
-    }));
-
-  if (toInsert.length === 0) {
-    return { inserted: 0, message: "All modules already exist" };
-  }
-
-  try {
-    if (session) {
-      await ModuleRegistry.insertMany(toInsert, { session, ordered: false });
-    } else {
-      await ModuleRegistry.insertMany(toInsert, { ordered: false });
-    }
-  } catch (err: any) {
-    // Gracefully ignore duplicate key collisions (E11000) from concurrent requests
-    if (!err.message?.includes("E11000") && err.code !== 11000) {
-      throw err;
-    }
-  }
-
-  return { inserted: toInsert.length, message: `${toInsert.length} modules seeded` };
-}

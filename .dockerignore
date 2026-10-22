@@ -1,4 +1,11 @@
 node_modules
+.git
+.codex
+.agents
+.aws
+dist
+coverage
+*.tsbuildinfo
 .env
 .env.*
 !.env.example

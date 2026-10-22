@@ -6,6 +6,8 @@ import { Subscription } from "../models/Subscription.ts";
 import { Organization } from "../models/Organization.ts";
 import { Location } from "../models/Location.ts";
 import { Doctor } from "../models/Doctor.ts";
+import { User } from "../models/User.ts";
+import { OrgMember } from "../models/OrgMember.ts";
 import { SaaSConfig } from "../models/SaaSConfig.ts";
 import { subscriptionService, PlanDowngradeViolationError } from "../services/billing/SubscriptionService.ts";
 
@@ -45,6 +47,9 @@ describe("Subscription Plan Downgrade & Active Resource Quota Enforcement", () =
       plan: "professional",
     });
     const orgId = org._id.toString();
+    const administrator = await User.create({ name: "Downgrade administrator", email: `downgrade_${Date.now()}@example.test`, role: "admin" });
+    await OrgMember.create({ userId: administrator.id, organizationId: orgId, role: "admin", locationAccess: { mode: "all", locationIds: [] } });
+    const actor = { id: administrator.id, organization_id: orgId, role: "admin" };
 
     // 2. Create Pro Plan (allows 5 locations)
     const proPlan = await SaaSPlan.create({
@@ -153,27 +158,27 @@ describe("Subscription Plan Downgrade & Active Resource Quota Enforcement", () =
 
     // Default getClinics returns only active locations
     const replyDefault = createMockReply();
-    await getLocations({ user: { organization_id: orgId, role: "admin" }, query: {} } as any, replyDefault as any);
+    await getLocations({ user: actor, query: {} } as any, replyDefault as any);
     expect(replyDefault.getStatus()).toBe(200);
     expect(replyDefault.getData().data).toHaveLength(1);
     expect(replyDefault.getData().data[0].name).toBe("Indiranagar Branch");
 
     // getClinics with status="inactive" returns 3 inactive locations
     const replyInactive = createMockReply();
-    await getLocations({ user: { organization_id: orgId, role: "admin" }, query: { status: "inactive" } } as any, replyInactive as any);
+    await getLocations({ user: actor, query: { status: "inactive" } } as any, replyInactive as any);
     expect(replyInactive.getStatus()).toBe(200);
     expect(replyInactive.getData().data).toHaveLength(3);
 
     // getClinics with includeInactive="true" returns all 4 locations
     const replyAll = createMockReply();
-    await getLocations({ user: { organization_id: orgId, role: "admin" }, query: { includeInactive: "true" } } as any, replyAll as any);
+    await getLocations({ user: actor, query: { includeInactive: "true" } } as any, replyAll as any);
     expect(replyAll.getStatus()).toBe(200);
     expect(replyAll.getData().data).toHaveLength(4);
 
     // 12. Test reactivateClinic when org is at quota limit (1 of 1)
     const replyBlocked = createMockReply();
     await reactivateLocation({
-      user: { organization_id: orgId, role: "admin" },
+      user: actor,
       params: { id: location2._id.toString() }
     } as any, replyBlocked as any);
     expect(replyBlocked.getStatus()).toBe(403);
@@ -188,7 +193,7 @@ describe("Subscription Plan Downgrade & Active Resource Quota Enforcement", () =
     await Organization.updateOne({ _id: orgId }, { maxLocations: 5, plan: "professional" });
     const replyReactivated = createMockReply();
     await reactivateLocation({
-      user: { organization_id: orgId, role: "admin" },
+      user: actor,
       params: { id: location2._id.toString() }
     } as any, replyReactivated as any);
     expect(replyReactivated.getStatus()).toBe(200);

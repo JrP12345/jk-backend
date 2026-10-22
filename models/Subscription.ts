@@ -1,8 +1,10 @@
 import mongoose, { Schema } from "mongoose";
+import { commercialQuoteSchema } from "./commercialQuoteSchema.ts";
 
 const SubscriptionSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
   planId: { type: Schema.Types.ObjectId, ref: "SaaSPlan", required: true, index: true },
+  commercialQuote: { type: commercialQuoteSchema, default: undefined },
   status: {
     type: String,
     enum: ["trialing", "active", "payment_pending", "payment_failed", "cancelled", "expired"],

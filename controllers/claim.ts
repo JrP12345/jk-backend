@@ -59,7 +59,7 @@ export async function createClaimController(req: FastifyRequest, reply: FastifyR
     }
 
     if (invoiceId) {
-      const invoice = await Invoice.findById(invoiceId).lean() as any;
+      const invoice = await Invoice.findOne({ _id: invoiceId, kind: { $ne: "pharmacy" } }).lean() as any;
       if (!invoice) return reply.code(404).send(errorResponse("Invoice not found"));
       const invoiceAccess = await checkOperationalRecordAccess(req, invoice);
       if (!invoiceAccess.allowed) return sendTenantError(reply, invoiceAccess);
@@ -194,7 +194,7 @@ export async function createPaymentLinkController(req: FastifyRequest, reply: Fa
     if (!mongoose.Types.ObjectId.isValid(invoiceId) || !Number.isFinite(amount) || amount <= 0) {
       return reply.code(400).send(errorResponse("Valid invoiceId and positive amount are required"));
     }
-    const invoice = await Invoice.findById(invoiceId).lean() as any;
+    const invoice = await Invoice.findOne({ _id: invoiceId, kind: { $ne: "pharmacy" } }).lean() as any;
     if (!invoice) return reply.code(404).send(errorResponse("Invoice not found"));
     const invoiceAccess = await checkOperationalRecordAccess(req, invoice);
     if (!invoiceAccess.allowed) return sendTenantError(reply, invoiceAccess);

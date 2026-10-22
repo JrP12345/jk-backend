@@ -31,6 +31,7 @@ import appointmentRoutes from "./routes/appointments.ts";
 import clinicalRoutes from "./routes/clinical.ts";
 import laboratoryRoutes from "./routes/laboratory.ts";
 import pharmacyRoutes from "./routes/pharmacy.ts";
+import pharmacyOnboardingRoutes from "./routes/pharmacyOnboarding.ts";
 import billingRoutes from "./routes/billing.ts";
 import analyticsRoutes from "./routes/analytics.ts";
 import trafficAnalyticsRoutes from "./routes/trafficAnalytics.ts";
@@ -311,9 +312,9 @@ app.register(cors, {
   allowedHeaders: [
     "Content-Type", "Authorization", "X-Requested-With", "Accept",
     "Cache-Control", "cache-control", "Pragma", "Expires", "X-Patient-Record-Access",
-    "X-Tracker-Token", "If-None-Match"
+    "X-Tracker-Token", "If-None-Match", "Idempotency-Key"
   ],
-  exposedHeaders: ["ETag"],
+  exposedHeaders: ["ETag", "X-Report-Digest"],
 });
 
 app.register(rateLimit, {
@@ -338,6 +339,7 @@ app.register(appointmentRoutes);
 app.register(clinicalRoutes);
 app.register(laboratoryRoutes);
 app.register(pharmacyRoutes);
+app.register(pharmacyOnboardingRoutes);
 app.register(billingRoutes);
 app.register(analyticsRoutes);
 app.register(trafficAnalyticsRoutes);

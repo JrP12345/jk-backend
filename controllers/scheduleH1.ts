@@ -1,10 +1,38 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { escapeRegex } from '../utilities/helpers.ts';
+import { errorResponse, escapeRegex } from '../utilities/helpers.ts';
 import { ScheduleH1Register } from "../models/ScheduleH1Register.ts";
 import { getPaginationParams, setPaginationHeaders } from "../utilities/helpers.ts";
+import { checkLocationAccess, getRequestLocationIds, resolveAuthorizedOrganizationScope } from "../utilities/tenant.ts";
+import { registerEvidenceStatus } from "../services/PharmacyRestrictedSupply.ts";
+
+async function getRegisterScope(request: FastifyRequest) {
+  const scope = resolveAuthorizedOrganizationScope(request);
+  if (!scope.allowed) return scope;
+
+  const { locationId } = request.query as { locationId?: string };
+  const filter: Record<string, any> = {};
+  if (locationId) {
+    const locationAccess = await checkLocationAccess(request, locationId);
+    if (!locationAccess.allowed) return locationAccess;
+    if (scope.organizationId && scope.organizationId !== locationAccess.organizationId) {
+      return { allowed: false as const, statusCode: 404 as const, message: "Location not found" };
+    }
+    filter.organizationId = locationAccess.organizationId;
+    filter.locationId = locationId;
+  } else {
+    // Root support reads must deliberately select a tenant or a physical location.
+    if (!scope.organizationId) {
+      return { allowed: false as const, statusCode: 400 as const, message: "Organization or location context is required" };
+    }
+    filter.organizationId = scope.organizationId;
+    const locationIds = await getRequestLocationIds(request);
+    if (locationIds) filter.locationId = { $in: locationIds };
+  }
+  return { allowed: true as const, filter };
+}
 
 export async function getScheduleH1Entries(request: FastifyRequest, reply: FastifyReply) {
-  const { organization_id } = request.user as { organization_id?: string };
+  reply.header("Cache-Control", "no-store");
   const query = request.query as {
     locationId?: string;
     scheduleType?: string;
@@ -15,28 +43,23 @@ export async function getScheduleH1Entries(request: FastifyRequest, reply: Fasti
     limit?: string | number;
   };
 
-  const filter: any = {};
-  if (organization_id) {
-    filter.organizationId = organization_id;
-  }
-  if (query.locationId) {
-    filter.locationId = query.locationId;
-  }
-  if (query.scheduleType) {
-    filter.scheduleType = query.scheduleType;
-  }
+  const scope = await getRegisterScope(request);
+  if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+  const filter = scope.filter;
+  filter.scheduleType = query.scheduleType || "schedule_h1";
+  if (!["schedule_h", "schedule_h1", "schedule_x", "narcotic"].includes(filter.scheduleType)) return reply.code(400).send(errorResponse("Invalid schedule type"));
   if (query.startDate || query.endDate) {
     filter.dispensedAt = {};
     if (query.startDate) filter.dispensedAt.$gte = new Date(query.startDate);
     if (query.endDate) filter.dispensedAt.$lte = new Date(query.endDate);
   }
-    if (query.search) {
-      const search = escapeRegex(String(query.search).slice(0, 200));
-      filter.$or = [
-        { medicineName: { $regex: search, $options: "i" } },
-        { patientName: { $regex: search, $options: "i" } },
-        { doctorName: { $regex: search, $options: "i" } },
-        { batchNumber: { $regex: search, $options: "i" } },
+  if (query.search) {
+    const search = escapeRegex(String(query.search).slice(0, 200));
+    filter.$or = [
+      { medicineName: { $regex: search, $options: "i" } },
+      { patientName: { $regex: search, $options: "i" } },
+      { doctorName: { $regex: search, $options: "i" } },
+      { batchNumber: { $regex: search, $options: "i" } },
     ];
   }
 
@@ -53,7 +76,7 @@ export async function getScheduleH1Entries(request: FastifyRequest, reply: Fasti
   setPaginationHeaders(reply, { totalCount, totalPages, currentPage, pageSize });
   return reply.send({
     success: true,
-    data: entries,
+    data: entries.map(registerEvidenceStatus),
     pagination: {
       total: totalCount,
       page: currentPage,
@@ -64,7 +87,7 @@ export async function getScheduleH1Entries(request: FastifyRequest, reply: Fasti
 }
 
 export async function exportScheduleH1Register(request: FastifyRequest, reply: FastifyReply) {
-  const { organization_id } = request.user as { organization_id?: string };
+  reply.header("Cache-Control", "no-store");
   const query = request.query as {
     locationId?: string;
     scheduleType?: string;
@@ -72,16 +95,11 @@ export async function exportScheduleH1Register(request: FastifyRequest, reply: F
     endDate?: string;
   };
 
-  const filter: any = {};
-  if (organization_id) {
-    filter.organizationId = organization_id;
-  }
-  if (query.locationId) {
-    filter.locationId = query.locationId;
-  }
-  if (query.scheduleType) {
-    filter.scheduleType = query.scheduleType;
-  }
+  const scope = await getRegisterScope(request);
+  if (!scope.allowed) return reply.code(scope.statusCode).send(errorResponse(scope.message));
+  const filter = scope.filter;
+  filter.scheduleType = query.scheduleType || "schedule_h1";
+  if (!["schedule_h", "schedule_h1", "schedule_x", "narcotic"].includes(filter.scheduleType)) return reply.code(400).send(errorResponse("Invalid schedule type"));
   if (query.startDate || query.endDate) {
     filter.dispensedAt = {};
     if (query.startDate) filter.dispensedAt.$gte = new Date(query.startDate);
@@ -94,9 +112,10 @@ export async function exportScheduleH1Register(request: FastifyRequest, reply: F
     success: true,
     data: {
       generatedAt: new Date().toISOString(),
-      statutoryAct: "Drugs and Cosmetics Rules, 1945 (Rule 65 - Schedule H1 Register)",
+      statutoryAct: filter.scheduleType === "schedule_h1" ? "Drugs and Cosmetics Rules, 1945 (Rule 65 - Schedule H1 Register)" : "Drugs and Cosmetics Rules, 1945 (Rule 65 - prescription register)",
+      scheduleType: filter.scheduleType,
       totalRecords: entries.length,
-      records: entries,
+      records: entries.map(registerEvidenceStatus),
     },
   });
 }

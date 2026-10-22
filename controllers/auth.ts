@@ -474,7 +474,7 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
       return reply.code(400).send(errorResponse("Two-factor challenge and a 6-digit code are required"));
     }
 
-    let challenge: { userId: string; authVersion: number };
+    let challenge: { userId: string; authVersion: number; organizationId?: string };
     try {
       challenge = verifyTwoFactorChallenge(twoFactorToken);
     } catch {
@@ -500,7 +500,7 @@ export async function verifyLoginTwoFactor(req: FastifyRequest, reply: FastifyRe
     }
 
     if (process.env.NODE_ENV === "production" && user.email && !user.isEmailVerified) return reply.code(403).send(errorResponse("Please verify your email address before signing in."));
-    return await completeVerifiedLogin(req, reply, user, {}, true);
+    return await completeVerifiedLogin(req, reply, user, {}, true, challenge.organizationId);
   } catch (err) {
     console.error("verifyLoginTwoFactor error:", safeError(err));
     if (err instanceof WorkspaceError) return reply.code(err.statusCode).send(errorResponse(err.message));
@@ -808,7 +808,7 @@ export async function refreshAccessToken(req: FastifyRequest, reply: FastifyRepl
     }
 
     const organization_id = currentRecord.organizationId?.toString();
-    const workspace = organization_id && user.role !== "root" && !isConsumerRole(user.role) && !currentRecord.isGuest
+    const workspace = organization_id && user.role !== "root" && (currentRecord.workspaceRole || !isConsumerRole(user.role)) && !currentRecord.isGuest
       ? await authorizeWorkspace(user.id, organization_id) : undefined;
     if (currentRecord.workspaceRole && currentRecord.workspaceRole !== workspace?.role) {
       clearAuthCookies(reply);
@@ -1108,13 +1108,15 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
 
     const organization_id = req.user?.organization_id;
     const role = req.user!.role;
+    let workspaceProfile: string | undefined, forceWorkspaceMfa = false;
 
     if (organization_id && user.role !== "root") {
-      const organization = await Organization.findById(organization_id).select("status isActive").lean();
+      const organization = await Organization.findById(organization_id).select("status isActive workspaceProfile staffMfaRequired").lean();
       if (!organization || organization.status === "inactive" || organization.isActive === false) {
         clearAuthCookies(reply);
         return reply.code(403).send(errorResponse("Organization workspace is inactive or suspended"));
       }
+      workspaceProfile = organization.workspaceProfile || "clinic"; forceWorkspaceMfa = organization.staffMfaRequired === true;
     }
 
     const permissions = [...await getEffectivePermissions(role, organization_id, user.authVersion)];
@@ -1134,7 +1136,9 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
         email: user.email,
         isActive: user.isActive,
         twoFactorEnabled: !!user.twoFactorEnabled,
-        mfaEnrollmentRequired: staffMfaEnrollmentRequired(role, !!user.twoFactorEnabled, process.env, Date.now(), !!user.twoFactorEnrollmentRequired),
+        mfaEnrollmentRequired: staffMfaEnrollmentRequired(role, !!user.twoFactorEnabled, process.env, Date.now(), !!user.twoFactorEnrollmentRequired || forceWorkspaceMfa),
+        workspaceProfile,
+        hasStaffWorkspaces: isConsumerRole(user.role) ? Boolean(await OrgMember.exists({ userId: user._id, role: { $nin: ["patient", "family_member", "guest", "root"] } })) : undefined,
         role,
         image_url: user.image_url || null,
         organization_id,
@@ -1156,7 +1160,7 @@ export async function switchOrganization(req: FastifyRequest, reply: FastifyRepl
 
     const { organizationId } = (req.body as any) || {};
     if (userRole !== "root") {
-      if (isConsumerRole(userRole) || req.user?.impersonatedBy || !organizationId) {
+      if (userRole === "guest" || req.user?.impersonatedBy || !organizationId) {
         return reply.code(403).send(errorResponse("Select a staff organization workspace"));
       }
       const workspace = await authorizeWorkspace(userId, organizationId);
@@ -1492,12 +1496,13 @@ export async function googleLoginController(req: FastifyRequest, reply: FastifyR
 // Shared session issuance for verified passwords and passkeys; existing 2FA remains required.
 export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyReply, user: any,
   extra: Record<string, unknown> = {}, mfaVerified = false, selectedOrganizationId?: string) {
+    if (user.role === "pharmacy_applicant") return reply.code(403).send(errorResponse("Finish verified pharmacy setup before signing in to a workspace"));
     if (!user.isActive) return reply.code(403).send(errorResponse("Account is deactivated"));
     if (process.env.NODE_ENV === "production" && user.role === "root" && !user.twoFactorEnabled) return reply.code(403).send(errorResponse("Platform root MFA enrollment is required. Use the authorized recovery/setup procedure."));
     if (user.twoFactorEnabled && !mfaVerified) {
       if (!user.twoFactorSecret) return reply.code(403).send(errorResponse("Two-factor configuration requires account recovery"));
       clearAuthCookies(reply);
-      const twoFactorToken = generateTwoFactorChallenge(user.id, user.authVersion || 1);
+      const twoFactorToken = generateTwoFactorChallenge(user.id, user.authVersion || 1, selectedOrganizationId);
       return reply.code(200).send(
         successResponse(
           {
@@ -1511,8 +1516,9 @@ export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyR
     }
 
     let organization_id: string | undefined;
+    let workspaceProfile: string | undefined, forceWorkspaceMfa = false;
     let role = user.role as string;
-    if (role !== "root" && !isConsumerRole(role)) {
+    if (role !== "root" && (selectedOrganizationId || !isConsumerRole(role))) {
       const workspaces = await listUserWorkspaces(user.id);
       if (!selectedOrganizationId && workspaces.length > 1) {
         clearAuthCookies(reply);
@@ -1520,7 +1526,7 @@ export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyR
         return reply.send(successResponse({ workspaceRequired: true, workspaceToken, workspaces }, "Select your organization workspace"));
       }
       organization_id = selectedOrganizationId || workspaces[0]?.organizationId;
-      if (organization_id) role = (await authorizeWorkspace(user.id, organization_id)).role;
+      if (organization_id) { const workspace = await authorizeWorkspace(user.id, organization_id); role = workspace.role; workspaceProfile = workspace.workspaceProfile; forceWorkspaceMfa = workspace.staffMfaRequired; }
       else if (await OrgMember.exists({ userId: user._id })) {
         return reply.code(403).send(errorResponse("No active organization workspace is available"));
       }
@@ -1562,7 +1568,9 @@ export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyR
       successResponse(
         {
           ...extra,
-          user: { id: user.id, name: user.name, email: user.email || null, role, image_url: user.image_url || null, organization_id, permissions, twoFactorEnabled: !!user.twoFactorEnabled, mfaEnrollmentRequired: staffMfaEnrollmentRequired(role, !!user.twoFactorEnabled, process.env, Date.now(), !!user.twoFactorEnrollmentRequired) },
+          user: { id: user.id, name: user.name, email: user.email || null, role, image_url: user.image_url || null, organization_id, workspaceProfile, permissions,
+            hasStaffWorkspaces: isConsumerRole(user.role) ? Boolean(await OrgMember.exists({ userId: user._id, role: { $nin: ["patient", "family_member", "guest", "root"] } })) : undefined,
+            twoFactorEnabled: !!user.twoFactorEnabled, mfaEnrollmentRequired: staffMfaEnrollmentRequired(role, !!user.twoFactorEnabled, process.env, Date.now(), !!user.twoFactorEnrollmentRequired || forceWorkspaceMfa) },
         },
         "Login successful"
       )
@@ -1589,10 +1597,12 @@ export async function selectLoginWorkspace(req: FastifyRequest, reply: FastifyRe
 }
 
 export async function getUserWorkspaces(req: FastifyRequest, reply: FastifyReply) {
-  if (!req.user || req.user.role === "root" || isConsumerRole(req.user.role) || req.user.impersonatedBy) {
+  if (!req.user || req.user.role === "root" || req.user.role === "guest" || req.user.impersonatedBy) {
     return reply.code(403).send(errorResponse("Sign in to your own staff account to select a workspace"));
   }
-  return reply.send(successResponse(await listUserWorkspaces(req.user.id)));
+  const workspaces = await listUserWorkspaces(req.user.id);
+  if (isConsumerRole(req.user.role) && !workspaces.length) return reply.code(403).send(errorResponse("No staff workspace is assigned to this account"));
+  return reply.send(successResponse(workspaces));
 }
 
 
@@ -1609,7 +1619,7 @@ async function replyWithRotationGrace(reply: FastifyReply, previous: any) {
     return reply.code(401).send(errorResponse("Session has expired or been terminated"));
   }
   const organization_id = successor.organizationId?.toString();
-  const workspace = organization_id && user.role !== "root" && !isConsumerRole(user.role) && !successor.isGuest
+  const workspace = organization_id && user.role !== "root" && (successor.workspaceRole || !isConsumerRole(user.role)) && !successor.isGuest
     ? await authorizeWorkspace(String(user._id), organization_id) : undefined;
   if (successor.workspaceRole && successor.workspaceRole !== workspace?.role) return reply.code(401).send(errorResponse("Workspace membership changed; sign in again"));
   const liveSession = await resolveSession(String(successor._id), user.authVersion || 1);

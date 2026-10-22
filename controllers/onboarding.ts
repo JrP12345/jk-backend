@@ -1,3 +1,4 @@
+import { provisionOrganization, type OrganizationProvisionInput } from "../services/OrganizationProvisioningService.ts";
 import { safeError } from "../utilities/safeError.ts";
 import { SearchEngine } from '../platform/search/SearchEngine.ts';
 import { revokeUserSessions } from '../utilities/sessionResolver.ts';
@@ -46,6 +47,7 @@ import { deactivateDoctorAssignments } from '../services/DoctorAssignmentRecover
 import { assertOtherActiveAdministrator } from '../services/OrganizationGovernanceService.ts';
 import { CommandError } from '../services/CommandReceiptService.ts';
 import { pinAssignableRole } from '../services/RoleAssignmentService.ts';
+import { requireDoctorCapacity } from '../services/OrganizationCapacityService.ts';
 import { checkLocationAccess, resolveAuthorizedOrganizationScope, resolveTargetOrganizationId, isRootRequest } from "../utilities/tenant.ts";
 import { eventBus } from "../events/eventBus.ts";
 import { EVENT_TYPES } from "../events/types.ts";
@@ -95,91 +97,7 @@ export {
  *  - During org onboarding (createOrganization)
  *  - On server startup as a one-time migration guard
  */
-export async function seedDefaultRoles(session?: any) {
-  const defaultRoles = [
-    {
-      name: "admin",
-      description: "Full-access system administrator. Manages all organizational resources.",
-      isSystemRole: true,
-      permissions: ADMIN_PERMISSIONS,
-    },
-    {
-      name: "location_manager",
-      description: "Practice desk operator (OPD Queue, Pharmacy, Cashier).",
-      isSystemRole: true,
-      permissions: LOCATION_MANAGER_PERMISSIONS,
-    },
-    {
-      name: "doctor",
-      description: "Clinical physician with access to EHR, prescriptions, and appointments.",
-      isSystemRole: true,
-      permissions: DOCTOR_PERMISSIONS,
-    },
-    {
-      name: "receptionist",
-      description: "Front-desk staff managing appointments, queue, billing, and admissions.",
-      isSystemRole: true,
-      permissions: RECEPTIONIST_PERMISSIONS,
-    },
-    {
-      name: "nurse",
-      description: "Nursing staff managing patient care, medication administration, and observations.",
-      isSystemRole: true,
-      permissions: NURSE_PERMISSIONS,
-    },
-    {
-      name: "lab_tech",
-      description: "Laboratory technician managing diagnostic orders and results.",
-      isSystemRole: true,
-      permissions: LAB_TECH_PERMISSIONS,
-    },
-    {
-      name: "pharmacist",
-      description: "Pharmacy staff managing medicine inventory and prescriptions.",
-      isSystemRole: true,
-      permissions: PHARMACIST_PERMISSIONS,
-    },
-    {
-      name: "cashier",
-      description: "Billing and cashier staff managing invoices and payments.",
-      isSystemRole: true,
-      permissions: CASHIER_PERMISSIONS,
-    },
-    {
-      name: "patient",
-      description: "Patient with access to their own health records and appointments.",
-      isSystemRole: true,
-      permissions: PATIENT_PERMISSIONS,
-    },
-    {
-      name: "family_member",
-      description: "Family member with limited access to patient records.",
-      isSystemRole: true,
-      permissions: FAMILY_MEMBER_PERMISSIONS,
-    },
-  ];
-
-  for (const role of defaultRoles) {
-    const opts: any = { upsert: true, returnDocument: "after" };
-    if (session) opts.session = session;
-
-    // Seed only missing global definitions. Preserve explicitly reviewed grants,
-    // including empty roles and organization-specific overrides.
-    await Role.findOneAndUpdate(
-      { name: role.name, organizationId: null },
-      {
-        $setOnInsert: {
-          name: role.name,
-          description: role.description,
-          isSystemRole: role.isSystemRole,
-          organizationId: null,
-          permissions: BUILTIN_ROLE_PERMISSIONS[role.name] || role.permissions,
-        },
-      },
-      opts
-    );
-  }
-}
+export { seedDefaultRoles } from "../services/OrganizationRoleDefaults.ts";
 
 // ─── Step 1: Create Organization + Admin ────────────────────────
 export async function createOrganization(req: FastifyRequest, reply: FastifyReply) {
@@ -231,121 +149,7 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
     if (!admin_password || admin_password.length < 8) return reply.code(400).send(errorResponse("Administrator password must contain at least 8 characters"));
     const passwordStrength = validatePasswordStrength(admin_password);
     if (!passwordStrength.valid) return reply.code(400).send(errorResponse(passwordStrength.reason || "Password does not meet complexity requirements"));
-    const created = await withTransaction(async (session) => {
-      // Plans and quotas are commercial entitlements. Only a platform root can
-      // select a plan, and no caller can set quotas directly through onboarding.
-      const selectedPlan = (req.body as any).plan || "starter";
-      const configuredPlan = await SaaSPlan.findOne({ slug: selectedPlan, status: "active" }).lean();
-      const fallbackLimits = selectedPlan === "enterprise"
-        ? { maxLocations: 99, maxDoctors: 999, maxStaff: 999 }
-        : selectedPlan === "professional"
-          ? { maxLocations: 5, maxDoctors: 15, maxStaff: 25 }
-          : { maxLocations: 1, maxDoctors: 2, maxStaff: 5 };
-      const planLimits = {
-        maxLocations: configuredPlan?.limits?.maxLocations ?? fallbackLimits.maxLocations,
-        maxDoctors: configuredPlan?.limits?.maxDoctors ?? fallbackLimits.maxDoctors,
-        maxStaff: configuredPlan?.limits?.maxStaff ?? fallbackLimits.maxStaff,
-      };
-
-      // Validate the administrator before writing any organization records.
-      let emailQuery = User.findOne({ email: admin_email.trim().toLowerCase() });
-      if (session) emailQuery = emailQuery.session(session);
-      if (await emailQuery) {
-        throw new WorkspaceError(409, "Administrator email is already registered; provide a unique administrator email for this organization");
-      }
-      const hashedAdminPassword = await bcrypt.hash(admin_password, 10);
-
-      const org = await createWithSession(Organization, {
-        name: org_name,
-        city,
-        address: address || null,
-        phone: org_phone || null,
-        email: org_email || null,
-        description: description || null,
-        image_url: image_url || null,
-        logo_url: logo_url || null,
-        timings: timings || null,
-        working_days: working_days || null,
-        plan: selectedPlan,
-        ...planLimits,
-        taxId: taxId?.trim() || undefined,
-        licenseNumber: licenseNumber?.trim() || undefined,
-        countryCode,
-        currency: countryCode ? COUNTRY_SETTINGS[countryCode].currency : (currency || "INR"),
-        timezone: timezone || (countryCode ? COUNTRY_SETTINGS[countryCode].defaultTimezone : null) || "Asia/Kolkata",
-        onboardingStatus: "LOCATION_CREATED",
-        isOnboarded: false,
-      }, session);
-
-      const adminUser = await createWithSession(User, {
-        name: admin_name,
-        email: admin_email.trim().toLowerCase(),
-        password: hashedAdminPassword,
-        phone: admin_phone || null,
-        role: "admin",
-      }, session);
-
-      if (!adminUser) throw new Error("Failed to initialize administrator user");
-
-      await createWithSession(OrgMember, {
-        userId: adminUser._id,
-        organizationId: org._id,
-        role: "admin",
-      }, session);
-
-      // Automatically create the primary physical Location.
-      await createWithSession(Location, {
-        organizationId: org._id,
-        name: location_name?.trim() || org_name.trim(),
-        facilityType: facilityType || null,
-        city: location_city?.trim() || city,
-        address: location_address || address || null,
-        phone: location_phone || org_phone || admin_phone || null,
-        email: location_email || org_email || admin_email || null,
-        timings: timings || null,
-      }, session);
-
-      // Seed default module toggles for the new organization (P1 = enabled, P2/P3 = disabled)
-      await seedModulesForOrg(org._id.toString(), adminUser?._id?.toString(), session);
-
-      // Upsert all system role documents so that permission checks work for every role type.
-      await seedDefaultRoles(session);
-
-      const orgIdStr = org._id.toString();
-      await attachBranding(org, session);
-
-      // Provision the subscription in the same transaction as the organization.
-      // The lazy initializer cannot see an organization that has not committed yet.
-      await subscriptionService.createInitialSubscription(orgIdStr, selectedPlan, trialDays, session);
-
-      await eventBus.publishDurable({
-        eventType: EVENT_TYPES.ORG_CREATED,
-        category: "organization",
-        targetUserId: adminUser._id.toString(),
-        title: "Organization Created",
-        message: `Welcome to Ekavyu! Organization workspace (${org_name}) is now active.`,
-        severity: "success",
-        organizationId: orgIdStr,
-        actionUrl: "/dashboard",
-      });
-
-      if (sendWelcomeEmail !== false && admin_email && admin_password) {
-        const portalUrl = `${getFrontendBaseUrl()}/login`;
-        await enqueueTransactionalEmail({
-          to: admin_email.trim().toLowerCase(),
-          subject: `Welcome to Ekavyu - ${org_name} Workspace Provisioned`,
-          text: `Hello ${admin_name},\n\nYour organization workspace (${org_name}) has been provisioned on Ekavyu Healthcare OS.\n\nLogin Portal: ${portalUrl}\nEmail: ${admin_email}\n\nUse the password you chose during provisioning to sign in. Please sign in to configure your clinical staff and operational settings.`,
-          html: `<p>Hello <strong>${admin_name}</strong>,</p><p>Your organization workspace (<strong>${org_name}</strong>) has been provisioned on Ekavyu Healthcare OS.</p><ul><li><strong>Login Portal:</strong> <a href="${portalUrl}">${portalUrl}</a></li><li><strong>Email:</strong> ${admin_email}</li></ul><p>Use the password you chose during provisioning to sign in. Please sign in to configure your clinical staff and operational settings.</p>`,
-          idempotencyKey: `transactional-email:organization-welcome:${org._id}`,
-          session,
-        });
-      }
-
-      return {
-        organization: { id: orgIdStr, name: org_name, city },
-        user: { id: adminUser._id.toString(), name: adminUser.name, email: adminUser.email, role: adminUser.role, organization_id: orgIdStr },
-      };
-    });
+    const created = await provisionOrganization(req.body as OrganizationProvisionInput);
     return reply.code(201).send(successResponse(created, "Organization created and admin registered"));
   } catch (err: any) {
     console.error("createOrganization error:", safeError(err));
@@ -568,16 +372,8 @@ export async function addDoctor(req: FastifyRequest, reply: FastifyReply) {
     const emailCheck = await User.findOne({ email: cleanEmail });
     if (emailCheck) return reply.code(409).send(errorResponse("Email already registered"));
 
-    // Check SaaS Doctor Quota Limit
-    const org = await Organization.findById(orgId);
-    if (org && org.maxDoctors) {
-      const existingDoctorsCount = await Doctor.countDocuments({ organizationId: orgId });
-      if (existingDoctorsCount >= org.maxDoctors && req.user?.role !== "root") {
-        return reply.code(403).send(errorResponse(`Doctor count quota limit of ${org.maxDoctors} reached for your ${org.plan?.toUpperCase() || "current"} plan. Upgrade subscription to add more doctors.`));
-      }
-    }
-
     const created = await withTransaction(async (session) => {
+      await requireDoctorCapacity(orgId, req.user?.role);
       await pinAssignableRole('doctor', orgId);
       const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -624,6 +420,7 @@ export async function addDoctor(req: FastifyRequest, reply: FastifyReply) {
     });
     return reply.code(201).send(successResponse(created, "Doctor registered successfully"));
   } catch (err) {
+    if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
     console.error("addDoctor error:", safeError(err));
     return reply.code(500).send(errorResponse("Internal server error"));
   }
@@ -658,7 +455,7 @@ export async function addReceptionist(req: FastifyRequest, reply: FastifyReply) 
 
     // Check SaaS Staff Quota Limit (Counts all non-doctor staff in organization)
     const org = await Organization.findById(orgId);
-    if (org && org.maxStaff) {
+    if (org && org.maxStaff != null) {
       const existingStaffCount = await OrgMember.countDocuments({ organizationId: orgId, role: { $nin: ["doctor", "patient", "root"] } });
       if (existingStaffCount >= org.maxStaff && req.user?.role !== "root") {
         return reply.code(403).send(errorResponse(`Staff quota limit of ${org.maxStaff} reached for your ${org.plan?.toUpperCase() || "current"} plan. Upgrade subscription to add more staff.`));
@@ -851,7 +648,7 @@ export async function addStaff(req: FastifyRequest, reply: FastifyReply) {
 
     // Check SaaS Staff Quota Limit (Counts all non-doctor staff in organization)
     const org = await Organization.findById(orgId);
-    if (org && org.maxStaff) {
+    if (org && org.maxStaff != null) {
       const existingStaffCount = await OrgMember.countDocuments({ organizationId: orgId, role: { $nin: ["doctor", "patient", "root"] } });
       if (existingStaffCount >= org.maxStaff && req.user?.role !== "root") {
         return reply.code(403).send(errorResponse(`Staff quota limit of ${org.maxStaff} reached for your ${org.plan?.toUpperCase() || "current"} plan. Upgrade subscription to add more staff.`));
@@ -978,9 +775,10 @@ export async function acceptInvitation(req: FastifyRequest, reply: FastifyReply)
     if (["root", "patient"].includes(invite.role)) return reply.code(403).send(errorResponse("Invalid staff invitation role"));
     const quota = invite.role === "doctor" ? invitedOrganization.maxDoctors : invitedOrganization.maxStaff;
     const memberCount = await OrgMember.countDocuments({ organizationId: invite.organizationId, role: invite.role === "doctor" ? "doctor" : { $nin: ["doctor", "patient", "root"] } });
-    if (quota && memberCount >= quota) return reply.code(403).send(errorResponse("Organization staff quota is reached. Ask the administrator to review the subscription."));
+    if (invite.role !== "doctor" && quota != null && memberCount >= quota) return reply.code(403).send(errorResponse("Organization staff quota is reached. Ask the administrator to review the subscription."));
 
     const activated = await withTransaction(async (session) => {
+      if (invite.role === "doctor") await requireDoctorCapacity(String(invite.organizationId));
       await pinAssignableRole(invite.role, String(invite.organizationId));
       const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -1203,7 +1001,9 @@ export async function enableAdminDoctorProfile(req: FastifyRequest, reply: Fasti
       return reply.code(400).send(errorResponse("Consultation fees must be a non-negative number"));
     }
 
-    const doctor = await Doctor.findOneAndUpdate(
+    const doctor = await withTransaction(async () => {
+      await requireDoctorCapacity(orgId, req.user?.role, req.user!.id);
+      return Doctor.findOneAndUpdate(
       { userId: req.user!.id, organizationId: orgId },
       {
         organizationId: orgId,
@@ -1220,10 +1020,12 @@ export async function enableAdminDoctorProfile(req: FastifyRequest, reply: Fasti
         isActive: true,
       },
       { upsert: true, returnDocument: "after", runValidators: true }
-    );
+      );
+    });
 
     return reply.code(200).send(successResponse(doctor, "Clinical Doctor Profile linked to Admin Account successfully!"));
   } catch (err: any) {
+    if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
     console.error("enableAdminDoctorProfile error:", safeError(err));
     return reply.code(500).send(errorResponse("Failed to link Doctor Profile to Admin Account"));
   }
