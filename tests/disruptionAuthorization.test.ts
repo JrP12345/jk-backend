@@ -76,6 +76,42 @@ const patientAction = (headers = {}, appointmentId = visitA) => app.inject({ met
 const batch = (appointmentIds: string[], cookie = staffCookie) => app.inject({ method: "POST", url: "/api/doctor-overrides/triage/batch", headers: { cookie }, payload: { action: "cancel", appointmentIds } });
 
 describe("Disruption authorization boundaries", () => {
+  it.each([
+    ["trialing", true],
+    ["active", true],
+    ["expired", true],
+    ["payment_pending", false],
+    ["payment_failed", false],
+    ["cancelled", true],
+  ] as const)("keeps existing-care reads accessible with a %s subscription (elapsed period: %s)", async (status, elapsed) => {
+    const subscription = await Subscription.findOne({ organizationId: orgA }).orFail();
+    const original = { status: subscription.status, trialEndsAt: subscription.trialEndsAt, currentPeriodEnd: subscription.currentPeriodEnd };
+    const end = new Date(Date.now() + (elapsed ? -1 : 1) * 86400000);
+    await Subscription.updateOne({ _id: subscription._id }, { status, trialEndsAt: end, currentPeriodEnd: end });
+    try {
+      const reads = [
+        `/api/doctor-overrides/triage?locationId=${locationA}`,
+        `/api/doctor-overrides/eligible-replacements?locationId=${locationA}&doctorId=${doctorA}`,
+      ];
+      for (const url of reads) {
+        const result = await app.inject({ method: "GET", url, headers: { cookie: staffCookie } });
+        expect(result.statusCode, result.body).toBe(200);
+        if (url.includes("/triage?")) {
+          expect(result.json().data.map((visit: { id: string }) => visit.id)).toEqual([visitA]);
+        }
+        expect((await app.inject({ method: "GET", url: url.replace(locationA, locationB), headers: { cookie: staffCookie } })).statusCode).toBe(404);
+        expect((await app.inject({ method: "GET", url, headers: { cookie: restrictedCookie } })).statusCode).toBe(403);
+        expect((await app.inject({ method: "GET", url, headers: { cookie: patientCookie } })).statusCode).toBe(403);
+        expect((await app.inject({ method: "GET", url })).statusCode).toBe(401);
+      }
+      // Reading existing care must not grant subscription-gated write access.
+      expect((await app.inject({ method: "POST", url: "/api/doctor-overrides", headers: { cookie: staffCookie }, payload: {
+        locationId: locationA, doctorId: doctorA, date: "2026-10-04", status: "unavailable",
+      } })).statusCode).toBe(402);
+    } finally {
+      await Subscription.updateOne({ _id: subscription._id }, original);
+    }
+  });
   it("never accepts an anonymous appointment ID as mutation authority", async () => {
     expect((await patientAction()).statusCode).toBe(401);
     expect(disruptionService.cancelByDisruption).not.toHaveBeenCalled();

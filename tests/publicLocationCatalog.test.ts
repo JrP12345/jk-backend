@@ -1,5 +1,5 @@
 import { providerFixtureSlug } from "./helpers/providerFixture.ts";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import mongoose from "mongoose";
 import app from "../index.ts";
 import { Organization } from "../models/Organization.ts";
@@ -9,6 +9,8 @@ import { Doctor } from "../models/Doctor.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
 import { PatientFeedback } from "../models/PatientFeedback.ts";
 import { Subscription } from "../models/Subscription.ts";
+import { Appointment } from "../models/Appointment.ts";
+import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
 
 describe("Dynamic public clinic catalog", () => {
   let top: string, cheap: string, unrated: string, disabledLocationId: string, hiddenLocationId: string, publicDoctorId: string, hiddenDoctorId: string, assignmentOnlyDoctorId: string;
@@ -47,6 +49,38 @@ describe("Dynamic public clinic catalog", () => {
     await DoctorAssignment.create({ locationId: top, doctorId: assignmentOnlyDoctor._id, organizationId: org._id, fees: 250, workingHours: "{}" });
   });
 
+  it("keeps public responses and canonical links stable across repeated reads", async () => {
+    const locationSlug = await providerFixtureSlug("location", top);
+    const doctorSlug = await providerFixtureSlug("doctor", publicDoctorId);
+    for (const url of [
+      "/api/public/locations?sort=rating",
+      `/api/public/locations/${locationSlug}`,
+      `/api/public/doctors/${doctorSlug}/profile?location=${locationSlug}`,
+    ]) {
+      const first = await app.inject({ method: "GET", url });
+      expect(first.statusCode, first.body).toBe(200);
+      const operations: Record<string, number> = {};
+      const previousDebug = mongoose.get("debug");
+      mongoose.set("debug", (collection: string, method: string) => {
+        const key = `${collection}.${method}`;
+        operations[key] = (operations[key] || 0) + 1;
+      });
+      try {
+        const repeated = await app.inject({ method: "GET", url });
+        expect(repeated.statusCode, repeated.body).toBe(200);
+        expect(repeated.json().data).toEqual(first.json().data);
+        console.info("PUBLIC_READ_OPERATIONS", JSON.stringify({ url, operations }));
+        // Resolution uses individual lookups; enrichment stays bounded regardless of page size.
+        const resolutionReads = url.includes("/doctors/") ? 2 : url.includes("?") ? 0 : 1;
+        expect(operations["publiclinks.findOne"] || 0).toBe(resolutionReads);
+        expect(operations["publiclinks.find"]).toBe(1);
+        expect(Object.keys(operations).some(key => /\.(?:insertOne|insertMany|updateOne|bulkWrite)$/.test(key))).toBe(false);
+      } finally {
+        mongoose.set("debug", previousDebug);
+      }
+    }
+  });
+
   it("serves only active public doctor profiles and their clinic locations", async () => {
     const response = await app.inject({ method: "GET", url: `/api/public/doctors/${await providerFixtureSlug("doctor", publicDoctorId)}/profile` });
     expect(response.statusCode, response.body).toBe(200);
@@ -54,6 +88,51 @@ describe("Dynamic public clinic catalog", () => {
     expect(response.json().data.locations[0]).toMatchObject({ id: top, fees: 300 });
     expect(response.body).not.toContain("password");
     expect((await app.inject({ method: "GET", url: `/api/public/doctors/${await providerFixtureSlug("doctor", hiddenDoctorId)}/profile` })).statusCode).toBe(404);
+  });
+
+  it("refreshes scoped waiting counts and leave information without returning patient data", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-23T08:00:00Z"));
+    const patientId = new mongoose.Types.ObjectId();
+    const visitIds = Array.from({ length: 4 }, () => new mongoose.Types.ObjectId());
+    const overrideIds = Array.from({ length: 3 }, () => new mongoose.Types.ObjectId());
+    try {
+      await Appointment.collection.insertMany(visitIds.map((_id, index) => ({
+        _id, locationId: new mongoose.Types.ObjectId(top), patientId,
+        doctorId: new mongoose.Types.ObjectId(index === 3 ? assignmentOnlyDoctorId : publicDoctorId),
+        appointmentTime: new Date(), status: ["pending", "checked-in", "completed", "pending"][index],
+      })));
+      await DoctorDayOverride.create([
+        { _id: overrideIds[0], locationId: top, doctorId: publicDoctorId, date: "2026-10-23", status: "unavailable", reason: "Synthetic leave" },
+        { _id: overrideIds[1], locationId: top, doctorId: publicDoctorId, date: "2026-10-24", status: "unavailable", reason: "Synthetic holiday" },
+        { _id: overrideIds[2], locationId: cheap, doctorId: publicDoctorId, date: "2026-10-23", status: "unavailable", reason: "Other location private reason" },
+      ]);
+      const url = `/api/public/locations/${await providerFixtureSlug("location", top)}`;
+      const first = await app.inject({ method: "GET", url });
+      expect(first.statusCode, first.body).toBe(200);
+      const doctors = first.json().data.doctors;
+      expect(doctors.find((doctor: { id: string }) => doctor.id === publicDoctorId)).toMatchObject({
+        waitingPatientsCount: 2, estimatedWaitMinutes: 30, isAvailable: false,
+        overrideReason: "Synthetic leave", isOnlineBookingClosed: true,
+        upcomingHolidays: [{ date: "2026-10-23" }, { date: "2026-10-24" }],
+      });
+      expect(doctors.find((doctor: { id: string }) => doctor.id === assignmentOnlyDoctorId).waitingPatientsCount).toBe(1);
+      expect(first.body).not.toContain(patientId.toString());
+      expect(first.body).not.toContain("Other location private reason");
+
+      await Appointment.updateMany({ _id: { $in: visitIds.slice(0, 2) } }, { status: "completed" });
+      await DoctorDayOverride.deleteOne({ _id: overrideIds[0] });
+      const refreshed = await app.inject({ method: "GET", url });
+      expect(refreshed.statusCode, refreshed.body).toBe(200);
+      expect(refreshed.json().data.doctors.find((doctor: { id: string }) => doctor.id === publicDoctorId)).toMatchObject({
+        waitingPatientsCount: 0, estimatedWaitMinutes: 0, isAvailable: true,
+        upcomingHolidays: [{ date: "2026-10-24" }],
+      });
+    } finally {
+      await Appointment.deleteMany({ _id: { $in: visitIds } });
+      await DoctorDayOverride.deleteMany({ _id: { $in: overrideIds } });
+      vi.useRealTimers();
+    }
   });
 
   it("serves a listed doctor even when the optional profile record is missing", async () => {

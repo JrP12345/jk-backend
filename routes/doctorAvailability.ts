@@ -41,9 +41,10 @@ export default async function doctorAvailabilityRoutes(app: FastifyInstance) {
       ),
     ],
   };
+  // Existing-care reads remain available when new activity is subscription-blocked.
   const viewTriage = { preHandler: [authenticate, requireModule("appointments"),
     denyRoles("patient", "family_member", "guest"),
-    checkAnyPermission("VIEW_APPOINTMENTS", "MANAGE_APPOINTMENTS", "MANAGE_QUEUE"), enforceSubscriptionActive] };
+    checkAnyPermission("VIEW_APPOINTMENTS", "MANAGE_APPOINTMENTS", "MANAGE_QUEUE")] };
 
   const optionalAuth = async (req: FastifyRequest, reply: FastifyReply) => {
     // Public tracker proof is independent of cookies. Otherwise resolve the
