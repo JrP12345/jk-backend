@@ -5,6 +5,8 @@ import { Organization } from "../models/Organization.ts";
 import { Location } from "../models/Location.ts";
 import { User } from "../models/User.ts";
 import { OrgMember } from "../models/OrgMember.ts";
+import { Role } from "../models/Role.ts";
+import { Receptionist } from "../models/Receptionist.ts";
 import { Patient } from "../models/Patient.ts";
 import { Appointment } from "../models/Appointment.ts";
 import { DoctorAssignment } from "../models/DoctorAssignment.ts";
@@ -72,6 +74,25 @@ describe("Bounded request lifecycle measurements", () => {
     reads.mockRestore();
     expect((await app.inject({ method: "GET", url: summaryUrl("&includeAppointments=invalid"), headers })).statusCode).toBe(400);
     expect((await app.inject({ method: "GET", url: summaryUrl("&includeAppointments=false").replace(locationId, otherLocationId), headers })).statusCode).toBe(403);
+  });
+
+  it("serves assigned-location counts for a custom receptionist without granting location-management reads", async () => {
+    const org = await Organization.create({ name: "Restricted reception fixture", city: "Surat", plan: "enterprise" });
+    const branch = await Location.create({ organizationId: org.id, name: "Assigned branch", city: "Surat" });
+    await Location.create({ organizationId: org.id, name: "Unassigned branch", city: "Surat" });
+    await Role.create({ name: "receptionist", organizationId: org.id, permissions: ["VIEW_PATIENTS", "MANAGE_APPOINTMENTS", "MANAGE_QUEUE", "VIEW_BILLING", "MANAGE_BILLING", "MANAGE_ORDERS", "MANAGE_MEDICINES", "VIEW_APPOINTMENTS", "MANAGE_PATIENTS"] });
+    const desk = await User.create({ name: "Restricted receptionist", role: "receptionist", email: "restricted-reception@example.test" });
+    await OrgMember.create({ userId: desk.id, organizationId: org.id, role: "receptionist" });
+    await Receptionist.create({ userId: desk.id, organizationId: org.id, locationId: branch.id });
+    const { sessionId } = await createRefreshTokenDetails(desk.id, { organizationId: org.id });
+    const access = generateAccessToken({ id: desk.id, email: desk.email!, role: "receptionist", organization_id: org.id, sessionId });
+    const scopedHeaders = { cookie: `access_token=${access}` };
+    expect((await app.inject({ method: "GET", url: "/api/onboarding/locations", headers: scopedHeaders })).statusCode).toBe(403);
+    const response = await app.inject({ method: "GET", url: summaryUrl().replace(`locationId=${locationId}&`, ""), headers: scopedHeaders });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().data).toMatchObject({ locationCount: 1, appointments: 0, financialVisible: true });
+    expect(response.json().data).not.toHaveProperty("locations");
+    expect((await app.inject({ method: "GET", url: summaryUrl(), headers: scopedHeaders })).statusCode).toBe(403);
   });
 
   it("aggregates complete dashboard trends beyond list limits without returning historical patient records", async () => {

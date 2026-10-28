@@ -1,3 +1,4 @@
+import { isGoogleMapsEmbedUrl } from "../utilities/googleMapsEmbed.ts";
 import { safeError } from "../utilities/safeError.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import mongoose from "mongoose";
@@ -14,14 +15,14 @@ import { attachBranding, locationBranding, validateBrandingReferences, BrandingV
 export async function createLocation(req: FastifyRequest, reply: FastifyReply) {
   try {
     const {
-      name, facilityType, logo, image_url, description, brandColor, phone, email, address, city, timezone, latitude, longitude, timings, amenities, upiVpa, merchantName, isPublished
+      name, facilityType, logo, image_url, description, brandColor, phone, email, address, city, timezone, latitude, longitude, googleMapsEmbedUrl, timings, amenities, upiVpa, merchantName, isPublished
     } = (req.body || {}) as {
       organizationId?: string; name: string; city: string; logo?: string; image_url?: string; description?: string;
       facilityType?: string;
       isPublished?: boolean;
       brandColor?: "#0F6F66" | "#1D4ED8" | "#6D28D9" | "#9A3412";
       phone?: string; email?: string; address?: string; timezone?: string; latitude?: number;
-      longitude?: number; timings?: string; amenities?: string[]; upiVpa?: string; merchantName?: string;
+      longitude?: number; googleMapsEmbedUrl?: string; timings?: string; amenities?: string[]; upiVpa?: string; merchantName?: string;
     };
 
     const scope = resolveAuthorizedOrganizationScope(req);
@@ -45,6 +46,7 @@ export async function createLocation(req: FastifyRequest, reply: FastifyReply) {
     if (!name || !city) {
       return reply.code(400).send(errorResponse("Location name and city are required"));
     }
+    if (googleMapsEmbedUrl !== undefined && googleMapsEmbedUrl !== "" && !isGoogleMapsEmbedUrl(googleMapsEmbedUrl)) return reply.code(400).send(errorResponse("Use the Google Maps embed link from Share > Embed a map"));
     if (timezone && !isIanaTimezone(timezone)) return reply.code(400).send(errorResponse("A valid IANA timezone is required"));
 
     const branding = { _id: orgId, logo_url: logo || image_url || null };
@@ -66,6 +68,7 @@ export async function createLocation(req: FastifyRequest, reply: FastifyReply) {
       timezone: timezone || null,
       latitude: latitude !== undefined ? latitude : null,
       longitude: longitude !== undefined ? longitude : null,
+      googleMapsEmbedUrl: googleMapsEmbedUrl || null,
       timings: timings || null,
       amenities: amenities || [],
       upiVpa: upiVpa?.trim() || "",
@@ -152,18 +155,19 @@ export async function updateLocation(req: FastifyRequest, reply: FastifyReply) {
     }
 
     const {
-      name, facilityType, logo, image_url, description, brandColor, phone, email, address, city, timezone, latitude, longitude, timings, amenities, upiVpa, merchantName, isPublished
+      name, facilityType, logo, image_url, description, brandColor, phone, email, address, city, timezone, latitude, longitude, googleMapsEmbedUrl, timings, amenities, upiVpa, merchantName, isPublished
     } = req.body as {
       name: string; city: string; logo?: string; image_url?: string; description?: string; brandColor?: string;
       facilityType?: string;
       isPublished?: boolean;
-      phone?: string; email?: string; address?: string; timezone?: string; latitude?: number; longitude?: number;
+      phone?: string; email?: string; address?: string; timezone?: string; latitude?: number; longitude?: number; googleMapsEmbedUrl?: string;
       timings?: string; amenities?: string[]; upiVpa?: string; merchantName?: string;
     };
 
     if (!name || !city) {
       return reply.code(400).send(errorResponse("Location name and city are required"));
     }
+    if (googleMapsEmbedUrl !== undefined && googleMapsEmbedUrl !== "" && !isGoogleMapsEmbedUrl(googleMapsEmbedUrl)) return reply.code(400).send(errorResponse("Use the Google Maps embed link from Share > Embed a map"));
     if (timezone && !isIanaTimezone(timezone)) return reply.code(400).send(errorResponse("A valid IANA timezone is required"));
 
     const filter: any = { _id: id, isActive: true };
@@ -196,6 +200,7 @@ export async function updateLocation(req: FastifyRequest, reply: FastifyReply) {
         ...(timezone !== undefined && { timezone: timezone || null }),
         ...(latitude !== undefined && { latitude }),
         ...(longitude !== undefined && { longitude }),
+        ...(googleMapsEmbedUrl !== undefined && { googleMapsEmbedUrl: googleMapsEmbedUrl || null }),
         timings: timings || null,
         amenities: amenities || [],
         ...(upiVpa !== undefined && { upiVpa: upiVpa.trim() }),

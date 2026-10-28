@@ -66,7 +66,7 @@ The existing prescription print endpoint returns HTML. It is shared as a secure 
 | `GET /api/organization/whatsapp/health` | organization management, tenant delivery |
 | `GET/POST /api/webhooks/whatsapp` | verify token / raw-body HMAC |
 
-The existing `Organization.whatsappConfig`, `OutboundMessage`, `NotificationLog`, `UsageRecord` and `AuditLog` are extended. New models: `WhatsAppAccount`, `WhatsAppTemplate`, `WhatsAppWebhookInbox`, `WhatsAppRecipient`, `WhatsAppInboundMessage`, `WhatsAppBookingSession`. Settings poll every 15 seconds and display today's counts and recent delivery records.
+The integration uses `Organization.whatsappConfig`, `OutboundMessage`, `NotificationLog`, `UsageRecord`, `AuditLog`, `WhatsAppAccount`, `WhatsAppTemplate`, `WhatsAppWebhookInbox`, `WhatsAppRecipient` and `WhatsAppInboundMessage`. Inbound messages are stored for explicit staff review/routing; there is no WhatsApp booking-session implementation. Settings poll every 15 seconds and display today's counts and recent delivery records.
 
 Optional guide features—Embedded Signup, a template editor, bulk campaigns, a staff conversation inbox, inbound media downloading and Meta cost analytics—are outside the current notification/patient-assistant workflow. Meta approval, subscription and a staging handset test remain external setup steps.
 

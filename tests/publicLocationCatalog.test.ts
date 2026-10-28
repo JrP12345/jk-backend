@@ -49,6 +49,31 @@ describe("Dynamic public clinic catalog", () => {
     await DoctorAssignment.create({ locationId: top, doctorId: assignmentOnlyDoctor._id, organizationId: org._id, fees: 250, workingHours: "{}" });
   });
 
+  it("filters multiple specialties and map bounds before cursor pagination", async () => {
+    const result = await app.inject({ method: "GET", url: "/api/public/locations?sort=fee_low&specialization=Cardiology&specialization=Dermatology&bounds=-1,0,1,0.2&limit=1" });
+    expect(result.statusCode, result.body).toBe(200);
+    expect(result.json().data.map((item: { id: string }) => item.id)).toEqual([cheap]);
+    const cursor = result.headers["x-next-cursor"];
+    expect(cursor).toBeTruthy();
+    const second = await app.inject({ method: "GET", url: `/api/public/locations?sort=fee_low&specialization=Cardiology&specialization=Dermatology&bounds=-1,0,1,0.2&limit=1&cursor=${encodeURIComponent(String(cursor))}` });
+    expect(second.json().data.map((item: { id: string }) => item.id)).toEqual([unrated]);
+    expect(result.json().filters.specialtyCounts.Cardiology).toBe(1);
+    expect(result.json().filters.specialties).toContain("General Physician / Consultant");
+    expect((await app.inject({ method: "GET", url: "/api/public/locations?bounds=0,0,0,1" })).statusCode).toBe(400);
+  });
+
+  it("applies hours across the full visible directory without publishing unspecified hours", async () => {
+    const previous = await Location.findById(top).select("timings").lean();
+    try {
+      await Location.updateOne({ _id: top }, { $set: { timings: "24/7" } });
+      for (const query of ["openNow=true", "open24Hours=true"]) {
+        const response = await app.inject({ method: "GET", url: `/api/public/locations?sort=rating&${query}` });
+        expect(response.statusCode, response.body).toBe(200);
+        expect(response.json().data.map((item: { id: string }) => item.id)).toEqual([top]);
+      }
+    } finally { await Location.updateOne({ _id: top }, { $set: { timings: previous?.timings || "" } }); }
+  });
+
   it("keeps public responses and canonical links stable across repeated reads", async () => {
     const locationSlug = await providerFixtureSlug("location", top);
     const doctorSlug = await providerFixtureSlug("doctor", publicDoctorId);
@@ -292,6 +317,10 @@ describe("Dynamic public clinic catalog", () => {
       const invalid = await app.inject({ method: "GET", url: "/api/public/locations?sort=nearby&latitude=0&longitude=0" });
       expect(invalid.statusCode, invalid.body).toBe(200);
       expect(invalid.json().data.find((item: { id: string }) => item.id === cheap).distanceKm).toBeNull();
+      await Location.updateOne({ _id: cheap }, { latitude: 0, longitude: 0 });
+      const unmapped = await app.inject({ method: "GET", url: "/api/public/locations?sort=nearby&latitude=21.17&longitude=72.83" });
+      expect(unmapped.statusCode, unmapped.body).toBe(200);
+      expect(unmapped.json().data.find((item: { id: string }) => item.id === cheap).distanceKm).toBeNull();
     } finally { await Location.updateOne({ _id: cheap }, original); }
   });
 

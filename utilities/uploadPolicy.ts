@@ -1,11 +1,13 @@
 import type { FastifyRequest } from 'fastify';
 import type { ContentClass } from '../models/UploadIntent.ts';
 import { Patient } from '../models/Patient.ts';
+import { Organization } from '../models/Organization.ts';
 import mongoose from 'mongoose';
-import { checkPatientAccess } from './tenant.ts';
+import { checkPatientAccess, resolveAuthorizedOrganizationScope } from './tenant.ts';
 import { requestHasAnyPermission } from './permissions.ts';
 import { detectMagicBytes, scanForActiveMaliciousContent } from './fileSecurity.ts';
 import { UploadIntent } from '../models/UploadIntent.ts';
+import { prepareBrandingImage } from './brandingImage.ts';
 
 export const CLASS_MAX_BYTES: Record<ContentClass, number> = {
   avatar: 2 * 1024 * 1024, prescription: 10 * 1024 * 1024,
@@ -31,6 +33,17 @@ export function validateUploadBytes(buffer: Buffer, declaredMime: string, maxByt
   return mime;
 }
 
+/** Profile photos are decoded/re-encoded so embedded provenance is removed,
+ * rather than mistaken for active SVG. Clinical documents retain their scanner. */
+export async function prepareUploadBytes(buffer: Buffer, declaredMime: string, maxBytes: number, contentClass: ContentClass) {
+  if (contentClass !== 'avatar') return { buffer, mime: validateUploadBytes(buffer, declaredMime, maxBytes) };
+  if (!buffer.length || buffer.length > maxBytes) throw new Error('File is empty or exceeds the allowed size');
+  const mime = normalizeUploadMime(declaredMime);
+  const clean = await prepareBrandingImage(buffer, mime);
+  if (clean.length > maxBytes) throw new Error('Processed profile photo exceeds the allowed size');
+  return { buffer: clean, mime };
+}
+
 /** New clinical attachments reuse verified upload authority instead of embedding arbitrary URLs/bytes. */
 export async function isVerifiedClinicalAttachment(value: unknown, organizationId: unknown, patientId: unknown) {
   if (value === undefined || value === null || value === '') return true;
@@ -54,5 +67,11 @@ export async function authorizeUpload(req: FastifyRequest, patientId?: unknown, 
     return check;
   }
   if (consumer) return { allowed: false, statusCode: 400, message: 'Patient context is required' };
-  return { allowed: !!req.user?.organization_id, statusCode: 400, message: 'Organization context is required', organizationId: req.user?.organization_id };
+  const scope = resolveAuthorizedOrganizationScope(req);
+  if (!scope.allowed) return scope;
+  if (!scope.organizationId) return { allowed: false, statusCode: 400, message: 'Organization context is required' };
+  if (req.user?.role === 'root' && !await Organization.exists({ _id: scope.organizationId })) {
+    return { allowed: false, statusCode: 404, message: 'Organization not found' };
+  }
+  return scope;
 }

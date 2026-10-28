@@ -1,6 +1,8 @@
 import { fixtureAccessToken } from "./helpers/sessionFixture.ts";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import crypto from "node:crypto";
+import sharp from "sharp";
+import { crc32 } from "node:zlib";
 import { app } from "../index.ts";
 import { Organization } from "../models/Organization.ts";
 import { OrganizationBrandingAsset } from "../models/OrganizationBrandingAsset.ts";
@@ -14,6 +16,8 @@ import { cleanupBrandingAssets } from "../services/OrganizationBranding.ts";
 import { uploadOrganizationImage } from "../utilities/r2.ts";
 import { emailProvider } from "../notifications/providers/emailProvider.ts";
 import { encryptField } from "../utilities/cryptoEnvelope.ts";
+import { prepareBrandingImage } from "../utilities/brandingImage.ts";
+import { scanForActiveMaliciousContent } from "../utilities/fileSecurity.ts";
 
 const storage = vi.hoisted(() => new Map<string, Buffer>());
 vi.mock("../utilities/r2.ts", async (importOriginal) => ({
@@ -22,7 +26,16 @@ vi.mock("../utilities/r2.ts", async (importOriginal) => ({
   getObjectBuffer: vi.fn(async (key: string) => { if (!storage.has(key)) throw new Error("Object not found"); return storage.get(key)!; }),
   deleteObjectFromStorage: vi.fn(async (key: string) => { storage.delete(key); }),
 }));
-const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
+const png = (await sharp({ create: { width: 8, height: 8, channels: 4, background: { r: 31, g: 92, b: 82, alpha: 0.5 } } }).png().toBuffer()).toString("base64");
+// Synthetic provenance chunk reproduces a PNG containing an SVG thumbnail in
+// its metadata. Never embed a user's actual logo or filesystem path in tests.
+function withProvenance(image: Buffer) {
+  const payload = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><title>Illustrative provenance thumbnail</title></svg>');
+  const chunk = Buffer.alloc(payload.length + 12);
+  chunk.writeUInt32BE(payload.length); chunk.write("caBX", 4); payload.copy(chunk, 8);
+  chunk.writeUInt32BE(crc32(chunk.subarray(4, -4)), chunk.length - 4);
+  return Buffer.concat([image.subarray(0, 33), chunk, image.subarray(33)]);
+}
 let root: any, admin: any, orgA: any, orgB: any;
 const cookie = async (user: any, org?: string) => ({ access_token: (await fixtureAccessToken({ id: user.id, email: user.email, role: user.role, organization_id: org })) });
 const base = (name: string) => ({ org_name: name, city: "Mumbai", admin_name: "Primary Admin", admin_email: `${name.replaceAll(" ", "-")}@org.test`, admin_password: "Password123!", sendWelcomeEmail: false });
@@ -61,7 +74,7 @@ describe("organization branding persistence", () => {
     const rendered = await app.inject({ method: "GET", url: fresh.json().data.logo_url });
     expect(rendered.statusCode).toBe(200);
     expect(rendered.headers["content-type"]).toBe("image/png");
-    expect(rendered.rawPayload).toEqual(Buffer.from(png, "base64"));
+    expect(rendered.rawPayload).toEqual(await prepareBrandingImage(Buffer.from(png, "base64"), "image/png"));
     const replacement = await upload(root, id);
     const newRef = replacement.json().data.reference;
     const edit = await app.inject({ method: "PUT", url: `/api/organizations/${id}`, cookies: (await cookie(root)), payload: { name: "Renamed Organization", logo_url: newRef } });
@@ -85,6 +98,65 @@ describe("organization branding persistence", () => {
     vi.mocked(uploadOrganizationImage).mockRejectedValueOnce(new Error("Storage offline"));
     expect((await upload(root)).statusCode).toBe(503);
     expect(await OrganizationBrandingAsset.countDocuments()).toBe(count);
+  });
+
+  it("accepts a PNG with provenance SVG metadata, stores clean pixels and retains transparency", async () => {
+    const source = withProvenance(Buffer.from(png, "base64"));
+    expect(scanForActiveMaliciousContent(source).clean).toBe(false); // previous false positive
+    const uploaded = await app.inject({ method: "POST", url: `/api/organizations/branding/uploads?organizationId=${orgA.id}`, cookies: await cookie(root), payload: { contentType: "image/png", base64Data: `data:image/png;base64,${source.toString("base64")}` } });
+    expect(uploaded.statusCode, uploaded.body).toBe(201);
+    const ref = uploaded.json().data.reference;
+    const saved = await app.inject({ method: "PUT", url: `/api/organizations/${orgA.id}`, cookies: await cookie(root), payload: { logo_url: ref } });
+    expect(saved.statusCode, saved.body).toBe(200);
+    const rendered = await app.inject({ method: "GET", url: ref });
+    expect(rendered.statusCode).toBe(200);
+    expect(rendered.headers["x-content-type-options"]).toBe("nosniff");
+    expect(rendered.rawPayload.includes(Buffer.from("caBX"))).toBe(false);
+    expect(rendered.rawPayload.includes(Buffer.from("<svg"))).toBe(false);
+    const before = await sharp(Buffer.from(png, "base64")).raw().toBuffer({ resolveWithObject: true });
+    const after = await sharp(rendered.rawPayload).raw().toBuffer({ resolveWithObject: true });
+    expect(after).toEqual(before);
+  });
+
+  it.each(["jpeg", "webp"] as const)("normalizes %s images without retaining active-looking XMP metadata", async format => {
+    const source = await sharp(Buffer.from(png, "base64")).withXmp('<x:xmpmeta xmlns:x="adobe:ns:meta/"><svg>Illustrative thumbnail</svg></x:xmpmeta>').toFormat(format).toBuffer();
+    const result = await prepareBrandingImage(source, `image/${format}`);
+    const metadata = await sharp(result).metadata();
+    expect(metadata.format).toBe(format);
+    expect(metadata.width).toBe(8);
+    expect(metadata.xmp).toBeUndefined();
+  });
+
+  it("rejects oversized pixel dimensions and animated branding while stripping appended content", async () => {
+    const large = Buffer.from(png, "base64");
+    large.writeUInt32BE(5001, 16); large.writeUInt32BE(5001, 20);
+    large.writeUInt32BE(crc32(large.subarray(12, 29)), 29);
+    await expect(prepareBrandingImage(large, "image/png")).rejects.toThrow(/25 megapixels/);
+    const red = await sharp({ create: { width: 8, height: 8, channels: 4, background: "red" } }).png().toBuffer();
+    const animated = await sharp([Buffer.from(png, "base64"), red], { join: { animated: true } }).webp().toBuffer();
+    await expect(prepareBrandingImage(animated, "image/webp")).rejects.toThrow(/still image/);
+    const appended = Buffer.concat([Buffer.from(png, "base64"), Buffer.from("<html><script>document.cookie</script></html>")]);
+    const clean = await prepareBrandingImage(appended, "image/png");
+    expect(clean.includes(Buffer.from("<html"))).toBe(false);
+  });
+
+  it("applies EXIF orientation before stripping metadata", async () => {
+    const source = await sharp({ create: { width: 8, height: 4, channels: 3, background: "green" } }).withMetadata({ orientation: 6 }).jpeg().toBuffer();
+    const metadata = await sharp(await prepareBrandingImage(source, "image/jpeg")).metadata();
+    expect({ width: metadata.width, height: metadata.height, orientation: metadata.orientation }).toEqual({ width: 4, height: 8, orientation: undefined });
+  });
+
+  it.each([
+    ["mismatched type", "image/jpeg", Buffer.from(png, "base64")],
+    ["signature without image pixels", "image/png", Buffer.from(png, "base64").subarray(0, 33)],
+    ["SVG disguised as PNG", "image/png", Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>')],
+    ["HTML disguised as PNG", "image/png", Buffer.from('<html><script>alert(1)</script></html>')],
+    ["oversized image", "image/png", Buffer.concat([Buffer.from(png, "base64"), Buffer.alloc(5 * 1024 * 1024)])],
+  ])("rejects %s before storage", async (_label, contentType, buffer) => {
+    vi.mocked(uploadOrganizationImage).mockClear();
+    const response = await app.inject({ method: "POST", url: "/api/organizations/branding/uploads", cookies: await cookie(root), payload: { contentType, base64Data: buffer.toString("base64") } });
+    expect(response.statusCode, response.body).toBe(400);
+    expect(uploadOrganizationImage).not.toHaveBeenCalled();
   });
 
   it("reuses the branding lifecycle for locations, rejects foreign and private images, and retains archived images", async () => {

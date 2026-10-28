@@ -203,6 +203,7 @@ export const createLocationSchema = {
       brandColor: { type: "string", enum: ["#0F6F66", "#1D4ED8", "#6D28D9", "#9A3412"] },
       latitude: { type: "number", minimum: -90, maximum: 90 },
       longitude: { type: "number", minimum: -180, maximum: 180 },
+      googleMapsEmbedUrl: { type: "string", maxLength: 12000 },
       upiVpa: { type: "string" },
       merchantName: { type: "string" }
     },
@@ -239,6 +240,7 @@ export const updateLocationSchema = {
       brandColor: { type: "string", enum: ["#0F6F66", "#1D4ED8", "#6D28D9", "#9A3412"] },
       latitude: { type: "number", minimum: -90, maximum: 90 },
       longitude: { type: "number", minimum: -180, maximum: 180 },
+      googleMapsEmbedUrl: { type: "string", maxLength: 12000 },
       upiVpa: { type: "string" },
       merchantName: { type: "string" }
     },

@@ -16,6 +16,7 @@ import { handleClinicalWebSocket, sendToLocationClinicalLocally, resolveWebSocke
 import { revokeUserSessions } from '../utilities/sessionResolver.ts';
 import { escapeCsv } from '../services/ReportExportService.ts';
 import mongoose from 'mongoose';
+import sharp from 'sharp';
 import { analyticsPath, referrerOrigin } from '../utilities/trafficPrivacy.ts';
 import { scrubTelemetry } from '../utilities/telemetry.ts';
 import { sanitizeMiddleware } from '../middleware/sanitize.ts';
@@ -24,7 +25,7 @@ import { ObservationScore } from '../models/ObservationScore.ts';
 import { ClinicalSearchService } from '../services/ClinicalSearchService.ts';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
-const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+const png = await sharp({ create: { width: 8, height: 8, channels: 4, background: { r: 31, g: 92, b: 82, alpha: 0.5 } } }).png().toBuffer();
 
 describe('Phase 1 file and clinical authority', () => {
   it('rejects sessionless private websocket tokens in the test environment too', async () => {
@@ -62,6 +63,57 @@ describe('Phase 1 file and clinical authority', () => {
     expect((await app.inject({ ...request, url: '/api/get-upload-url' })).statusCode).toBe(404);
     const invalid = await app.inject({ ...request, url: '/api/uploads/base64', payload: { fileName: 'fixture.png', contentType: 'image/png', base64: png.toString('base64') } });
     expect(invalid.statusCode).toBe(400);
+  });
+
+  it('scopes Root staff-photo uploads to an explicit organization and keeps tenant overrides forbidden', async () => {
+    const org = await Organization.create({ name: 'Selected staff organization', city: 'Pune' });
+    const foreign = await Organization.create({ name: 'Different staff organization', city: 'Surat' });
+    const root = await User.create({ name: 'Platform staff manager', role: 'root', email: 'root-avatar@example.test' });
+    const rootAuth = await createAuthSession({ id: root.id, role: 'root', email: root.email! });
+    const source = await sharp(png).withXmp('<x:xmpmeta xmlns:x="adobe:ns:meta/"><svg>Illustrative provenance</svg></x:xmpmeta>').png().toBuffer();
+    const payload = { originalFilename: 'staff.png', contentType: 'image/png', contentClass: 'avatar', base64Data: source.toString('base64') };
+    vi.spyOn(s3Client, 'send').mockResolvedValue({} as never);
+    const request = { method: 'POST' as const, url: '/api/uploads/base64', cookies: { access_token: rootAuth.accessToken } };
+    expect((await app.inject({ ...request, payload })).statusCode).toBe(400);
+    const uploaded = await app.inject({ ...request, payload: { ...payload, organizationId: org.id } });
+    expect(uploaded.statusCode, uploaded.body).toBe(200);
+    const saved = await UploadIntent.findById(uploaded.json().data.intentId);
+    expect(saved?.organizationId.toString()).toBe(org.id);
+    expect(saved?.contentClass).toBe('avatar');
+    expect(saved?.patientId).toBeUndefined();
+    expect(uploaded.json().data.objectKey).toContain(`tenants/${org.id}/verified/`);
+    const stored = vi.mocked(s3Client.send).mock.calls.map(([command]) => (command as any).input).find(input => Buffer.isBuffer(input.Body));
+    expect((await sharp(stored.Body).metadata()).xmp).toBeUndefined();
+    expect((await app.inject({ ...request, payload: { ...payload, organizationId: 'bad-id' } })).statusCode).toBe(400);
+    expect((await app.inject({ ...request, payload: { ...payload, organizationId: new mongoose.Types.ObjectId().toString() } })).statusCode).toBe(404);
+    const admin = await User.create({ name: 'Tenant staff manager', role: 'admin', email: 'admin-avatar@example.test' });
+    await OrgMember.create({ userId: admin._id, organizationId: org._id, role: 'admin' });
+    const adminAuth = await createAuthSession({ id: admin.id, role: 'admin', email: admin.email!, organization_id: org.id });
+    const adminRequest = { ...request, cookies: { access_token: adminAuth.accessToken } };
+    expect((await app.inject({ ...adminRequest, payload: { ...payload, organizationId: foreign.id } })).statusCode).toBe(403);
+    expect((await app.inject({ ...adminRequest, payload: { ...payload, organizationId: org.id } })).statusCode).toBe(200);
+    const patient = await User.create({ name: 'Patient', role: 'patient', email: 'patient-avatar@example.test' });
+    const patientAuth = await createAuthSession({ id: patient.id, role: 'patient', email: patient.email! });
+    expect((await app.inject({ ...request, cookies: { access_token: patientAuth.accessToken }, payload: { ...payload, organizationId: org.id } })).statusCode).toBe(400);
+  });
+
+  it('requires the matching explicit Root organization during avatar verification and download', async () => {
+    const org = await Organization.create({ name: 'Scoped photo workflow', city: 'Pune' });
+    const other = await Organization.create({ name: 'Other photo workflow', city: 'Surat' });
+    const root = await User.create({ name: 'Platform photo operator', role: 'root', email: 'root-photo-flow@example.test' });
+    const auth = await createAuthSession({ id: root.id, role: 'root', email: root.email! });
+    const cookies = { access_token: auth.accessToken };
+    const created = await app.inject({ method: 'POST', url: '/api/uploads/intent', cookies, payload: { originalFilename: 'staff.png', contentType: 'image/png', contentClass: 'avatar', fileSizeBytes: png.length, organizationId: org.id } });
+    expect(created.statusCode, created.body).toBe(201);
+    const intentId = created.json().data.intentId;
+    const send = vi.spyOn(s3Client, 'send').mockImplementation(async (command: any) => command.input.Body ? {} : { Body: Readable.from([png]), ContentLength: png.length } as any);
+    expect((await app.inject({ method: 'POST', url: '/api/uploads/verify', cookies, payload: { intentId } })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'POST', url: `/api/uploads/verify?organizationId=${other.id}`, cookies, payload: { intentId } })).statusCode).toBe(403);
+    expect(send).not.toHaveBeenCalled();
+    const verified = await app.inject({ method: 'POST', url: `/api/uploads/verify?organizationId=${org.id}`, cookies, payload: { intentId } });
+    expect(verified.statusCode, verified.body).toBe(200);
+    expect((await app.inject({ method: 'GET', url: `/api/uploads/download/${intentId}?organizationId=${other.id}`, cookies })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: `/api/uploads/download/${intentId}?organizationId=${org.id}`, cookies })).statusCode).toBe(200);
   });
   it('accepts only a verified attachment matching the lab patient and organization', async () => {
     const org = new mongoose.Types.ObjectId(), patient = new mongoose.Types.ObjectId(), user = new mongoose.Types.ObjectId();

@@ -4,7 +4,7 @@ import mongoose from 'mongoose';
 import { generatePresignedUrl, generatePresignedDownloadUrl, getObjectBuffer, storeVerifiedObject, deleteObjectFromStorage } from '../utilities/r2.ts';
 import { authenticate } from '../middleware/auth.ts';
 import { UploadIntent, type ContentClass } from '../models/UploadIntent.ts';
-import { CLASS_MAX_BYTES, normalizeUploadMime, validateUploadMetadata, validateUploadBytes, authorizeUpload } from '../utilities/uploadPolicy.ts';
+import { CLASS_MAX_BYTES, normalizeUploadMime, validateUploadMetadata, prepareUploadBytes, authorizeUpload } from '../utilities/uploadPolicy.ts';
 import { successResponse, errorResponse } from '../utilities/helpers.ts';
 
 export default async function uploadRoutes(fastify: FastifyInstance) {
@@ -45,9 +45,9 @@ export default async function uploadRoutes(fastify: FastifyInstance) {
     const originalKey = intent.objectKey;
     let invalidContent = false;
     try {
-      const buffer = await getObjectBuffer(originalKey, intent.maxSizeBytes);
+      let buffer = await getObjectBuffer(originalKey, intent.maxSizeBytes);
       let mime: string;
-      try { mime = validateUploadBytes(buffer, intent.permittedMimeTypes[0], intent.maxSizeBytes); }
+      try { ({ buffer, mime } = await prepareUploadBytes(buffer, intent.permittedMimeTypes[0], intent.maxSizeBytes, intent.contentClass)); }
       catch (error) { invalidContent = true; throw error; }
       // Seal the checked bytes at a server-only key. The original PUT URL cannot overwrite them.
       verifiedKey = await storeVerifiedObject(buffer, mime, intent.organizationId.toString());
@@ -96,9 +96,9 @@ export default async function uploadRoutes(fastify: FastifyInstance) {
     if (typeof encoded !== 'string' || encoded.length > Math.ceil(maxBytes / 3) * 4 + 256) return reply.code(413).send(errorResponse('Upload exceeds the allowed size'));
     const raw = encoded.replace(/^data:[^;]+;base64,/, '');
     if (!/^[A-Za-z0-9+/]*={0,2}$/.test(raw) || raw.length % 4 !== 0) return reply.code(400).send(errorResponse('Invalid base64 data'));
-    const buffer = Buffer.from(raw, 'base64');
+    let buffer: Buffer = Buffer.from(raw, 'base64');
     let mime: string;
-    try { mime = validateUploadBytes(buffer, body.contentType, maxBytes); }
+    try { ({ buffer, mime } = await prepareUploadBytes(buffer, body.contentType, maxBytes, contentClass)); }
     catch { return reply.code(400).send(errorResponse('Invalid file size, signature or active content')); }
     const key = await storeVerifiedObject(buffer, mime, authority.organizationId!);
     try {

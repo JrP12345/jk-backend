@@ -19,6 +19,7 @@ import { Organization } from "../models/Organization.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { PatientFeedback } from "../models/PatientFeedback.ts";
 import { getPublicLocationFacets, getSortedPublicLocationPage } from "../utilities/publicLocationCatalog.ts";
+import { facilityHours, parseBrowseFilters } from "../utilities/publicBrowseFilters.ts";
 import { Patient } from "../models/Patient.ts";
 import { User } from "../models/User.ts";
 import { Location } from "../models/Location.ts";
@@ -211,9 +212,11 @@ export async function getOrganizationDetails(req: FastifyRequest, reply: Fastify
 
 export async function getPublicLocations(req: FastifyRequest, reply: FastifyReply) {
   try {
-    const { search, city, specialization, sort, latitude, longitude } = req.query as {
-      search?: string; city?: string; specialization?: string; sort?: string; latitude?: string; longitude?: string;
+    const { search, city, sort, latitude, longitude } = req.query as {
+      search?: string; city?: string; sort?: string; latitude?: string; longitude?: string;
     };
+    const browse = parseBrowseFilters(req.query as Record<string, unknown>);
+    if (!browse) return reply.code(400).send(errorResponse("Invalid directory filters"));
     if (sort && sort !== "rating" && sort !== "fee_low" && sort !== "nearby") return reply.code(400).send(errorResponse("Unsupported location sort"));
     const origin = sort === "nearby" ? { latitude: Number(latitude), longitude: Number(longitude) } : undefined;
     if (origin && (typeof latitude !== "string" || !latitude.trim() || typeof longitude !== "string" || !longitude.trim() ||
@@ -222,7 +225,7 @@ export async function getPublicLocations(req: FastifyRequest, reply: FastifyRepl
     }
 
     // Filter out orphan locations belonging to deleted organizations
-    const activeOrgs = await Organization.find({ isActive: true, status: { $ne: "inactive" } }).select("_id").lean();
+    const activeOrgs = await Organization.find({ isActive: true, status: { $ne: "inactive" } }).select("_id timezone").lean();
     const activeOrgIds = activeOrgs.map((o) => o._id);
 
     const andConditions: any[] = [
@@ -283,9 +286,8 @@ export async function getPublicLocations(req: FastifyRequest, reply: FastifyRepl
     }
 
     // Specialization filtering
-    if (specialization) {
-      const safeSpecialization = escapeRegex(specialization);
-      const doctors = await Doctor.find({ isActive: { $ne: false }, specialization: { $regex: new RegExp(safeSpecialization, "i") } }).select("userId").lean();
+    if (browse.specialties.length) {
+      const doctors = await Doctor.find({ isActive: { $ne: false }, specialization: { $in: browse.specialties.map(value => new RegExp(`^${escapeRegex(value)}$`, "i")) } }).select("userId").lean();
       const activeDoctors = await User.find({ _id: { $in: doctors.map((doctor) => doctor.userId) }, isActive: true }).select("_id").lean();
       const doctorUserIds = activeDoctors.map((user) => user._id);
 
@@ -295,6 +297,21 @@ export async function getPublicLocations(req: FastifyRequest, reply: FastifyRepl
       andConditions.push({ _id: { $in: locationIds } });
     }
 
+    if (browse.bounds) {
+      const [south, west, north, east] = browse.bounds;
+      andConditions.push({ latitude: { $gte: south, $lte: north }, $or: west <= east ? [{ longitude: { $gte: west, $lte: east } }] : [{ longitude: { $gte: west, $lte: 180 } }, { longitude: { $gte: -180, $lte: east } }] });
+      andConditions.push({ $or: [{ latitude: { $ne: 0 } }, { longitude: { $ne: 0 } }] });
+    }
+    if (browse.openNow || browse.open24Hours) {
+      const candidates = await Location.find({ $and: andConditions }).select("_id timings timezone organizationId").lean();
+      const zones = new Map(activeOrgs.map(org => [String(org._id), org.timezone || "Asia/Kolkata"]));
+      const now = new Date();
+      const ids = candidates.filter(location => {
+        const status = facilityHours(location.timings, location.timezone || zones.get(String(location.organizationId)) || "Asia/Kolkata", now);
+        return (!browse.openNow || status.open) && (!browse.open24Hours || status.allDay);
+      }).map(location => location._id);
+      andConditions.push({ _id: { $in: ids } });
+    }
     const pagination = getCursorPaginationParams(req.query as any, 20, 100);
     const decoded = decodeCursor(pagination.cursor);
     const cursorFilter = buildCursorFilter(decoded, { timeField: "createdAt", sortDirection: "desc" });
@@ -335,7 +352,7 @@ export async function getPublicLocations(req: FastifyRequest, reply: FastifyRepl
         { $match: { locationId: { $in: locationIds }, rating: { $gte: 1, $lte: 5 } } },
         { $group: { _id: "$locationId", rating: { $avg: "$rating" }, reviewsCount: { $sum: 1 } } },
       ]),
-      !search && !city && !specialization && !pagination.cursor ? getPublicLocationFacets(visibility) : undefined,
+      !pagination.cursor ? getPublicLocationFacets(visibility) : undefined,
     ]);
     const allDoctorUserIds = allAssignments.map((a: any) => a.doctorId?._id).filter(Boolean);
     const [docProfiles, slugs, counts] = await Promise.all([

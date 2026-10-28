@@ -70,7 +70,7 @@ export async function getDailyDashboard(req: FastifyRequest, reply: FastifyReply
     collections = values.reduce((total, value) => total + (value.collections || 0), 0);
     outstanding = values.reduce((total, value) => total + (value.outstanding || 0), 0);
   }
-  return reply.send(successResponse({ appointments: statuses.reduce((total, row) => total + row.count, 0), completed: byStatus.completed || 0,
+  return reply.send(successResponse({ locationCount: allowedLocationIds.length, appointments: statuses.reduce((total, row) => total + row.count, 0), completed: byStatus.completed || 0,
     pending: (byStatus.pending || 0) + (byStatus.confirmed || 0), byStatus, collections, outstanding, moneyByCurrency, financialVisible, startDate: start, endDate: end,
     ...(trends ? { trends } : {}), recentAppointments: recentAppointments.map((appointment: any) => ({ ...appointment, id: appointment._id.toString(), locationId: appointment.locationId ? { ...appointment.locationId, id: appointment.locationId._id.toString() } : null, doctorId: appointment.doctorId ? { ...appointment.doctorId, id: appointment.doctorId._id.toString() } : null, patientId: appointment.patientId ? { ...appointment.patientId, id: appointment.patientId._id.toString() } : null })) }));
 }

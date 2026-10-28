@@ -162,7 +162,7 @@ This is a separate approved release, not a rename of the existing staging enviro
 
 **PASS:** merged staging/production Compose using synthetic values; separate project/network/volumes; correct Caddy mount replacement; only edge ports published; build/runtime APP_URL and direct API target match; API/all worker configuration validators; host-only Secure/Lax cookie helper; secret/template ignore checks; bounded container logs; frontend rewrite evaluation; backend TypeScript and JS syntax/diff checks; 11 focused first-account provisioning tests using a temporary replica set (including hashed creation, safe preview, bad targets and nonempty-DB refusal).
 
-No full suite or large build was repeated. The earlier 104 focused tests and production HTTP/browser verification remain recorded in [release verification](../../frontend/docs/discovery-release-verification.md), but they do not certify these new deployment files on a server.
+No full suite or large build was repeated. The earlier 104 focused tests and production HTTP/browser verification remain recorded in [release verification](../../frontend/docs/public-discovery.md#dated-local-verification), but they do not certify these new deployment files on a server.
 
 **PENDING:** VM/Atlas/bucket creation, DNS and secrets, passing CI for committed release revisions, Caddy parser/container-image validation on a Docker host, encrypted MFA enrollment, real database connectivity, all container readiness, deployed phone/cookie/payment/notification checks and explicit deployment approval. Docker daemon is unavailable locally. No credentials or provider account access were requested.
 

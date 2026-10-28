@@ -32,7 +32,8 @@ export async function getPublicLocationFacets(visibility: Record<string, unknown
         { $unwind: "$assignments" },
         { $project: { specialty: { $trim: { input: { $ifNull: ["$assignments.profile.specialization", ""] } } } } },
         { $match: { specialty: { $ne: "" } } },
-        { $group: { _id: "$specialty" } },
+        { $group: { _id: { location: "$_id", specialty: "$specialty" } } },
+        { $group: { _id: "$_id.specialty", count: { $sum: 1 } } },
         { $sort: { _id: 1 } },
       ],
     } },
@@ -40,6 +41,7 @@ export async function getPublicLocationFacets(visibility: Record<string, unknown
   return {
     cities: (result?.cities || []).map((item: { _id: string }) => item._id),
     specialties: (result?.specialties || []).map((item: { _id: string }) => item._id),
+    specialtyCounts: Object.fromEntries((result?.specialties || []).map((item: { _id: string; count: number }) => [item._id, item.count])),
   };
 }
 
@@ -53,6 +55,8 @@ function distanceStages(origin: LocationOrigin): mongoose.PipelineStage[] {
       { $isNumber: "$latitude" }, { $isNumber: "$longitude" },
       { $gte: ["$latitude", -90] }, { $lte: ["$latitude", 90] },
       { $gte: ["$longitude", -180] }, { $lte: ["$longitude", 180] },
+      // A physical facility at the Null Island placeholder has no usable pin.
+      { $not: [{ $and: [{ $eq: ["$latitude", 0] }, { $eq: ["$longitude", 0] }] }] },
     ] } } },
     { $set: { value: { $cond: ["$validCoordinates", { $multiply: [6371, { $acos: { $max: [-1, { $min: [1, { $add: [
       { $multiply: [Math.sin(origin.latitude * radians), { $sin: { $multiply: ["$latitude", radians] } }] },

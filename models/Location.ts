@@ -1,5 +1,6 @@
 import mongoose, { Schema } from "mongoose";
 import { FACILITY_TYPES } from "../utilities/facility.ts";
+import { isGoogleMapsEmbedUrl } from "../utilities/googleMapsEmbed.ts";
 
 // One physical healthcare location owned by an organization.
 const LocationSchema = new Schema({
@@ -19,6 +20,7 @@ const LocationSchema = new Schema({
   timezone: { type: String }, // Optional branch override; otherwise use organization timezone.
   latitude: { type: Number },
   longitude: { type: Number },
+  googleMapsEmbedUrl: { type: String, default: null, validate: { validator: (value: unknown) => value == null || value === "" || isGoogleMapsEmbedUrl(value), message: "Use a Google Maps embed URL" } },
   timings: { type: String }, // JSON schedule string
   amenities: [{ type: String }],
   onlineBookingSafetyBuffer: { type: Number, default: 30 }, // Default safety buffer in minutes for online bookings

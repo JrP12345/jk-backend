@@ -78,6 +78,7 @@ export function toPublicLocation(raw: any) {
     address: location.address || "", phone: location.phone || "", email: location.email || "",
     description: location.description || "", brandColor: location.brandColor,
     latitude: location.latitude, longitude: location.longitude,
+    googleMapsEmbedUrl: location.googleMapsEmbedUrl || "",
     timings: location.timings, amenities: location.amenities || [],
   };
 }

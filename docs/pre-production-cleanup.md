@@ -8,7 +8,13 @@ Previous ciphertext readers and key aliases are removed. DATA_ENCRYPTION_KEY con
 
 Lab orders use one structured result and resultedAt; flat result fields, completedDate and the unused future verifiedBy field are removed. Both the direct result action and encounter state-machine action preserve their current lifecycle behavior while using the same stored representation. Privacy exports identify EKAVYU_DPDP_EXPORT. Demo seeding requires explicit root credentials and never prints their password.
 
-Final verification covers 155 backend files and 879 current cases using the broad run plus affected reruns. Encryption/configuration regressions pass 12 cases; the Root-preserving reset passes seven integration cases, including rollback and empty worker-collection recreation. Package TypeScript passes; the API and four workers build to five verified bundles. See the frontend [verification and retained occurrence inventory](../../frontend/docs/pre-production-cleanup.md) for combined evidence and scope. Source verification performed no database reset, seed, index application, secret rotation or deployment.
+Current cleanup progress and verification are maintained in the single frontend
+[working plan](../../frontend/docs/pre-production-cleanup.md). The statements
+above describe the October 7 contract cleanup, rather than current test totals.
+The October 24 cleanup removes the unused WhatsApp booking-session model and an
+unreferenced one-off architecture upgrade script. Current index preparation
+remains `npm run db:indexes`; no database or index operation was performed as
+part of source cleanup.
 
 Both deployment examples declare DATA_ENCRYPTION_KEY. When updating Render, configure that name with the exact persistent encryption secret already used by the database. Sharing the key through the existing environment group keeps API and workers consistent; a fresh value is suitable only for a fresh database. See [deployment troubleshooting](../DEPLOYMENT.md#missing-data-encryption-key-on-render).
 
