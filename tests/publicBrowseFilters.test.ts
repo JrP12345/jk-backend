@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { facilityHours, parseBrowseFilters } from "../utilities/publicBrowseFilters.ts";
 
 describe("Public directory filter contracts", () => {
+  it("validates facility, booking and distance filters without coercing arbitrary values", () => {
+    expect(parseBrowseFilters({ facilityType: ["clinic", "hospital", "clinic"], onlineBooking: "true", radiusKm: "25" })).toMatchObject({ facilityTypes: ["clinic", "hospital"], onlineBooking: true, radiusKm: 25 });
+    for (const query of [{ facilityType: "invented" }, { facilityType: { $ne: "" } }, { onlineBooking: "yes" }, ...["", "0", "51", "NaN", "Infinity"].map(radiusKm => ({ radiusKm }))]) expect(parseBrowseFilters(query)).toBeNull();
+  });
   it("accepts multiple literal specialties and antimeridian bounds", () => {
     expect(parseBrowseFilters({ specialization: ["Cardiology", "Dermatology", "Cardiology"], bounds: "-10,170,10,-170", openNow: "true" })).toEqual({ specialties: ["Cardiology", "Dermatology"], bounds: [-10, 170, 10, -170], openNow: true, open24Hours: false });
   });

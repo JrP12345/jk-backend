@@ -13,6 +13,45 @@ import { Appointment } from "../models/Appointment.ts";
 import { DoctorDayOverride } from "../models/DoctorDayOverride.ts";
 
 describe("Dynamic public clinic catalog", () => {
+  it("filters distance before pagination while keeping unmapped facilities out of a radius", async () => {
+    const url = "/api/public/locations?sort=nearby&latitude=0&longitude=0&radiusKm=20&limit=1";
+    const first = await app.inject({ method: "GET", url });
+    expect(first.statusCode, first.body).toBe(200);
+    expect(first.json().data.map((item: { id: string }) => item.id)).toEqual([cheap]);
+    const cursor = first.headers["x-next-cursor"];
+    expect(cursor).toBeTruthy();
+    const second = await app.inject({ method: "GET", url: url + "&cursor=" + encodeURIComponent(String(cursor)) });
+    expect(second.json().data.map((item: { id: string }) => item.id)).toEqual([unrated]);
+    expect(second.headers["x-next-cursor"]).toBeFalsy();
+    expect((await app.inject({ method: "GET", url: "/api/public/locations?radiusKm=20" })).statusCode).toBe(400);
+  });
+
+  it("uses saved facility types and real catalogue counts instead of inferring a clinic from its name", async () => {
+    const previous = await Location.find({ _id: { $in: [cheap, top] } }).select("facilityType").lean();
+    try {
+      await Location.updateOne({ _id: cheap }, { $set: { facilityType: "clinic" } });
+      await Location.updateOne({ _id: top }, { $set: { facilityType: "hospital" } });
+      const response = await app.inject({ method: "GET", url: "/api/public/locations?facilityType=clinic&sort=rating" });
+      expect(response.json().data.map((item: { id: string }) => item.id)).toEqual([cheap]);
+      expect(response.json().filters.facilityTypeCounts).toMatchObject({ clinic: 1, hospital: 1 });
+      const either = await app.inject({ method: "GET", url: "/api/public/locations?facilityType=clinic&facilityType=hospital&sort=rating" });
+      expect(either.json().data.map((item: { id: string }) => item.id)).toEqual([top, cheap]);
+    } finally { for (const row of previous) await Location.updateOne({ _id: row._id }, { $set: { facilityType: row.facilityType || null } }); }
+  });
+
+  it("requires booking access and active public doctors for the online-booking filter", async () => {
+    const organizationId = String((await Location.findById(cheap).lean())!.organizationId);
+    const access = vi.spyOn(await import("../services/billing/SubscriptionAccess.ts"), "getOrganizationBookingAccess");
+    try {
+      access.mockResolvedValue(new Map([[organizationId, true]]));
+      const response = await app.inject({ method: "GET", url: "/api/public/locations?onlineBooking=true&sort=rating" });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json().data.map((item: { id: string }) => item.id)).toEqual([top, cheap, unrated]);
+      expect(response.json().data.every((item: { onlineBookingAvailable: boolean }) => item.onlineBookingAvailable)).toBe(true);
+      access.mockResolvedValue(new Map([[organizationId, false]]));
+      expect((await app.inject({ method: "GET", url: "/api/public/locations?onlineBooking=true" })).json().data).toEqual([]);
+    } finally { access.mockRestore(); }
+  });
   let top: string, cheap: string, unrated: string, disabledLocationId: string, hiddenLocationId: string, publicDoctorId: string, hiddenDoctorId: string, assignmentOnlyDoctorId: string;
   beforeAll(async () => {
     const org = await Organization.create({ name: "Published Catalog", city: "Surat", isActive: true });

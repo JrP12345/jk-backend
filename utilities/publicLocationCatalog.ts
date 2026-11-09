@@ -22,6 +22,7 @@ export async function getPublicLocationFacets(visibility: Record<string, unknown
   const [result] = await Location.aggregate([
     { $match: visibility },
     { $facet: {
+      facilityTypes: [{ $match: { facilityType: { $type: "string", $ne: "" } } }, { $group: { _id: "$facilityType", count: { $sum: 1 } } }],
       cities: [
         { $group: { _id: "$city" } },
         { $match: { _id: { $type: "string", $ne: "" } } },
@@ -42,6 +43,7 @@ export async function getPublicLocationFacets(visibility: Record<string, unknown
     cities: (result?.cities || []).map((item: { _id: string }) => item._id),
     specialties: (result?.specialties || []).map((item: { _id: string }) => item._id),
     specialtyCounts: Object.fromEntries((result?.specialties || []).map((item: { _id: string; count: number }) => [item._id, item.count])),
+    facilityTypeCounts: Object.fromEntries((result?.facilityTypes || []).map((item: { _id: string; count: number }) => [item._id, item.count])),
   };
 }
 
@@ -63,6 +65,11 @@ function distanceStages(origin: LocationOrigin): mongoose.PipelineStage[] {
       { $multiply: [Math.cos(origin.latitude * radians), { $cos: { $multiply: ["$latitude", radians] } }, { $cos: { $multiply: [{ $subtract: ["$longitude", origin.longitude] }, radians] } }] },
     ] }] }] } }] }, null] } } },
   ];
+}
+
+/** Filter the whole catalogue by straight-line distance before cursor pagination. */
+export async function publicLocationsWithinRadius(filter: Record<string, unknown>, origin: LocationOrigin, radiusKm: number) {
+  return Location.aggregate([{ $match: filter }, ...distanceStages(origin), { $match: { validCoordinates: true, value: { $lte: radiusKm } } }, { $project: { _id: 1 } }]);
 }
 
 /** Rank the full visible directory before limiting, including across city boundaries. */

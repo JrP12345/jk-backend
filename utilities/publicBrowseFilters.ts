@@ -1,3 +1,5 @@
+import { FACILITY_TYPES, isFacilityType } from "./facility.ts";
+
 /** Public discovery filters. Unknown hours never count as open. */
 const days = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 type Interval = { start: number; end: number };
@@ -55,7 +57,11 @@ export function parseBrowseFilters(query: Record<string, unknown>) {
   const raw = query.specialization === undefined ? [] : Array.isArray(query.specialization) ? query.specialization : [query.specialization];
   if (raw.length > 30 || raw.some(value => typeof value !== "string" || value.length > 160)) return null;
   const specialties = [...new Set((raw as string[]).map(value => value.trim()).filter(Boolean))];
-  for (const key of ["openNow", "open24Hours"]) if (query[key] !== undefined && !["true", "false"].includes(String(query[key]))) return null;
+  for (const key of ["openNow", "open24Hours", "onlineBooking"]) if (query[key] !== undefined && !["true", "false"].includes(String(query[key]))) return null;
+  const types = query.facilityType === undefined ? [] : Array.isArray(query.facilityType) ? query.facilityType : [query.facilityType];
+  if (types.length > FACILITY_TYPES.length || types.some(value => !isFacilityType(value))) return null;
+  const radiusKm = query.radiusKm === undefined ? undefined : Number(query.radiusKm);
+  if (radiusKm !== undefined && (typeof query.radiusKm !== "string" || !query.radiusKm.trim() || !Number.isFinite(radiusKm) || radiusKm < 1 || radiusKm > 50)) return null;
   let bounds: [number, number, number, number] | undefined;
   if (query.bounds !== undefined) {
     if (typeof query.bounds !== "string") return null;
@@ -64,5 +70,5 @@ export function parseBrowseFilters(query: Record<string, unknown>) {
     if (parts.length !== 4 || parts.some(part => !part.trim()) || values.some(value => !Number.isFinite(value)) || Math.abs(values[0]) > 90 || Math.abs(values[2]) > 90 || Math.abs(values[1]) > 180 || Math.abs(values[3]) > 180 || values[0] >= values[2]) return null;
     bounds = values as [number, number, number, number];
   }
-  return { specialties, bounds, openNow: query.openNow === "true", open24Hours: query.open24Hours === "true" };
+  return { specialties, bounds, openNow: query.openNow === "true", open24Hours: query.open24Hours === "true", ...(types.length ? { facilityTypes: [...new Set(types as string[])] } : {}), ...(query.onlineBooking === "true" ? { onlineBooking: true } : {}), ...(radiusKm !== undefined ? { radiusKm } : {}) };
 }

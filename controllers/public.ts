@@ -18,7 +18,7 @@ import { isActiveBookingDoctor } from "../utilities/doctorBookingEligibility.ts"
 import { Organization } from "../models/Organization.ts";
 import { Doctor } from "../models/Doctor.ts";
 import { PatientFeedback } from "../models/PatientFeedback.ts";
-import { getPublicLocationFacets, getSortedPublicLocationPage } from "../utilities/publicLocationCatalog.ts";
+import { getPublicLocationFacets, getSortedPublicLocationPage, publicDoctorAssignments, publicLocationsWithinRadius } from "../utilities/publicLocationCatalog.ts";
 import { facilityHours, parseBrowseFilters } from "../utilities/publicBrowseFilters.ts";
 import { Patient } from "../models/Patient.ts";
 import { User } from "../models/User.ts";
@@ -218,7 +218,7 @@ export async function getPublicLocations(req: FastifyRequest, reply: FastifyRepl
     const browse = parseBrowseFilters(req.query as Record<string, unknown>);
     if (!browse) return reply.code(400).send(errorResponse("Invalid directory filters"));
     if (sort && sort !== "rating" && sort !== "fee_low" && sort !== "nearby") return reply.code(400).send(errorResponse("Unsupported location sort"));
-    const origin = sort === "nearby" ? { latitude: Number(latitude), longitude: Number(longitude) } : undefined;
+    const origin = sort === "nearby" || browse.radiusKm !== undefined ? { latitude: Number(latitude), longitude: Number(longitude) } : undefined;
     if (origin && (typeof latitude !== "string" || !latitude.trim() || typeof longitude !== "string" || !longitude.trim() ||
       !Number.isFinite(origin.latitude) || Math.abs(origin.latitude) > 90 || !Number.isFinite(origin.longitude) || Math.abs(origin.longitude) > 180)) {
       return reply.code(400).send(errorResponse("Valid latitude and longitude are required for nearby locations"));
@@ -238,6 +238,7 @@ export async function getPublicLocations(req: FastifyRequest, reply: FastifyRepl
       { isActive: true, isPublished: { $ne: false } }
     ];
     const visibility = { $and: [...andConditions] };
+    if (browse.facilityTypes?.length) andConditions.push({ facilityType: { $in: browse.facilityTypes } });
 
     if (city) {
       andConditions.push({ city: { $regex: new RegExp(escapeRegex(city), "i") } });
@@ -311,6 +312,20 @@ export async function getPublicLocations(req: FastifyRequest, reply: FastifyRepl
         return (!browse.openNow || status.open) && (!browse.open24Hours || status.allDay);
       }).map(location => location._id);
       andConditions.push({ _id: { $in: ids } });
+    }
+    if (browse.onlineBooking) {
+      const candidates = await Location.aggregate([
+        { $match: { $and: andConditions } },
+        { $lookup: { from: DoctorAssignment.collection.name, localField: "_id", foreignField: "locationId", let: { organizationId: "$organizationId" }, pipeline: publicDoctorAssignments(), as: "doctors" } },
+        { $match: { "doctors.0": { $exists: true } } },
+        { $project: { _id: 1, organizationId: 1 } },
+      ]);
+      const access = await getOrganizationBookingAccess([...new Set(candidates.map(item => String(item.organizationId)))]);
+      andConditions.push({ _id: { $in: candidates.filter(item => access.get(String(item.organizationId)) === true).map(item => item._id) } });
+    }
+    if (browse.radiusKm !== undefined && origin) {
+      const nearby = await publicLocationsWithinRadius({ $and: andConditions }, origin, browse.radiusKm);
+      andConditions.push({ _id: { $in: nearby.map(item => item._id) } });
     }
     const pagination = getCursorPaginationParams(req.query as any, 20, 100);
     const decoded = decodeCursor(pagination.cursor);
