@@ -18,10 +18,14 @@ import {
 import { getDoctorSlots } from "../controllers/appointment.ts";
 import { createPublicBookingSession } from "../controllers/auth.ts";
 import { getPublicDiscovery } from "../controllers/publicDiscovery.ts";
+import { getPublicMedicines, createPublicPickup, getPublicPickup } from "../controllers/pharmacyStorefront.ts";
 
 export default async function publicRoutes(app: FastifyInstance) {
   const isTest = process.env.NODE_ENV === "test";
   app.get("/api/public/discovery", getPublicDiscovery);
+  app.get("/api/public/locations/:slug/medicines", { config: { rateLimit: { max: isTest ? 1000 : 60, timeWindow: "1 minute" } } }, getPublicMedicines);
+  app.post("/api/public/locations/:slug/pickups", { bodyLimit: 16000, config: { rateLimit: { max: isTest ? 1000 : 5, timeWindow: "10 minutes" } } }, createPublicPickup);
+  app.post("/api/public/pharmacy-pickup/status", { bodyLimit: 1000, config: { rateLimit: { max: isTest ? 1000 : 60, timeWindow: "1 minute" } } }, getPublicPickup);
   // GET /api/public/organizations — List all hospitals/locations
   app.get("/api/public/organizations", getOrganizations);
 

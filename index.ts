@@ -308,7 +308,7 @@ app.register(cors, {
     "Cache-Control", "cache-control", "Pragma", "Expires", "X-Patient-Record-Access",
     "X-Tracker-Token", "If-None-Match", "Idempotency-Key"
   ],
-  exposedHeaders: ["ETag", "X-Report-Digest"],
+  exposedHeaders: ["ETag", "X-Report-Digest", "Server-Timing"],
 });
 
 app.register(rateLimit, {

@@ -3,16 +3,10 @@ import { InvoiceSeries } from "../models/InvoiceSeries.ts";
 import { Location } from "../models/Location.ts";
 import { withTransaction } from "./transaction.ts";
 import { CommandError } from "../services/CommandReceiptService.ts";
-
-export function indiaFinancialYear(at = new Date()) {
-  if (!Number.isFinite(at.getTime())) throw new CommandError(409, "Invalid invoice issue date");
-  const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", year: "numeric", month: "numeric" }).formatToParts(at);
-  const year = Number(parts.find(part => part.type === "year")!.value);
-  const month = Number(parts.find(part => part.type === "month")!.value);
-  const start = month >= 4 ? year : year - 1;
-  if (start < 2000 || start > 2098) throw new CommandError(409, "Invoice financial year needs a reviewed numbering version");
-  return { start, label: `${start}-${String(start + 1).slice(-2)}`, code: `${String(start).slice(-2)}${String(start + 1).slice(-2)}` };
-}
+import { indiaFinancialYear } from "./indiaFinancialYear.ts";
+import { allocateConfiguredPharmacyNumber } from "../services/PharmacyInvoiceNumberingService.ts";
+import type { PharmacyNumberSnapshot } from "./pharmacyInvoiceNumberFormat.ts";
+export { indiaFinancialYear } from "./indiaFinancialYear.ts";
 
 async function nextBounded(id: string, max: number) {
   await Counter.updateOne({ id }, { $setOnInsert: { seq: 0 } }, { upsert: true });
@@ -37,6 +31,34 @@ export async function allocateInvoiceNumber(locationId: string, at = new Date())
     const sequence = await nextBounded(`invoice-v2:${reservation.series}:${fiscal.start}`, 999999);
     return { invoiceNumber: `I${reservation.series}${fiscal.code}/${String(sequence).padStart(6, "0")}`,
       numberingVersion: 2, financialYear: fiscal.label, invoiceSeries: reservation.series };
+  });
+}
+
+/** Pharmacy documents can use the owner's series; general clinical invoices keep their own allocator. */
+export async function allocatePharmacyInvoiceNumber(locationId: string, at = new Date()): Promise<{ invoiceNumber: string; numberingVersion: number; financialYear: string; invoiceSeries: string; numberingSnapshot?: PharmacyNumberSnapshot }> {
+  return withTransaction(async () => {
+    const configured = await allocateConfiguredPharmacyNumber(locationId, at);
+    if (!configured) return allocateInvoiceNumber(locationId, at);
+    // Credit notes and opening balances keep their separate reserved branch series.
+    await reserveBranchSeries(locationId);
+    return configured;
+  });
+}
+
+/** Permanent server reservation; unused/expired numbers are never given back. */
+export async function reserveOfflinePharmacyNumbers(locationId: string, count: number, at: Date) {
+  if (!Number.isSafeInteger(count) || count < 1 || count > 1000) throw new CommandError(400, "Reserve between 1 and 1000 invoice numbers");
+  return withTransaction(async session => {
+    if (!session?.inTransaction()) throw new CommandError(503, "Offline number reservation requires database transactions");
+    const configured = await allocateConfiguredPharmacyNumber(locationId, at, count), reservation = await reserveBranchSeries(locationId), year = indiaFinancialYear(at);
+    if (configured) return { prefix: configured.invoiceSeries, financialYear: year.label, first: configured.numberingSnapshot.sequence - count + 1,
+      last: configured.numberingSnapshot.sequence, format: { prefixTemplate: configured.numberingSnapshot.prefixTemplate, digits: configured.numberingSnapshot.digits,
+        resetPolicy: configured.numberingSnapshot.resetPolicy, configurationRevision: configured.numberingSnapshot.configurationRevision } };
+    const key = `invoice-v2:${reservation.series}:${year.start}`;
+    await Counter.updateOne({ id: key }, { $setOnInsert: { seq: 0 } }, { upsert: true });
+    const counter = await Counter.findOneAndUpdate({ id: key, seq: { $gte: 0, $lte: 999999 - count } }, { $inc: { seq: count } }, { returnDocument: "after" });
+    if (!counter || !Number.isSafeInteger(counter.seq)) throw new CommandError(409, "Invoice series cannot fit this reservation");
+    return { prefix: `I${reservation.series}${year.code}/`, financialYear: year.label, first: counter.seq - count + 1, last: counter.seq };
   });
 }
 

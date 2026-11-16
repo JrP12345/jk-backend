@@ -28,7 +28,7 @@ export async function listPharmacyPurchaseProducts(req: FastifyRequest, reply: F
     if (!Number.isInteger(limit) || limit < 1 || limit > 50 || query.search !== undefined && (typeof query.search !== "string" || query.search.length > 100)) throw new CommandError(400, "Invalid product search or page size");
     const rows = await Medicine.find({ locationId: scope.locationId, deletedAt: null, unitDefinition: { $exists: true }, ...(query.cursor ? { _id: { $gt: identifier(query.cursor) } } : {}),
       ...(query.search?.trim() ? { $or: [{ name: { $regex: escapeRegex(query.search.trim()), $options: "i" } }, { genericName: { $regex: escapeRegex(query.search.trim()), $options: "i" } }, { barcodes: query.search.trim() }] } : {}) })
-      .select("name genericName strength unitDefinition price hsnCode").sort({ _id: 1 }).limit(limit + 1).lean();
+      .select("name genericName strength manufacturer unitDefinition price hsnCode").sort({ _id: 1 }).limit(limit + 1).lean();
     const page = rows.slice(0, limit);
     return reply.send(successResponse({ items: page.map(dto), nextCursor: rows.length > limit ? String(page.at(-1)!._id) : null }));
   } catch (error) { return failure(reply, error); }

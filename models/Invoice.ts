@@ -8,6 +8,7 @@ import { pharmacyDocumentSchema, pharmacyTaxAmounts } from "./pharmacyDocumentSc
 import { CommandError } from "../services/CommandReceiptService.ts";
 import { pharmacyCalculationSchema } from "./pharmacyCalculationSchema.ts";
 import { validateRetailInvoice } from "../utilities/pharmacyInvoice.ts";
+import { validPharmacyInvoiceNumber } from "../utilities/pharmacyInvoiceNumberFormat.ts";
 
 const InvoiceItemSchema = new Schema({
   ...pharmacyTaxAmounts,
@@ -37,7 +38,7 @@ const InvoiceSchema = new Schema({
     issuer: { legalName: { type: String, required: true }, address: { type: String, required: true }, drugLicenceNumbers: [String] },
   }, { _id: false }), default: undefined },
   calculation: { type: pharmacyCalculationSchema },
-  invoiceNumber: { type: String, required: true, unique: true },
+  invoiceNumber: { type: String, required: true },
   generationKey: { type: String },
   clinicalChargeVersion: { type: Number },
   supplementForInvoiceId: { type: Schema.Types.ObjectId, ref: "Invoice" },
@@ -46,6 +47,8 @@ const InvoiceSchema = new Schema({
   numberingVersion: { type: Number },
   financialYear: { type: String },
   invoiceSeries: { type: String },
+  numberingSnapshot: { type: new Schema({ version: { type: Number, enum: [1], required: true }, prefixTemplate: { type: String, required: true }, prefix: { type: String, required: true },
+    digits: { type: Number, required: true }, sequence: { type: Number, required: true }, resetPolicy: { type: String, enum: ["continuous", "financial_year"], required: true }, configurationRevision: { type: Number, required: true } }, { _id: false }), default: undefined },
   taxDocument: { type: pharmacyDocumentSchema },
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization" },
   currency: { type: String, enum: ["INR", "USD", "CAD", "GBP", "AED", "EUR"] },
@@ -117,6 +120,7 @@ const InvoiceSchema = new Schema({
 }, { timestamps: true });
 
 InvoiceSchema.index({ locationId: 1, status: 1 });
+InvoiceSchema.index({ organizationId: 1, invoiceNumber: 1 }, { unique: true, name: "invoice_organization_number_v1" });
 // A separate array contains only real source IDs. Indexing mixed clinical items
 // would also index missing pharmacy IDs as null, conflicting across normal bills.
 InvoiceSchema.index({ pharmacyDispenseLineIds: 1 }, { unique: true,
@@ -124,6 +128,8 @@ InvoiceSchema.index({ pharmacyDispenseLineIds: 1 }, { unique: true,
 InvoiceSchema.index({ generationKey: 1 }, { unique: true, partialFilterExpression: { generationKey: { $type: "string" } } });
 InvoiceSchema.index({ organizationId: 1, createdAt: -1 });
 InvoiceSchema.index({ organizationId: 1, patientId: 1, createdAt: -1 });
+InvoiceSchema.index({ organizationId: 1, locationId: 1, kind: 1, "customerSnapshot.partyId": 1, _id: -1 });
+InvoiceSchema.index({ organizationId: 1, locationId: 1, kind: 1, issuedAt: -1, _id: -1 });
 
 InvoiceSchema.pre("validate", function () {
   validateRetailInvoice(this);
@@ -136,12 +142,12 @@ InvoiceSchema.pre("validate", function () {
   }
   if (this.documentVersion === 1) {
     const document = this.taxDocument;
-    const validNumber = /^I[0-9A-Z]{4}[0-9]{4}\/[0-9]{6}$/.test(this.invoiceNumber);
+    const validNumber = validPharmacyInvoiceNumber(this);
     const sum = (key: "baseAmountPaise" | "cgstPaise" | "sgstPaise" | "grossAmountPaise") => this.items.reduce((total, item) => total + (item[key] ?? NaN), 0);
-    if (!this.issuedAt || !document || document.version !== 1 || !validNumber || this.numberingVersion !== 2 || this.currency !== "INR" ||
+    if (!this.issuedAt || !document || document.version !== 1 || !validNumber || this.currency !== "INR" ||
         !document.issuer?.legalName || !document.issuer.address || !document.issuer.stateCode || !document.issuer.authorisedSignatory ||
         !document.issuer.drugLicenceNumbers?.length || !document.recipient?.name || !document.issuedBy || document.signatureMode !== "manual_on_print" ||
-        document.issuedAt?.getTime() !== this.issuedAt.getTime() || this.invoiceSeries !== this.invoiceNumber.slice(1, 5) ||
+        document.issuedAt?.getTime() !== this.issuedAt.getTime() ||
         !this.financialYear || !this.invoiceSeries || !this.items.length || this.items.some(item =>
           !/^\d{4}(\d{2})?(\d{2})?$/.test(item.hsnSacCode) || !/^[A-Z]{3}$/.test(item.unitCode || "") ||
           ![item.baseAmountPaise, item.cgstPaise, item.sgstPaise, item.grossAmountPaise].every(value => Number.isSafeInteger(value) && value! >= 0) ||
@@ -156,7 +162,7 @@ InvoiceSchema.pre("validate", function () {
   }
 });
 
-const protectedIssuePaths = ["openingBalanceId", "openingBalanceSnapshot", "kind", "createdBy", "customerSnapshot", "calculation", "items", "pharmacyDispenseLineIds", "invoiceNumber", "documentVersion", "numberingVersion", "financialYear", "invoiceSeries", "taxDocument", "issuedAt", "currency", "organizationId", "locationId", "patientId", "doctorId", "encounterId", "appointmentId", "supplementForInvoiceId", "subtotal", "taxableAmount", "tax", "discount", "totalAmount", "cgstTotal", "sgstTotal", "igstTotal", "supplierGstin", "customerGstin", "invoiceType", "placeOfSupply", "isInterstate", "deletedAt"];
+const protectedIssuePaths = ["openingBalanceId", "openingBalanceSnapshot", "kind", "createdBy", "customerSnapshot", "calculation", "items", "pharmacyDispenseLineIds", "invoiceNumber", "documentVersion", "numberingVersion", "numberingSnapshot", "financialYear", "invoiceSeries", "taxDocument", "issuedAt", "currency", "organizationId", "locationId", "patientId", "doctorId", "encounterId", "appointmentId", "supplementForInvoiceId", "subtotal", "taxableAmount", "tax", "discount", "totalAmount", "cgstTotal", "sgstTotal", "igstTotal", "supplierGstin", "customerGstin", "invoiceType", "placeOfSupply", "isInterstate", "deletedAt"];
 InvoiceSchema.pre("save", async function () {
   if (this.isNew) return;
   const issued = await Invoice.findOne({ _id: this._id, documentVersion: { $in: [1, 2, 3] }, issuedAt: { $ne: null } }).select("_id").lean();

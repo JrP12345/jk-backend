@@ -1,0 +1,45 @@
+{
+  "writesPaused": true,
+  "review": [
+    {
+      "collection": "invoices",
+      "remove": {
+        "v": 2,
+        "key": {
+          "invoiceNumber": 1
+        },
+        "name": "invoiceNumber_1",
+        "unique": true
+      },
+      "retain": {
+        "v": 2,
+        "key": {
+          "organizationId": 1,
+          "invoiceNumber": 1
+        },
+        "name": "invoice_organization_number_v1",
+        "unique": true
+      }
+    },
+    {
+      "collection": "pharmacyinvoiceprefixes",
+      "remove": {
+        "v": 2,
+        "key": {
+          "prefix": 1
+        },
+        "name": "prefix_1",
+        "unique": true
+      },
+      "retain": {
+        "v": 2,
+        "key": {
+          "organizationId": 1,
+          "prefix": 1
+        },
+        "name": "pharmacy_organization_prefix_v1",
+        "unique": true
+      }
+    }
+  ]
+}

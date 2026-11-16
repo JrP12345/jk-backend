@@ -22,6 +22,7 @@ export async function pharmacyCapabilities(req: FastifyRequest, locationId: stri
   const root = req.user.role === "root";
   const moduleEnabled = await isModuleEnabledForOrganization(access.organizationId, "pharmacy");
   const enabled = location.pharmacyCapability?.enabled !== false;
+  const inventoryMode = location.pharmacyCapability?.inventoryMode || "tracked";
   if (!access.organizationId) throw new CommandError(404, "Organization not found");
   const entitlement = await getOrganizationProductEntitlements(access.organizationId);
   const businessEnabled = !entitlement.enforcement || entitlement.active && entitlement.pharmacyLocationIds.includes(locationId);
@@ -30,11 +31,12 @@ export async function pharmacyCapabilities(req: FastifyRequest, locationId: stri
   ])) as Record<PharmacyAction, boolean>;
   const organization = await Organization.findById(access.organizationId).select("workspaceProfile").lean();
   if (organization?.workspaceProfile === "pharmacy") { actions.viewRxQueue = false; actions.dispense = false; actions.recoverDispense = false; }
+  if (inventoryMode === "billing_only") for (const action of ["receiveStock", "adjustStock", "transferStock", "viewRxQueue", "dispense"] as const) actions[action] = false;
   const importKinds = (root || moduleEnabled ? [
     ["catalogue", ["manageCatalog", "viewStock"]], ["opening_stock", ["receiveStock", "viewStock", "viewCost"]],
     ["customer_dues", ["openingBalances", "viewReturns"]], ["supplier_dues", ["openingBalances", "viewPurchases"]],
-  ] as Array<[string, PharmacyAction[]]> : []).filter(([, required]) => required.every(action => pharmacyAllows(permissions, action, root))).map(([kind]) => kind);
+  ] as Array<[string, PharmacyAction[]]> : []).filter(([kind, required]) => (kind !== "opening_stock" || inventoryMode === "tracked") && required.every(action => pharmacyAllows(permissions, action, root))).map(([kind]) => kind);
   return { locationId, organizationId: access.organizationId, enabled, moduleEnabled, rootOverride: root,
-    mode: location.pharmacyCapability ? "configured" : "legacy_included", revision: location.pharmacyCapability?.revision || 0,
+    mode: location.pharmacyCapability ? "configured" : "legacy_included", inventoryMode, revision: location.pharmacyCapability?.revision || 0,
     actions, importKinds, commercialEntitlement: entitlement.enforcement ? businessEnabled ? "active" : "unavailable" : "plan_included", counterSalesAvailable: actions.sell, restrictedQualificationRequired: true };
 }

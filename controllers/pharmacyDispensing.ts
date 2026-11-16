@@ -11,13 +11,15 @@ import { withTransaction } from "../utilities/transaction.ts";
 import { errorResponse, successResponse } from "../utilities/helpers.ts";
 import { CommandError } from "../services/CommandReceiptService.ts";
 import { genuineDetail } from "../utilities/pharmacyEvidence.ts";
+import { PharmacyInventoryError, requireStockTransaction } from "../utilities/pharmacyInventory.ts";
+import { pinPharmacyContinuityLocation } from "../utilities/pharmacyCapability.ts";
 
 function revisionFilter(revision: number) {
   if (!Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER) throw new CommandError(400, "Invalid expectedRevision");
   return revision;
 }
 function failure(reply: FastifyReply, error: unknown) {
-  return reply.code(error instanceof CommandError ? error.statusCode : 500).send(errorResponse(error instanceof CommandError ? error.message : "Unable to record dispensing review"));
+  return reply.code(error instanceof CommandError || error instanceof PharmacyInventoryError ? error.statusCode : 500).send(errorResponse(error instanceof CommandError || error instanceof PharmacyInventoryError ? error.message : "Unable to record dispensing review"));
 }
 export async function getPharmacyProfessionalReview(req: FastifyRequest, reply: FastifyReply) {
   reply.header("Cache-Control", "no-store");
@@ -38,7 +40,8 @@ export async function savePharmacyProfessionalReview(req: FastifyRequest, reply:
     const revision = revisionFilter(expectedRevision);
     if (![declaration.registrationNumber, declaration.council, declaration.address, declaration.reviewReference].every(genuineDetail)) throw new CommandError(409, "Complete genuine professional evidence details");
     if (declaration.active && new Date(declaration.validUntil).getTime() <= Date.now()) throw new CommandError(409, "Active professional review must have a future review deadline");
-    const saved = await withTransaction(async () => {
+    const saved = await withTransaction(async session => {
+      requireStockTransaction(session);
       const member = await OrgMember.findOneAndUpdate({ userId, organizationId: access.organizationId, role: { $nin: ["patient", "family_member", "guest"] } }, { $inc: { __v: 1 } });
       const user = await User.findOne({ _id: userId, isActive: true });
       if (!member || !user) throw new CommandError(404, "Active staff member not found");
@@ -67,11 +70,12 @@ export async function reviewMedicineDispensing(req: FastifyRequest, reply: Fasti
     const { expectedRevision, scheduleType, reviewReference } = req.body as any;
     const revision = revisionFilter(expectedRevision);
     if (!genuineDetail(reviewReference)) throw new CommandError(409, "A genuine classification review reference is required");
-    const saved = await withTransaction(async () => {
+    const saved = await withTransaction(async session => {
       const updated = await Medicine.findOneAndUpdate({ _id: id, locationId: medicine.locationId, deletedAt: null,
         ...(revision ? { dispensingRevision: revision } : { $or: [{ dispensingRevision: 0 }, { dispensingRevision: { $exists: false } }] }) },
       { $set: { scheduleType, dispensingReview: { scheduleType, reviewReference, confirmedBy: req.user!.id, confirmedAt: new Date() } }, $inc: { dispensingRevision: 1 } }, { returnDocument: "after", runValidators: true });
       if (!updated) throw new CommandError(409, "Dispensing classification changed; reload before saving");
+      await pinPharmacyContinuityLocation(String(medicine.locationId), session);
       await AuditLog.create({ organizationId: access.organizationId, userId: req.user!.id, action: "PHARMACY_DISPENSING_CLASSIFICATION_REVIEWED", targetId: medicine._id, targetModel: "Medicine", category: "ADMIN", details: { revision: revision + 1, scheduleType } });
       return updated;
     });

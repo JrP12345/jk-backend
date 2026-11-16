@@ -7,10 +7,11 @@ export const MEDICINE_PACK_UNITS = ["strip", "box", "bottle", "vial", "tube", "a
 export function assertMedicineBodyTypes(input: unknown) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new CommandError(400, "A medicine object is required");
   const body = input as Record<string, unknown>;
+  if (body.billingSupply !== undefined && (!body.billingSupply || typeof body.billingSupply !== "object" || Array.isArray(body.billingSupply) || typeof (body.billingSupply as Record<string, unknown>).mrpPaise !== "number")) throw new CommandError(400, "Billing supply MRP must be numeric paise");
   for (const key of ["stockQuantity", "price", "costPrice", "reorderLevel", "gstRate", "expectedUnitVersion"]) {
     if (body[key] !== undefined && (typeof body[key] !== "number" || !Number.isFinite(body[key]))) throw new CommandError(400, `${key} must be a finite number`);
   }
-  for (const key of ["name", "genericName", "manufacturer", "strength", "category", "scheduleType", "hsnCode", "expiryDate", "batchNumber"]) {
+  for (const key of ["name", "genericName", "manufacturer", "strength", "rackLocation", "category", "scheduleType", "hsnCode", "expiryDate", "batchNumber"]) {
     if (body[key] !== undefined && typeof body[key] !== "string") throw new CommandError(400, `${key} must be a string`);
   }
   if (body.barcodes !== undefined) normalizeBarcodes(body.barcodes);
@@ -39,9 +40,9 @@ export function normalizeUnitDefinition(input: unknown, version: number) {
 }
 export function catalogueFields(body: Record<string, unknown>) {
   const result: Record<string, unknown> = {};
-  for (const [key, max] of [["name", 200], ["genericName", 500], ["manufacturer", 200], ["strength", 80]] as const) if (body[key] !== undefined) {
+  for (const [key, max] of [["name", 200], ["genericName", 500], ["manufacturer", 200], ["strength", 80], ["rackLocation", 60]] as const) if (body[key] !== undefined) {
     const value = body[key];
-    if (typeof value !== "string" || value.trim().length > max || ["name", "genericName"].includes(key) && !value.trim()) throw new CommandError(400, `Invalid ${key}`);
+    if (typeof value !== "string" || value.trim().length > max || key === "rackLocation" && /[\p{Cc}\p{Cf}]/u.test(value) || ["name", "genericName"].includes(key) && !value.trim()) throw new CommandError(400, `Invalid ${key}`);
     result[key] = value.trim();
   }
   if (body.category !== undefined) {

@@ -193,10 +193,10 @@ describe("Location pharmacy capability and granular authority", () => {
     expect((await settings(f, false, 0)).statusCode).toBe(409);
     expect(await AuditLog.countDocuments({ targetId: f.locationId, action: "PHARMACY_CAPABILITY_REVIEWED" })).toBe(1);
     const list = await app.inject({ method: "GET", url: "/api/onboarding/locations", headers: f.admin.headers });
-    expect(list.json().data[0].pharmacyCapability).toEqual({ enabled: true, revision: 1 });
+    expect(list.json().data[0].pharmacyCapability).toEqual({ enabled: true, revision: 1, inventoryMode: "tracked" });
     const edited = await app.inject({ method: "PUT", url: `/api/onboarding/locations/${f.locationId}`, headers: f.admin.headers, payload: { name: "Existing clinic", city: "Pune" } });
     expect(edited.statusCode, edited.body).toBe(200);
-    expect(edited.json().data.pharmacyCapability).toEqual({ enabled: true, revision: 1 });
+    expect(edited.json().data.pharmacyCapability).toEqual({ enabled: true, revision: 1, inventoryMode: "tracked" });
     const reviewed = await app.inject({ method: "GET", url: `/api/pharmacy/locations/${f.locationId}/settings`, headers: f.staff.headers });
     expect(reviewed.statusCode, reviewed.body).toBe(200);
     expect(reviewed.json().data.review.reviewReference).toBe("Synthetic local test review");

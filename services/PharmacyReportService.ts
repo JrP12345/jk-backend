@@ -12,6 +12,8 @@ import { stockReport } from "./PharmacyStockReportService.ts";
 import { financeReport } from "./PharmacyFinanceReportService.ts";
 import { reportNumber, type ReportRow, type ReportColumn } from "./PharmacyReportTypes.ts";
 import { escapeCsv } from "./ReportExportService.ts";
+import { pharmacyInventoryMode, requireTrackedInventory } from "../utilities/pharmacyInventoryMode.ts";
+const currentStockKinds = new Set<string>(["stock", "low_stock", "expiry", "valuation", "dead_stock"]);
 const grants: Record<PharmacyReportKind, PharmacyAction[]> = {
   stock: ["viewStock"], low_stock: ["viewStock"], expiry: ["viewStock"], dead_stock: ["viewStock"], valuation: ["viewStock", "viewCost"], movements: ["readMovements"],
   purchases: ["viewPurchases"], purchase_returns: ["viewPurchases"], supplier_dues: ["viewPurchases"], sales: ["viewSales"], collections: ["viewSales"], tax: ["viewSales"], sales_returns: ["viewReturns"], customer_dues: ["viewReturns"], cash_events: ["viewSettlements"],
@@ -25,7 +27,8 @@ async function reportAuthority(req: FastifyRequest) {
 export async function reportCatalogue(req: FastifyRequest, locationId: unknown) {
   const scope = await purchaseScope(req, locationId), allows = await reportAuthority(req);
   if (!allows("viewReports")) throw new CommandError(403, "Pharmacy report permission is required");
-  return { locationId: scope.locationId, items: pharmacyReportKinds.filter(kind => grants[kind].every(allows)).map(kind => ({ kind, label: pharmacyReportLabels[kind] })) };
+  const { mode } = await pharmacyInventoryMode(scope.locationId);
+  return { locationId: scope.locationId, items: pharmacyReportKinds.filter(kind => grants[kind].every(allows) && (mode === "tracked" || !currentStockKinds.has(kind))).map(kind => ({ kind, label: pharmacyReportLabels[kind] })) };
 }
 export async function readPharmacyReport(req: FastifyRequest, rawKind: unknown, exporting = false, basicAlert = false) {
   const input = pharmacyReportInput(req.query, rawKind), scope = await purchaseScope(req, input.locationId), allows = await reportAuthority(req);
@@ -40,6 +43,7 @@ export async function readPharmacyReport(req: FastifyRequest, rawKind: unknown, 
   const start = locationDayRange(startDate, timezone).start, end = new Date(Math.min(locationDayRange(endDate, timezone).end.getTime(), asOf.getTime()));
   return withTransaction(async session => {
     if (!session) throw new CommandError(503, "Consistent pharmacy reports require a transaction-capable database");
+    if (currentStockKinds.has(input.kind)) await requireTrackedInventory(scope.locationId, session);
     const org = await Organization.findById(scope.organizationId).select("currency countryCode").session(session).lean();
     if (org?.currency !== "INR" || org.countryCode !== "IN") throw new CommandError(409, "Pharmacy reports require the configured India/INR source currency");
     const cashKinds = ["cash_in", "cash_out", ...(allows("viewPurchases") ? ["supplier_credit", "supplier_payment", "supplier_refund"] : []), ...(allows("viewReturns") ? ["customer_refund"] : [])];

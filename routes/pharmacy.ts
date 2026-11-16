@@ -1,4 +1,8 @@
 import type { FastifyInstance } from "fastify";
+import { getCounterOverview } from "../controllers/pharmacyCounterOverview.ts";
+import { stockReconciliationController } from "../controllers/pharmacyStockReconciliation.ts";
+import { externalPrescriptionController } from "../controllers/pharmacyExternalPrescriptions.ts";
+import { getPickupQueue, resolvePickupTicket, updatePickup, getStorefront, updateStorefront } from "../controllers/pharmacyStorefront.ts";
 import { authenticate, checkPermission } from "../middleware/auth.ts";
 import { requireModule } from "../middleware/moduleGuard.ts";
 import { requirePharmacyStaff, requirePharmacyAction } from "../middleware/pharmacyGuard.ts";
@@ -6,6 +10,7 @@ import { getPharmacyCapabilities, getPharmacySettings, savePharmacySettings, get
 import { pharmacySettingsSchema } from "../schemas/pharmacySettings.ts";
 import pharmacyPurchaseRoutes from "./pharmacyPurchases.ts";
 import { postCounterInvoice, getCounterOperation, getCounterInvoice, listCounterInvoices, postCounterQuote, searchCounterProducts, searchCounterCustomers } from "../controllers/pharmacySales.ts";
+import { getCounterCataloguePage } from "../controllers/pharmacyCatalogue.ts";
 import { postPharmacyCollection, payPharmacyInvoice, getPharmacyCollectionOperation, listPharmacyCollections } from "../controllers/pharmacyCollections.ts";
 import { postPharmacyStockReceipt, getPharmacyStockReceipt } from "../controllers/pharmacyStockReceipts.ts";
 import { listReturnInvoices, getReturnSource, quoteReturn, postReturn, getReturnOperation, getReturn } from "../controllers/pharmacyReturns.ts";
@@ -21,6 +26,9 @@ import { postPharmacyImport, getPharmacyImport, listPharmacyImports } from "../c
 import { createMedicineSchema, updateMedicineSchema, medicineListSchema, dispensePrescriptionSchema, stockAdjustmentSchema } from "../schemas/clinical.ts";
 import { getPharmacyTaxProfile, savePharmacyTaxProfile, reviewMedicineTax } from "../controllers/pharmacyTax.ts";
 import { pharmacyTaxProfileSchema, medicineTaxReviewSchema } from "../schemas/pharmacyTax.ts";
+import { pharmacyNumberingSettings, pharmacyNumberingSchema, assertPharmacyNumberingBody } from "../controllers/pharmacyInvoiceNumbering.ts";
+import { offlineDeviceController } from "../controllers/pharmacyOfflineDevice.ts";
+import { getOfflineAuthority, getOfflineSnapshotPage, offlineCheckoutController } from "../controllers/pharmacyOfflineAuthority.ts";
 import { getPharmacyProfessionalReview, savePharmacyProfessionalReview, reviewMedicineDispensing } from "../controllers/pharmacyDispensing.ts";
 import { pharmacyProfessionalReviewSchema, pharmacyDispensingReviewSchema } from "../schemas/pharmacyDispensing.ts";
 import {
@@ -46,6 +54,16 @@ export default async function pharmacyRoutes(app: FastifyInstance) {
   };
   const action = (permission: PharmacyAction) => ({ preHandler: [authenticate, requirePharmacyStaff, requireModule("pharmacy"), requirePharmacyAction(permission)] });
   const imports = { preHandler: [authenticate, requirePharmacyStaff, requireModule("pharmacy")] };
+  const externalRead = action("viewExternalPrescriptions"), externalWrite = action("externalDispense");
+  app.get("/api/pharmacy/external-prescriptions", externalRead, externalPrescriptionController("list"));
+  app.get("/api/pharmacy/external-prescriptions/products", externalWrite, externalPrescriptionController("products"));
+  app.get("/api/pharmacy/external-prescriptions/:id", externalRead, externalPrescriptionController("read"));
+  app.get("/api/pharmacy/external-prescription-invoices/:id", externalRead, externalPrescriptionController("bill"));
+  app.post("/api/pharmacy/external-prescriptions", externalWrite, externalPrescriptionController("record"));
+  app.post("/api/pharmacy/external-prescriptions/:id/cancel", externalRead, externalPrescriptionController("cancel"));
+  app.post("/api/pharmacy/external-prescriptions/quote", externalWrite, externalPrescriptionController("quote"));
+  app.post("/api/pharmacy/external-prescriptions/supply", externalWrite, externalPrescriptionController("supply"));
+  app.get("/api/pharmacy/external-prescription-operations/:key", externalRead, getCounterOperation);
   app.post("/api/pharmacy/imports/inspect", imports, postPharmacyImport("inspect"));
   app.post("/api/pharmacy/imports/preview", imports, postPharmacyImport("preview"));
   app.get("/api/pharmacy/imports", imports, listPharmacyImports);
@@ -53,6 +71,16 @@ export default async function pharmacyRoutes(app: FastifyInstance) {
   app.get("/api/pharmacy/imports/:id/export", imports, getPharmacyImport(true));
   app.post("/api/pharmacy/imports/:id/commit", imports, postPharmacyImport("commit"));
   const settings = { preHandler: [authenticate, requirePharmacyStaff, requirePharmacyAction("manageSettings")] };
+  const countPath = "/api/pharmacy/locations/:locationId/stock-reconciliation";
+  app.get(countPath, settings, stockReconciliationController("snapshot"));
+  app.post(`${countPath}/preview`, { ...settings, bodyLimit: 8 * 1024 * 1024 }, stockReconciliationController("preview"));
+  app.post(`${countPath}/commit`, { ...settings, bodyLimit: 8 * 1024 * 1024 }, stockReconciliationController("commit"));
+  app.get(`${countPath}/operations/:key`, settings, stockReconciliationController("recover"));
+  app.get("/api/pharmacy/locations/:locationId/storefront", settings, getStorefront);
+  app.put("/api/pharmacy/locations/:locationId/storefront", settings, updateStorefront);
+  app.get("/api/pharmacy/pickups", action("viewSales"), getPickupQueue);
+  app.post("/api/pharmacy/pickups/scan", action("viewSales"), resolvePickupTicket);
+  app.post("/api/pharmacy/pickups/:id/transition", action("viewSales"), updatePickup);
   const transfers = action("transferStock");
   const { pharmacyTransferController } = await import("../controllers/pharmacyTransfers.ts");
   app.get("/api/pharmacy/transfer-products", transfers, pharmacyTransferController("products"));
@@ -76,6 +104,8 @@ export default async function pharmacyRoutes(app: FastifyInstance) {
   app.post("/api/pharmacy/sales", action("sell"), postCounterInvoice);
   app.post("/api/pharmacy/sales/quote", action("sell"), postCounterQuote);
   app.get("/api/pharmacy/sales/products", action("sell"), searchCounterProducts);
+  app.get("/api/pharmacy/sales/catalogue", action("sell"), getCounterCataloguePage);
+  app.get("/api/pharmacy/sales/overview", action("viewSales"), getCounterOverview);
   app.get("/api/pharmacy/sales/customers", action("sell"), searchCounterCustomers);
   app.get("/api/pharmacy/sale-operations/:key", action("viewSales"), getCounterOperation);
   app.get("/api/pharmacy/invoices", action("viewSales"), listCounterInvoices);
@@ -105,6 +135,22 @@ export default async function pharmacyRoutes(app: FastifyInstance) {
   app.patch("/api/pharmacy/locations/:locationId/settings", { ...settings, schema: pharmacySettingsSchema }, savePharmacySettings);
   app.get("/api/pharmacy/role-presets", { preHandler: [authenticate, requirePharmacyStaff, checkPermission("ADMINISTRATIVE_GOVERNANCE")] }, getPharmacyRolePresets);
   const configurePharmacyTax = { preHandler: [authenticate, requirePharmacyStaff, requireModule("pharmacy"), checkPermission("MANAGE_ORGANIZATION")] };
+  const devicePath = "/api/pharmacy/locations/:locationId/offline-device";
+  app.get("/api/pharmacy/locations/:locationId/offline-authority", action("viewSales"), getOfflineAuthority);
+  app.get("/api/pharmacy/locations/:locationId/offline-authority/:authorityId/snapshot/:page", action("viewSales"), getOfflineSnapshotPage);
+  const authorityPath = "/api/pharmacy/locations/:locationId/offline-authority";
+  app.get(`${authorityPath}/:authorityId/grant`, action("viewSales"), offlineCheckoutController("grant"));
+  for (const command of ["acquire", "prepare", "activate", "cancel", "close"] as const)
+    app.post(`${authorityPath}/${command}`, { ...configurePharmacyTax, bodyLimit: 16384 }, offlineCheckoutController(command));
+  app.post(`${authorityPath}/import`, { ...action("viewSales"), bodyLimit: 3 * 1024 * 1024 }, offlineCheckoutController("import"));
+  app.get(devicePath, configurePharmacyTax, offlineDeviceController("read"));
+  app.get(`${devicePath}/history/:deviceId`, configurePharmacyTax, offlineDeviceController("history"));
+  app.post(`${devicePath}/challenge`, { ...configurePharmacyTax, bodyLimit: 8192 }, offlineDeviceController("challenge"));
+  app.post(`${devicePath}/enroll`, { ...configurePharmacyTax, bodyLimit: 8192 }, offlineDeviceController("enroll"));
+  app.post(`${devicePath}/revoke`, { ...configurePharmacyTax, bodyLimit: 8192 }, offlineDeviceController("revoke"));
+  app.post(`${devicePath}/cancel`, { ...configurePharmacyTax, bodyLimit: 8192 }, offlineDeviceController("cancel"));
+  app.get("/api/pharmacy/locations/:locationId/invoice-numbering", configurePharmacyTax, pharmacyNumberingSettings());
+  app.put("/api/pharmacy/locations/:locationId/invoice-numbering", { ...configurePharmacyTax, preValidation: assertPharmacyNumberingBody, schema: pharmacyNumberingSchema }, pharmacyNumberingSettings(true));
   app.get("/api/pharmacy/locations/:locationId/tax-profile", configurePharmacyTax, getPharmacyTaxProfile);
   app.put("/api/pharmacy/locations/:locationId/tax-profile", { ...configurePharmacyTax, schema: pharmacyTaxProfileSchema }, savePharmacyTaxProfile);
   app.put("/api/pharmacy/medicines/:id/tax-classification", { ...configurePharmacyTax, schema: medicineTaxReviewSchema }, reviewMedicineTax);

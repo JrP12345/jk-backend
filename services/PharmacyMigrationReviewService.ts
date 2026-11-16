@@ -139,7 +139,7 @@ export async function reviewPharmacyMigrationPage(input: PharmacyReviewInput, co
         if (!row.organizationId) add(codes, "invoice_organization_missing");
         else if (id(row.organizationId) !== input.organizationId) add(codes, "organization_conflict");
         if (!row.documentVersion) add(codes, "legacy_invoice_provenance_review");
-        if (row.documentVersion && (row.documentVersion !== 1 || row.numberingVersion !== 2 || !date(row.issuedAt) || !items.length)) add(codes, "issued_document_evidence_review");
+        if (row.documentVersion && (row.documentVersion !== 1 || ![2, 3].includes(row.numberingVersion) || !date(row.issuedAt) || !items.length)) add(codes, "issued_document_evidence_review");
         if (items.length > MAX_RELATED) add(codes, "related_rows_exceed_limit");
         for (const item of items.slice(0, MAX_RELATED)) if (item.pharmacyDispenseId || item.pharmacyDispenseLineId) {
           const lineKey = id(item.pharmacyDispenseLineId);

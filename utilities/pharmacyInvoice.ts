@@ -1,5 +1,6 @@
 import { CommandError } from "../services/CommandReceiptService.ts";
 import { toPaise } from "./pharmacyTax.ts";
+import { validPharmacyInvoiceNumber } from "./pharmacyInvoiceNumberFormat.ts";
 
 /** Validates the committed retail contract without requiring any clinical entity. */
 export function validateRetailInvoice(invoice: any) {
@@ -26,8 +27,7 @@ export function validateRetailInvoice(invoice: any) {
       !doc || doc.version !== 2 || doc.pricingPolicy !== calc.policy || !["tax_invoice", "bill_of_supply", "invoice_cum_bill_of_supply", "ordinary_bill"].includes(doc.kind) ||
       !doc.issuer?.legalName || !doc.issuer.address || !doc.issuer.authorisedSignatory || !doc.issuer.drugLicenceNumbers?.length || !doc.recipient?.name ||
       String(doc.issuedBy) !== String(invoice.createdBy) || doc.signatureMode !== "manual_on_print" || doc.supplyMode !== "counter_pickup" ||
-      !invoice.issuedAt || doc.issuedAt?.getTime() !== invoice.issuedAt.getTime() || invoice.currency !== "INR" || invoice.numberingVersion !== 2 ||
-      !/^I[0-9A-Z]{4}[0-9]{4}\/[0-9]{6}$/.test(invoice.invoiceNumber) || !invoice.financialYear || invoice.invoiceSeries !== invoice.invoiceNumber.slice(1, 5) ||
+      !invoice.issuedAt || doc.issuedAt?.getTime() !== invoice.issuedAt.getTime() || invoice.currency !== "INR" || !validPharmacyInvoiceNumber(invoice) || !invoice.financialYear ||
       !invoice.items.length || calc.lines.length !== invoice.items.length || !calc.totals || invoice.isInterstate || invoice.invoiceType !== "B2C") fail();
   const totals = calc.totals, fields = ["amountBeforeDiscountPaise", "lineDiscountPaise", "invoiceDiscountPaise", "baseAmountPaise", "cgstPaise", "sgstPaise", "grossAmountPaise"];
   const paid = toPaise(invoice.amountPaid ?? 0), credited = invoice.creditedPaise ?? 0;

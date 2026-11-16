@@ -48,6 +48,24 @@ export function receiptQuantity(input: StockReceiptInput, unit: { version: numbe
   return quantity;
 }
 export function validateCapturedLot(lot: any, unit?: any, organizationId?: string) {
+  return validateLotSnapshot(lot, unit, organizationId, expiry => lotExpiry(expiry, expiry.timezone).cutoff);
+}
+
+/** Memoize only pure calendar arithmetic within one read; validate every lot's facts. */
+export function createCapturedLotValidator() {
+  const cutoffs = new Map<string, Date>();
+  return (lot: any, unit?: any, organizationId?: string) => validateLotSnapshot(lot, unit, organizationId, expiry => {
+    if (typeof expiry.value !== "string" || typeof expiry.timezone !== "string") return lotExpiry(expiry, expiry.timezone).cutoff;
+    const key = JSON.stringify([expiry.precision, expiry.value, expiry.timezone]);
+    const cached = cutoffs.get(key);
+    if (cached) return cached;
+    const cutoff = lotExpiry(expiry, expiry.timezone).cutoff;
+    if (cutoffs.size < 1024) cutoffs.set(key, cutoff);
+    return cutoff;
+  });
+}
+
+function validateLotSnapshot(lot: any, unit: any, organizationId: string | undefined, resolveExpiry: (expiry: any) => Date) {
   if (lot.lotVersion !== 1) return;
   const snapshot = lot.unitSnapshot, cost = lot.costBasis;
   const invalid = () => { throw new CommandError(409, "Lot snapshot, units or prices require inventory review"); };
@@ -56,7 +74,7 @@ export function validateCapturedLot(lot: any, unit?: any, organizationId?: strin
   const expectedExpiry = lot.expirySnapshot;
   if (!expectedExpiry || !["day", "month"].includes(expectedExpiry.precision)) return invalid();
   let cutoff: Date;
-  try { cutoff = lotExpiry(expectedExpiry, expectedExpiry.timezone).cutoff; } catch { return invalid(); }
+  try { cutoff = resolveExpiry(expectedExpiry); } catch { return invalid(); }
   if (!lot.organizationId || organizationId && String(lot.organizationId) !== organizationId ||
       !/^[a-zA-Z0-9_-]{8,100}$/.test(lot.receiptLineId || "") || !["opening", "receipt", "return", "transfer"].includes(lot.receiptKind) ||
       lot.receiptKind === "opening" && (typeof lot.openingSourceReference !== "string" || lot.openingSourceReference.trim().length < 3) ||

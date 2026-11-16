@@ -1,5 +1,6 @@
 import mongoose, { Schema } from "mongoose";
 import { CommandError, commandHash } from "../services/CommandReceiptService.ts";
+import { ownsOfflineDrawer } from "../utilities/pharmacyOfflineOwnership.ts";
 
 export function assertDrawerEvidence(value: any) {
   if (value.kind !== "drawer" || value.status !== "closed") return;
@@ -17,6 +18,7 @@ const CashierShiftSchema = new Schema(
     shiftDate: { type: String, required: true, index: true }, // "YYYY-MM-DD"
     collectionBasis: { type: String, enum: ["receipt_v1", "drawer_v1"] },
     drawerCode: String, organizationName: String, locationName: String,
+    pharmacyOfflineOwner: { type: String, default: undefined },
     openingFloatPaise: { type: Number, min: 0, default: 0, validate: Number.isSafeInteger },
     revision: { type: Number, min: 0, default: 0, validate: Number.isSafeInteger },
     closedBy: { type: Schema.Types.ObjectId, ref: "User" }, closedByName: String,
@@ -64,7 +66,7 @@ CashierShiftSchema.pre("validate", function () {
   if (this.status === "closed" && (!this.endedAt || this.endedAt < this.startedAt || !this.closedBy || !this.closedByName || !this.drawerTotals || !/^[a-f0-9]{64}$/.test(this.evidenceHash || "") || !Number.isSafeInteger(this.drawerTotals.expectedCashPaise) || this.drawerTotals.expectedCashPaise! < 0)) throw new CommandError(409, "Drawer closing evidence is incomplete");
   assertDrawerEvidence(this);
 });
-const openingFacts = ["kind", "organizationId", "locationId", "cashierId", "cashierName", "drawerCode", "openingFloatPaise", "organizationName", "locationName", "currency", "timezone", "shiftDate", "startedAt", "collectionBasis"];
+const openingFacts = ["kind", "organizationId", "locationId", "cashierId", "cashierName", "drawerCode", "openingFloatPaise", "organizationName", "locationName", "currency", "timezone", "shiftDate", "startedAt", "collectionBasis", "pharmacyOfflineOwner"];
 CashierShiftSchema.pre("save", async function () {
   if (this.isNew) return;
   const prior = await mongoose.model("CashierShift").findById(this._id).select("status").session(this.$session()).lean() as { status?: string } | null;
@@ -72,6 +74,12 @@ CashierShiftSchema.pre("save", async function () {
 });
 for (const op of ["updateOne", "updateMany", "findOneAndUpdate", "replaceOne", "findOneAndReplace", "deleteOne", "deleteMany", "findOneAndDelete"] as const) CashierShiftSchema.pre(op, function () {
   const update = this.getUpdate() as Record<string, any> | null;
+  const filter = this.getFilter();
+  if (["updateOne", "findOneAndUpdate"].includes(op) && update && Object.keys(update).every(key => ["$inc", "$set", "$unset"].includes(key)) &&
+      Object.keys(update.$inc || {}).every(key => ["revision", "__v"].includes(key)) && update.$inc?.revision === 1 && update.$inc?.__v === 1 &&
+      Object.keys(update.$set || {}).every(key => key === "pharmacyOfflineOwner") && Object.keys(update.$unset || {}).every(key => key === "pharmacyOfflineOwner") &&
+      (update.$set?.pharmacyOfflineOwner || update.$unset?.pharmacyOfflineOwner) && filter.kind === "drawer" && filter.status === "active" && Number.isSafeInteger(filter.revision) &&
+      ownsOfflineDrawer(String(filter._id), String(filter.locationId)) && this.getOptions().session?.inTransaction()) return;
   if (!["updateOne", "findOneAndUpdate"].includes(op) || !update || Object.keys(update).some(key => key !== "$inc") || Object.keys(update.$inc || {}).some(key => !["revision", "__v"].includes(key)) || update.$inc?.revision !== 1 || update.$inc?.__v !== 1 || this.getFilter().status !== "active" || this.getFilter().kind !== "drawer" || !this.getFilter()._id || !Number.isSafeInteger(this.getFilter().revision)) throw new CommandError(409, "Use guarded drawer lifecycle mutations; closed reports are immutable");
 });
 CashierShiftSchema.pre("bulkWrite", function () { throw new CommandError(409, "Drawer and closing facts cannot be bulk rewritten"); });

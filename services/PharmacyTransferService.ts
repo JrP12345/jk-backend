@@ -110,7 +110,7 @@ async function checkedFacts(transfer: any, session: mongoose.ClientSession, disp
   return { source, destination, lot };
 }
 async function pinBusiness(transfer: any, session: mongoose.ClientSession) {
-  for (const locationId of [transfer.sourceLocationId, transfer.destinationLocationId].map(String).sort()) await pinActivePharmacyLocation(locationId, session);
+  for (const locationId of [transfer.sourceLocationId, transfer.destinationLocationId].map(String).sort()) await pinActivePharmacyLocation(locationId, session, true, true);
 }
 const commandScope = (organizationId: string, locationId: string, action: TransferAction, transferId?: string) => `pharmacy-transfer:${organizationId}:${locationId}:${action}:${transferId || "new"}`;
 function key(req: FastifyRequest) {

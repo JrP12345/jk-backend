@@ -7,6 +7,7 @@ export const PHARMACY_PERMISSION_CATALOG = [
   ["PHARMACY_COLLECT_PAYMENT", "Collect pharmacy payments"], ["PHARMACY_PURCHASE", "Manage pharmacy purchases"],
   ["PHARMACY_RETURN", "Process pharmacy returns"], ["PHARMACY_APPROVE_REFUND", "Approve pharmacy refunds"],
   ["PHARMACY_CLOSE_TILL", "Close pharmacy till"], ["PHARMACY_VIEW_REPORTS", "View pharmacy reports"],
+  ["PHARMACY_MOVE_TILL_CASH", "Record pharmacy drawer cash movements"],
   ["PHARMACY_TRANSFER", "Transfer pharmacy stock"],
 ].map(([code, name]) => ({ code, name, category: "Pharmacy", description: name }));
 
@@ -18,6 +19,8 @@ export const PHARMACY_ACTION_GRANTS = {
   adjustStock: ["PHARMACY_ADJUST_STOCK", "MANAGE_MEDICINES"],
   viewRxQueue: ["PHARMACY_VIEW_RX_QUEUE", "MANAGE_MEDICINES", "VIEW_EHR"],
   dispense: ["PHARMACY_DISPENSE_RESTRICTED", "MANAGE_MEDICINES"],
+  externalDispense: ["PHARMACY_DISPENSE_RESTRICTED", "MANAGE_MEDICINES"],
+  viewExternalPrescriptions: ["PHARMACY_DISPENSE_RESTRICTED", "MANAGE_MEDICINES"],
   recoverDispense: ["PHARMACY_DISPENSE_RESTRICTED", "MANAGE_MEDICINES"],
   readRegister: ["PHARMACY_EXPORT_REGISTER", "MANAGE_MEDICINES", "VIEW_EHR"],
   exportRegister: ["PHARMACY_EXPORT_REGISTER", "MANAGE_MEDICINES"],
@@ -30,19 +33,19 @@ export const PHARMACY_ACTION_GRANTS = {
   collect: ["PHARMACY_COLLECT_PAYMENT", "MANAGE_ORGANIZATION"],
   processReturn: ["PHARMACY_RETURN", "MANAGE_ORGANIZATION"],
   approveReturn: ["PHARMACY_APPROVE_REFUND", "MANAGE_ORGANIZATION"],
-  viewReturns: ["PHARMACY_RETURN", "PHARMACY_APPROVE_REFUND", "PHARMACY_SELL", "PHARMACY_COLLECT_PAYMENT", "MANAGE_ORGANIZATION"],
+  viewReturns: ["PHARMACY_RETURN", "PHARMACY_APPROVE_REFUND", "MANAGE_ORGANIZATION"],
   settle: ["PHARMACY_APPROVE_REFUND", "MANAGE_ORGANIZATION"],
-  viewSettlements: ["PHARMACY_APPROVE_REFUND", "PHARMACY_PURCHASE", "PHARMACY_SELL", "PHARMACY_COLLECT_PAYMENT", "MANAGE_ORGANIZATION"],
+  viewSettlements: ["PHARMACY_APPROVE_REFUND", "PHARMACY_PURCHASE", "MANAGE_ORGANIZATION"],
   openingBalances: ["MANAGE_ORGANIZATION"],
-  viewTill: ["PHARMACY_CLOSE_TILL", "PHARMACY_COLLECT_PAYMENT", "PHARMACY_APPROVE_REFUND", "PHARMACY_VIEW_REPORTS", "MANAGE_ORGANIZATION"],
+  viewTill: ["PHARMACY_CLOSE_TILL", "PHARMACY_MOVE_TILL_CASH", "PHARMACY_COLLECT_PAYMENT", "PHARMACY_APPROVE_REFUND", "PHARMACY_VIEW_REPORTS", "MANAGE_ORGANIZATION"],
   openTill: ["PHARMACY_CLOSE_TILL", "PHARMACY_COLLECT_PAYMENT", "PHARMACY_APPROVE_REFUND", "MANAGE_ORGANIZATION"],
   closeTill: ["PHARMACY_CLOSE_TILL", "MANAGE_ORGANIZATION"],
-  moveTillCash: ["PHARMACY_CLOSE_TILL", "PHARMACY_APPROVE_REFUND", "MANAGE_ORGANIZATION"],
+  moveTillCash: ["PHARMACY_MOVE_TILL_CASH", "PHARMACY_APPROVE_REFUND", "MANAGE_ORGANIZATION"],
   viewReports: ["PHARMACY_VIEW_REPORTS", "MANAGE_ORGANIZATION"],
   transferStock: ["PHARMACY_TRANSFER", "MANAGE_ORGANIZATION"],
 } as const;
 export type PharmacyAction = keyof typeof PHARMACY_ACTION_GRANTS;
-export const PHARMACY_NEW_ACTIVITY = new Set<PharmacyAction>(["manageCatalog", "receiveStock", "adjustStock", "viewRxQueue", "dispense", "managePurchases", "sell", "collect", "openingBalances"]);
+export const PHARMACY_NEW_ACTIVITY = new Set<PharmacyAction>(["manageCatalog", "receiveStock", "adjustStock", "viewRxQueue", "dispense", "externalDispense", "managePurchases", "sell", "collect", "openingBalances"]);
 export function pharmacyAllows(permissions: ReadonlySet<string>, action: PharmacyAction, root = false) {
   return root || PHARMACY_ACTION_GRANTS[action].some(code => permissions.has(code));
 }
@@ -52,5 +55,6 @@ export const PHARMACY_ROLE_PRESETS = [
   { name: "pharmacy_owner", label: "Pharmacy owner", permissions: PHARMACY_PERMISSION_CATALOG.map(permission => permission.code) },
   { name: "pharmacy_pharmacist", label: "Dispensing pharmacist", permissions: ["PHARMACY_VIEW_STOCK", "PHARMACY_VIEW_RX_QUEUE", "PHARMACY_DISPENSE_RESTRICTED", "PHARMACY_EXPORT_REGISTER"] },
   { name: "pharmacy_stock_manager", label: "Pharmacy stock manager", permissions: ["PHARMACY_VIEW_STOCK", "PHARMACY_MANAGE_CATALOG", "PHARMACY_RECEIVE_STOCK", "PHARMACY_ADJUST_STOCK", "PHARMACY_VIEW_COST", "PHARMACY_PURCHASE", "PHARMACY_VIEW_REPORTS"] },
-  { name: "pharmacy_cashier", label: "Pharmacy cashier", permissions: ["PHARMACY_VIEW_STOCK", "PHARMACY_SELL", "PHARMACY_COLLECT_PAYMENT", "PHARMACY_CLOSE_TILL"] },
+  { name: "pharmacy_cashier", label: "Pharmacy cashier", permissions: ["PHARMACY_VIEW_STOCK", "PHARMACY_SELL", "PHARMACY_COLLECT_PAYMENT", "PHARMACY_CLOSE_TILL", "PHARMACY_MOVE_TILL_CASH"] },
+  { name: "pharmacy_counter_sales", label: "Counter sales only", permissions: ["PHARMACY_SELL", "PHARMACY_COLLECT_PAYMENT", "PHARMACY_CLOSE_TILL"] },
 ].map(preset => ({ ...preset, description: `${preset.label}; location grants and professional evidence are checked separately`, permissions: ["VIEW_LOCATIONS", ...preset.permissions] }));

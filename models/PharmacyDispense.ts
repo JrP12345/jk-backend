@@ -30,7 +30,10 @@ const line = new Schema({
   }, { _id: false })],
 });
 const schema = new Schema({
+  inventoryMode: { type: String, enum: ["tracked", "billing_only"], default: "tracked", required: true },
   kind: { type: String, enum: ["clinical", "pharmacy"], default: "clinical", required: true },
+  externalPrescriptionId: { type: Schema.Types.ObjectId, ref: "PharmacyExternalPrescription" },
+  externalPrescriptionRevision: Number,
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true },
   locationId: { type: Schema.Types.ObjectId, ref: "Location", required: true },
   patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: function (this: { kind?: string }): boolean { return this.kind !== "pharmacy"; } },
@@ -61,6 +64,8 @@ schema.pre("validate", function () {
   const selected = this.prescriptionIds.map(String).sort();
   const mapped = this.lines.flatMap(item => item.prescriptions.map(rx => String(rx.prescriptionId))).sort();
   const retail = this.kind === "pharmacy";
+  if (this.inventoryMode === "billing_only" && (!retail || this.lines.some(item => item.pricingAllocations.length !== 1 || item.pricingAllocations.some(lot => !lot.batchNumber || !lot.expiryDate || !lot.expiryValue || !["day", "month"].includes(lot.expiryPrecision || "") || !Number.isSafeInteger(lot.mrpPaise) || lot.unitPrice * 100 > lot.mrpPaise! || lot.quantity !== item.quantity)))) throw new Error("Billing-only supply evidence is incomplete");
+  if (this.externalPrescriptionId && (!retail || !Number.isSafeInteger(this.externalPrescriptionRevision) || this.externalPrescriptionRevision! < 1) || !this.externalPrescriptionId && this.externalPrescriptionRevision !== undefined) throw new Error("External prescription source is incomplete");
   const progress = this.prescriptionProgress || [];
   if (progress.length && (progress.length !== selected.length || new Set(progress.map(row => String(row.prescriptionId))).size !== selected.length || progress.some(row => {
     const supplied = this.lines.flatMap(item => item.prescriptions).find(item => String(item.prescriptionId) === String(row.prescriptionId));
@@ -73,7 +78,7 @@ schema.pre("validate", function () {
   if ((retail ? Boolean(this.patientId || this.doctorId || this.encounterId || this.appointmentId || this.clinicalNoteId || this.focusedCompletionAuditId || selected.length || mapped.length) : (!this.clinicalNoteId && !this.focusedCompletionAuditId) || !selected.length) || !this.lines.length || new Set(selected).size !== selected.length ||
       JSON.stringify(selected) !== JSON.stringify(mapped) || this.lines.some(item =>
         (!retail && item.prescriptions.reduce((sum, rx) => sum + rx.quantity, 0) !== item.quantity) ||
-        (retail && (!item.calculationLineId || !item.unitSnapshot || !item.batches.length)) ||
+        (retail && (!item.calculationLineId || !item.unitSnapshot || (this.inventoryMode === "tracked" ? !item.batches.length : item.batches.length !== 0 || item.pricingAllocations.length !== 1 || Boolean(item.pricingAllocations[0]?.batchId)))) ||
         (item.batches.length > 0 && item.batches.reduce((sum, batch) => sum + batch.quantity, 0) !== item.quantity) ||
         Math.abs(item.amount * item.quantity - (item.baseAmountPaise != null ? item.baseAmountPaise / 100 : item.lineAmount)) > 0.000001 ||
         (item.grossAmountPaise !== undefined && (item.baseAmountPaise! + item.cgstPaise! + item.sgstPaise! !== item.grossAmountPaise || item.lineAmount !== item.grossAmountPaise / 100)))) {

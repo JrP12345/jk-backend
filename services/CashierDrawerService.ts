@@ -16,6 +16,7 @@ import { createWithSession, withTransaction } from "../utilities/transaction.ts"
 import { collectionPaise } from "./TillCollectionService.ts";
 import { getLocationTimezone, locationDateKey } from "../utilities/locationTime.ts";
 import { pinPharmacyContinuityLocation } from "../utilities/pharmacyCapability.ts";
+import { offlineDrawerFilter } from "../utilities/pharmacyOfflineOwnership.ts";
 import { decryptField } from "../utilities/cryptoEnvelope.ts";
 import { indiaFinancialYear } from "../utilities/invoiceNumber.ts";
 import { invoiceBalancePaise } from "./InvoicePaymentService.ts";
@@ -31,8 +32,13 @@ function safe(value: bigint) { if (value < 0n || value > BigInt(Number.MAX_SAFE_
 /** Writing the shared drawer serializes posting against close, including split receipts. */
 export async function claimCashierDrawer(scope: Scope, currency: string, session: mongoose.ClientSession | null, required = true) {
   if (!session) throw new CommandError(503, "Drawer postings require a transaction");
-  const drawer = await CashierShift.findOne({ kind: "drawer", organizationId: scope.organizationId, locationId: scope.locationId, cashierId: scope.actorId, status: "active" }).session(session);
-  if (!drawer) { if (!required) return null; throw new CommandError(428, "Open your physical drawer before recording collections or payouts"); }
+  const drawer = await CashierShift.findOne({ kind: "drawer", organizationId: scope.organizationId, locationId: scope.locationId, cashierId: scope.actorId, status: "active", ...offlineDrawerFilter(scope.locationId) }).session(session);
+  if (!drawer) {
+    if (await CashierShift.exists({ kind: "drawer", organizationId: scope.organizationId, locationId: scope.locationId, cashierId: scope.actorId, status: "active", pharmacyOfflineOwner: { $exists: true } }).session(session))
+      throw new CommandError(409, "This drawer is assigned to an offline billing PC. Synchronize and reconcile its ledger before cloud collections or payouts.");
+    if (!required) return null;
+    throw new CommandError(428, "Open your physical drawer before recording collections or payouts");
+  }
   if (drawer.currency !== currency || drawer.revision >= 1000) throw new CommandError(409, "Drawer currency differs or its posting limit was reached; review and close this drawer");
   const claimed = await CashierShift.updateOne({ _id: drawer._id, kind: "drawer", status: "active", revision: drawer.revision }, { $inc: { revision: 1, __v: 1 } }, { session, timestamps: false });
   if (claimed.modifiedCount !== 1) throw new CommandError(409, "Drawer changed; reload and keep the same operation reference");

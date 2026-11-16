@@ -4,6 +4,8 @@ import { genuineDetail } from "../utilities/pharmacyEvidence.ts";
 
 export interface IScheduleH1Register {
   recordVersion?: number;
+  externalPrescriptionId?: mongoose.Types.ObjectId;
+  externalPrescriptionRevision?: number;
   dispenseId?: mongoose.Types.ObjectId;
   batchId?: mongoose.Types.ObjectId;
   batchKey?: string;
@@ -28,7 +30,7 @@ export interface IScheduleH1Register {
   batchNumber: string;
   expiryDate?: Date;
   quantityDispensed: number;
-  patientId: mongoose.Types.ObjectId;
+  patientId?: mongoose.Types.ObjectId;
   patientName: string;
   patientAddress?: string;
   patientPhone?: string;
@@ -46,7 +48,8 @@ export interface IScheduleH1Register {
 
 const ScheduleH1RegisterSchema = new Schema<IScheduleH1Register>(
   {
-    recordVersion: { type: Number, enum: [1] },
+    recordVersion: { type: Number, enum: [1, 2] },
+    externalPrescriptionId: { type: Schema.Types.ObjectId, ref: "PharmacyExternalPrescription" }, externalPrescriptionRevision: Number,
     dispenseId: { type: Schema.Types.ObjectId, ref: "PharmacyDispense" },
     batchId: { type: Schema.Types.ObjectId, ref: "MedicineBatch" }, batchKey: String,
     clinicalNoteId: { type: Schema.Types.ObjectId, ref: "ClinicalNote" },
@@ -67,7 +70,7 @@ const ScheduleH1RegisterSchema = new Schema<IScheduleH1Register>(
     batchNumber: { type: String, required: true, trim: true },
     expiryDate: { type: Date },
     quantityDispensed: { type: Number, required: true, min: 1 },
-    patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
+    patientId: { type: Schema.Types.ObjectId, ref: "Patient", required: function (this: IScheduleH1Register) { return this.recordVersion !== 2; }, index: true },
     patientName: { type: String, required: true, trim: true },
     patientAddress: { type: String, trim: true },
     patientPhone: { type: String, trim: true },
@@ -87,12 +90,14 @@ const ScheduleH1RegisterSchema = new Schema<IScheduleH1Register>(
 ScheduleH1RegisterSchema.index({ locationId: 1, dispensedAt: -1 });
 ScheduleH1RegisterSchema.index({ locationId: 1, scheduleType: 1 });
 ScheduleH1RegisterSchema.index({ dispenseId: 1, medicineId: 1, batchKey: 1, prescriptionId: 1 }, { unique: true, partialFilterExpression: { recordVersion: 1 } });
+ScheduleH1RegisterSchema.index({ dispenseId: 1, medicineId: 1, batchKey: 1, externalPrescriptionId: 1 }, { unique: true, partialFilterExpression: { recordVersion: 2 } });
 ScheduleH1RegisterSchema.pre("validate", function () {
   if (!this.isNew) return;
   const fields = [this.patientName, this.patientAddress, this.doctorName, this.doctorAddress, this.doctorRegNumber,
     this.doctorCouncil, this.dispensedByName, this.pharmacistRegNumber, this.pharmacistCouncil, this.pharmacistReviewReference, this.doctorReviewReference, this.classificationReviewReference, this.batchNumber];
-  if (this.recordVersion !== 1 || !["schedule_h", "schedule_h1"].includes(this.scheduleType) || !Number.isSafeInteger(this.quantityDispensed) ||
-      !this.dispenseId || !this.invoiceId || !this.prescriptionId || !this.encounterId || !this.clinicalNoteId || !this.doctorId || !this.dispensedBy || !this.expiryDate || !this.batchKey ||
+  const source = this.recordVersion === 2 ? this.externalPrescriptionId && Number.isSafeInteger(this.externalPrescriptionRevision) && this.externalPrescriptionRevision! > 0 && !this.patientId && !this.doctorId && !this.prescriptionId && !this.encounterId && !this.clinicalNoteId : this.recordVersion === 1 && !this.externalPrescriptionId && this.prescriptionId && this.encounterId && this.clinicalNoteId && this.doctorId;
+  if (!source || !["schedule_h", "schedule_h1"].includes(this.scheduleType) || !Number.isSafeInteger(this.quantityDispensed) ||
+      !this.dispenseId || !this.invoiceId || !this.dispensedBy || !this.expiryDate || !this.batchKey ||
       ![this.doctorReviewRevision, this.pharmacistReviewRevision].every(value => Number.isSafeInteger(value) && value! > 0) ||
       this.signatureMode !== "reviewed_electronic_record" || fields.some(value => !genuineDetail(value))) throw new Error("Complete captured restricted-supply evidence is required");
 });

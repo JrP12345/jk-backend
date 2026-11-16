@@ -6,9 +6,61 @@ import { createWithSession, withTransaction } from "../utilities/transaction.ts"
 import { PharmacyInventoryError, requireStockTransaction, stockRevisionFilter } from "../utilities/pharmacyInventory.ts";
 import { appendStockMovement } from "./PharmacyStockMovementService.ts";
 import { pinActivePharmacyLocation } from "../utilities/pharmacyCapability.ts";
-import { validateCapturedLot } from "../utilities/pharmacyLot.ts";
+import { validateCapturedLot, createCapturedLotValidator } from "../utilities/pharmacyLot.ts";
 import { Location } from "../models/Location.ts";
+import { CommandError } from "./CommandReceiptService.ts";
+import { requireTrackedInventory } from "../utilities/pharmacyInventoryMode.ts";
 export { PharmacyInventoryError } from "../utilities/pharmacyInventory.ts";
+
+const counterProof = Symbol("counter-stock");
+export type CounterStockPreparation = Readonly<{ [counterProof]: true }>;
+type CounterMedicine = InstanceType<typeof Medicine>;
+type CounterBatch = InstanceType<typeof MedicineBatch>;
+const counterPreparations = new WeakMap<CounterStockPreparation, {
+  medicine: CounterMedicine; batches: CounterBatch[]; quantity: number; locationId: string;
+  session: mongoose.ClientSession; transaction: object;
+}>();
+
+function transactionIdentity(session: mongoose.ClientSession): object {
+  // The installed driver replaces this runtime object on every startTransaction,
+  // including retries. Its public serverSession number advances only on first I/O.
+  const identity: unknown = Reflect.get(session, "transaction");
+  if (!identity || typeof identity !== "object") throw new PharmacyInventoryError("Transaction identity is unavailable; refresh the sale");
+  return identity;
+}
+
+/** Fresh read shared by pricing and allocation. No client/cache evidence is accepted. */
+export async function prepareCounterStock(medicine: CounterMedicine, scope: { organizationId: string; locationId: string }, quantity: number, session: mongoose.ClientSession | null, retain = false, validateLot = createCapturedLotValidator()) {
+  if (String(medicine.locationId) !== scope.locationId || medicine.deletedAt) throw new PharmacyInventoryError("Medicine is not assigned to the selected location", 404);
+  const inventory = await MedicineBatch.find({ medicineId: medicine._id }).sort({ expiryDate: 1, receivedAt: 1, _id: 1 }).limit(5001).session(session);
+  if (!inventory.length || inventory.length > 5000 || inventory.some(lot => lot.lotVersion !== 1 || String(lot.locationId) !== scope.locationId || String(lot.organizationId) !== scope.organizationId)) throw new CommandError(409, "Counter stock needs captured owned lots within the review bound");
+  for (const lot of inventory) validateLot(lot, medicine.unitDefinition, scope.organizationId);
+  if (!Number.isSafeInteger(medicine.stockQuantity) || medicine.stockQuantity < 0 || inventory.reduce((sum, lot) => sum + BigInt(lot.quantity), 0n) !== BigInt(medicine.stockQuantity)) throw new CommandError(409, "Counter lot and aggregate stock do not reconcile");
+  const now = new Date(), batches = inventory.filter(batch => batch.status === "active" && batch.expiryDate > now && batch.quantity > 0);
+  let remaining = quantity;
+  const selected: Array<{ batch: CounterBatch; quantity: number }> = [];
+  for (const batch of batches) {
+    if (!remaining) break;
+    const take = Math.min(remaining, batch.quantity); selected.push({ batch, quantity: take }); remaining -= take;
+  }
+  if (remaining) throw new CommandError(409, "Insufficient eligible batch stock; refresh the sale");
+  let preparation: CounterStockPreparation | undefined;
+  if (retain) {
+    requireStockTransaction(session);
+    preparation = Object.freeze({ [counterProof]: true as const });
+    counterPreparations.set(preparation, { medicine, batches, quantity, locationId: scope.locationId, session: session!, transaction: transactionIdentity(session!) });
+  }
+  return { selected, preparation };
+}
+
+function consumeCounterPreparation(proof: CounterStockPreparation, medicineId: string, locationId: string, quantity: number, session: mongoose.ClientSession) {
+  const prepared = counterPreparations.get(proof);
+  // A proof is single-use and cannot survive driver retry, commit, another bill or branch.
+  counterPreparations.delete(proof);
+  // The driver replaces this object at startTransaction; its server txn number advances lazily.
+  if (!prepared || prepared.session !== session || !session.inTransaction() || prepared.transaction !== transactionIdentity(session) || String(prepared.medicine._id) !== medicineId || prepared.locationId !== locationId || prepared.quantity !== quantity) throw new PharmacyInventoryError("Counter stock preparation changed; refresh the sale");
+  return prepared;
+}
 
 export interface DispenseAuditContext extends RestrictedSupplyContext {
   organizationId?: string | mongoose.Types.ObjectId;
@@ -110,7 +162,7 @@ export async function addBatchToMedicine(input: BatchAddInput): Promise<any> {
       batchId: batch._id, beforeQuantity: 0, afterQuantity: input.quantity, quantityDelta: input.quantity,
     }], session, { notes: input.unlinkedInwardReason });
 
-    await pinActivePharmacyLocation(input.locationId, session);
+    await pinActivePharmacyLocation(input.locationId, session, true, true);
     return batch;
   });
 }
@@ -124,7 +176,8 @@ export async function dispenseMedicineFEFO(
   locationId: string,
   dispenseQuantity: number,
   existingSession?: mongoose.ClientSession | null,
-  auditContext?: DispenseAuditContext
+  auditContext?: DispenseAuditContext,
+  counterPreparation?: CounterStockPreparation,
 ): Promise<{ dispensedBatches: Array<{ batchId: string; batchNumber: string; quantity: number }>; totalCost: number;
   pricedAllocations: Array<{ batchId?: string; batchNumber: string; expiryDate: Date; quantity: number; unitPrice: number; hsnCode: string; gstRate?: number }> }> {
   if (!Number.isSafeInteger(dispenseQuantity) || dispenseQuantity <= 0) {
@@ -134,7 +187,8 @@ export async function dispenseMedicineFEFO(
   const execute = async (session: mongoose.ClientSession | null) => {
     requireStockTransaction(session);
     const queryOptions = session ? { session } : undefined;
-    const medicine = await Medicine.findOne({ _id: medicineId, deletedAt: null }, null, queryOptions);
+    const prepared = counterPreparation ? consumeCounterPreparation(counterPreparation, medicineId, locationId, dispenseQuantity, session!) : undefined;
+    const medicine = prepared?.medicine || await Medicine.findOne({ _id: medicineId, deletedAt: null }, null, queryOptions);
     if (!medicine) {
       throw new PharmacyInventoryError("Medicine record not found", 404);
     }
@@ -151,7 +205,7 @@ export async function dispenseMedicineFEFO(
     const restricted = await prepareRestrictedSupply(medicineId, locationId, dispenseQuantity, auditContext);
 
     const now = new Date();
-    const batches = await MedicineBatch.find({
+    const batches = prepared ? prepared.batches.filter(batch => batch.status === "active" && batch.expiryDate > now && batch.quantity > 0) : await MedicineBatch.find({
       medicineId,
       locationId,
       status: "active",
@@ -159,7 +213,7 @@ export async function dispenseMedicineFEFO(
       quantity: { $gt: 0 },
     }).sort({ expiryDate: 1, receivedAt: 1, _id: 1 }).session(session);
 
-    if (batches.some(batch => batch.lotVersion === 1)) {
+    if (!prepared && batches.some(batch => batch.lotVersion === 1)) {
       const location = await Location.findById(locationId).select("organizationId").session(session);
       if (!location || !medicine.unitDefinition) throw new PharmacyInventoryError("Captured lot ownership or units need inventory review");
       for (const batch of batches) validateCapturedLot(batch, medicine.unitDefinition, String(location.organizationId));
@@ -207,7 +261,7 @@ export async function dispenseMedicineFEFO(
       await appendStockMovement(medicine, "dispense", medicine.stockQuantity - dispenseQuantity, [], session,
         { actorId: auditContext?.dispensedBy ? String(auditContext.dispensedBy) : undefined });
       const storedTax = await Medicine.findOne({ _id: medicine._id, locationId }).select("hsnCode gstRate").lean().session(session);
-      await pinActivePharmacyLocation(locationId, session);
+      await pinActivePharmacyLocation(locationId, session, true, true);
       return { dispensedBatches: [], totalCost: dispenseQuantity * medicine.price, pricedAllocations: [{
         batchNumber: medicine.batchNumber || "", expiryDate: medicine.expiryDate!, quantity: dispenseQuantity,
         unitPrice: medicine.price, hsnCode: storedTax?.hsnCode || "", gstRate: storedTax?.gstRate,
@@ -223,7 +277,7 @@ export async function dispenseMedicineFEFO(
     const dispensedBatches: Array<{ batchId: string; batchNumber: string; quantity: number }> = [];
     let totalCost = 0;
     // Read before saving hydrated batches, since save may persist schema defaults.
-    const storedTaxRows = await MedicineBatch.find({ _id: { $in: batches.map(batch => batch._id) }, medicineId, locationId })
+    const storedTaxRows = prepared ? batches : await MedicineBatch.find({ _id: { $in: batches.map(batch => batch._id) }, medicineId, locationId })
       .select("hsnCode gstRate").lean().session(session);
 
     for (const batch of batches) {
@@ -265,7 +319,7 @@ export async function dispenseMedicineFEFO(
         quantityDelta: original.batch.quantity - original.quantity,
       })), session, { actorId: auditContext?.dispensedBy ? String(auditContext.dispensedBy) : undefined });
     // Lean reads preserve missing legacy tax fields; hydrated schema defaults must not become tax evidence.
-    await pinActivePharmacyLocation(locationId, session);
+    await pinActivePharmacyLocation(locationId, session, true, true);
     return { dispensedBatches, totalCost, pricedAllocations: dispensedBatches.map(allocation => {
       const batch = batches.find(batch => String(batch._id) === allocation.batchId)!;
       const storedTax = storedTaxRows.find(row => String(row._id) === allocation.batchId);
@@ -280,6 +334,7 @@ export async function dispenseMedicineFEFO(
  * Get expiring medicine batches within N days.
  */
 export async function getExpiringBatches(locationId: string, daysThreshold: number = 30, includePurchaseCost = true): Promise<any[]> {
+  await requireTrackedInventory(locationId, null);
   const targetDate = new Date(Date.now() + daysThreshold * 86400000);
 
   const rows = await MedicineBatch.find({

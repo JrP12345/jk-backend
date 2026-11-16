@@ -70,7 +70,8 @@ describe("Source-bound pharmacy returns, credits and physical quarantine", () =>
   it("requires independent return and financial approval grants, and current grants on replay", async () => {
     const f = await fixture(["PHARMACY_SELL", "PHARMACY_RETURN"]), q = await review(f); expect((await post(f, q.issueInput)).statusCode).toBe(403);
     await Role.updateOne({ organizationId: f.organizationId, name: f.role }, { $set: { permissions: ["PHARMACY_SELL", "PHARMACY_RETURN", "PHARMACY_APPROVE_REFUND"] } }); const reference = key(), posted = await post(f, q.issueInput, reference); expect(posted.statusCode, posted.body).toBe(201);
-    await Role.updateOne({ organizationId: f.organizationId, name: f.role }, { $set: { permissions: ["PHARMACY_SELL"] } }); expect((await post(f, q.issueInput, reference)).statusCode).toBe(403); expect((await get(f, `return-operations/${reference}`)).statusCode).toBe(200);
+    await Role.updateOne({ organizationId: f.organizationId, name: f.role }, { $set: { permissions: ["PHARMACY_SELL"] } }); expect((await post(f, q.issueInput, reference)).statusCode).toBe(403); expect((await get(f, `return-operations/${reference}`)).statusCode).toBe(403);
+    await Role.updateOne({ organizationId: f.organizationId, name: f.role }, { $set: { permissions: ["PHARMACY_RETURN"] } }); expect((await get(f, `return-operations/${reference}`)).statusCode).toBe(200);
   });
   it("keeps continuity returns/history available after pharmacy disable and excludes foreign invoice/lot evidence", async () => {
     const f = await fixture(), foreign = await fixture(), input = await intent(f), q = await review(f); await Location.updateOne({ _id: f.locationId }, { $set: { pharmacyCapability: { enabled: false, revision: 1, updatedBy: f.user.id, updatedAt: new Date(), reviewReference: "Synthetic disable" } } });

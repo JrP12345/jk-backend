@@ -6,8 +6,12 @@ import { isGoogleMapsEmbedUrl } from "../utilities/googleMapsEmbed.ts";
 const LocationSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
   name: { type: String, required: true },
+  // Held until an authenticated, reconciled release; expiry never clears ownership.
+  pharmacyOfflineOwner: { type: String, default: undefined },
   facilityType: { type: String, enum: [...FACILITY_TYPES], default: null },
+  publicPharmacy: { type: new Schema({ catalogueEnabled: { type: Boolean, default: false }, pickupEnabled: { type: Boolean, default: false }, revision: { type: Number, required: true, min: 0, validate: Number.isSafeInteger } }, { _id: false }), default: undefined },
   pharmacyCapability: { type: new Schema({ enabled: { type: Boolean, required: true }, revision: { type: Number, required: true, min: 0, validate: Number.isSafeInteger },
+    inventoryMode: { type: String, enum: ["tracked", "billing_only"], default: "tracked", required: true },
     reviewReference: String, confirmedBy: { type: Schema.Types.ObjectId, ref: "User" }, confirmedAt: Date }, { _id: false }), default: undefined },
   logo: { type: String },
   images: [{ type: String }],
@@ -40,9 +44,10 @@ LocationSchema.set("toJSON", {
   virtuals: true,
   transform: (doc, ret: any) => {
     ret.id = ret._id.toString();
-    if (ret.pharmacyCapability) ret.pharmacyCapability = { enabled: ret.pharmacyCapability.enabled, revision: ret.pharmacyCapability.revision };
+    if (ret.pharmacyCapability) ret.pharmacyCapability = { enabled: ret.pharmacyCapability.enabled, revision: ret.pharmacyCapability.revision, inventoryMode: ret.pharmacyCapability.inventoryMode };
     delete ret._id;
     delete ret.__v;
+    delete ret.pharmacyOfflineOwner;
     return ret;
   }
 });

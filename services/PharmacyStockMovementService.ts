@@ -147,7 +147,7 @@ export async function adjustMedicineStock(
       action: "MEDICINE_STOCK_ADJUSTMENT", targetId: medicine._id, targetModel: "Medicine",
       details: { movementId: movement._id, oldQuantity, newQuantity: input.newQuantity, adjustmentDelta: delta,
         revision: movement.revision, reason: input.reason, notes: input.notes?.trim() || null } }, session);
-    await pinActivePharmacyLocation(authority.locationId, session, delta > 0);
+    await pinActivePharmacyLocation(authority.locationId, session, delta > 0, true);
     return String(movement._id);
   }));
   const movement = await StockMovement.findOne({ _id: command.resultId, organizationId: authority.organizationId,

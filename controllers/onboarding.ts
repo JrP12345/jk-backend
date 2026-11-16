@@ -1,4 +1,5 @@
 import { provisionOrganization, type OrganizationProvisionInput } from "../services/OrganizationProvisioningService.ts";
+import { provisionAssistedPharmacy } from "../services/PharmacyTrialService.ts";
 import { safeError } from "../utilities/safeError.ts";
 import { SearchEngine } from '../platform/search/SearchEngine.ts';
 import { revokeUserSessions } from '../utilities/sessionResolver.ts';
@@ -149,11 +150,15 @@ export async function createOrganization(req: FastifyRequest, reply: FastifyRepl
     if (!admin_password || admin_password.length < 8) return reply.code(400).send(errorResponse("Administrator password must contain at least 8 characters"));
     const passwordStrength = validatePasswordStrength(admin_password);
     if (!passwordStrength.valid) return reply.code(400).send(errorResponse(passwordStrength.reason || "Password does not meet complexity requirements"));
-    const created = await provisionOrganization(req.body as OrganizationProvisionInput);
+    const pharmacyTerms = req.body as { pharmacyPlanId?: string; pharmacyPlanFingerprint?: string };
+    const created = facilityType === "pharmacy"
+      ? await provisionAssistedPharmacy(req.body as OrganizationProvisionInput, pharmacyTerms.pharmacyPlanId || "", pharmacyTerms.pharmacyPlanFingerprint || "", String(req.user!.id))
+      : await provisionOrganization(req.body as OrganizationProvisionInput);
     return reply.code(201).send(successResponse(created, "Organization created and admin registered"));
   } catch (err: any) {
     console.error("createOrganization error:", safeError(err));
     if (err instanceof WorkspaceError) return reply.code(err.statusCode).send(errorResponse(err.message));
+    if (err instanceof CommandError) return reply.code(err.statusCode).send(errorResponse(err.message));
     if (err instanceof BrandingValidationError) return reply.code(400).send(errorResponse(err.message));
     return reply.code(500).send(errorResponse(err.message || "Internal server error"));
   }
@@ -186,13 +191,14 @@ export async function getAllOrganizations(req: FastifyRequest, reply: FastifyRep
           hasCapturedPayment: { $max: { $cond: [{ $eq: ["$status", "captured"] }, 1, 0] } },
         } },
       ]),
-      OrgMember.find({ organizationId: { $in: orgIds }, role: "admin" }).populate("userId", "name email").lean(),
+      OrgMember.find({ organizationId: { $in: orgIds }, role: "admin" }).populate("userId", "name email twoFactorEnabled isActive").lean(),
     ]);
     const subscriptionsByOrg = new Map(subscriptions.map((sub) => [sub.organizationId.toString(), sub]));
     const paidOrgs = new Set(payments.filter((payment) => payment.hasCapturedPayment).map((payment) => payment._id.toString()));
     const latestPaymentByOrg = new Map<string, string>(payments.map((payment) => [payment._id.toString(), payment.latestStatus]));
     const adminsByOrg = new Map(admins.map((member: any) => [member.organizationId.toString(), {
       name: member.userId?.name || "Admin", email: member.userId?.email || null,
+      twoFactorEnabled: member.userId?.twoFactorEnabled === true, isActive: Boolean(member.userId && member.userId.isActive !== false),
     }]));
     const formattedOrgs = orgs.map((o: any) => ({
       ...o,
@@ -214,7 +220,7 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
     const { id } = req.params as { id: string };
     const {
       name, city, address, phone, email, plan, maxLocations, maxDoctors, maxStaff, status,
-      taxId, licenseNumber, countryCode, currency, timezone, image_url, logo_url, images, description, timings, working_days, workflowPreferences
+      taxId, licenseNumber, countryCode, currency, timezone, image_url, logo_url, images, description, timings, working_days, workflowPreferences, staffMfaRequired
     } = req.body as any;
 
     if (req.user?.role !== "root" && req.user?.organization_id !== id) {
@@ -223,6 +229,7 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
     if (status !== undefined && req.user?.role !== "root") {
       return reply.code(403).send(errorResponse("Only Root can suspend or reactivate an organization"));
     }
+    if (staffMfaRequired !== undefined && (req.user?.role !== "root" || staffMfaRequired !== true)) return reply.code(403).send(errorResponse("Only Root can require staff MFA; this operation cannot disable it"));
     const previousOrg = await Organization.findById(id).lean();
     if (!previousOrg) return reply.code(404).send(errorResponse("Organization not found"));
     await validateBrandingReferences(req, { image_url, logo_url, images }, previousOrg);
@@ -254,6 +261,7 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
     }
 
     const updateData: any = {};
+    if (staffMfaRequired === true) updateData.staffMfaRequired = true;
     for (const key of ["registration", "consultation", "queueChime", "queueVoiceLanguage"] as const) {
       if (workflowPreferences?.[key] !== undefined) updateData[`workflowPreferences.${key}`] = workflowPreferences[key];
     }
@@ -296,6 +304,7 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
       await attachBranding({ ...previousOrg, ...updateData }, session);
       const updated = await Organization.findByIdAndUpdate(id, updateData, { returnDocument: "after", runValidators: true, ...(session ? { session } : {}) }).lean();
       if (updated) await retireUnusedBranding(previousOrg, updated, session);
+      if (updated && staffMfaRequired === true && previousOrg.staffMfaRequired !== true) await createWithSession(AuditLog, { userId: req.user!.id, organizationId: id, action: "STAFF_MFA_REQUIRED", targetId: updated._id, targetModel: "Organization", category: "AUTH", details: { required: true } }, session);
       return updated;
     });
     if (!updatedOrg) {

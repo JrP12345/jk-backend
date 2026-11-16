@@ -19,6 +19,7 @@ export interface IMedicineBatch extends Document {
   createdAt: Date;
   updatedAt: Date;
   lotVersion?: number; receiptLineId?: string; receiptKind?: "opening" | "receipt" | "return" | "transfer"; receivedAt?: Date; receivedQuantity?: number;
+  offlineImportRevision?: { authorityId: string; revision: number };
   transferSource?: { transferId: mongoose.Types.ObjectId; eventId: mongoose.Types.ObjectId; originalBatchId: mongoose.Types.ObjectId };
   returnSource?: { returnId: mongoose.Types.ObjectId; originalBatchId: mongoose.Types.ObjectId; invoiceId: mongoose.Types.ObjectId };
   unitSnapshot?: { version: number; baseUnit: string; packUnit: string; unitsPerPack: number };
@@ -31,6 +32,7 @@ export interface IMedicineBatch extends Document {
 const medicineBatchSchema = new Schema<IMedicineBatch>(
   {
     lotVersion: { type: Number, enum: [1], immutable: true },
+    offlineImportRevision: { type: new Schema({ authorityId: { type: String, required: true }, revision: { type: Number, required: true, min: 1, validate: Number.isSafeInteger } }, { _id: false }), default: undefined },
     purchaseSource: { type: new Schema({ purchaseId: { type: Schema.Types.ObjectId, required: true }, purchaseLineId: { type: String, required: true }, receiptId: { type: Schema.Types.ObjectId, required: true } }, { _id: false }), immutable: true, default: undefined },
     returnSource: { type: new Schema({ returnId: { type: Schema.Types.ObjectId, required: true }, originalBatchId: { type: Schema.Types.ObjectId, required: true }, invoiceId: { type: Schema.Types.ObjectId, required: true } }, { _id: false }), immutable: true, default: undefined },
     transferSource: { type: new Schema({ transferId: { type: Schema.Types.ObjectId, required: true }, eventId: { type: Schema.Types.ObjectId, required: true }, originalBatchId: { type: Schema.Types.ObjectId, required: true } }, { _id: false }), immutable: true, default: undefined },

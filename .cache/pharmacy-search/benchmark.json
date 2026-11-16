@@ -1,0 +1,8 @@
+{
+  "products": 10000,
+  "foreignProducts": 1000,
+  "elapsedMs": 21,
+  "returned": 1,
+  "docsExamined": 2,
+  "keysExamined": 1
+}

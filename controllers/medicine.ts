@@ -12,10 +12,11 @@ import { successResponse, errorResponse, escapeRegex, getPaginationParams, setPa
 import { checkLocationAccess, checkOperationalRecordAccess, getRequestLocationIds } from "../utilities/tenant.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
 import { dispenseMedicineFEFO, PharmacyInventoryError } from "../services/PharmacyInventoryService.ts";
-import { allocateInvoiceNumber } from "../utilities/invoiceNumber.ts";
+import { allocatePharmacyInvoiceNumber } from "../utilities/invoiceNumber.ts";
 import { loadPharmacyIssuer, pricePharmacySupply, pharmacyDocumentSnapshot } from "../services/PharmacyDocumentService.ts";
 import { pharmacyRequestAllows } from "../services/PharmacyCapabilityService.ts";
 import { pinActivePharmacyLocation } from "../utilities/pharmacyCapability.ts";
+import { normalizeBillingSupply } from "../utilities/pharmacyInventoryMode.ts";
 import { CommandError } from "../services/CommandReceiptService.ts";
 import { adjustMedicineStock, type StockAdjustmentInput } from "../services/PharmacyStockMovementService.ts";
 import { StockMovement } from "../models/StockMovement.ts";
@@ -55,6 +56,7 @@ export async function createMedicine(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse("Stock and prices must be non-negative numbers; stock must be a safe integer"));
     }
     const metadata = catalogueFields(req.body as Record<string, unknown>);
+    const billingSupply = (req.body as any).billingSupply === undefined ? undefined : normalizeBillingSupply((req.body as any).billingSupply);
     const opening = stockQuantity > 0 || expiryDate !== undefined || batchNumber !== undefined;
     const canViewCost = await pharmacyRequestAllows(req, "viewCost");
     if (opening && (!await pharmacyRequestAllows(req, "receiveStock") || !canViewCost)) return reply.code(403).send(errorResponse("Opening-stock creation requires stock receipt and cost permissions"));
@@ -67,10 +69,11 @@ export async function createMedicine(req: FastifyRequest, reply: FastifyReply) {
     if (unitDefinition && stockQuantity > 0) throw new CommandError(409, "Configure units on an empty catalogue item, then receive stock in base units");
 
     const medicine = await withTransaction(async session => {
-      await pinActivePharmacyLocation(locationId, session);
+      await pinActivePharmacyLocation(locationId, session, true, opening);
       return Medicine.create({
       locationId,
       ...metadata,
+      ...(billingSupply ? { billingSupply } : {}),
       stockQuantity,
       price,
       ...(costPrice !== undefined ? { costPrice } : {}),
@@ -196,11 +199,12 @@ export async function updateMedicine(req: FastifyRequest, reply: FastifyReply) {
         const next = normalizeUnitDefinition(input.unitDefinition, version + 1);
         const differs = !current.unitDefinition || (["baseUnit", "packUnit", "unitsPerPack"] as const).some(key => next[key] !== current.unitDefinition?.[key]);
         if (differs) {
-          if (current.stockQuantity !== 0 || await MedicineBatch.exists({ medicineId: current._id }).session(session)) throw new CommandError(409, "Existing stock or batch history needs reviewed unit reconciliation; units cannot be reinterpreted here");
+          if (current.stockQuantity !== 0 || await MedicineBatch.exists({ medicineId: current._id }).session(session) || await PharmacyDispense.exists({ "lines.medicineId": current._id }).session(session)) throw new CommandError(409, "Existing stock or batch history needs reviewed unit reconciliation; units cannot be reinterpreted here");
           current.set("unitDefinition", next);
         }
       }
       current.set(metadata);
+      if ((req.body as any).billingSupply !== undefined) current.set("billingSupply", normalizeBillingSupply((req.body as any).billingSupply));
       if (price !== undefined) current.price = price;
       if (costPrice !== undefined) current.costPrice = costPrice;
       if (expiryDate !== undefined) current.expiryDate = new Date(expiryDate);
@@ -492,7 +496,7 @@ export async function dispensePrescription(req: FastifyRequest, reply: FastifyRe
         throw new CommandError(409, "A recipient address and explicit GST state code are required for this pharmacy document value");
       }
       const taxDocument = await pharmacyDocumentSnapshot(issuer, patient, userId, issuedAt, supplyLines);
-      const numbering = await allocateInvoiceNumber(locationId, issuedAt);
+      const numbering = await allocatePharmacyInvoiceNumber(locationId, issuedAt);
       const invoiceItems = supplyLines.map(line => ({
         ...line, pharmacyDispenseId: dispenseId, pharmacyDispenseLineId: line._id,
         cgstAmount: line.cgstPaise / 100, sgstAmount: line.sgstPaise / 100, igstAmount: 0, totalItemAmount: line.lineAmount,

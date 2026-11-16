@@ -2,13 +2,13 @@ import { CommandError } from "../services/CommandReceiptService.ts";
 import { object, identifier, text } from "./pharmacyPurchases.ts";
 
 export const PHARMACY_IMPORT_FIELDS = {
-  catalogue: ["sourceId", "name", "genericName", "category", "scheduleType", "baseUnit", "packUnit", "unitsPerPack", "sellingPrice", "barcode", "manufacturer", "strength", "reorderLevel"],
+  catalogue: ["sourceId", "name", "genericName", "category", "scheduleType", "baseUnit", "packUnit", "unitsPerPack", "sellingPrice", "barcode", "manufacturer", "strength", "reorderLevel", "rackLocation"],
   opening_stock: ["sourceId", "medicineId", "baseUnit", "packUnit", "unitsPerPack", "packs", "looseUnits", "batchNumber", "expiryPrecision", "expiry", "purchaseTotal", "sellingPrice", "mrp"],
   customer_dues: ["sourceId", "partyId", "sourceDate", "amount"],
   supplier_dues: ["sourceId", "partyId", "sourceDate", "amount"],
 } as const;
 export type PharmacyImportKind = keyof typeof PHARMACY_IMPORT_FIELDS;
-const optional = new Set(["barcode", "manufacturer", "strength", "reorderLevel"]);
+const optional = new Set(["barcode", "manufacturer", "strength", "reorderLevel", "rackLocation"]);
 export function importKind(value: unknown): PharmacyImportKind {
   if (typeof value !== "string" || !Object.hasOwn(PHARMACY_IMPORT_FIELDS, value)) throw new CommandError(400, "Choose catalogue, opening_stock, customer_dues or supplier_dues");
   return value as PharmacyImportKind;

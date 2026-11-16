@@ -1,0 +1,22 @@
+{
+  "probe": "pharmacy-competing-tills",
+  "tills": 2,
+  "requestedPerTill": 6,
+  "initialStock": 10,
+  "remainingStock": 4,
+  "invoices": 1,
+  "receipts": 1,
+  "elapsedMs": 111,
+  "results": [
+    {
+      "status": 201,
+      "elapsedMs": 68,
+      "timing": "counter_save;dur=56.4, counter_authority;dur=2.7, counter_readiness;dur=1.2, counter_prepare;dur=6.1, counter_stock;dur=9.6, counter_documents;dur=13.3, counter_payment;dur=10.7, counter_command;dur=52.5, counter_finalize;dur=3.0"
+    },
+    {
+      "status": 409,
+      "elapsedMs": 102,
+      "timing": "counter_save;dur=90.4, counter_authority;dur=2.7, counter_readiness;dur=1.2, counter_prepare;dur=4.5, counter_command;dur=86.5"
+    }
+  ]
+}

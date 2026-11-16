@@ -14,6 +14,7 @@ import { pinActivePharmacyLocation } from "../utilities/pharmacyCapability.ts";
 import { decryptField } from "../utilities/cryptoEnvelope.ts";
 import { identifier } from "../schemas/pharmacyPurchases.ts";
 import { claimCashierDrawer } from "./CashierDrawerService.ts";
+import { ownsOfflineDrawer } from "../utilities/pharmacyOfflineOwnership.ts";
 
 type Scope = Awaited<ReturnType<typeof purchaseScope>>;
 const receiptScope = (scope: Scope) => `pharmacy-collection:${scope.organizationId}:${scope.locationId}`;
@@ -32,14 +33,28 @@ export async function collectPharmacyInvoice(req: FastifyRequest, rawId: string,
   const input = pharmacyCollectionInput(req.body), invoiceId = identifier(rawId), scope = await purchaseScope(req, input.locationId), key = req.headers["idempotency-key"];
   if (typeof key !== "string" || !/^[a-zA-Z0-9_-]{8,100}$/.test(key)) throw new CommandError(428, "A stable Idempotency-Key is required for collection");
   if (!await Invoice.exists({ _id: invoiceId, organizationId: scope.organizationId, locationId: scope.locationId, kind: "pharmacy", deletedAt: null })) throw new CommandError(404, "Counter invoice not found");
+  let committed: Record<string, unknown> | undefined;
   const command = await executeRecordedCommand(receiptScope(scope), key, { actorId: scope.actorId, invoiceId, full, ...input }, () => withTransaction(async session => {
     requireStockTransaction(session);
-    const invoice = await Invoice.findOne({ _id: invoiceId, organizationId: scope.organizationId, locationId: scope.locationId, kind: "pharmacy", deletedAt: null }).session(session);
+    const data = await recordPharmacyCollection(scope, invoiceId, input, key, session, full);
+    const saved = await OperationReceipt.updateOne({ scope: receiptScope(scope), key }, { $set: { responseCiphertext: JSON.stringify({ version: 1, actorId: scope.actorId, data }) } }).session(session);
+    if (saved.matchedCount !== 1) throw new CommandError(409, "Collection reservation changed; keep the same reference");
+    committed = data;
+    return String(data.receiptId);
+  }), { writeConcern: { w: "majority" } });
+  return { ...(!command.replayed && committed ? committed : await recoverPharmacyCollection(req, input.locationId, key)), replayed: command.replayed };
+}
+
+/** Shared ledger write. The caller owns the surrounding recorded transaction. */
+export async function recordPharmacyCollection(scope: Scope, invoiceId: string, input: ReturnType<typeof pharmacyCollectionInput>, key: string, session: mongoose.ClientSession | null, full = false, createdInvoice?: InstanceType<typeof Invoice>, capturedPaidAt?: Date) {
+    requireStockTransaction(session);
+    const invoice = createdInvoice ?? await Invoice.findOne({ _id: invoiceId, organizationId: scope.organizationId, locationId: scope.locationId, kind: "pharmacy", deletedAt: null }).session(session);
     if (!invoice || invoice.currency !== "INR") throw new CommandError(404, "Counter invoice not found");
     const before = invoiceBalancePaise(invoice, true), revision = invoice.paymentRevision ?? 0;
     if (!Number.isSafeInteger(revision) || revision < 0 || revision !== input.expectedPaymentRevision || before.balancePaise !== input.expectedBalancePaise) throw new CommandError(409, "Collection balance or revision changed; reload before receiving more money");
     const drawer = await claimCashierDrawer(scope, invoice.currency, session);
-    const receiptId = new mongoose.Types.ObjectId(), paidAt = new Date();
+    if (capturedPaidAt && (!ownsOfflineDrawer(String(drawer!._id), scope.locationId) || !Number.isFinite(capturedPaidAt.getTime()) || capturedPaidAt > new Date(Date.now() + 60_000) || !invoice.issuedAt || capturedPaidAt < invoice.issuedAt)) throw new CommandError(409, "Captured collection time requires verified offline ownership and the original invoice time");
+    const receiptId = new mongoose.Types.ObjectId(), paidAt = capturedPaidAt || new Date();
     const result = appendInvoiceCollection(invoice, input.entries, { key, actorId: scope.actorId, receiptId, shiftId: drawer!._id, paidAt, strictLedger: true });
     if ((full || invoice.customerSnapshot?.anonymous) && result.balancePaise !== 0) throw new CommandError(409, "Full settlement is required for an anonymous customer or full-pay command; identified customers may retain a balance");
     invoice.paymentRevision = revision + 1;
@@ -54,10 +69,5 @@ export async function collectPharmacyInvoice(req: FastifyRequest, rawId: string,
       details: { invoiceId, collectedPaise: result.collectedPaise, balancePaise: result.balancePaise, revision: invoice.paymentRevision, receiptId } }, session);
     await pinActivePharmacyLocation(scope.locationId, session, false);
     const { _id, __v: _version, ...fields } = receipt.toObject();
-    const data = { ...fields, receiptId: String(_id), invoiceId, requestKey: key };
-    const saved = await OperationReceipt.updateOne({ scope: receiptScope(scope), key }, { $set: { responseCiphertext: JSON.stringify({ version: 1, actorId: scope.actorId, data }) } }).session(session);
-    if (saved.matchedCount !== 1) throw new CommandError(409, "Collection reservation changed; keep the same reference");
-    return String(receiptId);
-  }), { writeConcern: { w: "majority" } });
-  return { ...await recoverPharmacyCollection(req, input.locationId, key), replayed: command.replayed };
+    return { ...fields, receiptId: String(_id), invoiceId, requestKey: key };
 }

@@ -39,7 +39,7 @@ export async function inspectPharmacyImport(req: FastifyRequest) {
   const body = req.body as Record<string, unknown>, kind = importKind(body?.kind);
   await requireImportScope(req, body.locationId, kind);
   const parsed = parsePharmacyCsv(body.csv);
-  return { headers: parsed.headers, rowCount: parsed.records.length, fields: PHARMACY_IMPORT_FIELDS[kind], optionalFields: ["barcode", "manufacturer", "strength", "reorderLevel"] };
+  return { headers: parsed.headers, rowCount: parsed.records.length, fields: PHARMACY_IMPORT_FIELDS[kind], optionalFields: ["barcode", "manufacturer", "strength", "reorderLevel", "rackLocation"] };
 }
 
 export async function previewPharmacyImport(req: FastifyRequest) {
@@ -62,7 +62,7 @@ export async function previewPharmacyImport(req: FastifyRequest) {
       if (input.kind === "catalogue") {
         if (!["general", "schedule_h", "schedule_h1", "schedule_x", "narcotic"].includes(fields.scheduleType)) throw new CommandError(400, "An explicit source schedule classification is required; sale approval remains separate");
         const metadata = catalogueFields({ name: fields.name, genericName: fields.genericName, category: fields.category, ...(fields.barcode ? { barcodes: [fields.barcode] } : {}),
-          ...(fields.manufacturer ? { manufacturer: fields.manufacturer } : {}), ...(fields.strength ? { strength: fields.strength } : {}), ...(fields.reorderLevel ? { reorderLevel: csvWhole(fields.reorderLevel, "reorder level") } : {}) });
+          ...(fields.manufacturer ? { manufacturer: fields.manufacturer } : {}), ...(fields.strength ? { strength: fields.strength } : {}), ...(fields.rackLocation ? { rackLocation: fields.rackLocation } : {}), ...(fields.reorderLevel ? { reorderLevel: csvWhole(fields.reorderLevel, "reorder level") } : {}) });
         const unitDefinition = normalizeUnitDefinition({ baseUnit: fields.baseUnit, packUnit: fields.packUnit, unitsPerPack: csvWhole(fields.unitsPerPack, "units per pack", 1_000_000) }, 1);
         row.data = { ...metadata, unitDefinition, scheduleType: fields.scheduleType, price: csvPaise(fields.sellingPrice, "selling price") / 100 };
       } else if (input.kind === "opening_stock") {

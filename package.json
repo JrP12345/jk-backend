@@ -30,7 +30,8 @@
     "start": "node dist/index.js",
     "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
     "seed:root": "node --env-file=.env --experimental-strip-types scripts/seedRoot.ts",
-    "db:indexes": "node --env-file=.env --experimental-strip-types scripts/prepare-database-indexes.ts"
+    "db:indexes": "node --env-file=.env --experimental-strip-types scripts/prepare-database-indexes.ts",
+    "db:medicine-search": "node --env-file=.env --experimental-strip-types scripts/prepare-medicine-search.ts"
   },
   "repository": {
     "type": "git",

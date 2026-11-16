@@ -11,6 +11,7 @@ import { appendStockMovement } from "./PharmacyStockMovementService.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
 import { requireStockTransaction, stockRevisionFilter } from "../utilities/pharmacyInventory.ts";
 import { pinActivePharmacyLocation } from "../utilities/pharmacyCapability.ts";
+import { requireTrackedInventory } from "../utilities/pharmacyInventoryMode.ts";
 import { lotExpiry, normalizeStockReceipt, receiptQuantity, validateCapturedLot, type StockReceiptInput } from "../utilities/pharmacyLot.ts";
 import { decryptField } from "../utilities/cryptoEnvelope.ts";
 
@@ -39,7 +40,7 @@ export async function receivePharmacyStock(authority: StockReceiptAuthority, key
     const data = await receivePharmacyStockInTransaction(authority, key, input, session);
     const saved = await OperationReceipt.updateOne({ scope: scopeKey(authority), key }, { $set: { responseCiphertext: JSON.stringify({ version: 1, ...authority, key, data }) } }).session(session);
     if (saved.matchedCount !== 1) throw new CommandError(409, "Receipt reservation changed; retry the same reference");
-    await pinActivePharmacyLocation(input.locationId, session);
+    await pinActivePharmacyLocation(input.locationId, session, true, true);
     return data.batchId;
   }), { writeConcern: { w: "majority" } });
   return { ...await recoverPharmacyStockReceipt(authority, key), replayed: command.replayed };
@@ -67,13 +68,14 @@ export async function receivePharmacyOpeningGroup(authority: StockReceiptAuthori
   if (!medicine || medicine.stockQuantity !== 0 || await MedicineBatch.exists({ medicineId: first.medicineId }).session(session) || await StockMovement.exists({ medicineId: first.medicineId }).session(session)) throw new CommandError(409, "Opening import requires an empty product with no prior stock history");
   const permitted = new Set(inputs.map(input => input.receiptLineId)), results = [];
   for (const input of inputs) results.push(await receivePharmacyStockInTransaction(authority, key, input, session, undefined, permitted));
-  await pinActivePharmacyLocation(authority.locationId, session);
+  await pinActivePharmacyLocation(authority.locationId, session, true, true);
   return results;
 }
 
 export async function receivePharmacyStockInTransaction(authority: StockReceiptAuthority, key: string, rawInput: StockReceiptInput, session: ClientSession | null, source?: { purchaseSource: PurchaseLotSource; hsnCode: string; gstRate: number; unitSnapshot: { version: number; baseUnit: string; packUnit: string; unitsPerPack: number } }, openingGroupLineIds?: ReadonlySet<string>) {
   const input = normalizeStockReceipt(rawInput);
   if (input.locationId !== authority.locationId) throw new CommandError(404, "Receipt location differs from authority");
+  await requireTrackedInventory(authority.locationId, session);
   requireStockTransaction(session);
   const location = await Location.findOne({ _id: input.locationId, organizationId: authority.organizationId, isActive: { $ne: false } }).session(session);
   if (!location) throw new CommandError(404, "Location not found");

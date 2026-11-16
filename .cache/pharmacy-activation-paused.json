@@ -1,0 +1,9 @@
+{
+    "pausedAt":  "2026-11-15T05:03:17.4646734Z",
+    "stoppedIds":  [
+                       14332,
+                       2948,
+                       8676
+                   ],
+    "restart":  "node --env-file-if-exists=.env scripts/dev.mjs"
+}

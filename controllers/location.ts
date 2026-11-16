@@ -246,7 +246,8 @@ export async function deleteLocation(req: FastifyRequest, reply: FastifyReply) {
       return reply.code(400).send(errorResponse(`Cannot deactivate location with ${activeApptsCount} active appointment(s). Please reassign or cancel them first.`));
     }
 
-    await Location.updateOne(filter, { isActive: false });
+    const deactivated = await Location.updateOne({ ...filter, pharmacyOfflineOwner: { $exists: false } }, { isActive: false });
+    if (deactivated.matchedCount !== 1) return reply.code(409).send(errorResponse("Location changed or has unresolved offline billing ownership. Reconcile the PC before deactivating this branch."));
 
     const { DoctorAssignment } = await import("../models/DoctorAssignment.ts");
     await DoctorAssignment.updateMany({ locationId: id, organizationId: location.organizationId }, { isActive: false });

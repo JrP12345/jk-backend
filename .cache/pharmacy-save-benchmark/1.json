@@ -1,0 +1,35 @@
+{
+  "probe": "pharmacy-save",
+  "lines": 1,
+  "historicalLotsPerProduct": 50,
+  "samples": [
+    {
+      "elapsedMs": 205,
+      "queries": 54,
+      "medicineReads": 2,
+      "lotReads": 1,
+      "timing": "counter_save;dur=147.3, counter_authority;dur=6.0, counter_readiness;dur=2.1, counter_prepare;dur=30.9, counter_stock;dur=23.8, counter_documents;dur=31.5, counter_payment;dur=23.3, counter_command;dur=138.0, counter_finalize;dur=11.6"
+    },
+    {
+      "elapsedMs": 150,
+      "queries": 51,
+      "medicineReads": 2,
+      "lotReads": 1,
+      "timing": "counter_save;dur=132.4, counter_authority;dur=5.2, counter_readiness;dur=17.6, counter_prepare;dur=20.6, counter_stock;dur=21.4, counter_documents;dur=23.1, counter_payment;dur=23.5, counter_command;dur=109.5, counter_finalize;dur=3.5"
+    },
+    {
+      "elapsedMs": 111,
+      "queries": 51,
+      "medicineReads": 2,
+      "lotReads": 1,
+      "timing": "counter_save;dur=97.8, counter_authority;dur=8.2, counter_readiness;dur=2.2, counter_prepare;dur=10.2, counter_stock;dur=18.3, counter_documents;dur=17.3, counter_payment;dur=20.5, counter_command;dur=87.3, counter_finalize;dur=5.2"
+    }
+  ],
+  "coldMs": 205,
+  "warmMs": [
+    150,
+    111
+  ],
+  "p50Ms": 150,
+  "p95Ms": 205
+}

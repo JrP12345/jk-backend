@@ -60,12 +60,14 @@ describe("Compatible medicine catalogue metadata", () => {
     expect((await edit(f, id, { costPrice: 0 })).statusCode).toBe(403);
     expect((await edit(f, id, { scheduleType: "schedule_h" })).statusCode).toBe(409);
     expect((await edit(f, id, { gstRate: 0 })).statusCode).toBe(409);
-    const metadata = await edit(f, id, { manufacturer: "Updated manufacturer", strength: "250 mg", reorderLevel: 0, barcodes: ["000005"] });
+    const metadata = await edit(f, id, { manufacturer: "Updated manufacturer", strength: "250 mg", rackLocation: "A3 / Shelf 2", reorderLevel: 0, barcodes: ["000005"] });
     expect(metadata.statusCode, metadata.body).toBe(200); expect(metadata.json().data).toMatchObject({ stockQuantity: 0, manufacturer: "Updated manufacturer", strength: "250 mg", reorderLevel: 0, barcodes: ["000005"] });
     expect(metadata.json().data).not.toHaveProperty("costPrice");
+    expect(metadata.json().data.rackLocation).toBe("A3 / Shelf 2");
+    expect((await edit(f, id, { rackLocation: "" })).json().data.rackLocation).toBe("");
   });
   it.each([{ name: " " }, { reorderLevel: -1 }, { reorderLevel: 0.5 }, { unitDefinition: { ...unit, unitsPerPack: 0 } }, { unitDefinition: { ...unit, unitsPerPack: 1.5 } },
-    { unitDefinition: { ...unit, unitsPerPack: 1000001 } }, { barcodes: ["same", "same"] }, { barcodes: ["bad barcode"] }])("rejects invalid metadata %j", async fields => {
+    { unitDefinition: { ...unit, unitsPerPack: 1000001 } }, { rackLocation: "x".repeat(61) }, { rackLocation: "A\nB" }, { rackLocation: 12 }, { barcodes: ["same", "same"] }, { barcodes: ["bad barcode"] }])("rejects invalid metadata %j", async fields => {
     const f = await fixture(); expect((await create(f, fields)).statusCode).toBe(400); expect(await Medicine.countDocuments({ locationId: f.locationId })).toBe(0);
   });
   it("keeps legacy unit identity absent and prevents declaring units over existing quantities", async () => {

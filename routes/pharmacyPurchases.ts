@@ -4,15 +4,22 @@ import { requirePharmacyStaff, requirePharmacyAction } from "../middleware/pharm
 import { requireModule } from "../middleware/moduleGuard.ts";
 import { listPharmacyParties, listPharmacyPurchases, listPharmacyPurchaseProducts, readPharmacyParty, readPharmacyPurchase, writePharmacyParty, writePharmacyPurchase, postPurchase, receivePurchase, recoverPurchase, listPurchaseReceipts } from "../controllers/pharmacyPurchases.ts";
 import { readSupplierReturnSource, previewSupplierReturn, postSupplierReturn, recoverSupplierReturn } from "../controllers/pharmacyPurchaseReturns.ts";
+import { purchaseCsvInspection, purchaseCsvPreview, purchaseCsvRemember } from "../controllers/pharmacyPurchaseCsv.ts";
+import { listPharmacyShortbook, savePharmacyShortbook } from "../controllers/pharmacyShortbook.ts";
 export default async function pharmacyPurchaseRoutes(app: FastifyInstance) {
   const view = { preHandler: [authenticate, requirePharmacyStaff, requireModule("pharmacy"), requirePharmacyAction("viewPurchases")] };
   const manage = { preHandler: [authenticate, requirePharmacyStaff, requireModule("pharmacy"), requirePharmacyAction("managePurchases")] };
+  app.get("/api/pharmacy/shortbook", view, listPharmacyShortbook);
+  app.put("/api/pharmacy/shortbook/:medicineId", manage, savePharmacyShortbook);
   app.get("/api/pharmacy/parties", view, listPharmacyParties);
   app.get("/api/pharmacy/parties/:id", view, readPharmacyParty);
   app.post("/api/pharmacy/parties", manage, writePharmacyParty);
   app.put("/api/pharmacy/parties/:id", manage, writePharmacyParty);
   app.get("/api/pharmacy/purchases", view, listPharmacyPurchases);
   app.get("/api/pharmacy/purchase-products", view, listPharmacyPurchaseProducts);
+  app.post("/api/pharmacy/purchase-csv/inspect", manage, purchaseCsvInspection);
+  app.post("/api/pharmacy/purchase-csv/preview", manage, purchaseCsvPreview);
+  app.put("/api/pharmacy/purchase-csv/profile", manage, purchaseCsvRemember);
   app.get("/api/pharmacy/purchases/:id", view, readPharmacyPurchase);
   app.post("/api/pharmacy/purchases", manage, writePharmacyPurchase);
   app.put("/api/pharmacy/purchases/:id", manage, writePharmacyPurchase);

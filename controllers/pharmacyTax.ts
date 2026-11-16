@@ -10,6 +10,8 @@ import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { withTransaction } from "../utilities/transaction.ts";
 import { CommandError } from "../services/CommandReceiptService.ts";
 import { inclusiveTax, validatePharmacyProfile } from "../utilities/pharmacyTax.ts";
+import { offlineOwnerFilter } from "../utilities/pharmacyOfflineOwnership.ts";
+import { pinPharmacyContinuityLocation } from "../utilities/pharmacyCapability.ts";
 
 function expectedRevision(value: unknown) {
   if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) >= Number.MAX_SAFE_INTEGER) throw new CommandError(409, "Reload settings and provide a valid expectedRevision");
@@ -39,7 +41,8 @@ export async function savePharmacyTaxProfile(req: FastifyRequest, reply: Fastify
     // rather than leaving an older supported profile active after a rejected edit.
     validatePharmacyProfile(profile, false);
     const saved = await withTransaction(async () => {
-      const location = await Location.findOneAndUpdate({ _id: locationId, organizationId: access.organizationId, isActive: true }, { $inc: { __v: 1 } });
+      const location = await Location.findOneAndUpdate({ _id: locationId, organizationId: access.organizationId, ...offlineOwnerFilter(locationId), isActive: true }, { $inc: { __v: 1 } });
+      if (!location) throw new CommandError(409, "Branch is unavailable or assigned to an offline billing PC; reconcile it before changing the issuer profile");
       const organization = await Organization.findById(access.organizationId).select("countryCode currency").lean();
       if (!location || !organization || organization.countryCode !== "IN" || organization.currency !== "INR") throw new CommandError(409, "This pharmacy document profile requires an explicit India/INR organization");
       const current = await PharmacyTaxProfile.findOne({ locationId, organizationId: access.organizationId });
@@ -72,12 +75,13 @@ export async function reviewMedicineTax(req: FastifyRequest, reply: FastifyReply
         (treatment === "taxable" ? gstRate <= 0 : gstRate !== 0) || typeof reviewReference !== "string" || reviewReference.trim().length < 3) {
       throw new CommandError(409, "Review the medicine HSN, tax treatment, rate and supporting reference");
     }
-    const saved = await withTransaction(async () => {
+    const saved = await withTransaction(async session => {
       const updated = await Medicine.findOneAndUpdate({ _id: id, locationId: medicine.locationId, deletedAt: null,
         ...(revision === 0 ? { $or: [{ taxRevision: 0 }, { taxRevision: { $exists: false } }] } : { taxRevision: revision }) },
       { $set: { hsnCode, gstRate, taxClassification: { hsnCode, unitCode, gstRate, treatment, reviewReference,
         confirmedBy: req.user!.id, confirmedAt: new Date() } }, $inc: { taxRevision: 1 } }, { returnDocument: "after", runValidators: true });
       if (!updated) throw new CommandError(409, "Medicine tax classification changed; reload before saving");
+      await pinPharmacyContinuityLocation(String(medicine.locationId), session);
       await AuditLog.create({ organizationId: access.organizationId, userId: req.user!.id, action: "PHARMACY_MEDICINE_TAX_REVIEWED", targetId: medicine._id,
         targetModel: "Medicine", category: "ADMIN", details: { revision: revision + 1 } });
       return updated;

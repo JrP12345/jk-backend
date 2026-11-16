@@ -3,7 +3,6 @@ import bcrypt from "bcryptjs";
 import mongoose from "mongoose";
 import { PharmacyOnboardingRequest } from "../models/PharmacyOnboardingRequest.ts";
 import { User } from "../models/User.ts";
-import { Organization } from "../models/Organization.ts";
 import { SaaSPlan } from "../models/SaaSPlan.ts";
 import { Subscription } from "../models/Subscription.ts";
 import { Location } from "../models/Location.ts";
@@ -13,8 +12,7 @@ import { CommandError, executeRecordedCommand } from "./CommandReceiptService.ts
 import { otpService } from "./OtpService.ts";
 import { provisionOrganization } from "./OrganizationProvisioningService.ts";
 import { onboardingInput, onboardingProof } from "../schemas/pharmacyOnboarding.ts";
-import { calculateCommercialQuote, commercialFingerprint, validateCommercialPlan } from "../utilities/commercialQuote.ts";
-import { validateProductFootprint } from "./billing/ProductActivationService.ts";
+import { pharmacyTrialOption as publicOption, loadPublishedPharmacyTrial as publishedPlan, pinPublishedPharmacyTrial, pharmacyTrialInitializer } from "./PharmacyTrialService.ts";
 import { withTransaction, createWithSession } from "../utilities/transaction.ts";
 import { decryptField } from "../utilities/cryptoEnvelope.ts";
 
@@ -22,20 +20,6 @@ const hash = (value: string) => crypto.createHash("sha256").update(value).digest
 const proofError = () => new CommandError(401, "Setup proof is unavailable or expired. Sign in to a completed workspace, or begin a fresh verified request");
 const context = (request: any) => `pharmacy-onboarding:${request.id}:${request.setupTokenHash}`;
 function requireTransaction(session: mongoose.ClientSession | null): asserts session is mongoose.ClientSession { if (!session?.inTransaction()) throw new CommandError(503, "Verified business setup requires a transaction-capable database"); }
-function planFingerprint(plan: any) { const row = plan.toObject(); return commercialFingerprint({ id: plan.id, pricing: row.commercialPricing, limits: row.limits, legacyTier: row.legacyTier, trialDays: row.trialDays, currency: row.currency }); }
-function publicOption(plan: any) {
-  validateCommercialPlan(plan);
-  if (!plan.selfServicePharmacy || !Number.isSafeInteger(plan.trialDays) || plan.trialDays < 1 || plan.trialDays > 365 || plan.limits.maxLocations < 1 || plan.limits.maxStaff < 1) throw new CommandError(409, "This pharmacy trial is not published for independent setup");
-  const preview = calculateCommercialQuote("000000000000000000000001", { ...plan.toObject(), id: plan.id }, { billingCycle: "monthly", priceRevision: plan.commercialPricing.revision, doctorSeats: 0,
-    locations: [{ locationId: "000000000000000000000002", clinic: false, pharmacy: true, capabilityRevision: 0 }] });
-  return { id: plan.id, name: plan.name, trialDays: plan.trialDays, monthlyTotalPaise: preview.totalPaise, currency: "INR", maxStaff: preview.entitlements.maxStaff, fingerprint: planFingerprint(plan) };
-}
-async function publishedPlan(planId: string, fingerprint?: string) {
-  const plan = await SaaSPlan.findOne({ _id: planId, status: "active", commercialFamily: "location_products", selfServicePharmacy: true });
-  if (!plan) throw new CommandError(409, "The selected pharmacy trial is no longer published");
-  const option = publicOption(plan);
-  if (fingerprint && option.fingerprint !== fingerprint) throw new CommandError(409, "Published trial terms changed. Review the current selection and begin a fresh request"); return plan;
-}
 export async function pharmacyOnboardingOptions() {
   const plans = await SaaSPlan.find({ status: "active", commercialFamily: "location_products", selfServicePharmacy: true }).sort({ displayOrder: 1, _id: 1 }).limit(20);
   const items = []; for (const plan of plans) { try { items.push(publicOption(plan)); } catch { /* An invalid catalogue is unavailable, never a fabricated offer. */ } }
@@ -128,24 +112,11 @@ export async function completePharmacyOnboarding(raw: unknown, requestKey: unkno
     let data: any;
     if (request.state === "provisioned") data = JSON.parse(decryptField(request.resultCiphertext!));
     else {
-      const intent = JSON.parse(decryptField(request.intentCiphertext)), plan = await publishedPlan(intent.planId, intent.planFingerprint);
-      const pinnedPlan = await SaaSPlan.findOneAndUpdate({ _id: plan._id, status: "active", selfServicePharmacy: true, "commercialPricing.revision": plan.commercialPricing!.revision, trialDays: plan.trialDays }, { $inc: { __v: 1 } }, { session, returnDocument: "after" });
-      if (!pinnedPlan || planFingerprint(pinnedPlan) !== intent.planFingerprint) throw new CommandError(409, "Published trial terms changed before setup committed; review a fresh selection");
+      const intent = JSON.parse(decryptField(request.intentCiphertext)), plan = await pinPublishedPharmacyTrial(intent.planId, intent.planFingerprint, session);
       const created = await provisionOrganization({ org_name: intent.businessName, city: intent.city, address: intent.address, org_phone: intent.businessPhone,
         org_email: request.email, admin_name: owner.name, admin_email: request.email, admin_password: "", facilityType: "pharmacy", plan: plan.legacyTier!,
         countryCode: "IN", currency: "INR", timezone: "Asia/Kolkata", sendWelcomeEmail: false }, { verifiedOwnerUserId: ownerUserId, workspaceProfile: "pharmacy", staffMfaRequired: true,
-        initializeSubscription: async ({ organizationId, locationId }, currentSession) => {
-          requireTransaction(currentSession); const now = new Date();
-          const location = await Location.findById(locationId).select("pharmacyCapability");
-          const quote = calculateCommercialQuote(organizationId, { ...plan.toObject(), id: plan.id }, { billingCycle: "monthly", priceRevision: plan.commercialPricing!.revision, doctorSeats: 0,
-            locations: [{ locationId, clinic: false, pharmacy: true, capabilityRevision: location!.pharmacyCapability!.revision }] }, now);
-          await validateProductFootprint(quote, currentSession, true);
-          const trialEndsAt = new Date(now.getTime() + plan.trialDays * 86400000);
-          await createWithSession(Subscription, { organizationId, planId: plan._id, commercialQuote: quote, status: "trialing", entitlementSource: "trial", billingCycle: "monthly",
-            trialStartedAt: now, trialEndsAt, currentPeriodStart: now, currentPeriodEnd: trialEndsAt,
-            manualGrantReason: `Verified independent pharmacy setup ${request.id}`, manualGrantedBy: ownerUserId, manualGrantedAt: now }, currentSession);
-          await Organization.updateOne({ _id: organizationId }, { $set: { maxLocations: quote.entitlements.maxLocations, maxDoctors: quote.entitlements.maxDoctors, maxStaff: quote.entitlements.maxStaff } }).session(currentSession);
-        } });
+        initializeSubscription: pharmacyTrialInitializer(plan, ownerUserId, `Verified independent pharmacy setup ${request.id}`) });
       const location = await Location.findOne({ organizationId: created.organization.id }).select("_id"), subscription = await Subscription.findOne({ organizationId: created.organization.id }).select("trialEndsAt");
       data = { organization: created.organization, ownerUserId, locationId: String(location!._id), trialEndsAt: subscription!.trialEndsAt, workspaceProfile: "pharmacy" };
       request.state = "provisioned"; request.organizationId = new mongoose.Types.ObjectId(created.organization.id); request.provisionedAt = new Date(); request.resultCiphertext = JSON.stringify(data); await request.save({ session });

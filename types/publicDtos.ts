@@ -7,6 +7,7 @@
  */
 
 import { organizationImageReference } from "../services/OrganizationBranding.ts";
+import { publicPharmacyFlags } from "../utilities/publicPharmacy.ts";
 
 export interface PublicOrganizationSummary {
   id: string;
@@ -80,5 +81,6 @@ export function toPublicLocation(raw: any) {
     latitude: location.latitude, longitude: location.longitude,
     googleMapsEmbedUrl: location.googleMapsEmbedUrl || "",
     timings: location.timings, amenities: location.amenities || [],
+    pharmacy: publicPharmacyFlags(location),
   };
 }

@@ -29,6 +29,17 @@ async function read(f: Scope, kind: string, extra = "") { const res = await get(
 async function issue(f: Awaited<ReturnType<typeof fixture>>) { const res = await post(f, "sales", f.input); expect(res.statusCode, res.body).toBe(201); return res.json().data.invoiceId; }
 async function collect(f: Scope, id: string) { const res = await post(f, `invoices/${id}/collections`, { expectedPaymentRevision: 0, expectedBalancePaise: 2000, manualConfirmed: true, cashTenderedPaise: 1000, entries: [{ componentId: "cash-component", amountPaise: 1000, paymentMethod: "cash" }, { componentId: "upi-component", amountPaise: 1000, paymentMethod: "upi", referenceNumber: "ACTUAL-UPI-REPORT" }] }); expect(res.statusCode, res.body).toBe(201); }
 describe("Bounded source-based pharmacy reports and reviewed CSV", () => {
+  it("links expiry follow-up only to captured purchase receipt provenance", async () => {
+    const f = await pharmacyPurchaseFixture([...grants, "PHARMACY_RECEIVE_STOCK"]), purchaseId = f.purchase.id;
+    expect((await post(f, `purchases/${purchaseId}/post`, { expectedRevision: 0, expectedSupplierRevision: 0, supplierStateCode: "27", taxMode: "sgst", costTreatment: "exclude_tax", roundOffPaise: 0, reviewReference: "Synthetic source review" })).statusCode).toBe(200);
+    const received = await post(f, `purchases/${purchaseId}/receipts`, { expectedRevision: 1, deliveryReference: key(), lines: [{ lineId: key(), purchaseLineId: f.body.lines[0].lineId, billedBaseUnits: 3, freeBaseUnits: 1, batchNumber: "EXPIRING-RECEIVED", expiry: { precision: "day", value: new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10) } }] });
+    expect(received.statusCode, received.body).toBe(201);
+    const page = await read(f, "expiry"); expect(page.rows[0]).toMatchObject({ purchaseId, batch: "EXPIRING-RECEIVED", review: "", saleable: 4 });
+    const opening = await fixture(); const lot = (await MedicineBatch.findOne({ medicineId: opening.medicine.id }))!;
+    const expiry = lotExpiry({ precision: "month", value: "2020-01" }, "Asia/Kolkata");
+    await MedicineBatch.collection.updateOne({ _id: lot._id }, { $set: { expiryDate: expiry.cutoff, expirySnapshot: expiry } });
+    expect((await read(opening, "expiry")).rows[0]).not.toHaveProperty("purchaseId");
+  });
   it("reports captured stock and rational lot cost without adding unlike units or leaking acquisition costs", async () => {
     const f = await fixture(), stock = await read(f, "stock"), value = await read(f, "valuation");
     expect(stock.rows[0]).toMatchObject({ product: "Ordinary product", units: 10, eligible: 10, unit: "tablet", reorder: 20, review: "" });

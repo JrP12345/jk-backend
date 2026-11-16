@@ -126,6 +126,16 @@ describe("Pharmacy issued documents, reviewed tax profiles and fiscal numbering"
     const response = await post(f.body); expect(response.statusCode, response.body).toBe(409);
     await noSupply(f); expect((await Counter.findOne({ id })).seq).toBe(999999);
   });
+  it("captures custom clinical numbering without changing clinical supply or tax evidence", async () => {
+    const f = await fixture(), prefixTemplate = `D${crypto.randomBytes(2).toString("hex").toUpperCase()}/{FY}/`;
+    const configured = await app.inject({ method: "PUT", url: `/api/pharmacy/locations/${f.location.id}/invoice-numbering`, headers,
+      payload: { expectedRevision: 0, expectedFinancialYear: indiaFinancialYear().label, prefixTemplate, digits: 4, resetPolicy: "financial_year", nextNumber: 12, reviewReference: "Synthetic numbering review" } });
+    expect(configured.statusCode, configured.body).toBe(200);
+    const result = await post(f.body); expect(result.statusCode, result.body).toBe(201);
+    expect(result.json().data).toMatchObject({ documentVersion: 1, numberingVersion: 3, invoiceNumber: configured.json().data.preview,
+      numberingSnapshot: { prefixTemplate, sequence: 12, digits: 4, configurationRevision: 1 }, totalAmount: 210, status: "unpaid" });
+    expect((await Medicine.findById(f.medicine.id))!.stockQuantity).toBe(18);
+  });
   it("captures inclusive GST, issuer, units and exact paise in an unpaid issued invoice", async () => {
     const f = await fixture(); const key = crypto.randomUUID();
     const response = await post(f.body, key); expect(response.statusCode, response.body).toBe(201);

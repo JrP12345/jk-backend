@@ -33,6 +33,7 @@ async function returnSource(scope: Scope, invoiceId: string, session: mongoose.C
   if (["cancelled", "refunded"].includes(invoice.status)) throw new CommandError(409, "Invoice needs a reviewed correction workflow");
   const source = await PharmacyDispense.findOne({ invoiceId, organizationId: scope.organizationId, locationId: scope.locationId, kind: "pharmacy" }).session(session);
   if (!source || source.lines.length !== invoice.items.length) throw new CommandError(409, "Original sold source evidence needs review");
+  const billingOnly = source.inventoryMode === "billing_only";
   const history = await PharmacyReturn.find({ invoiceId, organizationId: scope.organizationId, locationId: scope.locationId }).sort({ revision: 1 }).limit(1001).session(session).lean();
   if (history.length > 1000 || history.length !== invoice.returnRevision || history.some((row, index) => row.revision !== index + 1)) throw new CommandError(409, "Return ledger revision needs review");
   const credits = await InvoiceCreditNote.find({ invoiceId, organizationId: scope.organizationId, locationId: scope.locationId }).limit(1001).session(session).lean();
@@ -41,26 +42,28 @@ async function returnSource(scope: Scope, invoiceId: string, session: mongoose.C
     const item = invoice.items.find((item: any) => String(item.pharmacyDispenseLineId) === String(line._id));
     if (!item || !line.unitSnapshot?.version || !line.pricingAllocations.length || line.quantity !== item.quantity || ["baseAmountPaise", "cgstPaise", "sgstPaise", "grossAmountPaise"].some(field => (line as any)[field] !== (item as any)[field])) throw new CommandError(409, "Original invoice/source amounts need review");
     return { lineId: String(line._id), quantity: line.quantity, baseAmountPaise: line.baseAmountPaise!, cgstPaise: line.cgstPaise!, sgstPaise: line.sgstPaise!,
-      lots: line.pricingAllocations.map(lot => { if (!lot.batchId) throw new CommandError(409, "Original lot identity missing"); return { batchId: String(lot.batchId), quantity: lot.quantity, unitPricePaise: toPaise(lot.unitPrice) }; }) };
+      lots: line.pricingAllocations.map(lot => { if (!billingOnly && !lot.batchId || billingOnly && (lot.batchId || line.pricingAllocations.length !== 1)) throw new CommandError(409, "Original lot identity missing"); return { batchId: String(billingOnly ? line._id : lot.batchId), quantity: lot.quantity, unitPricePaise: toPaise(lot.unitPrice) }; }) };
   }), invoice.calculation!.totals!.payablePaise!);
   if (basis.length > 1000) throw new CommandError(409, "Source lot count exceeds the return review bound");
   const balances = invoiceBalancePaise(invoice, true);
   const rows: any[] = [];
   for (const part of basis) {
-    const line = source.lines.find(line => String(line._id) === part.lineId)!, allocation = line.pricingAllocations.find(lot => String(lot.batchId) === part.batchId)!;
-    const lot = await MedicineBatch.findOne({ _id: part.batchId, medicineId: line.medicineId, locationId: scope.locationId, organizationId: scope.organizationId, lotVersion: 1 }).session(session);
-    if (!lot || lot.receiptKind === "return") throw new CommandError(409, "Original owned lot evidence needs review");
-    validateCapturedLot(lot, line.unitSnapshot, scope.organizationId);
+    const line = source.lines.find(line => String(line._id) === part.lineId)!, allocation = billingOnly ? line.pricingAllocations[0] : line.pricingAllocations.find(lot => String(lot.batchId) === part.batchId)!;
+    const lot = billingOnly ? null : await MedicineBatch.findOne({ _id: part.batchId, medicineId: line.medicineId, locationId: scope.locationId, organizationId: scope.organizationId, lotVersion: 1 }).session(session);
+    if (!billingOnly) {
+      if (!lot || lot.receiptKind === "return") throw new CommandError(409, "Original owned lot evidence needs review");
+      validateCapturedLot(lot, line.unitSnapshot, scope.organizationId);
+    }
     const returned = history.flatMap(row => row.lines).filter(row => String(row.sourceLineId) === part.lineId && String(row.sourceBatchId) === part.batchId).reduce((sum, row) => sum + row.quantity, 0);
     if (!Number.isSafeInteger(returned) || returned > part.quantity) throw new CommandError(409, "Returned source quantity needs review");
     rows.push({ ...part, sourceLineId: part.lineId, sourceBatchId: part.batchId, medicineId: String(line.medicineId), description: line.description, batchNumber: allocation.batchNumber,
       unitSnapshot: (line.unitSnapshot as any).toObject?.() || line.unitSnapshot, soldQuantity: part.quantity, returnedQuantity: returned, remainingQuantity: part.quantity - returned, expiryValue: allocation.expiryValue, expiryPrecision: allocation.expiryPrecision, lot });
   }
-  return { invoice, rows, balances, history, credits };
+  return { invoice, rows, balances, history, credits, inventoryMode: source.inventoryMode };
 }
 function sourceView(source: Awaited<ReturnType<typeof returnSource>>) {
   return { invoiceId: String(source.invoice._id), invoiceNumber: source.invoice.invoiceNumber, locationId: String(source.invoice.locationId), currency: "INR", customerName: source.invoice.taxDocument!.recipient!.name,
-    returnRevision: source.invoice.returnRevision, paymentRevision: source.invoice.paymentRevision, ...source.balances,
+    inventoryMode: source.inventoryMode, returnRevision: source.invoice.returnRevision, paymentRevision: source.invoice.paymentRevision, ...source.balances,
     lines: source.rows.map(({ lot: _lot, ...row }) => row), credits: source.credits.map(({ _id, issuerSnapshot: _issuer, __v: _version, ...row }) => ({ ...row, id: String(_id) })) };
 }
 export async function getPharmacyReturnSource(req: FastifyRequest, locationId: unknown, rawId: string) {
@@ -107,6 +110,8 @@ export async function commitPharmacyReturn(req: FastifyRequest, rawId: string) {
     if (invoice.returnRevision !== input.expectedReturnRevision || invoice.paymentRevision !== input.expectedPaymentRevision || prepared.totals.payablePaise !== input.expectedCreditPaise) throw new CommandError(409, "Return or payment changed; refresh the return review");
     const returnId = new mongoose.Types.ObjectId(), creditNoteId = new mongoose.Types.ObjectId(), issuedAt = new Date(), lines: any[] = [];
     for (const line of prepared.lines) {
+      // Physically quarantine returned goods, but never invent an inventory receipt for an untracked sale.
+      if (prepared.source.inventoryMode === "billing_only") { lines.push(line); continue; }
       const sold = prepared.source.rows.find(row => row.sourceLineId === line.sourceLineId && row.sourceBatchId === line.sourceBatchId)!, original = sold.lot;
       const medicine = await Medicine.findOne({ _id: line.medicineId, locationId: scope.locationId }).session(session);
       if (!medicine?.unitDefinition) throw new CommandError(409, "Source product/unit ownership needs review");
@@ -126,7 +131,7 @@ export async function commitPharmacyReturn(req: FastifyRequest, rawId: string) {
       lines.push({ ...line, quarantineBatchId });
     }
     const revision = invoice.returnRevision + 1, creditNoteNumber = await allocateCreditNoteNumber(scope.locationId, issuedAt);
-    await createWithSession(PharmacyReturn, { _id: returnId, organizationId: scope.organizationId, locationId: scope.locationId, invoiceId, invoiceNumber: invoice.invoiceNumber, creditNoteId, actorId: scope.actorId, approvedBy: scope.actorId, operationKey: key, revision, reason: input.reason, reviewReference: input.reviewReference, createdAt: issuedAt, disposition: "quarantined", lines }, session);
+    await createWithSession(PharmacyReturn, { _id: returnId, inventoryMode: prepared.source.inventoryMode, organizationId: scope.organizationId, locationId: scope.locationId, invoiceId, invoiceNumber: invoice.invoiceNumber, creditNoteId, actorId: scope.actorId, approvedBy: scope.actorId, operationKey: key, revision, reason: input.reason, reviewReference: input.reviewReference, createdAt: issuedAt, disposition: "quarantined", lines }, session);
     const note = await createWithSession<InstanceType<typeof InvoiceCreditNote>>(InvoiceCreditNote, { _id: creditNoteId, organizationId: scope.organizationId, locationId: scope.locationId, invoiceId, returnId, creditNoteNumber, sourceInvoiceNumber: invoice.invoiceNumber, sourceIssuedAt: invoice.issuedAt, issuedAt, currency: "INR", policy: "source-credit-paise-v1", taxAdjustment: "professional_review_required", issuerSnapshot: invoice.taxDocument!.toObject(), actorId: scope.actorId, reason: input.reason, reviewReference: input.reviewReference, ...prepared.totals }, session);
     invoice.creditedPaise += prepared.totals.payablePaise; invoice.returnRevision = revision; invoice.paymentRevision++;
     const due = Math.max(0, prepared.source.balances.totalPaise - prepared.source.balances.paidPaise - invoice.creditedPaise);

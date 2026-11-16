@@ -50,10 +50,11 @@ describe("Reviewed source CSV import", () => {
     expect(await Invoice.countDocuments({ organizationId: f.organizationId })).toBe(0);
   });
   it("creates only an empty catalogue item once, retains leading zero barcode and requires separate classification/tax approval", async () => {
-    const f = await fixture(), { view, body } = await preview(f, "catalogue", [catalogue()]);
+    const f = await fixture(), { view, body } = await preview(f, "catalogue", [{ ...catalogue(), rackLocation: "A3 / Shelf 2" }]);
     const first = await commit(f, view); expect(first.statusCode, first.body).toBe(200); const result = first.json().data.units[0].result;
     expect(result).toMatchObject({ stockQuantity: 0, classificationReviewRequired: true, taxReviewRequired: true });
     const product = await Medicine.findById(result.medicineId); expect(product!.barcodes).toEqual(["0000123"]); expect(product!.price).toBe(0.29); expect(product!.dispensingReview?.confirmedAt).toBeFalsy();
+    expect(product!.rackLocation).toBe("A3 / Shelf 2");
     expect((await commit(f, view)).json().data.counts.posted).toBe(1);
     const alternate = await app.inject({ method: "POST", url: "/api/pharmacy/imports/preview", headers: f.headers, payload: { ...body, csv: body.csv + "\r\n", reviewReference: "Explicit second source review" } });
     expect(alternate.statusCode, alternate.body).toBe(200); expect(alternate.json().data.units[0].status).toBe("posted");

@@ -42,21 +42,27 @@ export function partyInput(raw: unknown, editing: boolean) {
     gstRegistration: body.gstRegistration as "registered" | "unregistered", ...(gstin ? { gstin } : {}), ...(licence ? { licence } : {}), archived: body.archived ?? false,
     ...(editing ? { expectedRevision: whole(body.expectedRevision, "party revision", Number.MAX_SAFE_INTEGER - 1) } : {}) };
 }
+export function purchaseLineInput(rawLine: unknown) {
+  const line = object(rawLine, ["lineId", "medicineId", "expectedUnitVersion", "packs", "looseUnits", "freePacks", "freeLooseUnits", "baseAmountPaise", "discountPaise", "gstRateBps", "hsnCode", "sellingPricePaise", "mrpPaise"]);
+  const lineId = text(line.lineId, "line reference", 8, 100);
+  if (!/^[a-zA-Z0-9_-]+$/.test(lineId)) return invalid("Each purchase line needs a distinct stable reference");
+  const amount = whole(line.baseAmountPaise, "line amount"), discount = whole(line.discountPaise, "discount"), selling = whole(line.sellingPricePaise, "selling price"), mrp = line.mrpPaise === undefined ? undefined : whole(line.mrpPaise, "MRP");
+  if (discount > amount || mrp !== undefined && selling > mrp) return invalid("Discount exceeds base amount or selling price exceeds MRP");
+  const hsnCode = text(line.hsnCode, "HSN", 4, 8); if (!/^\d{4}(\d{2})?(\d{2})?$/.test(hsnCode)) return invalid("HSN must have 4, 6 or 8 digits");
+  return { lineId, medicineId: identifier(line.medicineId), expectedUnitVersion: whole(line.expectedUnitVersion, "unit version", Number.MAX_SAFE_INTEGER),
+    packs: whole(line.packs, "packs", Number.MAX_SAFE_INTEGER), looseUnits: whole(line.looseUnits, "loose units", Number.MAX_SAFE_INTEGER),
+    freePacks: whole(line.freePacks, "free packs", Number.MAX_SAFE_INTEGER), freeLooseUnits: whole(line.freeLooseUnits, "free loose units", Number.MAX_SAFE_INTEGER),
+    baseAmountPaise: amount, discountPaise: discount, gstRateBps: whole(line.gstRateBps, "GST basis points", 10000), hsnCode, sellingPricePaise: selling, ...(mrp !== undefined ? { mrpPaise: mrp } : {}) };
+}
 export function draftInput(raw: unknown, editing: boolean) {
   const body = object(raw, ["locationId", "supplierId", "expectedSupplierRevision", "supplierInvoiceNumber", "invoiceDate", "statedTotalPaise", "lines", "notes", "expectedRevision", "organizationId", "organization_id"]);
   if (!Array.isArray(body.lines) || !body.lines.length || body.lines.length > 100) return invalid("A purchase draft needs 1 to 100 lines");
   const seen = new Set<string>();
   const lines = body.lines.map((rawLine: unknown) => {
-    const line = object(rawLine, ["lineId", "medicineId", "expectedUnitVersion", "packs", "looseUnits", "freePacks", "freeLooseUnits", "baseAmountPaise", "discountPaise", "gstRateBps", "hsnCode", "sellingPricePaise", "mrpPaise"]);
-    const lineId = text(line.lineId, "line reference", 8, 100);
-    if (!/^[a-zA-Z0-9_-]+$/.test(lineId) || seen.has(lineId)) return invalid("Each purchase line needs a distinct stable reference"); seen.add(lineId);
-    const amount = whole(line.baseAmountPaise, "line amount"), discount = whole(line.discountPaise, "discount"), selling = whole(line.sellingPricePaise, "selling price"), mrp = line.mrpPaise === undefined ? undefined : whole(line.mrpPaise, "MRP");
-    if (discount > amount || mrp !== undefined && selling > mrp) return invalid("Discount exceeds base amount or selling price exceeds MRP");
-    const hsnCode = text(line.hsnCode, "HSN", 4, 8); if (!/^\d{4}(\d{2})?(\d{2})?$/.test(hsnCode)) return invalid("HSN must have 4, 6 or 8 digits");
-    return { lineId, medicineId: identifier(line.medicineId), expectedUnitVersion: whole(line.expectedUnitVersion, "unit version", Number.MAX_SAFE_INTEGER),
-      packs: whole(line.packs, "packs", Number.MAX_SAFE_INTEGER), looseUnits: whole(line.looseUnits, "loose units", Number.MAX_SAFE_INTEGER),
-      freePacks: whole(line.freePacks, "free packs", Number.MAX_SAFE_INTEGER), freeLooseUnits: whole(line.freeLooseUnits, "free loose units", Number.MAX_SAFE_INTEGER),
-      baseAmountPaise: amount, discountPaise: discount, gstRateBps: whole(line.gstRateBps, "GST basis points", 10000), hsnCode, sellingPricePaise: selling, ...(mrp !== undefined ? { mrpPaise: mrp } : {}) };
+    const line = purchaseLineInput(rawLine);
+    if (seen.has(line.lineId)) return invalid("Each purchase line needs a distinct stable reference");
+    seen.add(line.lineId);
+    return line;
   });
   const invoiceDate = calendarDate(body.invoiceDate), year = Number(invoiceDate.slice(0, 4)) - (Number(invoiceDate.slice(5, 7)) < 4 ? 1 : 0);
   const invoiceNumber = text(body.supplierInvoiceNumber, "supplier invoice number", 1, 80).normalize("NFKC");

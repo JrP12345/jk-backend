@@ -1,0 +1,60 @@
+{
+  "capturedAt": "2026-11-15T05:03:19.754Z",
+  "plans": [
+    {
+      "collection": "invoices",
+      "old": {
+        "v": 2,
+        "key": {
+          "items.pharmacyDispenseLineId": 1
+        },
+        "name": "items.pharmacyDispenseLineId_1",
+        "unique": true,
+        "partialFilterExpression": {
+          "items.pharmacyDispenseLineId": {
+            "$type": "objectId"
+          }
+        }
+      },
+      "replacement": {
+        "v": 2,
+        "key": {
+          "pharmacyDispenseLineIds": 1
+        },
+        "name": "pharmacyDispenseLineIds_1",
+        "unique": true,
+        "partialFilterExpression": {
+          "pharmacyDispenseLineIds": {
+            "$type": "objectId"
+          }
+        }
+      }
+    },
+    {
+      "collection": "medicinebatches",
+      "old": {
+        "v": 2,
+        "key": {
+          "medicineId": 1,
+          "locationId": 1,
+          "batchNumber": 1
+        },
+        "name": "medicineId_1_locationId_1_batchNumber_1",
+        "unique": true
+      },
+      "replacement": {
+        "v": 2,
+        "key": {
+          "organizationId": 1,
+          "locationId": 1,
+          "receiptLineId": 1
+        },
+        "name": "pharmacy_receipt_line_v1",
+        "unique": true,
+        "partialFilterExpression": {
+          "lotVersion": 1
+        }
+      }
+    }
+  ]
+}

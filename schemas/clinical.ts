@@ -26,10 +26,15 @@ export const createMedicineSchema = {
       costPrice: { type: "number", minimum: 0 },
       expiryDate: { type: "string", minLength: 1 },
       batchNumber: { type: "string", minLength: 1 },
+      billingSupply: { type: "object", additionalProperties: false, required: ["batchNumber", "expiry", "mrpPaise"], properties: {
+        batchNumber: { type: "string", minLength: 1, maxLength: 100 }, mrpPaise: { type: "integer", minimum: 0, maximum: 100_000_000_000 },
+        expiry: { type: "object", additionalProperties: false, required: ["precision", "value"], properties: { precision: { type: "string", enum: ["day", "month"] }, value: { type: "string", minLength: 7, maxLength: 10 } } },
+      } },
       manufacturer: { type: "string", maxLength: 200 }, strength: { type: "string", maxLength: 80 },
       category: { type: "string", enum: ["tablet", "capsule", "syrup", "injection", "ointment", "drops", "inhaler", "other"] },
       scheduleType: { type: "string", enum: ["general", "schedule_h", "schedule_h1", "schedule_x", "narcotic"] },
       reorderLevel: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+      rackLocation: { type: "string", maxLength: 60 },
       hsnCode: { type: "string", pattern: "^\\d{4}(\\d{2})?(\\d{2})?$" }, gstRate: { type: "number", minimum: 0, maximum: 100 },
       barcodes: { type: "array", maxItems: 20, items: { type: "string", minLength: 1, maxLength: 64 } },
       unitDefinition: { type: "object", additionalProperties: false, required: ["baseUnit", "packUnit", "unitsPerPack"], properties: {
