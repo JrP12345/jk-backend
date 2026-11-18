@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import type { FastifyRequest } from "fastify";
 import { PharmacyTransfer, PharmacyTransferEvent } from "../models/PharmacyTransfer.ts";
 import { Medicine } from "../models/Medicine.ts";
+import { assertSaleAllowed } from "../utilities/pharmacySaleControl.ts";
 import { MedicineBatch } from "../models/MedicineBatch.ts";
 import { PharmacyTaxProfile } from "../models/PharmacyTaxProfile.ts";
 import { OperationReceipt } from "../models/OperationReceipt.ts";
@@ -104,6 +105,7 @@ async function checkedFacts(transfer: any, session: mongoose.ClientSession, disp
   const destination = await Medicine.findOne({ _id: transfer.destinationMedicineId, locationId: transfer.destinationLocationId, ...(dispatch ? { deletedAt: null } : {}) }).session(session);
   const lot = await MedicineBatch.findOne({ _id: transfer.sourceBatchId, medicineId: transfer.sourceMedicineId, locationId: transfer.sourceLocationId }).session(session);
   if (!source || !destination || !lot || lot.lotVersion !== 1) throw fail();
+  if (dispatch) { assertSaleAllowed(source); assertSaleAllowed(destination); assertSaleAllowed(lot); }
   validateCapturedLot(lot, source.unitDefinition, String(transfer.organizationId));
   if (!same(productFacts(source), transfer.sourceSnapshot.medicine) || !same(productFacts(destination), transfer.destinationSnapshot.medicine) || !same(lotFacts(lot), transfer.sourceSnapshot.lot)) throw fail();
   if (dispatch && (lot.status !== "active" || lot.quantity < transfer.quantity || lot.expiryDate <= new Date())) throw fail("The approved source lot is unavailable or expired");
@@ -150,6 +152,7 @@ export async function commandPharmacyTransfer(req: FastifyRequest, action: Trans
       const lot = await MedicineBatch.findOne({ _id: input.sourceBatchId, medicineId: input.sourceMedicineId, locationId: scope.locationId }).session(session);
       if (!source || !destination || !lot || lot.lotVersion !== 1 || lot.status !== "active" || lot.quantity < input.quantity! || lot.expiryDate <= new Date()) throw fail("Select an actual available, unexpired source lot and an owned destination product");
       const sourceProduct = productFacts(source), destinationProduct = productFacts(destination);
+      assertSaleAllowed(source); assertSaleAllowed(destination); assertSaleAllowed(lot);
       if (!same(sourceProduct, destinationProduct)) throw fail("Explicit source/destination identity, formulation, schedule, tax and units must match; fuzzy substitution is not supported");
       if (["schedule_x", "narcotic"].includes(source.scheduleType)) throw fail("This category is not supported by the transfer workflow");
       await inventory(source, scope.organizationId, session); await inventory(destination, scope.organizationId, session);
@@ -192,6 +195,7 @@ export async function commandPharmacyTransfer(req: FastifyRequest, action: Trans
           const { source, destination, lot } = await checkedFacts(transfer, session), medicine = action === "receive" ? destination : source;
           if (medicine.deletedAt) throw fail("Restore the actual receiving product before recording stock at this branch");
           if (action === "receive" && input.disposition === "saleable") {
+            assertSaleAllowed(source); assertSaleAllowed(destination); assertSaleAllowed(lot);
             await requireRestrictedTransferReview(destination, scope.organizationId, destinationBranch, scope.actorId);
             if (lot.expiryDate <= new Date()) throw fail("Expired in-transit stock must be received into quarantine, never saleable stock");
             if (!same(await policy(scope.organizationId, sourceBranch, destinationBranch), transfer.issuerSnapshot)) throw fail("Branch issuer review changed; use quarantine and obtain a reviewed disposition");

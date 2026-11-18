@@ -13,7 +13,6 @@ import { Patient } from "../models/Patient.ts";
 import { getOrganizationPatient, hasPatientRecordAccess } from "../services/PatientRecordAccessService.ts";
 import { FamilyRelationship } from "../models/FamilyRelationship.ts";
 import { AuditLog } from "../models/AuditLog.ts";
-import { createTenantRepository } from "../platform/TenantRepository.ts";
 import { successResponse, errorResponse } from "../utilities/helpers.ts";
 import { checkLocationAccess, checkOperationalRecordAccess, resolveTargetOrganizationId } from "../utilities/tenant.ts";
 import { getNextAtomicSequence } from "../models/Counter.ts";
@@ -23,8 +22,6 @@ import {
   buildCursorFilter,
   formatCursorResult,
 } from "../utilities/cursorPagination.ts";
-
-const encounterRepo = createTenantRepository(Encounter);
 
 function sendTenantError(reply: FastifyReply, check: { allowed: false; statusCode: number; message: string }) {
   return reply.code(check.statusCode).send(errorResponse(check.message));

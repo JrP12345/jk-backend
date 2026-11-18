@@ -21,7 +21,7 @@ import { OutboundMessageDeliveryWorker } from '../services/OutboundMessageDelive
 import { whatsAppCloudApiService } from '../services/WhatsAppCloudApiService.ts';
 import { emailProvider } from '../notifications/providers/emailProvider.ts';
 import { patientCommunicationPolicy } from '../services/PatientCommunicationPolicy.ts';
-import { processWhatsAppWebhookPayload } from '../controllers/whatsappWebhook.ts';
+import { processWhatsAppWebhookPayload } from '../services/WhatsAppWebhookPayloadService.ts';
 async function fixture() {
   const org = await Organization.create({ name: 'Dispatch clinic', city: 'Pune', plan: 'enterprise', whatsappConfig: { mode: 'dedicated' } });
   const branch = await Location.create({ name: 'Dispatch branch', city: 'Pune', organizationId: org.id });

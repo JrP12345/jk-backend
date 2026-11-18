@@ -11,7 +11,7 @@ import { WhatsAppRecipient } from '../models/WhatsAppRecipient.ts';
 import { AuditLog } from '../models/AuditLog.ts';
 import { CrmActivity } from '../models/CrmActivity.ts';
 import { createAuthSession } from '../utilities/helpers.ts';
-import { processWhatsAppWebhookPayload } from '../controllers/whatsappWebhook.ts';
+import { processWhatsAppWebhookPayload } from '../services/WhatsAppWebhookPayloadService.ts';
 import { phoneHash } from '../services/WhatsAppSendPolicy.ts';
 async function fixture(root = false) {
   const org = await Organization.create({ name: 'Inbox', city: 'Pune', plan: 'enterprise' });

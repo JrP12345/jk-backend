@@ -4,6 +4,8 @@ node_modules
 .agents
 .aws
 dist
+build
+.cache
 coverage
 *.tsbuildinfo
 .env

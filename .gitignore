@@ -15,6 +15,9 @@ keys/
 # Build outputs & Logs
 dist/
 build/
+.cache/
+coverage/
+*.tsbuildinfo
 *.log
 
 # OS & IDE metadata

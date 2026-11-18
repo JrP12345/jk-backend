@@ -6,6 +6,7 @@
   "scripts": {
     "test": "vitest run",
     "check:fast": "node node_modules/typescript/bin/tsc --noEmit",
+    "check:pharmacy-supplier-providers": "node --env-file-if-exists=.env --experimental-strip-types scripts/check-pharmacy-supplier-providers.ts",
     "check:build-install": "node scripts/check-build-install.mjs",
     "check:startup": "node scripts/check-startup.mjs",
     "check:startup:source": "node scripts/check-startup.mjs --source",
@@ -64,7 +65,7 @@
     "@simplewebauthn/server": "^14.0.3",
     "bcryptjs": "^3.0.3",
     "fastify": "^5.12.3",
-    "fastify-plugin": "^6.0.0",
+    "fflate": "0.8.3",
     "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.9.5",

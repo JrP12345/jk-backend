@@ -13,6 +13,7 @@ const line = new Schema({
 const schema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, required: true }, locationId: { type: Schema.Types.ObjectId, required: true },
   supplierId: { type: Schema.Types.ObjectId, required: true }, supplierSnapshot: { type: pharmacyPartySnapshotSchema, required: true },
+  purchaseOrderId: { type: Schema.Types.ObjectId, ref: "PharmacyPurchaseOrder", default: undefined },
   supplierInvoiceNumber: { type: String, required: true }, normalizedInvoiceNumber: { type: String, required: true },
   invoiceDate: { type: String, required: true }, invoiceFY: { type: String, required: true }, currency: { type: String, enum: ["INR"], required: true },
   statedTotalPaise: integer, lines: { type: [line], required: true }, notes: { type: String, default: "" },
@@ -32,12 +33,16 @@ const schema = new Schema({
 // One source bill across branches. Later partial receipts must share this document.
 schema.index({ organizationId: 1, supplierId: 1, invoiceFY: 1, normalizedInvoiceNumber: 1 }, { unique: true });
 schema.index({ organizationId: 1, locationId: 1, _id: 1 });
+schema.index({ organizationId: 1, locationId: 1, purchaseOrderId: 1, _id: 1 });
 const financial = ["organizationId", "locationId", "supplierId", "supplierSnapshot", "supplierInvoiceNumber", "normalizedInvoiceNumber", "invoiceDate", "invoiceFY", "currency", "statedTotalPaise", "lines", "notes", "calculation", "status", "posting", "createdBy"];
 schema.pre("save", async function () {
+  if (!this.isNew && this.isModified("purchaseOrderId") && await mongoose.model("PharmacyPurchase").exists({ _id: this._id, purchaseOrderId: { $exists: true } }).session(this.$session())) throw new Error("A linked purchase order cannot be reassigned");
   if (!this.isNew && financial.some(field => this.isModified(field)) && await mongoose.model("PharmacyPurchase").exists({ _id: this._id, status: "posted" }).session(this.$session())) throw new Error("Posted purchase financial facts are immutable");
 });
 for (const operation of ["updateOne", "updateMany", "findOneAndUpdate", "deleteOne", "deleteMany", "findOneAndDelete"] as const) schema.pre(operation, async function () {
   const update = this.getUpdate() as Record<string, any> | null;
+  const changesOrder = update && (Array.isArray(update) || Object.entries(update).some(([operator, fields]) => !operator.startsWith("$") || Object.keys(fields || {}).some(path => path.split(".")[0] === "purchaseOrderId") || operator === "$rename" && Object.values(fields || {}).includes("purchaseOrderId")));
+  if (changesOrder && await this.model.exists({ ...this.getQuery(), purchaseOrderId: { $exists: true } }).session(this.getOptions().session ?? null)) throw new Error("A linked purchase order cannot be reassigned");
   const changesFinance = !update || Array.isArray(update) || Object.entries(update).some(([operator, fields]) => !operator.startsWith("$") || Object.keys(fields || {}).some(path => financial.includes(path.split(".")[0])) || operator === "$rename" && Object.values(fields || {}).some(path => typeof path === "string" && financial.includes(path.split(".")[0])));
   if (changesFinance && await this.model.exists({ ...this.getQuery(), status: "posted" }).session(this.getOptions().session ?? null)) throw new Error("Posted purchase financial facts are immutable");
 });

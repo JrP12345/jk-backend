@@ -8,6 +8,7 @@ import { PharmacyOfflineImport } from "../models/PharmacyOfflineImport.ts";
 import { CashierShift } from "../models/CashierShift.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { User } from "../models/User.ts";
+import { Location } from "../models/Location.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { withTransaction } from "../utilities/transaction.ts";
 import { withVerifiedOfflineOwnership } from "../utilities/pharmacyOfflineOwnership.ts";
@@ -72,6 +73,8 @@ export async function activateOfflineCheckout(req: FastifyRequest, locationId: s
     const pinnedActor = await User.updateOne({ _id: actor._id, authVersion: row.actorAuthVersion, isActive: { $ne: false } }, { $inc: { __v: 1 } });
     if (pinnedActor.modifiedCount !== 1) throw new CommandError(409, "Original operator changed during activation");
     const prepared = JSON.parse(manifest.payload);
+    const saleControls = await Location.findById(locationId).select("pharmacySaleControlUpdatedAt").session(session).lean();
+    if (saleControls?.pharmacySaleControlUpdatedAt && saleControls.pharmacySaleControlUpdatedAt > new Date(prepared.preparedAt)) throw new CommandError(409, "Sale controls changed after preparation. Cancel the unused preparation and prepare again before activating.");
     if (prepared.checkoutEnabled !== false || prepared.calculation.sha256 !== PHARMACY_CALCULATION_ENGINE_SHA256 || prepared.calculation.documentSha256 !== PHARMACY_OFFLINE_DOCUMENT_SHA256 || prepared.inventoryMode !== "tracked") throw new CommandError(409, "Prepared calculation/document version or inventory mode changed");
     const pinnedDevice = await PharmacyOfflineDevice.updateOne({ _id: device._id, status: "enrolled", authorityRevision: device.authorityRevision }, { $set: { authorityRevision: device.authorityRevision + 1 } });
     if (pinnedDevice.modifiedCount !== 1) throw new CommandError(409, "Original device changed during activation");

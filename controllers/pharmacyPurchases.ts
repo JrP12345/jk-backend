@@ -36,13 +36,17 @@ export async function listPharmacyPurchaseProducts(req: FastifyRequest, reply: F
 async function list(req: FastifyRequest, reply: FastifyReply, parties: boolean) {
   reply.header("Cache-Control", "no-store");
   try {
-    const query = object(req.query, ["locationId", "cursor", "limit", "search", "kind", "archived", "organizationId", "organization_id"]), scope = await purchaseScope(req, query.locationId);
+    const query = object(req.query, ["locationId", "cursor", "limit", "search", "kind", "archived", "supplierId", "status", "unlinked", "organizationId", "organization_id"]), scope = await purchaseScope(req, query.locationId);
     const limit = query.limit === undefined ? 25 : Number(query.limit);
     if (!Number.isInteger(limit) || limit < 1 || limit > 50 || query.search !== undefined && (typeof query.search !== "string" || query.search.length > 100) ||
-        query.kind !== undefined && !["supplier", "customer"].includes(query.kind) || query.archived !== undefined && !["true", "false"].includes(query.archived)) throw new CommandError(400, "Invalid list filters or page size");
+        query.kind !== undefined && !["supplier", "customer"].includes(query.kind) || query.archived !== undefined && !["true", "false"].includes(query.archived) ||
+        query.status !== undefined && !["draft", "posted"].includes(query.status) || query.unlinked !== undefined && query.unlinked !== "true" || parties && (query.supplierId !== undefined || query.status !== undefined || query.unlinked !== undefined)) throw new CommandError(400, "Invalid list filters or page size");
     const filter: any = { organizationId: scope.organizationId, ...(parties ? { locationIds: scope.locationId, archived: query.archived === "true" } : { locationId: scope.locationId }),
       ...(query.cursor ? { _id: { $gt: identifier(query.cursor) } } : {}) };
     if (parties && query.kind) filter.kinds = query.kind;
+    if (!parties && query.supplierId) filter.supplierId = identifier(query.supplierId);
+    if (!parties && query.status) filter.status = query.status;
+    if (!parties && query.unlinked === "true") filter.purchaseOrderId = { $exists: false };
     if (query.search?.trim()) filter[parties ? "normalizedName" : "supplierInvoiceNumber"] = { $regex: escapeRegex(query.search.trim().normalize("NFKC").toLowerCase()), $options: "i" };
     const rows = parties ? await PharmacyParty.find(filter).sort({ _id: 1 }).limit(limit + 1).lean() : await PharmacyPurchase.find(filter).sort({ _id: 1 }).limit(limit + 1).select("-lines").lean();
     const page = rows.slice(0, limit);

@@ -21,6 +21,7 @@ import { PHARMACY_CALCULATION_ENGINE_SHA256, PHARMACY_CALCULATION_POLICY } from 
 import { CommandError } from "./CommandReceiptService.ts";
 import { offlineReservationSigningKey } from "./PharmacyOfflineDeviceService.ts";
 import { PHARMACY_OFFLINE_DOCUMENT_SHA256 } from "../utilities/pharmacyOfflineDocumentVersion.ts";
+import { saleBlocked } from "../utilities/pharmacySaleControl.ts";
 
 const PURPOSE = "ekavyu.pharmacy.prepared-stock.v1", PAGE_SIZE = 200, MAX_PRODUCTS = 10000, MAX_LOTS = 50000;
 const hash = (value: string) => crypto.createHash("sha256").update(value).digest("hex");
@@ -77,7 +78,7 @@ export async function prepareOfflineAuthoritySnapshot(req: FastifyRequest, locat
         if (!products.length) break;
         scannedProducts += products.length;
         if (scannedProducts > MAX_PRODUCTS) throw new CommandError(409, "Branch exceeds the reviewed 10,000-product offline preparation bound");
-        const reviewed = products.filter(product => product.scheduleType === "general" && product.dispensingRevision >= 1 && product.dispensingReview?.scheduleType === "general" &&
+        const reviewed = products.filter(product => !saleBlocked(product) && product.scheduleType === "general" && product.dispensingRevision >= 1 && product.dispensingReview?.scheduleType === "general" &&
           product.dispensingReview.confirmedBy && product.dispensingReview.confirmedAt && product.dispensingReview.reviewReference);
         const inventory = reviewed.length ? await MedicineBatch.find({ medicineId: { $in: reviewed.map(product => product._id) } }).sort({ expiryDate: 1, receivedAt: 1, _id: 1 }).limit(MAX_LOTS - scannedLots + 1) : [];
         scannedLots += inventory.length;
@@ -92,7 +93,7 @@ export async function prepareOfflineAuthoritySnapshot(req: FastifyRequest, locat
           if (lots.length > 5000 || lots.some(lot => lot.lotVersion !== 1 || String(lot.organizationId) !== scope.organizationId || String(lot.locationId) !== locationId || lot.expirySnapshot?.timezone !== "Asia/Kolkata")) throw new CommandError(409, "Offline stock requires owned captured India lots within the counter bound");
           for (const lot of lots) validateLot(lot, product.unitDefinition, scope.organizationId);
           if (!Number.isSafeInteger(product.stockQuantity) || product.stockQuantity < 0 || lots.reduce((total, lot) => total + BigInt(lot.quantity), 0n) !== BigInt(product.stockQuantity)) throw new CommandError(409, "Product and lot stock differ; reconcile before offline preparation");
-          const eligible = lots.filter(lot => lot.status === "active" && lot.quantity > 0 && lot.expiryDate > now);
+          const eligible = lots.filter(lot => !saleBlocked(lot) && lot.status === "active" && lot.quantity > 0 && lot.expiryDate > now);
           if (!eligible.length) continue;
           const priced = pricePharmacySupply(product, eligible.map(lot => ({ quantity: lot.quantity, unitPrice: lot.sellingPrice, hsnCode: lot.hsnCode || "", gstRate: lot.gstRate })), issuer);
           if (!Number.isSafeInteger(product.stockRevision) || product.stockRevision < 0 || !Number.isSafeInteger(product.taxRevision) || product.taxRevision < 1 ||

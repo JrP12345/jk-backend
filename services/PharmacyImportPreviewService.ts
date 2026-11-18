@@ -21,6 +21,8 @@ import { withTransaction, createWithSession } from "../utilities/transaction.ts"
 import { purchaseScope } from "./PharmacyPurchaseDraftService.ts";
 import { pharmacyRequestAllows } from "./PharmacyCapabilityService.ts";
 import { CommandError, commandHash } from "./CommandReceiptService.ts";
+import { catalogueIdentity } from "../utilities/pharmacyGlobalCatalogue.ts";
+import { normalizeMedicineSearch, medicineSearchAnchor } from "../utilities/medicineSearchIndex.ts";
 
 export interface ImportRow { sourceLine: number; sourceId: string; sourceKey: string; fields: Record<string, string>; error?: string; data?: Record<string, any> }
 export interface ImportUnit { sourceKey: string; rows: number[]; invalid: boolean; factHash: string; facts: Record<string, any> | Record<string, any>[] }
@@ -95,6 +97,17 @@ export async function previewPharmacyImport(req: FastifyRequest) {
     for (const barcode of barcodes) occurrences.set(barcode, (occurrences.get(barcode) || 0) + 1);
     const assigned = await Medicine.find({ locationId: scope.locationId, deletedAt: null, barcodes: { $in: barcodes } }).select("barcodes").limit(201).lean();
     for (const row of rows.filter(row => row.data && !row.error)) if ((row.data!.barcodes || []).some((barcode: string) => occurrences.get(barcode)! > 1 || assigned.some(product => product.barcodes?.includes(barcode)))) row.error = "Barcode is repeated in this file or already assigned; review the actual source identity";
+    // Without a source barcode, an identical identity/pack needs operator review.
+    // Distinct barcodes are never merged on a name or similarity score.
+    const uncoded = rows.filter(row => row.data && !row.data.barcodes?.length), identities = new Map<string, number>();
+    for (const row of uncoded) { const key = catalogueIdentity(row.data!); identities.set(key, (identities.get(key) || 0) + 1); }
+    if (uncoded.length) {
+      const names = uncoded.map(row => normalizeMedicineSearch(row.data!.name));
+      const candidates = await Medicine.find({ locationId: scope.locationId, deletedAt: null, "searchIndex.name.grams": { $in: [...new Set(names.map(medicineSearchAnchor))] }, "searchIndex.name.value": { $in: names } })
+        .select("name genericName strength manufacturer category unitDefinition").limit(1001).lean();
+      const known = new Set(candidates.map(catalogueIdentity));
+      for (const row of uncoded) if (!row.error && (candidates.length > 1000 || identities.get(catalogueIdentity(row.data!))! > 1 || known.has(catalogueIdentity(row.data!)))) row.error = "Identical medicine and pack may already exist in this branch or file. Review the source; use the existing product rather than creating a duplicate.";
+    }
   } else if (input.kind === "opening_stock") {
     const ids = rows.filter(row => row.data).map(row => row.data!.medicineId);
     const medicines = await Medicine.aggregate([

@@ -1,4 +1,6 @@
 import type { FastifyInstance } from "fastify";
+import { globalCatalogueController } from "../controllers/pharmacyGlobalCatalogue.ts";
+import { pharmacySaleControlController } from "../controllers/pharmacySaleControls.ts";
 import { getCounterOverview } from "../controllers/pharmacyCounterOverview.ts";
 import { stockReconciliationController } from "../controllers/pharmacyStockReconciliation.ts";
 import { externalPrescriptionController } from "../controllers/pharmacyExternalPrescriptions.ts";
@@ -54,6 +56,10 @@ export default async function pharmacyRoutes(app: FastifyInstance) {
   };
   const action = (permission: PharmacyAction) => ({ preHandler: [authenticate, requirePharmacyStaff, requireModule("pharmacy"), requirePharmacyAction(permission)] });
   const imports = { preHandler: [authenticate, requirePharmacyStaff, requireModule("pharmacy")] };
+  app.get("/api/pharmacy/catalogue/global", action("viewStock"), globalCatalogueController());
+  app.post("/api/pharmacy/catalogue/global/:id/adopt", action("manageCatalog"), globalCatalogueController(true));
+  app.get("/api/pharmacy/medicines/:id/sale-controls", action("viewStock"), pharmacySaleControlController("read"));
+  app.get("/api/pharmacy/locations/:locationId/offline-authority/:authorityId/sale-control-status", action("viewSales"), pharmacySaleControlController("offline"));
   const externalRead = action("viewExternalPrescriptions"), externalWrite = action("externalDispense");
   app.get("/api/pharmacy/external-prescriptions", externalRead, externalPrescriptionController("list"));
   app.get("/api/pharmacy/external-prescriptions/products", externalWrite, externalPrescriptionController("products"));
@@ -135,6 +141,8 @@ export default async function pharmacyRoutes(app: FastifyInstance) {
   app.patch("/api/pharmacy/locations/:locationId/settings", { ...settings, schema: pharmacySettingsSchema }, savePharmacySettings);
   app.get("/api/pharmacy/role-presets", { preHandler: [authenticate, requirePharmacyStaff, checkPermission("ADMINISTRATIVE_GOVERNANCE")] }, getPharmacyRolePresets);
   const configurePharmacyTax = { preHandler: [authenticate, requirePharmacyStaff, requireModule("pharmacy"), checkPermission("MANAGE_ORGANIZATION")] };
+  app.put("/api/pharmacy/medicines/:id/sale-control", configurePharmacyTax, pharmacySaleControlController("product"));
+  app.put("/api/pharmacy/batches/:id/sale-control", configurePharmacyTax, pharmacySaleControlController("batch"));
   const devicePath = "/api/pharmacy/locations/:locationId/offline-device";
   app.get("/api/pharmacy/locations/:locationId/offline-authority", action("viewSales"), getOfflineAuthority);
   app.get("/api/pharmacy/locations/:locationId/offline-authority/:authorityId/snapshot/:page", action("viewSales"), getOfflineSnapshotPage);

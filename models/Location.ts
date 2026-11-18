@@ -8,6 +8,7 @@ const LocationSchema = new Schema({
   name: { type: String, required: true },
   // Held until an authenticated, reconciled release; expiry never clears ownership.
   pharmacyOfflineOwner: { type: String, default: undefined },
+  pharmacySaleControlUpdatedAt: { type: Date, default: undefined },
   facilityType: { type: String, enum: [...FACILITY_TYPES], default: null },
   publicPharmacy: { type: new Schema({ catalogueEnabled: { type: Boolean, default: false }, pickupEnabled: { type: Boolean, default: false }, revision: { type: Number, required: true, min: 0, validate: Number.isSafeInteger } }, { _id: false }), default: undefined },
   pharmacyCapability: { type: new Schema({ enabled: { type: Boolean, required: true }, revision: { type: Number, required: true, min: 0, validate: Number.isSafeInteger },

@@ -206,7 +206,8 @@ app.addHook("onSend", async (request, reply, payload) => {
   reply.header("X-Frame-Options", "DENY");
   reply.header("X-XSS-Protection", "1; mode=block");
   reply.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload");
-  reply.header("Referrer-Policy", "strict-origin-when-cross-origin");
+  // Preserve the stricter policy on capability/document responses.
+  if (reply.getHeader("Referrer-Policy") !== "no-referrer") reply.header("Referrer-Policy", "strict-origin-when-cross-origin");
   reply.header("Permissions-Policy", "geolocation=(), camera=(self), microphone=(self)");
   reply.header(
     "Content-Security-Policy",

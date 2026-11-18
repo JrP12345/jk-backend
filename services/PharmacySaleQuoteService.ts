@@ -15,6 +15,7 @@ import { authorizeExternalSale, reviewedExternalMedicine } from "./PharmacyExter
 import { pharmacyInventoryMode, normalizeBillingSupply } from "../utilities/pharmacyInventoryMode.ts";
 import { lotExpiry } from "../utilities/pharmacyLot.ts";
 import { requireStockTransaction } from "../utilities/pharmacyInventory.ts";
+import { assertSaleAllowed } from "../utilities/pharmacySaleControl.ts";
 
 type SaleInput = ReturnType<typeof pharmacySaleInput>;
 type Scope = { organizationId: string; locationId: string };
@@ -30,6 +31,7 @@ export async function prepareCounterSale(input: SaleInput, scope: Scope, issuer:
   const byId = new Map(medicines.map(medicine => [String(medicine._id), medicine]));
   for (const line of input.lines) {
     const medicine = byId.get(line.medicineId);
+    if (medicine) assertSaleAllowed(medicine);
     if (!medicine?.unitDefinition || medicine.unitDefinition.version !== line.expectedUnitVersion || !billingOnly && enforceVersions && medicine.stockRevision !== line.expectedStockRevision) throw new CommandError(409, "Product, units or stock changed; refresh the sale");
     if (external ? !reviewedExternalMedicine(medicine) || !external.document.lines.some(allowed => allowed.medicineId === line.medicineId && allowed.expectedDispensingRevision === medicine.dispensingRevision && allowed.expectedUnitVersion === line.expectedUnitVersion && line.quantity <= allowed.quantity - allowed.supplied) : medicine.scheduleType !== "general" || medicine.dispensingReview?.scheduleType !== "general" || !medicine.dispensingReview.confirmedAt || !medicine.dispensingReview.confirmedBy || !medicine.dispensingReview.reviewReference || medicine.dispensingRevision < 1) throw new CommandError(409, "Only reviewed ordinary products can use patient-optional counter issue; prescribed or restricted supplies need their authorized workflow");
     let allocations: SupplyAllocation[];

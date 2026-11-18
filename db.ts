@@ -18,6 +18,10 @@ export const connectDB = async () => {
     const configuredMin = Number(process.env.MONGODB_MIN_POOL_SIZE ?? 2);
     const minPoolSize = Number.isInteger(configuredMin) && configuredMin >= 0 ? configuredMin : 2;
     await mongoose.connect(MONGODB_URI, {
+      // Production indexes/collections are prepared by the reviewed operator tool,
+      // not rebuilt concurrently by each API or worker during startup.
+      autoIndex: process.env.NODE_ENV !== "production",
+      autoCreate: process.env.NODE_ENV !== "production",
       maxPoolSize,
       minPoolSize,
       serverSelectionTimeoutMS: DB_SERVER_SELECTION_TIMEOUT_MS,

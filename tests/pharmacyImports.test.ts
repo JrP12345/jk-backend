@@ -72,6 +72,20 @@ describe("Reviewed source CSV import", () => {
     const known = await preview(f, "opening_stock", [{ ...stock(f), medicineId: f.medicine.id }]);
     expect(known.view.units[0].status).toBe("invalid"); expect(known.view.rows[0].error).toMatch(/no prior stock/);
   });
+  it("flags identical barcode-free source rows and rechecks a product created after preview", async () => {
+    const f = await fixture();
+    const duplicates = await preview(f, "catalogue", [catalogue("uncoded-one", ""), catalogue("uncoded-two", "")]);
+    expect(duplicates.view.counts.invalid).toBe(2);
+    const single = await preview(f, "catalogue", [catalogue("uncoded-single", "")], { sourceReference: "Independent source" });
+    expect(single.view.counts.unprocessed).toBe(1);
+    await Medicine.create({ locationId: f.locationId, name: catalogue().name, genericName: catalogue().genericName, category: "tablet", price: 99,
+      unitDefinition: { version: 1, baseUnit: "tablet", packUnit: "strip", unitsPerPack: 10 } });
+    const result = await commit(f, single.view);
+    expect(result.statusCode, result.body).toBe(200); expect(result.json().data.units[0].status).toBe("failed");
+    expect(result.json().data.units[0].error).toMatch(/identity and pack already exist/);
+    expect(await Medicine.countDocuments({ locationId: f.locationId, name: catalogue().name })).toBe(1);
+    expect((await Medicine.findOne({ locationId: f.locationId, name: catalogue().name }))!.price).toBe(99);
+  });
   it("bounds a complete 200-row review, keeps unrelated-unit totals separate and rejects a 201st record", async () => {
     const f = await fixture(), records = Array.from({ length: 200 }, (_, index) => catalogue(`source-${index}`, `000-code-${index}`));
     const start = performance.now(), { view } = await preview(f, "catalogue", records), elapsed = performance.now() - start;

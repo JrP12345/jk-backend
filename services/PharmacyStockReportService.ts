@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { Medicine } from "../models/Medicine.ts";
+import { saleBlocked } from "../utilities/pharmacySaleControl.ts";
 import { MedicineBatch } from "../models/MedicineBatch.ts";
 import { StockMovement } from "../models/StockMovement.ts";
 import { normalizeUnitDefinition } from "../utilities/medicineCatalogue.ts";
@@ -11,17 +12,17 @@ export async function stockReport(ctx: ReportContext): Promise<ReportResult> {
   const bound = new Date(asOf.getTime() + input.days * 86400000), cutoff = new Date(asOf.getTime() - input.days * 86400000);
   if (input.kind === "valuation" || input.kind === "expiry") {
     const sources = await MedicineBatch.find({ organizationId: scope.organizationId, locationId: scope.locationId, quantity: { $gt: 0 }, ...(input.kind === "expiry" ? { expiryDate: { $lte: bound } } : {}), ...after }).sort({ _id: 1 }).limit(input.limit + 1).maxTimeMS(5000).session(session).lean();
-    const { page, nextCursor } = sourcePage(sources, input), medicines = await Medicine.find({ _id: { $in: page.map(row => row.medicineId) }, locationId: scope.locationId }).select("name unitDefinition deletedAt").limit(26).maxTimeMS(5000).session(session).lean();
+    const { page, nextCursor } = sourcePage(sources, input), medicines = await Medicine.find({ _id: { $in: page.map(row => row.medicineId) }, locationId: scope.locationId }).select("name unitDefinition deletedAt saleControl").limit(26).maxTimeMS(5000).session(session).lean();
     const rows: ReportRow[] = page.map(lot => {
       const medicine = medicines.find(row => String(row._id) === String(lot.medicineId)); let review = "", cost: ReturnType<typeof remainingLotCost> | null = null;
       try { if (!medicine?.unitDefinition || medicine.deletedAt || lot.lotVersion !== 1) throw Error(); validateCapturedLot(lot, medicine.unitDefinition, scope.organizationId); if (input.kind === "valuation") cost = remainingLotCost(lot); } catch { review = "Captured lot, product or cost basis needs review"; }
-      return { id: String(lot._id), medicineId: String(lot.medicineId), product: medicine?.name || "Unavailable product", batch: lot.batchNumber, units: lot.quantity, unit: lot.unitSnapshot?.baseUnit || "Unknown", status: lot.status, printedExpiry: lot.expirySnapshot?.value || "Unknown", expiryCutoff: reportDate(lot.expiryDate), saleable: review ? null : lot.status === "active" && lot.expiryDate > asOf ? lot.quantity : 0, review,
+      return { id: String(lot._id), medicineId: String(lot.medicineId), product: medicine?.name || "Unavailable product", batch: lot.batchNumber, units: lot.quantity, unit: lot.unitSnapshot?.baseUnit || "Unknown", status: lot.status, printedExpiry: lot.expirySnapshot?.value || "Unknown", expiryCutoff: reportDate(lot.expiryDate), saleable: review ? null : !saleBlocked(lot) && (!medicine || !saleBlocked(medicine)) && lot.status === "active" && lot.expiryDate > asOf ? lot.quantity : 0, review,
         ...(!review && lot.receiptKind === "receipt" && lot.purchaseSource?.purchaseId ? { purchaseId: String(lot.purchaseSource.purchaseId) } : {}),
         ...(input.kind === "valuation" ? { valueFloorPaise: cost ? reportNumber(BigInt(cost.numeratorPaise) / BigInt(cost.denominatorBaseUnits)) : null, costNumerator: cost?.numeratorPaise || null, costDenominator: cost?.denominatorBaseUnits || null } : {}) };
     });
     return { rows, nextCursor, scanned: page.length, columns: reportColumns([["product", "Product"], ["batch", "Batch"], ["units", "On-hand units", "integer"], ["unit", "Base unit"], ["saleable", "Eligible units", "integer"], ["status", "Disposition"], ["printedExpiry", "Printed expiry"], ["expiryCutoff", "Exclusive expiry cutoff", "date"], ...(input.kind === "valuation" ? [["valueFloorPaise", "Remaining cost, floor per lot (INR)", "paise"], ["costNumerator", "Exact cost numerator (paise)"], ["costDenominator", "Exact cost denominator", "integer"]] as Array<[string, string, "paise" | "integer" | undefined]> : []), ["review", "Review"]]), basis: input.kind === "valuation" ? "Current physical on-hand, including expired/quarantined stock. Captured rational acquisition cost; each lot is floored separately to whole paise for display. Unknown costs remain unknown. This is not an accounting valuation policy." : `Positive on-hand lots with exclusive cutoff within ${input.days} elapsed days, including already expired stock. Printed expiry precision is retained; quarantine remains ineligible.` };
   }
-  const sources = await Medicine.find({ locationId: scope.locationId, deletedAt: null, ...after }).select("name stockQuantity reorderLevel unitDefinition createdAt").sort({ _id: 1 }).limit(input.limit + 1).maxTimeMS(5000).session(session).lean();
+  const sources = await Medicine.find({ locationId: scope.locationId, deletedAt: null, ...after }).select("name stockQuantity reorderLevel unitDefinition createdAt saleControl").sort({ _id: 1 }).limit(input.limit + 1).maxTimeMS(5000).session(session).lean();
   const { page, nextCursor } = sourcePage(sources, input);
   // Inspect every related lot, including wrongly located references, without exposing foreign fields.
   const lots = await MedicineBatch.find({ medicineId: { $in: page.map(row => row._id) } }).limit(2001).maxTimeMS(5000).session(session).lean(); requireReportBound(lots);
@@ -34,7 +35,7 @@ export async function stockReport(ctx: ReportContext): Promise<ReportResult> {
       if (batches.some(lot => lot.lotVersion !== 1 || String(lot.locationId) !== scope.locationId || String(lot.organizationId) !== scope.organizationId)) throw Error();
       for (const lot of batches) { validateCapturedLot(lot, medicine.unitDefinition, scope.organizationId); if (lot.status === "depleted" && lot.quantity !== 0) throw Error(); }
       if (batches.reduce((sum, lot) => sum + BigInt(lot.quantity), 0n) !== BigInt(medicine.stockQuantity)) throw Error();
-      eligible = reportNumber(batches.filter(lot => lot.status === "active" && lot.expiryDate > asOf).reduce((sum, lot) => sum + BigInt(lot.quantity), 0n));
+      eligible = reportNumber(batches.filter(lot => !saleBlocked(lot) && !saleBlocked(medicine) && lot.status === "active" && lot.expiryDate > asOf).reduce((sum, lot) => sum + BigInt(lot.quantity), 0n));
     } catch { review = "Units, owned lots or aggregate reconciliation needs review"; }
     const reorder = medicine.reorderLevel ?? 20;
     if (!Number.isSafeInteger(reorder) || reorder < 0) review = "Reorder basis needs review";

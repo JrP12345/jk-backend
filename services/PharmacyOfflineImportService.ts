@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import mongoose from "mongoose";
 import type { FastifyRequest } from "fastify";
+import { saleBlocked } from "../utilities/pharmacySaleControl.ts";
 import { Invoice } from "../models/Invoice.ts";
 import { InvoiceCollectionReceipt } from "../models/InvoiceCollectionReceipt.ts";
 import { PharmacyDispense } from "../models/PharmacyDispense.ts";
@@ -144,11 +145,13 @@ export async function importOfflinePharmacyReceipt(req: FastifyRequest, location
         const byMedicine = new Map(medicines.map(medicine => [String(medicine._id), medicine])), byBatch = new Map(batches.map(batch => [String(batch._id), batch]));
         for (const line of receipt.lines) {
           const medicine = byMedicine.get(line.medicineId), productState = receipt.products.find(row => row.medicineId === line.medicineId)!;
+          if (medicine && saleBlocked(medicine, issuedAt)) return conflict("The original offline bill was issued during a product sale hold. Retain its invoice, payment and stock evidence for review.");
           const quantity = line.allocations.reduce((sum, allocation) => sum + BigInt(allocation.quantity), 0n);
           if (!medicine || medicine.stockQuantity !== productState.before || medicine.stockRevision !== productState.revision - 1 || BigInt(productState.before) - quantity !== BigInt(productState.after)) return conflict("Offline product checkpoint differs from the owned server stock");
           const allocations = [];
           for (const allocation of line.allocations) {
             const batch = byBatch.get(allocation.lotId), state = receipt.stock.find(row => row.lotId === allocation.lotId)!;
+            if (batch && saleBlocked(batch, issuedAt)) return conflict("The original offline bill was issued during a batch sale hold. Retain the original bill for review.");
             const old = batch?.offlineImportRevision, revision = old?.authorityId === receipt.authorityId ? old.revision : 0;
             if (!batch || String(batch.medicineId) !== line.medicineId || !["active", "expired"].includes(batch.status) || batch.quantity !== state.before || state.before - allocation.quantity !== state.after || allocation.expectedRevision !== revision || state.revision !== revision + 1) return conflict("Offline lot checkpoint differs from the owned server stock");
             const changed = await MedicineBatch.updateOne({ _id: batch._id, quantity: state.before, status: batch.status,

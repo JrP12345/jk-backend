@@ -12,7 +12,7 @@ import { queuePrescriptionCommunication } from '../services/PrescriptionCommunic
 import { createAuthSession } from '../utilities/helpers.ts';
 import { OutboundMessageDeliveryWorker } from '../services/OutboundMessageDeliveryWorker.ts';
 import { whatsAppCloudApiService } from '../services/WhatsAppCloudApiService.ts';
-import { processWhatsAppWebhookPayload } from '../controllers/whatsappWebhook.ts';
+import { processWhatsAppWebhookPayload } from '../services/WhatsAppWebhookPayloadService.ts';
 async function fixture() {
   const org = await Organization.create({ name: 'Prescription communication', city: 'Pune', plan: 'enterprise' });
   const admin = await User.create({ name: 'Prescription staff', email: `${crypto.randomUUID()}@example.test`, role: 'admin' });

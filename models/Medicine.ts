@@ -2,9 +2,14 @@ import mongoose, { Schema } from "mongoose";
 import { auditPlugin } from "../utilities/auditPlugin.ts";
 import { MEDICINE_BASE_UNITS, MEDICINE_PACK_UNITS } from "../utilities/medicineCatalogue.ts";
 import { installMedicineSearchIndex, medicineSearchFields } from "../utilities/medicineSearchIndex.ts";
+import { pharmacySaleControlSchema } from "../utilities/pharmacySaleControl.ts";
 
 const MedicineSchema = new Schema({
   locationId: { type: Schema.Types.ObjectId, ref: "Location", required: true, index: true },
+  globalProductId: { type: Schema.Types.ObjectId, ref: "PharmacyGlobalProduct" },
+  globalProductRevision: { type: Number, min: 1, validate: Number.isSafeInteger },
+  catalogueSource: { provider: String, sourceId: String, release: String, rowSha256: String },
+  saleControl: { type: pharmacySaleControlSchema, default: undefined },
   name: { type: String, required: true, index: true, maxlength: 200 },
   genericName: { type: String, required: true, maxlength: 500 },
   searchIndex: { type: new Schema(Object.fromEntries(medicineSearchFields.map(field => [field, { value: String, grams: [String] }])), { _id: false }), select: false },
@@ -52,6 +57,7 @@ const MedicineSchema = new Schema({
 }, { timestamps: true });
 
 MedicineSchema.index({ locationId: 1, name: 1 });
+MedicineSchema.index({ locationId: 1, globalProductId: 1 }, { unique: true, name: "pharmacy_branch_global_product", partialFilterExpression: { globalProductId: { $type: "objectId" }, deletedAt: null } });
 for (const field of medicineSearchFields) MedicineSchema.index({ locationId: 1, deletedAt: 1, [`searchIndex.${field}.grams`]: 1, _id: 1 }, { name: `pharmacy_search_${field}` });
 installMedicineSearchIndex(MedicineSchema);
 // Bound cursor-ordered multi-field search to the selected branch's active catalogue.

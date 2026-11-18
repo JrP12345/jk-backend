@@ -2,6 +2,11 @@
   "version": "1.0.0",
   "description": "Model classification for the advisory tenant-scoping scanner; runtime authorization is enforced in handlers and repositories.",
   "models": {
+    "PharmacyPurchaseOrder": {
+      "classification": "tenant",
+      "ownershipField": "organizationId",
+      "locationField": "locationId"
+    },
     "AIChatMessage": {
       "classification": "tenant",
       "ownershipField": "organizationId",

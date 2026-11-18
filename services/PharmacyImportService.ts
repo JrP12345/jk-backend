@@ -14,6 +14,8 @@ import { requireStockTransaction } from "../utilities/pharmacyInventory.ts";
 import { normalizeStockReceipt } from "../utilities/pharmacyLot.ts";
 import { pinActivePharmacyLocation } from "../utilities/pharmacyCapability.ts";
 import { escapeCsv } from "./ReportExportService.ts";
+import { catalogueIdentity } from "../utilities/pharmacyGlobalCatalogue.ts";
+import { normalizeMedicineSearch, medicineSearchAnchor } from "../utilities/medicineSearchIndex.ts";
 
 export async function commitPharmacyImport(req: FastifyRequest, id: string) {
   const input = importCommitInput(req.body), { scope, manifest, payload } = await loadPharmacyImport(req, id, input.locationId);
@@ -36,8 +38,15 @@ export async function commitPharmacyImport(req: FastifyRequest, id: string) {
         if (!organization) throw new CommandError(409, "New import sources require an active explicit India/INR organization; existing source recovery remains available");
         let resultId: string, data: Record<string, unknown>;
         if (payload.kind === "catalogue") {
-          const record = await createWithSession<InstanceType<typeof Medicine>>(Medicine, { ...rows[0].data!, locationId: scope.locationId, stockQuantity: 0 }, session);
           await pinActivePharmacyLocation(scope.locationId, session);
+          const fields = rows[0].data!;
+          if (!fields.barcodes?.length) {
+            const name = normalizeMedicineSearch(fields.name);
+            const candidates = await Medicine.find({ locationId: scope.locationId, deletedAt: null, "searchIndex.name.grams": medicineSearchAnchor(name), "searchIndex.name.value": name })
+              .select("name genericName strength manufacturer category unitDefinition").limit(101).session(session).lean();
+            if (candidates.length > 100 || candidates.some(row => catalogueIdentity(row) === catalogueIdentity(fields))) throw new CommandError(409, "Medicine identity and pack already exist; review the existing branch product");
+          }
+          const record = await createWithSession<InstanceType<typeof Medicine>>(Medicine, { ...rows[0].data!, locationId: scope.locationId, stockQuantity: 0 }, session);
           resultId = record.id; data = { medicineId: resultId, sourceId: rows[0].sourceId, stockQuantity: 0, classificationReviewRequired: true, taxReviewRequired: true };
         } else if (payload.kind === "opening_stock") {
           const receipts = rows.sort((a, b) => a.sourceId < b.sourceId ? -1 : a.sourceId > b.sourceId ? 1 : 0).map(row => {

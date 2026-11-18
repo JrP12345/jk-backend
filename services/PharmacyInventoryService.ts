@@ -10,6 +10,7 @@ import { validateCapturedLot, createCapturedLotValidator } from "../utilities/ph
 import { Location } from "../models/Location.ts";
 import { CommandError } from "./CommandReceiptService.ts";
 import { requireTrackedInventory } from "../utilities/pharmacyInventoryMode.ts";
+import { assertSaleAllowed, saleBlocked } from "../utilities/pharmacySaleControl.ts";
 export { PharmacyInventoryError } from "../utilities/pharmacyInventory.ts";
 
 const counterProof = Symbol("counter-stock");
@@ -31,12 +32,13 @@ function transactionIdentity(session: mongoose.ClientSession): object {
 
 /** Fresh read shared by pricing and allocation. No client/cache evidence is accepted. */
 export async function prepareCounterStock(medicine: CounterMedicine, scope: { organizationId: string; locationId: string }, quantity: number, session: mongoose.ClientSession | null, retain = false, validateLot = createCapturedLotValidator()) {
+  assertSaleAllowed(medicine);
   if (String(medicine.locationId) !== scope.locationId || medicine.deletedAt) throw new PharmacyInventoryError("Medicine is not assigned to the selected location", 404);
   const inventory = await MedicineBatch.find({ medicineId: medicine._id }).sort({ expiryDate: 1, receivedAt: 1, _id: 1 }).limit(5001).session(session);
   if (!inventory.length || inventory.length > 5000 || inventory.some(lot => lot.lotVersion !== 1 || String(lot.locationId) !== scope.locationId || String(lot.organizationId) !== scope.organizationId)) throw new CommandError(409, "Counter stock needs captured owned lots within the review bound");
   for (const lot of inventory) validateLot(lot, medicine.unitDefinition, scope.organizationId);
   if (!Number.isSafeInteger(medicine.stockQuantity) || medicine.stockQuantity < 0 || inventory.reduce((sum, lot) => sum + BigInt(lot.quantity), 0n) !== BigInt(medicine.stockQuantity)) throw new CommandError(409, "Counter lot and aggregate stock do not reconcile");
-  const now = new Date(), batches = inventory.filter(batch => batch.status === "active" && batch.expiryDate > now && batch.quantity > 0);
+  const now = new Date(), batches = inventory.filter(batch => !saleBlocked(batch) && batch.status === "active" && batch.expiryDate > now && batch.quantity > 0);
   let remaining = quantity;
   const selected: Array<{ batch: CounterBatch; quantity: number }> = [];
   for (const batch of batches) {
@@ -192,6 +194,7 @@ export async function dispenseMedicineFEFO(
     if (!medicine) {
       throw new PharmacyInventoryError("Medicine record not found", 404);
     }
+    assertSaleAllowed(medicine);
     if (medicine.locationId.toString() !== locationId) {
       throw new Error("Medicine is not assigned to the selected location");
     }
@@ -205,9 +208,10 @@ export async function dispenseMedicineFEFO(
     const restricted = await prepareRestrictedSupply(medicineId, locationId, dispenseQuantity, auditContext);
 
     const now = new Date();
-    const batches = prepared ? prepared.batches.filter(batch => batch.status === "active" && batch.expiryDate > now && batch.quantity > 0) : await MedicineBatch.find({
+    const batches = prepared ? prepared.batches.filter(batch => !saleBlocked(batch) && batch.status === "active" && batch.expiryDate > now && batch.quantity > 0) : await MedicineBatch.find({
       medicineId,
       locationId,
+      "saleControl.blocked": { $ne: true },
       status: "active",
       expiryDate: { $gt: now },
       quantity: { $gt: 0 },

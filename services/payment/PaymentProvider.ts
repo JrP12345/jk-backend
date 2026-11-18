@@ -96,19 +96,8 @@ class LiveRazorpayPaymentProvider implements PaymentProvider {
       }
     } catch (err: any) {
       console.error("[PaymentProvider] Live Razorpay payment link generation failed", safeError(err));
-      if (process.env.NODE_ENV === "production") {
-        throw new Error("Failed to generate online payment link: Payment gateway unavailable");
-      }
+      throw new Error("Failed to generate online payment link: Payment gateway unavailable");
     }
-
-    // Development sandbox fallback only when not in production
-    const paymentLinkId = `paylink_dev_${Math.random().toString(36).substr(2, 9)}`;
-    return {
-      paymentLinkId,
-      checkoutUrl: `https://pay.ekavyu.health/checkout/${paymentLinkId}`,
-      status: "created",
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-    };
   }
 
   async processRefund(request: PaymentRefundRequest): Promise<PaymentRefundResponse> {

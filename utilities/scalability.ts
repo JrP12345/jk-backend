@@ -119,9 +119,6 @@ export const WORKER_BACKPRESSURE_QUEUE_AGE_SEC = positiveInt("WORKER_BACKPRESSUR
 /** Maximum pending items before a worker enters backpressure mode (default 500) */
 export const WORKER_BACKPRESSURE_PENDING_LIMIT = positiveInt("WORKER_BACKPRESSURE_PENDING_LIMIT", 500);
 
-/** Poll multiplier during backpressure (2 = double the normal interval, default 2) */
-export const WORKER_BACKPRESSURE_POLL_MULTIPLIER = positiveInt("WORKER_BACKPRESSURE_POLL_MULTIPLIER", 2);
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function positiveInt(envName: string, fallback: number): number {

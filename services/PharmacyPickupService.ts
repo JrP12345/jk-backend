@@ -47,7 +47,7 @@ export async function requestPublicPickup(req: FastifyRequest) {
     await pinActivePharmacyLocation(locationId, session, true, true);
     if (await PharmacyPickup.countDocuments({ locationId, phoneHash, status: { $in: ["requested", "ready"] }, expiresAt: { $gt: new Date() } }).session(session) >= 5) throw new CommandError(429, "You already have pending requests here. Contact the pharmacy for help");
     const medicines = await Medicine.find({ ...ordinaryPublicProducts(location._id), _id: { $in: items.map(item => item.medicineId) } }).session(session).lean();
-    const lots = await MedicineBatch.aggregate([{ $match: { organizationId: location.organizationId, locationId: location._id, medicineId: { $in: medicines.map(item => item._id) }, lotVersion: 1, status: "active", quantity: { $gt: 0 }, expiryDate: { $gt: new Date() } } }, { $group: { _id: "$medicineId", quantity: { $sum: "$quantity" } } }]).session(session);
+    const lots = await MedicineBatch.aggregate([{ $match: { organizationId: location.organizationId, locationId: location._id, medicineId: { $in: medicines.map(item => item._id) }, lotVersion: 1, status: "active", "saleControl.blocked": { $ne: true }, quantity: { $gt: 0 }, expiryDate: { $gt: new Date() } } }, { $group: { _id: "$medicineId", quantity: { $sum: "$quantity" } } }]).session(session);
     const available = new Map(lots.map(row => [String(row._id), row.quantity as number]));
     const captured = items.map(item => { const medicine = medicines.find(row => String(row._id) === item.medicineId); if (!medicine?.unitDefinition || medicine.unitDefinition.version !== item.unitVersion || !Number.isSafeInteger(available.get(item.medicineId)) || (available.get(item.medicineId) || 0) < item.quantity) throw new CommandError(409, "A medicine, quantity or unit is no longer available. Refresh the list"); return { ...item, name: medicine.name, strength: medicine.strength, baseUnit: medicine.unitDefinition.baseUnit }; });
     const createdAt = new Date(), row = await createWithSession<InstanceType<typeof PharmacyPickup>>(PharmacyPickup, { organizationId: location.organizationId, locationId, reference: `PK-${crypto.randomBytes(5).toString("hex").toUpperCase()}`, tokenHash, phoneHash, customerNameCiphertext: encryptField(name), phoneCiphertext: encryptField(phone), status: "requested", revision: 0, items: captured, createdAt, expiresAt: new Date(createdAt.getTime() + 48 * 3600000) }, session);
@@ -104,6 +104,14 @@ export async function transitionPickup(req: FastifyRequest) {
       if (!invoice || !source || !invoice.issuedAt || invoice.issuedAt < row.createdAt || source.lines.length !== row.items.length || row.items.some(item => !source.lines.some(line => String(line.medicineId) === String(item.medicineId) && line.quantity === item.quantity && line.unitSnapshot?.baseUnit === item.baseUnit && line.unitSnapshot.version === item.unitVersion))) throw new CommandError(409, "Use a saved counter bill issued for exactly this pickup's medicines and quantities");
       const balance = invoiceBalancePaise(invoice, true);
       if (source.lines.some(line => !line.pricingAllocations.length || line.pricingAllocations.some(lot => !lot.expiryDate || lot.expiryDate <= new Date()))) throw new CommandError(409, "A billed batch has expired. Review the parcel before handover");
+      // A later exact-batch hold applies even when the parcel was billed earlier.
+      // Pin the original lots to serialize handover with a simultaneous hold.
+      const batchIds = [...new Set(source.lines.flatMap(line => line.batches.map(lot => String(lot.batchId))))];
+      if (batchIds.length) {
+        const batches = await MedicineBatch.updateMany({ _id: { $in: batchIds }, organizationId: scope.organizationId, locationId: scope.locationId, "saleControl.blocked": { $ne: true } },
+          { $inc: { __v: 1 } }, { session, timestamps: false });
+        if (batches.matchedCount !== batchIds.length) throw new CommandError(409, "A billed batch is on a sale hold or is unavailable. Review the parcel before handover");
+      }
       if (balance.creditedPaise || balance.refundedPaise) throw new CommandError(409, "This bill has corrections. Review the parcel before using another bill");
       if (body.action === "collect" && (invoice.status !== "paid" || balance.balancePaise !== 0)) throw new CommandError(409, "Record the bill's payment before handing over this parcel");
       const pinned = await Invoice.updateOne({ _id: invoice._id, paymentRevision: invoice.paymentRevision }, { $inc: { __v: 1 } }, { session, timestamps: false });

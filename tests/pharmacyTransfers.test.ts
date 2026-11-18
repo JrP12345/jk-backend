@@ -47,6 +47,16 @@ async function dispatched(f: Fixture) {
   const shipped = await post(f, "dispatch", id, { expectedRevision: 1 }); expect(shipped.statusCode, shipped.body).toBe(200); return { id, shipped: shipped.json().data };
 }
 describe("Controlled branch stock transfers", () => {
+  it("receives goods held in transit only into quarantine, preserving physical custody", async () => {
+    const f = await fixture(), { id } = await dispatched(f);
+    await MedicineBatch.updateOne({ _id: f.sourceBatchId }, { $set: { saleControl: { revision: 1, blocked: true, reason: "Synthetic in-transit lot review", reviewReference: "TEST ONLY hold", changedAt: new Date(), blockedAt: new Date(), changedBy: f.user.id } } });
+    const fields = { locationId: f.destination.id, expectedRevision: 2, quantity: 3, disposition: "saleable" };
+    expect((await post(f, "receive", id, fields)).statusCode).toBe(409);
+    const quarantine = await post(f, "receive", id, { ...fields, disposition: "quarantined" }); expect(quarantine.statusCode, quarantine.body).toBe(200);
+    expect(quarantine.json().data).toMatchObject({ status: "closed", quarantinedQuantity: 3, receivedQuantity: 0 });
+    expect((await Medicine.findById(f.destinationMedicine.id))!.stockQuantity).toBe(3);
+    expect((await MedicineBatch.findOne({ medicineId: f.destinationMedicine.id }))!.status).toBe("quarantined");
+  });
   it("keeps consumer grants and a foreign tenant from probing or mutating transfers", async () => {
     const f = await fixture(), created = await post(f), transferId = created.json().data.id;
     const foreign = await fixture();

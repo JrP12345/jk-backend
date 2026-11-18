@@ -1278,7 +1278,6 @@ export async function setupOnboardingTOTP(req: FastifyRequest, reply: FastifyRep
           secret: base32,
           qrCodeDataUrl,
           expiresAt,
-          devOtp: process.env.NODE_ENV === "development" ? "123456" : undefined,
         },
         "Google Authenticator 2FA setup initialized"
       )

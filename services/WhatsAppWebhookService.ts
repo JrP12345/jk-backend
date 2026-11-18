@@ -4,6 +4,7 @@ import type { FastifyRequest } from "fastify";
 import { WhatsAppWebhookInbox } from "../models/WhatsAppWebhookInbox.ts";
 import { encryptField, decryptField } from "../utilities/cryptoEnvelope.ts";
 import { getPlatformAccount, resolveWebhookOwner } from "./WhatsAppAccountService.ts";
+import { processWhatsAppWebhookPayload } from "./WhatsAppWebhookPayloadService.ts";
 
 function assertSignature(req: FastifyRequest, secret: string | undefined, raw: Buffer | null) {
   if (!secret && process.env.NODE_ENV === "test") return;
@@ -65,7 +66,6 @@ export class WhatsAppWebhookWorker {
         try {
           const body = JSON.parse(decryptField(row.payloadCiphertext));
           // Inbound capture is idempotent and does not execute booking commands.
-          const { processWhatsAppWebhookPayload } = await import("../controllers/whatsappWebhook.ts");
           await processWhatsAppWebhookPayload(body);
           await WhatsAppWebhookInbox.updateOne({ _id: row._id, lockedBy }, { $set: { status: "done" }, $unset: { payloadCiphertext: 1, lockedUntil: 1, lockedBy: 1, error: 1 } });
         } catch (error: any) {

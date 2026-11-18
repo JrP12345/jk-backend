@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "mode": "check",
+  "transactionCapable": true,
+  "ready": true,
+  "models": 127,
+  "expectedIndexes": 579,
+  "issues": []
+}

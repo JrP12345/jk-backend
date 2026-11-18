@@ -11,6 +11,7 @@ import { activateOfflineCheckout, offlineActivationMessage } from "../services/P
 import { importOfflinePharmacyReceipt, offlineReceiptProofMessage } from "../services/PharmacyOfflineImportService.ts";
 import { closeOfflineCheckout, offlineStopMessage } from "../services/PharmacyOfflineCloseService.ts";
 import { Location } from "../models/Location.ts";
+import { readOfflineSaleControlStatus, savePharmacySaleControl } from "../services/PharmacySaleControlService.ts";
 import { readFileSync } from "node:fs";
 import { offlineDocumentPolicy, ORIGINAL_OFFLINE_POLICY } from "../utilities/pharmacyOfflinePolicy.ts";
 import { buildOfflinePharmacyDocument as originalDocument } from "../utilities/offlinePolicies/v1/pharmacyOfflineDocument.ts";
@@ -40,7 +41,7 @@ it("retains byte-pinned original policy sources for receipts issued before a lat
   expect(offlineDocumentPolicy("0".repeat(64), ORIGINAL_OFFLINE_POLICY.document)).toBeNull();
 });
 const digest = (value: unknown) => crypto.createHash("sha256").update(offlineEvidenceCanonical(value)).digest("hex");
-async function setup(customNumbering = false, http = false) {
+async function setup(customNumbering = false, http = false, beforeActivation?: (context: { req: FastifyRequest; locationId: string; medicineId: string }) => Promise<void>) {
   const f = await pharmacyRetailFixture(["MANAGE_ORGANIZATION", "PHARMACY_SELL", "PHARMACY_COLLECT_PAYMENT"]), scope = { organizationId: f.organizationId, locationId: f.locationId, actorId: f.user.id };
   const req = { user: { id: f.user.id, role: f.role, organization_id: f.organizationId, authVersion: f.user.authVersion }, query: {} } as unknown as FastifyRequest;
   if (customNumbering) {
@@ -60,6 +61,7 @@ async function setup(customNumbering = false, http = false) {
   const ownership = { ...claim, proof: sign(offlineAuthorityProof(scope, claim)) };
   if (http) await post("acquire", ownership); else await acquireOfflineAuthority(req, f.locationId, ownership);
   const prepared = http ? await post("prepare", { authorityId: claim.authorityId }) : await prepareOfflineAuthoritySnapshot(req, f.locationId, claim.authorityId), manifest = JSON.parse(prepared.payload);
+  await beforeActivation?.({ req, locationId: f.locationId, medicineId: f.medicine.id });
   const activation = { authorityId: claim.authorityId, expectedRevision: 1, manifestDigest: prepared.sha256, requestedAt: new Date().toISOString(), reviewReference: "Synthetic durable preparation confirmed", confirmed: true as const };
   const activate = { ...activation, proof: sign(offlineActivationMessage(scope, activation)) };
   const activated = http ? await post("activate", activate) : await activateOfflineCheckout(req, f.locationId, activate), grant = JSON.parse(activated.payload);
@@ -91,6 +93,42 @@ it("activates only the completely prepared original PC and recovers the exact gr
   expect(await PharmacyOfflineGrant.countDocuments({ authorityId: f.claim.authorityId })).toBe(1); expect(await Invoice.countDocuments({ locationId: f.locationId })).toBe(0);
   const changed = { ...f.activate, reviewReference: "A different declaration" };
   await expect(activateOfflineCheckout(f.req, f.locationId, { ...changed, proof: f.sign(offlineActivationMessage(f.scope, changed)) })).rejects.toMatchObject({ statusCode: 409 });
+});
+
+it("a new hold stops the prepared counter but imports its original earlier bill and preserves later conflicting evidence", async () => {
+  const f = await setup(), earlier = f.command();
+  const originalStatus = await readOfflineSaleControlStatus(f.req, f.locationId, f.claim.authorityId);
+  expect(originalStatus.continueIssuance).toBe(true);
+  const status = await app.inject({ method: "GET", url: `/api/pharmacy/locations/${f.locationId}/offline-authority/${f.claim.authorityId}/sale-control-status`, headers: f.headers });
+  expect(status.statusCode, status.body).toBe(200); expect(status.headers["cache-control"]).toContain("no-store");
+  const request = (blocked: boolean, expectedRevision: number) => ({ ...f.req, body: { locationId: f.locationId, expectedRevision, blocked,
+    reason: "Synthetic exact-product restriction", reviewReference: "TEST ONLY reviewed hold", confirmed: true } }) as FastifyRequest;
+  const held = await savePharmacySaleControl(request(true, 0), f.medicine.id, "product");
+  expect(held.offlineNotice).toContain("Contact its operator");
+  expect(await readOfflineSaleControlStatus(f.req, f.locationId, f.claim.authorityId)).toMatchObject({ continueIssuance: false, manifestDigest: originalStatus.manifestDigest });
+  await expect(savePharmacySaleControl(request(false, 1), f.medicine.id, "product")).rejects.toMatchObject({ statusCode: 409 });
+  const imported = await importOfflinePharmacyReceipt(f.req, f.locationId, earlier);
+  expect(imported).toMatchObject({ digest: earlier.digest });
+  const later = f.command(earlier.receipt.sequence + 1, 1, 8, 1, 2, earlier.digest);
+  await expect(importOfflinePharmacyReceipt(f.req, f.locationId, later)).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("sale hold") });
+  expect(await importOfflinePharmacyReceipt(f.req, f.locationId, earlier)).toMatchObject({ digest: earlier.digest });
+  expect((await Medicine.findById(f.medicine.id))!.stockQuantity).toBe(8);
+});
+
+it("refuses activation if a hold was applied after the immutable snapshot was prepared", async () => {
+  await expect(setup(false, false, async ({ req, locationId, medicineId }) => {
+    await savePharmacySaleControl({ ...req, body: { locationId, expectedRevision: 0, blocked: true, reason: "Synthetic post-snapshot review", reviewReference: "TEST ONLY exact hold", confirmed: true } } as FastifyRequest, medicineId, "product");
+  })).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("Sale controls changed after preparation") });
+});
+
+it("does not import a new offline allocation from a held batch", async () => {
+  const f = await setup();
+  const request = { ...f.req, body: { locationId: f.locationId, expectedRevision: 0, blocked: true,
+    reason: "Synthetic exact-batch restriction", reviewReference: "TEST ONLY batch review", confirmed: true } } as FastifyRequest;
+  await savePharmacySaleControl(request, f.lot.id, "batch");
+  const later = f.command();
+  await expect(importOfflinePharmacyReceipt(f.req, f.locationId, later)).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("batch sale hold") });
+  expect((await MedicineBatch.findById(f.lot.id))!.quantity).toBe(10);
 });
 
 it("holds the branch until all device-signed receipts reach the exact stopped checkpoint, then closes once", async () => {

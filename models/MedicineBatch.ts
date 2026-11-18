@@ -2,6 +2,7 @@ import mongoose, { Schema, Document } from "mongoose";
 import { auditPlugin } from "../utilities/auditPlugin.ts";
 import { validateCapturedLot } from "../utilities/pharmacyLot.ts";
 import { MEDICINE_BASE_UNITS, MEDICINE_PACK_UNITS } from "../utilities/medicineCatalogue.ts";
+import { pharmacySaleControlSchema } from "../utilities/pharmacySaleControl.ts";
 
 export interface IMedicineBatch extends Document {
   organizationId?: mongoose.Types.ObjectId;
@@ -16,6 +17,7 @@ export interface IMedicineBatch extends Document {
   hsnCode?: string;
   gstRate?: number;
   status: "active" | "expired" | "depleted" | "quarantined";
+  saleControl?: { revision: number; blocked: boolean; reason: string; reviewReference: string; changedAt: Date; changedBy: mongoose.Types.ObjectId; blockedAt?: Date };
   createdAt: Date;
   updatedAt: Date;
   lotVersion?: number; receiptLineId?: string; receiptKind?: "opening" | "receipt" | "return" | "transfer"; receivedAt?: Date; receivedQuantity?: number;
@@ -31,6 +33,7 @@ export interface IMedicineBatch extends Document {
 
 const medicineBatchSchema = new Schema<IMedicineBatch>(
   {
+    saleControl: { type: pharmacySaleControlSchema, default: undefined },
     lotVersion: { type: Number, enum: [1], immutable: true },
     offlineImportRevision: { type: new Schema({ authorityId: { type: String, required: true }, revision: { type: Number, required: true, min: 1, validate: Number.isSafeInteger } }, { _id: false }), default: undefined },
     purchaseSource: { type: new Schema({ purchaseId: { type: Schema.Types.ObjectId, required: true }, purchaseLineId: { type: String, required: true }, receiptId: { type: Schema.Types.ObjectId, required: true } }, { _id: false }), immutable: true, default: undefined },

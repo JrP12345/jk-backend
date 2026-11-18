@@ -166,6 +166,17 @@ export class TenantRepository<T extends mongoose.Document | any> {
    */
   async aggregate(pipeline: PipelineStage[] = [], options?: TenantRepoOptions): Promise<any[]> {
     const orgId = this.resolveOrgId(options?.organizationId);
+    // A leading tenant match does not constrain documents introduced by a join/union,
+    // or authorize writes to another collection. No current consumer needs these stages.
+    const disallowed = new Set(["$lookup", "$graphLookup", "$unionWith", "$out", "$merge", "$documents"]);
+    const validate = (stages: PipelineStage[]) => {
+      for (const stage of stages) {
+        const operation = Object.keys(stage)[0];
+        if (disallowed.has(operation)) throw new TenantIsolationViolationError(`Tenant aggregation cannot use ${operation}; use an explicitly authorized service for cross-collection work`);
+        if ("$facet" in stage) for (const branch of Object.values(stage.$facet)) validate(branch as PipelineStage[]);
+      }
+    };
+    validate(pipeline);
     const tenantStage: PipelineStage = {
       $match: { [this.tenantField]: orgId },
     };

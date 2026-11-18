@@ -6,6 +6,7 @@ import { pharmacyRetailFixture } from "./helpers/pharmacyRetailFixture.ts";
 import { publicSlug } from "../utilities/publicLinks.ts";
 import { Location } from "../models/Location.ts";
 import { Medicine } from "../models/Medicine.ts";
+import { MedicineBatch } from "../models/MedicineBatch.ts";
 import { PharmacyPickup } from "../models/PharmacyPickup.ts";
 import { AuditLog } from "../models/AuditLog.ts";
 import { Invoice } from "../models/Invoice.ts";
@@ -13,8 +14,8 @@ import { PharmacyDispense } from "../models/PharmacyDispense.ts";
 import { PharmacyTaxProfile } from "../models/PharmacyTaxProfile.ts";
 
 beforeAll(async () => { await app.ready(); await Promise.all(Object.values(mongoose.models).map(model => model.init())); });
-async function fixture() {
-  const f = await pharmacyRetailFixture(["PHARMACY_SELL", "PHARMACY_COLLECT_PAYMENT", "PHARMACY_MANAGE_SETTINGS"]);
+async function fixture(extraPermissions: string[] = []) {
+  const f = await pharmacyRetailFixture(["PHARMACY_SELL", "PHARMACY_COLLECT_PAYMENT", "PHARMACY_MANAGE_SETTINGS", ...extraPermissions]);
   await Location.updateOne({ _id: f.locationId }, { $set: { facilityType: "pharmacy", isPublished: true } });
   const slug = await publicSlug("location", f.locationId, "Synthetic pharmacy");
   return { ...f, slug, token: crypto.randomBytes(32).toString("hex") };
@@ -102,6 +103,17 @@ it("links the exact paid counter bill and allows only one recorded QR handover w
   expect((await scan(f, pickup.reference)).json().data.status).toBe("collected");
   expect((await Medicine.findById(f.medicine.id))!.stockQuantity).toBe(8);
   expect(await AuditLog.countDocuments({ targetId: pickup.id, action: "PHARMACY_PICKUP_COLLECT" })).toBe(1);
+});
+
+it("stops a billed parcel when its original batch is subsequently held", async () => {
+  const f = await fixture(["MANAGE_ORGANIZATION"]); await publish(f); const pickup = (await request(f)).json().data, bill = await sale(f);
+  expect((await transition(f, pickup.id, "ready", 0, bill.invoiceNumber)).statusCode).toBe(200);
+  const held = await app.inject({ method: "PUT", url: `/api/pharmacy/batches/${(await MedicineBatch.findOne({ medicineId: f.medicine.id }))!.id}/sale-control`, headers: f.headers,
+    payload: { locationId: f.locationId, expectedRevision: 0, blocked: true, reason: "Synthetic batch hold", reviewReference: "TEST ONLY exact-batch source", confirmed: true } });
+  expect(held.statusCode, held.body).toBe(200);
+  const blocked = await transition(f, pickup.id, "collect", 1); expect(blocked.statusCode, blocked.body).toBe(409); expect(blocked.body).toContain("sale hold");
+  expect((await PharmacyPickup.findById(pickup.id))!.status).toBe("ready");
+  expect((await Medicine.findById(f.medicine.id))!.stockQuantity).toBe(8);
 });
 
 it("blocks unpaid handover, foreign branches, expired tickets and staff without counter permission", async () => {
