@@ -56,6 +56,11 @@ check("Backend TypeScript compilation (0 errors)", () => {
 // ─── 2. Quality Gate 2: Test Suite Execution ──────────────────────────────
 console.log("\n▶ Checking Gate 2: Vitest Integration Test Suite (`npx vitest run`)");
 
+check("Repository tooling tests (Node test runner)", () => {
+  execSync("node --test scripts/tests/architecture-inventory.test.mjs", { cwd: BACKEND_DIR, encoding: "utf8" });
+  return true;
+});
+
 check("Backend Vitest suite execution (100% tests pass)", () => {
   const out = execSync("node node_modules/vitest/vitest.mjs run --maxWorkers=1 --no-file-parallelism --reporter=dot", {
     cwd: BACKEND_DIR,

@@ -129,6 +129,7 @@ InvoiceSchema.index({ generationKey: 1 }, { unique: true, partialFilterExpressio
 InvoiceSchema.index({ organizationId: 1, createdAt: -1 });
 InvoiceSchema.index({ organizationId: 1, patientId: 1, createdAt: -1 });
 InvoiceSchema.index({ organizationId: 1, locationId: 1, kind: 1, "customerSnapshot.partyId": 1, _id: -1 });
+InvoiceSchema.index({ organizationId: 1, locationId: 1, kind: 1, deletedAt: 1, _id: -1 }, { name: "pharmacy_branch_sales_history_v1" });
 InvoiceSchema.index({ organizationId: 1, locationId: 1, kind: 1, issuedAt: -1, _id: -1 });
 
 InvoiceSchema.pre("validate", function () {

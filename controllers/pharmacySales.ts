@@ -22,7 +22,7 @@ function failure(reply: FastifyReply, error: unknown) {
   if ((error as { code?: number }).code === 11000) return reply.code(409).send(errorResponse("Sale source or invoice identity conflicts; recover the original reference"));
   return reply.code(500).send(errorResponse("Counter issue could not be confirmed. Keep the same reference and check the result before another issue."));
 }
-function searchFailure(reply: FastifyReply, error: unknown, kind: "Medicine" | "Customer") {
+function searchFailure(reply: FastifyReply, error: unknown, kind: "Medicine" | "Customer" | "Sale") {
   if (error instanceof CommandError || error instanceof PharmacyInventoryError) return failure(reply, error);
   return reply.code(503).send(errorResponse(`${kind} search is unavailable. Try a more specific search or retry.`));
 }
@@ -84,14 +84,20 @@ export async function getCounterInvoice(req: FastifyRequest, reply: FastifyReply
 export async function listCounterInvoices(req: FastifyRequest, reply: FastifyReply) {
   reply.header("Cache-Control", "no-store");
   try {
-    const query = object(req.query, ["locationId", "cursor", "customerId", "organizationId", "organization_id"]), scope = await purchaseScope(req, query.locationId);
+    const query = object(req.query, ["locationId", "cursor", "customerId", "search", "status", "organizationId", "organization_id"]), scope = await purchaseScope(req, query.locationId);
     const customerId = query.customerId === undefined ? undefined : identifier(query.customerId);
+    const search = query.search === undefined ? "" : text(query.search, "sale search", 0, 100);
+    const status = query.status === undefined ? "all" : text(query.status, "sale status", 1, 20);
+    if (!["all", "paid", "unpaid"].includes(status)) throw new CommandError(400, "Invalid sale payment filter");
+    const pattern = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     if (customerId && !await PharmacyParty.exists({ _id: customerId, organizationId: scope.organizationId, locationIds: scope.locationId, kinds: "customer" })) throw new CommandError(404, "Customer not found at this branch");
     const rows = await Invoice.find({ kind: "pharmacy", organizationId: scope.organizationId, locationId: scope.locationId, deletedAt: null,
       ...(customerId ? { "customerSnapshot.partyId": customerId } : {}),
-      ...(query.cursor ? { _id: customerId ? { $lt: identifier(query.cursor) } : { $gt: identifier(query.cursor) } } : {})
-    }).select("invoiceNumber issuedAt status totalAmount amountPaid balanceDue currency customerSnapshot documentVersion").sort({ _id: customerId ? -1 : 1 }).limit(26).lean();
+      ...(search ? { $or: [{ invoiceNumber: { $regex: pattern, $options: "i" } }, { "customerSnapshot.name": { $regex: pattern, $options: "i" } }] } : {}),
+      ...(status === "paid" ? { status: "paid" } : status === "unpaid" ? { status: { $in: ["unpaid", "partially_paid"] } } : {}),
+      ...(query.cursor ? { _id: { $lt: identifier(query.cursor) } } : {})
+    }).select("invoiceNumber issuedAt status totalAmount amountPaid balanceDue currency customerSnapshot documentVersion").sort({ _id: -1 }).limit(26).maxTimeMS(3000).lean();
     const page = rows.slice(0, 25);
     return reply.send(successResponse({ ...(customerId ? { customerId, locationId: scope.locationId } : {}), items: page.map(({ _id, ...fields }: any) => ({ ...fields, id: String(_id) })), nextCursor: rows.length > 25 ? String(page.at(-1)!._id) : null }));
-  } catch (error) { return failure(reply, error); }
+  } catch (error) { return searchFailure(reply, error, "Sale"); }
 }

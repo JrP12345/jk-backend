@@ -21,6 +21,29 @@ const quote = (f: Fixture, payload: object = intent(f)) => app.inject({ method: 
 const issue = (f: Fixture, payload: object, key = crypto.randomUUID()) => app.inject({ method: "POST", url: "/api/pharmacy/sales", headers: { ...f.headers, "idempotency-key": key }, payload });
 const lookup = (f: Fixture, path: string) => app.inject({ method: "GET", url: `/api/pharmacy/sales/${path}${path.includes("?") ? "&" : "?"}locationId=${f.locationId}`, headers: f.headers });
 describe("Trusted keyboard counter quote and bounded lookup", () => {
+  it("finds older branch sales across pages, filters payment states and escapes literal search text", async () => {
+    const f = await fixture(), foreign = await fixture();
+    // Read-only listing fixture: no sale, payment or stock command is invoked.
+    const rows = Array.from({ length: 30 }, (_, index) => ({ _id: new mongoose.Types.ObjectId(), kind: "pharmacy", organizationId: new mongoose.Types.ObjectId(f.organizationId), locationId: new mongoose.Types.ObjectId(f.locationId), deletedAt: null,
+      invoiceNumber: index === 0 ? "OLD-ONLY/[001]" : `SYNTHETIC-${index}`, status: ["unpaid", "paid", "partially_paid"][index % 3], totalAmount: 10, currency: "INR", customerSnapshot: { anonymous: false, name: index === 0 ? "Old page customer" : "Synthetic customer" } }));
+    await Invoice.collection.insertMany([...rows, { ...rows[0], _id: new mongoose.Types.ObjectId(), organizationId: new mongoose.Types.ObjectId(foreign.organizationId), locationId: new mongoose.Types.ObjectId(foreign.locationId) }]);
+    const read = (params = "", headers = f.headers) => app.inject({ method: "GET", url: `/api/pharmacy/invoices?locationId=${f.locationId}${params}`, headers });
+    const first = await read(); expect(first.statusCode, first.body).toBe(200);
+    expect(first.json().data.items.map((row: { id: string }) => row.id)).toEqual([...rows].reverse().slice(0, 25).map(row => String(row._id)));
+    const second = await read(`&cursor=${first.json().data.nextCursor}`);
+    expect(second.json().data.items.map((row: { id: string }) => row.id)).toEqual([...rows].reverse().slice(25).map(row => String(row._id)));
+    expect(second.json().data.nextCursor).toBeNull();
+    const old = await read(`&search=${encodeURIComponent("old-only/[001]")}`);
+    expect(old.json().data.items.map((row: { id: string }) => row.id)).toEqual([String(rows[0]._id)]);
+    expect((await read("&search=Old%20page%20customer")).json().data.items).toHaveLength(1);
+    expect((await read("&search=.*")).json().data.items).toEqual([]);
+    expect((await read("&status=paid")).json().data.items).toHaveLength(10);
+    const unpaid = (await read("&status=unpaid")).json().data.items;
+    expect(unpaid).toHaveLength(20); expect(unpaid.some((row: { status: string }) => row.status === "partially_paid")).toBe(true);
+    expect((await read("&status=unknown")).statusCode).toBe(400);
+    expect((await read(`&search=${"a".repeat(101)}`)).statusCode).toBe(400);
+    expect((await read("", foreign.headers)).statusCode).toBe(404);
+  });
   it("returns newly committed sale and collection results without redundant recovery reads, preserving replay", async () => {
     const f = await fixture(["PHARMACY_SELL", "PHARMACY_COLLECT_PAYMENT"]), checked = await quote(f), saleKey = crypto.randomUUID();
     const saleReads = vi.spyOn(OperationReceipt, "findOne");
