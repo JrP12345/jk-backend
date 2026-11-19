@@ -58,7 +58,7 @@ export async function provisionAssistedPharmacy(input: OrganizationProvisionInpu
   if (input.trialDays !== undefined) throw new CommandError(400, "Pharmacy trial duration comes from the reviewed product plan");
   return withTransaction(async session => {
     const plan = await pinPublishedPharmacyTrial(planId, fingerprint, session);
-    return provisionOrganization({ ...input, plan: plan.legacyTier!, facilityType: "pharmacy" }, { workspaceProfile: "pharmacy", staffMfaRequired: true,
+    return provisionOrganization({ ...input, plan: plan.legacyTier!, facilityType: "pharmacy" }, { workspaceProfile: "pharmacy",
       initializeSubscription: pharmacyTrialInitializer(plan, actorId, "Root-assisted pharmacy setup using reviewed published trial terms") });
   });
 }

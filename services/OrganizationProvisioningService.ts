@@ -23,7 +23,7 @@ export interface OrganizationProvisionInput {
   location_name?: string; location_city?: string; location_address?: string; location_phone?: string; location_email?: string; facilityType?: string;
   taxId?: string; licenseNumber?: string; countryCode?: CountryCode; currency?: string; timezone?: string; sendWelcomeEmail?: boolean;
 }
-export interface OrganizationProvisionOptions { verifiedOwnerUserId?: string; workspaceProfile?: "clinic" | "pharmacy"; staffMfaRequired?: boolean;
+export interface OrganizationProvisionOptions { verifiedOwnerUserId?: string; workspaceProfile?: "clinic" | "pharmacy";
   initializeSubscription?: (context: { organizationId: string; locationId: string; ownerUserId: string }, session: ClientSession | null) => Promise<void> }
 export async function provisionOrganization(input: OrganizationProvisionInput, options: OrganizationProvisionOptions = {}) {
   const { org_name, city, address, org_phone, org_email, description, image_url, logo_url, timings, working_days, trialDays, admin_name, admin_email, admin_password, admin_phone, location_name, location_city, location_address, location_phone, location_email, facilityType, taxId, licenseNumber, countryCode, currency, timezone, sendWelcomeEmail } = input;
@@ -57,7 +57,6 @@ export async function provisionOrganization(input: OrganizationProvisionInput, o
       const org = await createWithSession(Organization, {
         name: org_name,
         workspaceProfile,
-        staffMfaRequired: options.staffMfaRequired === true,
         city,
         address: address || null,
         phone: org_phone || null,

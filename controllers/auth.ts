@@ -1108,15 +1108,15 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
 
     const organization_id = req.user?.organization_id;
     const role = req.user!.role;
-    let workspaceProfile: string | undefined, forceWorkspaceMfa = false;
+    let workspaceProfile: string | undefined;
 
     if (organization_id && user.role !== "root") {
-      const organization = await Organization.findById(organization_id).select("status isActive workspaceProfile staffMfaRequired").lean();
+      const organization = await Organization.findById(organization_id).select("status isActive workspaceProfile").lean();
       if (!organization || organization.status === "inactive" || organization.isActive === false) {
         clearAuthCookies(reply);
         return reply.code(403).send(errorResponse("Organization workspace is inactive or suspended"));
       }
-      workspaceProfile = organization.workspaceProfile || "clinic"; forceWorkspaceMfa = organization.staffMfaRequired === true;
+      workspaceProfile = organization.workspaceProfile || "clinic";
     }
 
     const permissions = [...await getEffectivePermissions(role, organization_id, user.authVersion)];
@@ -1136,7 +1136,7 @@ export async function me(req: FastifyRequest, reply: FastifyReply) {
         email: user.email,
         isActive: user.isActive,
         twoFactorEnabled: !!user.twoFactorEnabled,
-        mfaEnrollmentRequired: staffMfaEnrollmentRequired(role, !!user.twoFactorEnabled, process.env, Date.now(), !!user.twoFactorEnrollmentRequired || forceWorkspaceMfa),
+        mfaEnrollmentRequired: staffMfaEnrollmentRequired(role, !!user.twoFactorEnabled, !!user.twoFactorEnrollmentRequired),
         workspaceProfile,
         hasStaffWorkspaces: isConsumerRole(user.role) ? Boolean(await OrgMember.exists({ userId: user._id, role: { $nin: ["patient", "family_member", "guest", "root"] } })) : undefined,
         role,
@@ -1516,7 +1516,7 @@ export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyR
     }
 
     let organization_id: string | undefined;
-    let workspaceProfile: string | undefined, forceWorkspaceMfa = false;
+    let workspaceProfile: string | undefined;
     let role = user.role as string;
     if (role !== "root" && (selectedOrganizationId || !isConsumerRole(role))) {
       const workspaces = await listUserWorkspaces(user.id);
@@ -1526,7 +1526,7 @@ export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyR
         return reply.send(successResponse({ workspaceRequired: true, workspaceToken, workspaces }, "Select your organization workspace"));
       }
       organization_id = selectedOrganizationId || workspaces[0]?.organizationId;
-      if (organization_id) { const workspace = await authorizeWorkspace(user.id, organization_id); role = workspace.role; workspaceProfile = workspace.workspaceProfile; forceWorkspaceMfa = workspace.staffMfaRequired; }
+      if (organization_id) { const workspace = await authorizeWorkspace(user.id, organization_id); role = workspace.role; workspaceProfile = workspace.workspaceProfile; }
       else if (await OrgMember.exists({ userId: user._id })) {
         return reply.code(403).send(errorResponse("No active organization workspace is available"));
       }
@@ -1570,7 +1570,7 @@ export async function completeVerifiedLogin(req: FastifyRequest, reply: FastifyR
           ...extra,
           user: { id: user.id, name: user.name, email: user.email || null, role, image_url: user.image_url || null, organization_id, workspaceProfile, permissions,
             hasStaffWorkspaces: isConsumerRole(user.role) ? Boolean(await OrgMember.exists({ userId: user._id, role: { $nin: ["patient", "family_member", "guest", "root"] } })) : undefined,
-            twoFactorEnabled: !!user.twoFactorEnabled, mfaEnrollmentRequired: staffMfaEnrollmentRequired(role, !!user.twoFactorEnabled, process.env, Date.now(), !!user.twoFactorEnrollmentRequired || forceWorkspaceMfa) },
+            twoFactorEnabled: !!user.twoFactorEnabled, mfaEnrollmentRequired: staffMfaEnrollmentRequired(role, !!user.twoFactorEnabled, !!user.twoFactorEnrollmentRequired) },
         },
         "Login successful"
       )

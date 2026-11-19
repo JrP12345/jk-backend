@@ -57,7 +57,7 @@ check("Backend TypeScript compilation (0 errors)", () => {
 console.log("\n▶ Checking Gate 2: Vitest Integration Test Suite (`npx vitest run`)");
 
 check("Repository tooling tests (Node test runner)", () => {
-  execSync("node --test scripts/tests/architecture-inventory.test.mjs", { cwd: BACKEND_DIR, encoding: "utf8" });
+  execSync("node --test scripts/tests/architecture-inventory.test.mjs scripts/tests/pharmacy-storage.test.mjs", { cwd: BACKEND_DIR, encoding: "utf8" });
   return true;
 });
 

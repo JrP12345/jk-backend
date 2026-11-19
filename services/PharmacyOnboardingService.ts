@@ -115,7 +115,7 @@ export async function completePharmacyOnboarding(raw: unknown, requestKey: unkno
       const intent = JSON.parse(decryptField(request.intentCiphertext)), plan = await pinPublishedPharmacyTrial(intent.planId, intent.planFingerprint, session);
       const created = await provisionOrganization({ org_name: intent.businessName, city: intent.city, address: intent.address, org_phone: intent.businessPhone,
         org_email: request.email, admin_name: owner.name, admin_email: request.email, admin_password: "", facilityType: "pharmacy", plan: plan.legacyTier!,
-        countryCode: "IN", currency: "INR", timezone: "Asia/Kolkata", sendWelcomeEmail: false }, { verifiedOwnerUserId: ownerUserId, workspaceProfile: "pharmacy", staffMfaRequired: true,
+        countryCode: "IN", currency: "INR", timezone: "Asia/Kolkata", sendWelcomeEmail: false }, { verifiedOwnerUserId: ownerUserId, workspaceProfile: "pharmacy",
         initializeSubscription: pharmacyTrialInitializer(plan, ownerUserId, `Verified independent pharmacy setup ${request.id}`) });
       const location = await Location.findOne({ organizationId: created.organization.id }).select("_id"), subscription = await Subscription.findOne({ organizationId: created.organization.id }).select("trialEndsAt");
       data = { organization: created.organization, ownerUserId, locationId: String(location!._id), trialEndsAt: subscription!.trialEndsAt, workspaceProfile: "pharmacy" };

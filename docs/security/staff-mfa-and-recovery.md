@@ -1,14 +1,12 @@
 # Staff security rollout and recovery
 
-Production staff use the existing TOTP authenticator challenge. After primary sign-in,
-unenrolled staff can only inspect their session, enroll, or sign out. HTTP APIs and
-private WebSockets enforce the policy from the live session/user record. Patient and
-family policies remain unchanged; platform root retains its stricter existing policy.
+Staff authenticator enrollment is optional, including pharmacy trials and production.
+Users can enable it under Account security. Ordinary unenrolled users can access their
+workspace after primary sign-in; organization flags and the former STAFF_MFA_REQUIRED /
+STAFF_MFA_ENFORCE_AFTER settings no longer impose enrollment. Existing enabled authenticators
+still require a code at sign-in. Platform root retains its separate stricter policy.
 
-For an existing clinic rollout, communicate an explicit UTC `STAFF_MFA_ENFORCE_AFTER`
-date before deployment and have staff enroll under Account → Security during that
-grace period. Blank means immediate enforcement. Test an administrator, doctor,
-receptionist and nurse before the deadline. Enrollment requires primary authentication
+Enrollment requires primary authentication
 within ten minutes, stores the pending secret encrypted and binds it to that session.
 It revokes old sessions after a valid code, then starts a fresh authenticated session.
 Legacy sessions without a recorded credential time require a fresh sign-in before
@@ -51,7 +49,7 @@ existing sessions. Protect and delete enrollment artifacts after secure handoff.
 ## Transport and secrets
 
 Production startup rejects non-HTTPS/wildcard CORS origins, invalid cookie settings,
-unbounded/invalid proxy hops or CIDRs and invalid rollout dates. Production trusts no
+unbounded/invalid proxy hops or CIDRs. Production trusts no
 proxy by default. The supplied Compose topology explicitly trusts one directly
 connected Caddy hop and exposes only Caddy ports. For another topology, configure its
 verified hop count **or** trusted CIDRs and firewall direct backend access. An origin

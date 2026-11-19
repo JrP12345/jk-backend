@@ -35,9 +35,9 @@ export async function authorizeWorkspace(userId: string, organizationId: string)
     throw new WorkspaceError(403, "Organization workspace is unavailable");
   }
   const organization = await Organization.findOne({ _id: organizationId,
-    isActive: { $ne: false }, status: { $ne: "inactive" } }).select("workspaceProfile staffMfaRequired").lean();
+    isActive: { $ne: false }, status: { $ne: "inactive" } }).select("workspaceProfile").lean();
   if (!organization) throw new WorkspaceError(403, "Organization workspace is inactive or suspended");
-  return { organizationId, role: membership.role, workspaceProfile: organization.workspaceProfile || "clinic", staffMfaRequired: organization.staffMfaRequired === true };
+  return { organizationId, role: membership.role, workspaceProfile: organization.workspaceProfile || "clinic" };
 }
 
 /** Opaque, single-use proof issued only after credentials and any configured MFA succeed. */

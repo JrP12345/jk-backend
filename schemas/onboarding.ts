@@ -83,7 +83,6 @@ export const updateOrganizationSchema = {
       maxDoctors: { type: "number", minimum: 1 },
       maxStaff: { type: "number", minimum: 1 },
       status: { type: "string", enum: ["active", "inactive"] },
-      staffMfaRequired: { type: "boolean", enum: [true] },
       taxId: { type: ["string", "null"] },
       licenseNumber: { type: ["string", "null"] },
       countryCode: { type: "string", enum: ["IN", "US", "CA", "GB", "AE"] },

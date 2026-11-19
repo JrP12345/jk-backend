@@ -89,11 +89,15 @@ describe("Phase one security closeout", () => {
     expect(JSON.stringify(log.mock.calls)).not.toContain(privateText);
     expect(fetchSpy.mock.calls[0][1]?.body).not.toContain(privateText);
   });
-  it("supports a dated MFA enrollment rollout without exempting production staff forever", () => {
-    expect(staffMfaEnrollmentRequired("nurse", false, { NODE_ENV: "production" })).toBe(true);
-    expect(staffMfaEnrollmentRequired("nurse", true, { NODE_ENV: "production" })).toBe(false);
-    expect(staffMfaEnrollmentRequired("patient", false, { NODE_ENV: "production" })).toBe(false);
-    expect(staffMfaEnrollmentRequired("doctor", false, { NODE_ENV: "production", STAFF_MFA_ENFORCE_AFTER: "2030-01-01T00:00:00Z" }, Date.parse("2026-01-01"))).toBe(false);
+  it("keeps enrollment optional in production and only gates identity-verified recovery", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("STAFF_MFA_REQUIRED", "true");
+    for (const role of ["admin", "doctor", "nurse", "pharmacist", "cashier", "receptionist"]) {
+      expect(staffMfaEnrollmentRequired(role, false)).toBe(false);
+      expect(staffMfaEnrollmentRequired(role, false, true)).toBe(true);
+      expect(staffMfaEnrollmentRequired(role, true, true)).toBe(false);
+    }
+    expect(staffMfaEnrollmentRequired("patient", false, true)).toBe(false);
   });
   it("keeps handled database exceptions out of production HTTP errors and controller logs", async () => {
     const root = await User.create({ name: "Privacy fixture root", role: "root", twoFactorEnabled: true });
@@ -107,13 +111,13 @@ describe("Phase one security closeout", () => {
     expect(response.body).not.toContain(privateText);
     expect(JSON.stringify(log.mock.calls)).not.toContain(privateText);
   });
-  it("limits unenrolled staff to enrollment, encrypts and binds setup, rotates sessions, and restores operations", async () => {
+  it("allows staff to opt in, encrypts and binds setup, rotates sessions, and preserves operations", async () => {
     vi.stubEnv("STAFF_MFA_REQUIRED", "true");
     const session = await createRefreshTokenDetails(doctor.id, { organizationId: org.id });
     const cookie = `access_token=${generateAccessToken({ id: doctor.id, role: "doctor", email: "", organization_id: org.id, sessionId: session.sessionId, authVersion: session.authVersion })}`;
-    expect((await app.inject({ method: "GET", url: "/api/patients", headers: { cookie } })).json().code).toBe("MFA_ENROLLMENT_REQUIRED");
+    expect((await app.inject({ method: "GET", url: "/api/patients", headers: { cookie } })).statusCode).toBe(200);
     const me = await app.inject({ method: "GET", url: "/api/auth/me", headers: { cookie } });
-    expect(me.statusCode).toBe(200); expect(me.json().data.user.mfaEnrollmentRequired).toBe(true);
+    expect(me.statusCode).toBe(200); expect(me.json().data.user.mfaEnrollmentRequired).toBe(false);
     const setup = await app.inject({ method: "POST", url: "/api/onboarding/totp/setup", headers: { cookie }, payload: {} });
     expect(setup.statusCode, setup.body).toBe(200);
     const pending = await PendingTwoFactorSetup.collection.findOne({ userId: doctor._id });

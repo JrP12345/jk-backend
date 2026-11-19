@@ -220,7 +220,7 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
     const { id } = req.params as { id: string };
     const {
       name, city, address, phone, email, plan, maxLocations, maxDoctors, maxStaff, status,
-      taxId, licenseNumber, countryCode, currency, timezone, image_url, logo_url, images, description, timings, working_days, workflowPreferences, staffMfaRequired
+      taxId, licenseNumber, countryCode, currency, timezone, image_url, logo_url, images, description, timings, working_days, workflowPreferences
     } = req.body as any;
 
     if (req.user?.role !== "root" && req.user?.organization_id !== id) {
@@ -229,7 +229,6 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
     if (status !== undefined && req.user?.role !== "root") {
       return reply.code(403).send(errorResponse("Only Root can suspend or reactivate an organization"));
     }
-    if (staffMfaRequired !== undefined && (req.user?.role !== "root" || staffMfaRequired !== true)) return reply.code(403).send(errorResponse("Only Root can require staff MFA; this operation cannot disable it"));
     const previousOrg = await Organization.findById(id).lean();
     if (!previousOrg) return reply.code(404).send(errorResponse("Organization not found"));
     await validateBrandingReferences(req, { image_url, logo_url, images }, previousOrg);
@@ -261,7 +260,6 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
     }
 
     const updateData: any = {};
-    if (staffMfaRequired === true) updateData.staffMfaRequired = true;
     for (const key of ["registration", "consultation", "queueChime", "queueVoiceLanguage"] as const) {
       if (workflowPreferences?.[key] !== undefined) updateData[`workflowPreferences.${key}`] = workflowPreferences[key];
     }
@@ -304,7 +302,6 @@ export async function updateOrganizationById(req: FastifyRequest, reply: Fastify
       await attachBranding({ ...previousOrg, ...updateData }, session);
       const updated = await Organization.findByIdAndUpdate(id, updateData, { returnDocument: "after", runValidators: true, ...(session ? { session } : {}) }).lean();
       if (updated) await retireUnusedBranding(previousOrg, updated, session);
-      if (updated && staffMfaRequired === true && previousOrg.staffMfaRequired !== true) await createWithSession(AuditLog, { userId: req.user!.id, organizationId: id, action: "STAFF_MFA_REQUIRED", targetId: updated._id, targetModel: "Organization", category: "AUTH", details: { required: true } }, session);
       return updated;
     });
     if (!updatedOrg) {

@@ -36,7 +36,7 @@ describe("Root-assisted pharmacy setup", () => {
       facilityType: "pharmacy", admin_name: f.input.ownerName, admin_email: f.input.email, admin_password: password, pharmacyPlanId: f.plan.id, pharmacyPlanFingerprint: f.option.fingerprint, sendWelcomeEmail: false };
     return { f, payload, headers: await provisioningFixtureHeaders() };
   }
-  it("creates the canonical one-branch trial with zero doctor seats and required MFA", async () => {
+  it("creates the canonical one-branch trial with zero doctor seats and optional authenticator enrollment", async () => {
     const { f, payload, headers } = await assistedInput();
     const response = await app.inject({ method: "POST", url: "/api/onboarding/organization", headers, payload });
     expect(response.statusCode, response.body).toBe(201);
@@ -44,7 +44,7 @@ describe("Root-assisted pharmacy setup", () => {
     const organization = await Organization.findById(organizationId).lean();
     const branch = await Location.findOne({ organizationId }).lean();
     const subscription = await Subscription.findOne({ organizationId }).lean();
-    expect(organization).toMatchObject({ workspaceProfile: "pharmacy", staffMfaRequired: true, maxLocations: 1, maxDoctors: 0, maxStaff: f.option.maxStaff });
+    expect(organization).toMatchObject({ workspaceProfile: "pharmacy", maxLocations: 1, maxDoctors: 0, maxStaff: f.option.maxStaff });
     expect(branch).toMatchObject({ facilityType: "pharmacy", address: payload.address, phone: payload.org_phone, pharmacyCapability: { enabled: false, revision: 0 } });
     expect(subscription).toMatchObject({ status: "trialing", entitlementSource: "trial", commercialQuote: { commercialFamily: "pharmacy", entitlements: { maxLocations: 1, maxDoctors: 0 } } });
     expect(String(subscription!.planId)).toBe(f.plan.id);
@@ -53,7 +53,7 @@ describe("Root-assisted pharmacy setup", () => {
     expect(await SubscriptionPayment.countDocuments({ organizationId })).toBe(0);
     const catalogue = await app.inject({ method: "GET", url: "/api/organizations", headers });
     const record = catalogue.json().data.find((row: any) => row.id === organizationId);
-    expect(record).toMatchObject({ workspaceProfile: "pharmacy", staffMfaRequired: true, primaryAdmin: { twoFactorEnabled: false, isActive: true } });
+    expect(record).toMatchObject({ workspaceProfile: "pharmacy", primaryAdmin: { twoFactorEnabled: false, isActive: true } });
     await OrgMember.updateOne({ organizationId, role: "admin" }, { $set: { userId: new mongoose.Types.ObjectId() } });
     const missingOwner = await app.inject({ method: "GET", url: "/api/organizations", headers });
     expect(missingOwner.json().data.find((row: any) => row.id === organizationId).primaryAdmin.isActive).toBe(false);
@@ -74,26 +74,26 @@ describe("Root-assisted pharmacy setup", () => {
       expect(await Organization.exists({ name: payload.org_name })).toBeNull();
     }
   });
-  it("allows only Root to enable an attributed MFA requirement and cannot disable it", async () => {
+  it("does not let organization updates impose mandatory authenticator enrollment", async () => {
     const { payload, headers } = await assistedInput();
     const created = await app.inject({ method: "POST", url: "/api/onboarding/organization", headers, payload });
     expect(created.statusCode, created.body).toBe(201);
     const organizationId = created.json().data.organization.id;
-    await Organization.updateOne({ _id: organizationId }, { $set: { staffMfaRequired: false } });
     const owner = await User.findOne({ email: payload.admin_email });
-    const ownerToken = await fixtureAccessToken({ id: owner!.id, email: payload.admin_email, role: "admin", organization_id: organizationId });
-    const denied = await app.inject({ method: "PUT", url: `/api/organizations/${organizationId}`, headers: { authorization: `Bearer ${ownerToken}` }, payload: { staffMfaRequired: true } });
-    expect(denied.statusCode, denied.body).toBe(403);
-    const enabled = await app.inject({ method: "PUT", url: `/api/organizations/${organizationId}`, headers, payload: { staffMfaRequired: true } });
-    expect(enabled.statusCode, enabled.body).toBe(200);
-    expect(enabled.json().data.staffMfaRequired).toBe(true);
-    expect(await AuditLog.countDocuments({ organizationId, action: "STAFF_MFA_REQUIRED" })).toBe(1);
-    const operational = await app.inject({ method: "GET", url: "/api/onboarding/locations", headers: { authorization: `Bearer ${ownerToken}` } });
-    expect(operational.statusCode, operational.body).toBe(403);
-    expect(operational.json().code).toBe("MFA_ENROLLMENT_REQUIRED");
-    const disable = await app.inject({ method: "PUT", url: `/api/organizations/${organizationId}`, headers, payload: { staffMfaRequired: false } });
-    expect(disable.statusCode, disable.body).toBe(400);
-    expect((await Organization.findById(organizationId))!.staffMfaRequired).toBe(true);
+    const ownerHeaders = { authorization: `Bearer ${await fixtureAccessToken({ id: owner!.id, email: payload.admin_email, role: "admin", organization_id: organizationId })}` };
+    for (const actorHeaders of [headers, ownerHeaders]) {
+      const update = await app.inject({ method: "PUT", url: `/api/organizations/${organizationId}`, headers: actorHeaders, payload: { staffMfaRequired: true } });
+      expect(update.statusCode, update.body).toBe(200);
+      expect(update.json().data).not.toHaveProperty("staffMfaRequired");
+      expect(await Organization.collection.findOne({ _id: new mongoose.Types.ObjectId(organizationId) })).not.toHaveProperty("staffMfaRequired");
+    }
+    // Previously generated development flags must not lock existing users out.
+    await Organization.collection.updateOne({ _id: new mongoose.Types.ObjectId(organizationId) }, { $set: { staffMfaRequired: true } });
+    const me = await app.inject({ method: "GET", url: "/api/auth/me", headers: ownerHeaders });
+    expect(me.statusCode, me.body).toBe(200);
+    expect(me.json().data.user.mfaEnrollmentRequired).toBe(false);
+    const operational = await app.inject({ method: "GET", url: "/api/onboarding/locations", headers: ownerHeaders });
+    expect(operational.statusCode, operational.body).toBe(200);
   });
 });
 beforeAll(async () => {
@@ -186,7 +186,7 @@ describe("Independent verified pharmacy business setup", () => {
     await SaaSPlan.updateOne({ _id: f.plan._id }, { $set: { selfServicePharmacy: false } });
     expect((await post(f, "start", f.input)).statusCode).toBe(409);
   });
-  it("keeps the verified provisional identity unprivileged, provisions one pharmacy trial and requires live MFA before operations", async () => {
+  it("keeps the verified provisional identity unprivileged, provisions one pharmacy trial and permits operations before optional MFA enrollment", async () => {
     const f = await fixture(), proof = await started(f);
     expect(await User.exists({ email: f.input.email })).toBeNull(); expect(await Organization.exists({ email: f.input.email })).toBeNull();
     const response = await post(f, "verify", { ...proof, otp: codeByEmail.get(f.input.email) }); expect(response.statusCode, response.body).toBe(200);
@@ -197,13 +197,13 @@ describe("Independent verified pharmacy business setup", () => {
     expect((await app.inject({ method: "POST", url: "/api/auth/login", payload: { email: f.input.email, password } })).statusCode).toBe(403);
     const key = crypto.randomUUID(), completed = await post(f, "complete", proof, key); expect(completed.statusCode, completed.body).toBe(200);
     const data = completed.json().data, organizationId = data.onboarding.organization.id, locationId = data.onboarding.locationId;
-    expect(data.user).toMatchObject({ role: "admin", workspaceProfile: "pharmacy", mfaEnrollmentRequired: true, organization_id: organizationId });
-    expect(await Organization.findById(organizationId)).toMatchObject({ workspaceProfile: "pharmacy", staffMfaRequired: true, isOnboarded: true, maxDoctors: 0, maxLocations: 1 });
+    expect(data.user).toMatchObject({ role: "admin", workspaceProfile: "pharmacy", mfaEnrollmentRequired: false, organization_id: organizationId });
+    expect(await Organization.findById(organizationId)).toMatchObject({ workspaceProfile: "pharmacy", isOnboarded: true, maxDoctors: 0, maxLocations: 1 });
     expect(await Subscription.findOne({ organizationId })).toMatchObject({ status: "trialing", entitlementSource: "trial", commercialQuote: { commercialFamily: "pharmacy", totalPaise: 49900 } });
     const enabled = (await ModuleRegistry.find({ organizationId, enabled: true })).map(row => row.moduleKey);
     expect(enabled).toContain("pharmacy"); expect(enabled).not.toContain("patients"); expect(enabled).not.toContain("consultations"); expect(enabled).not.toContain("appointments");
     expect(await Patient.countDocuments({ organizationId })).toBe(0); expect(await Doctor.countDocuments({ organizationId })).toBe(0); expect(await SubscriptionPayment.countDocuments({ organizationId })).toBe(0);
-    const pending = cookies(completed), denied = await app.inject({ method: "GET", url: `/api/pharmacy/locations/${locationId}/capabilities`, headers: { cookie: pending } }); expect(denied.statusCode, denied.body).toBe(403);
+    const pending = cookies(completed), accessible = await app.inject({ method: "GET", url: `/api/pharmacy/locations/${locationId}/capabilities`, headers: { cookie: pending } }); expect(accessible.statusCode, accessible.body).toBe(200);
     const active = await enroll(pending), me = await app.inject({ method: "GET", url: "/api/auth/me", headers: { cookie: active.cookie } }); expect(me.json().data.user).toMatchObject({ role: "admin", mfaEnrollmentRequired: false, workspaceProfile: "pharmacy" });
     const replay = await post(f, "complete", proof, key); expect(replay.statusCode).toBe(200); expect(replay.json().data.twoFactorRequired).toBe(true);
     expect(await Organization.countDocuments({ email: f.input.email })).toBe(1); expect(await Location.countDocuments({ organizationId })).toBe(1); expect(await Subscription.countDocuments({ organizationId })).toBe(1);
